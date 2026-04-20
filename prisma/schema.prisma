@@ -1,0 +1,57 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider          = "sqlserver"
+  url               = env("DATABASE_URL")
+  
+}
+
+// role: SALES | OPERATIONS
+model User {
+  id            String     @id @default(cuid())
+  email         String     @unique
+  name          String
+  password_hash String
+  role          String     @default("SALES")
+  created_at    DateTime   @default(now())
+  holds         Hold[]
+  audit_logs    AuditLog[]
+
+  @@map("app_users")
+}
+
+// status: HOLD | COMMITTED
+model Hold {
+  id           String     @id @default(cuid())
+  truck_number String
+  market       String
+  state        String
+  client_name  String
+  start_date   DateTime
+  end_date     DateTime
+  status       String     @default("HOLD")
+  notes        String?
+  created_by   String
+  created_at   DateTime   @default(now())
+  updated_at   DateTime   @updatedAt
+  user         User       @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  audit_logs   AuditLog[]
+
+  @@map("app_holds")
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  action       String
+  truck_number String
+  user_id      String
+  hold_id      String?
+  details      String?
+  created_at   DateTime @default(now())
+  user         User     @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  hold         Hold?    @relation(fields: [hold_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("app_audit_logs")
+}

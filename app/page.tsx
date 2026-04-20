@@ -1,101 +1,151 @@
-import Image from "next/image";
+'use client'
 
-export default function Home() {
+import { useState, useEffect, useCallback } from 'react'
+import { format, addDays, startOfDay } from 'date-fns'
+import Link from 'next/link'
+import { Navbar } from '@/components/Navbar'
+import { ScheduleGrid, type TruckInfo, type ScheduleBlock, type HoldBlock } from '@/components/ScheduleGrid'
+import { FilterBar } from '@/components/FilterBar'
+import { ScheduleSkeleton } from '@/components/LoadingSkeleton'
+
+type Filters = {
+  state: string
+  market: string
+  statusFilters: Set<string>
+  dateFrom: string
+  dateTo: string
+}
+
+const today = startOfDay(new Date())
+
+const defaultFilters: Filters = {
+  state: '',
+  market: '',
+  statusFilters: new Set(),
+  dateFrom: format(addDays(today, -7), 'yyyy-MM-dd'),
+  dateTo: format(addDays(today, 90), 'yyyy-MM-dd'),
+}
+
+export default function DashboardPage() {
+  const [trucks,    setTrucks]    = useState<TruckInfo[]>([])
+  const [schedules, setSchedules] = useState<ScheduleBlock[]>([])
+  const [holdBlocks, setHoldBlocks] = useState<HoldBlock[]>([])
+  const [markets, setMarkets] = useState<string[]>([])
+  const [states,  setStates]  = useState<string[]>([])
+  const [filters, setFilters] = useState<Filters>(defaultFilters)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  const fetchSchedule = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const res = await fetch('/api/schedule')
+      if (!res.ok) throw new Error('Failed to fetch schedule')
+      const data = await res.json()
+      setTrucks(data.trucks       || [])
+      setSchedules(data.schedules || [])
+      setHoldBlocks(data.holds    || [])
+    } catch (err) {
+      setError('Failed to load schedule data. Check your database connection.')
+      console.error(err)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const fetchMarkets = useCallback(async () => {
+    try {
+      const res = await fetch('/api/markets')
+      if (res.ok) {
+        const data = await res.json()
+        setMarkets(data.markets ?? [])
+        setStates(data.states   ?? [])
+      }
+    } catch (err) {
+      console.error('Failed to fetch markets:', err)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchSchedule()
+    fetchMarkets()
+  }, [fetchSchedule, fetchMarkets])
+
   return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="https://nextjs.org/icons/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+    <div className="flex flex-col h-screen overflow-hidden">
+      <Navbar />
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="https://nextjs.org/icons/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Schedule panel — full width */}
+        <div className="flex-1 flex flex-col overflow-hidden p-4 min-w-0">
+          <div className="flex items-center justify-between mb-3">
+            <h1 className="text-lg font-bold text-gray-900">Schedule Grid</h1>
+            <div className="flex items-center gap-2">
+              {!loading && (
+                <span className="text-xs text-gray-400">
+                  {trucks.length} trucks
+                </span>
+              )}
+              <button
+                onClick={fetchSchedule}
+                className="text-xs text-green-700 hover:text-green-900 font-medium border border-green-300 px-2 py-1 rounded"
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+
+          <FilterBar
+            filters={filters}
+            onChange={setFilters}
+            states={states}
+            markets={markets}
+          />
+
+
+          <div className="flex-1 overflow-auto mt-3">
+            {error ? (
+              <div className="flex flex-col items-center justify-center h-64 text-center">
+                <div className="text-5xl mb-4">⚠️</div>
+                <p className="text-gray-600 font-medium">{error}</p>
+                <button
+                  onClick={fetchSchedule}
+                  className="mt-4 bg-green-700 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-800"
+                >
+                  Retry
+                </button>
+              </div>
+            ) : loading ? (
+              <ScheduleSkeleton />
+            ) : (
+              <ScheduleGrid
+                trucks={trucks}
+                schedules={schedules}
+                holds={holdBlocks}
+                filters={filters}
+                onHoldCreated={fetchSchedule}
+                markets={markets}
+                states={states}
+              />
+            )}
+          </div>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+
+        {/* Floating AI button */}
+        <Link
+          href="/ai"
+          title="Ask AI Assistant"
+          className="fixed bottom-6 right-6 z-50 w-12 h-12 bg-green-700 hover:bg-green-800 text-white rounded-full shadow-lg flex items-center justify-center transition-colors group"
         >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+          </svg>
+          <span className="absolute right-14 bg-gray-800 text-white text-xs px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+            Ask AI Assistant
+          </span>
+        </Link>
+      </div>
     </div>
-  );
+  )
 }

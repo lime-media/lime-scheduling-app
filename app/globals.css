@@ -7,17 +7,29 @@
   --foreground: #171717;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   color: var(--foreground);
   background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Smooth scrolling for the schedule grid */
+.overflow-auto {
+  scrollbar-width: thin;
+  scrollbar-color: #d1d5db transparent;
+}
+
+.overflow-auto::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.overflow-auto::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.overflow-auto::-webkit-scrollbar-thumb {
+  background-color: #d1d5db;
+  border-radius: 3px;
 }
 
 @layer utilities {

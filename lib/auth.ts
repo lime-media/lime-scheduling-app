@@ -18,27 +18,30 @@ export const authOptions: NextAuthOptions = {
         password: { label: 'Password', type: 'password' },
       },
       async authorize(credentials) {
+        console.log('[auth] authorize called, email:', credentials?.email)
         if (!credentials?.email || !credentials?.password) {
           return null
         }
-
-        const pool   = await getPool()
-        const result = await pool
-          .request()
-          .input('email', credentials.email)
-          .query('SELECT id, email, name, password_hash, role FROM dbo.app_users WHERE email = @email')
-
-        const user = result.recordset[0]
-        if (!user) return null
-
-        const isValid = await bcrypt.compare(credentials.password, user.password_hash)
-        if (!isValid) return null
-
-        return {
-          id:    user.id,
-          email: user.email,
-          name:  user.name,
-          role:  user.role,
+        try {
+          const pool = await getPool()
+          console.log('[auth] pool connected')
+          const result = await pool
+            .request()
+            .input('email', credentials.email)
+            .query('SELECT id, email, name, password_hash, role FROM dbo.app_users WHERE email = @email')
+          console.log('[auth] query result count:', result.recordset.length)
+          const user = result.recordset[0]
+          if (!user) {
+            console.log('[auth] user not found')
+            return null
+          }
+          const isValid = await bcrypt.compare(credentials.password, user.password_hash)
+          console.log('[auth] password valid:', isValid)
+          if (!isValid) return null
+          return { id: user.id, email: user.email, name: user.name, role: user.role }
+        } catch (e) {
+          console.error('[auth] error:', (e as Error).message)
+          return null
         }
       },
     }),

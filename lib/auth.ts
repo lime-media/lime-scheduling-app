@@ -1,7 +1,7 @@
 import { NextAuthOptions } from 'next-auth'
 import CredentialsProvider from 'next-auth/providers/credentials'
 import bcrypt from 'bcryptjs'
-import { prisma } from './prisma'
+import { getPool } from './mssql'
 
 export const authOptions: NextAuthOptions = {
   session: {
@@ -22,24 +22,23 @@ export const authOptions: NextAuthOptions = {
           return null
         }
 
-        const user = await prisma.user.findUnique({
-          where: { email: credentials.email },
-        })
+        const pool   = await getPool()
+        const result = await pool
+          .request()
+          .input('email', credentials.email)
+          .query('SELECT id, email, name, password_hash, role FROM dbo.app_users WHERE email = @email')
 
+        const user = result.recordset[0]
         if (!user) return null
 
-        const isValid = await bcrypt.compare(
-          credentials.password,
-          user.password_hash
-        )
-
+        const isValid = await bcrypt.compare(credentials.password, user.password_hash)
         if (!isValid) return null
 
         return {
-          id: user.id,
+          id:    user.id,
           email: user.email,
-          name: user.name,
-          role: user.role,
+          name:  user.name,
+          role:  user.role,
         }
       },
     }),

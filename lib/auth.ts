@@ -19,6 +19,7 @@ export const authOptions: NextAuthOptions = {
       },
       async authorize(credentials) {
         console.log('[auth] authorize called, email:', credentials?.email)
+        console.log('[auth] env check - MSSQL_SERVER:', process.env.MSSQL_SERVER, '| MSSQL_USER:', process.env.MSSQL_USER, '| MSSQL_DATABASE:', process.env.MSSQL_DATABASE, '| MSSQL_PASSWORD set:', !!process.env.MSSQL_PASSWORD, '| NEXTAUTH_SECRET set:', !!process.env.NEXTAUTH_SECRET)
         if (!credentials?.email || !credentials?.password) {
           return null
         }
@@ -40,7 +41,8 @@ export const authOptions: NextAuthOptions = {
           if (!isValid) return null
           return { id: user.id, email: user.email, name: user.name, role: user.role }
         } catch (e) {
-          console.error('[auth] error:', (e as Error).message)
+          const err = e as Error & { code?: string; number?: number }
+          console.error('[auth] error:', err.message, '| code:', err.code, '| number:', err.number)
           return null
         }
       },

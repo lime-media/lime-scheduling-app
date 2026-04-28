@@ -294,8 +294,13 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     truckNums = truckNums.filter((t) => matched.has(t))
   }
 
-  // ── Market grouping — keyed from truck.last_known_market (GPS city || schedule market) ──
-  const truckMarketLookup = new Map(trucks.map((t) => [t.truck_number, t.last_known_market || 'Unassigned']))
+  // ── Market grouping — use truckMeta (same source as side panel) with API GPS as fallback ──
+  // truckMeta and trucks.last_known_market can diverge when multiple rows share the same
+  // shift_start date (tie-breaking differs). truckMeta is always consistent with the panel.
+  const truckMarketLookup = new Map(trucks.map((t) => {
+    const metaMarket = truckMeta.get(t.truck_number)?.last_known_market
+    return [t.truck_number, metaMarket || t.last_known_market || 'Unassigned']
+  }))
   const groupMap = new Map<string, string[]>()
   for (const truckNum of truckNums) {
     const market = truckMarketLookup.get(truckNum) ?? 'Unassigned'

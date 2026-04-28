@@ -10,6 +10,11 @@ import { getLiveVehicleLocations } from '@/lib/samsaraService'
 let sqlCache: { trucks: unknown; schedules: unknown; timestamp: number } | null = null
 const CACHE_TTL = 5 * 60 * 1000
 
+// Normalize market names — collapse whitespace around commas (e.g. "Tallahassee , FL" → "Tallahassee, FL")
+function normalizeMarket(m: unknown): string {
+  return String(m ?? '').replace(/\s*,\s*/g, ', ').trim()
+}
+
 function toDateStr(val: unknown): string {
   if (!val) return ''
   if (val instanceof Date) return val.toISOString().split('T')[0]
@@ -67,7 +72,7 @@ export async function GET(request: Request) {
       const existing   = scheduleInfo[num]
       if (!existing || shiftStart > existing.shift_start) {
         scheduleInfo[num] = {
-          market:      String(row.standard_market_name ?? '') || String(row.market ?? ''),
+          market:      normalizeMarket(row.standard_market_name) || normalizeMarket(row.market),
           state:       String(row.state  ?? ''),
           shift_start: shiftStart,
         }
@@ -106,8 +111,8 @@ export async function GET(request: Request) {
     // schedules: { truck_number, market, state, program, shift_start, shift_end }
     const schedules = schedulesRaw.map((r) => ({
       truck_number:        String(r.truck_number        ?? ''),
-      market:              String(r.market              ?? ''),
-      standard_market_name: String(r.standard_market_name ?? '') || undefined,
+      market:              normalizeMarket(r.market),
+      standard_market_name: normalizeMarket(r.standard_market_name) || undefined,
       state:               String(r.state               ?? ''),
       program:             String(r.program             ?? ''),
       shift_start:         toDateStr(r.shift_start),

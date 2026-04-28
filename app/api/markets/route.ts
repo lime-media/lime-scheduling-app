@@ -32,9 +32,10 @@ export async function GET() {
         ORDER BY standard_market
       `),
     ])
+    const normalize = (m: string) => m?.replace(/\s*,\s*/g, ', ').trim()
     const combined = new Set<string>([
-      ...cpmResult.recordset.map((r: { market: string }) => r.market?.trim()),
-      ...lookupResult.recordset.map((r: { market: string }) => r.market?.trim()),
+      ...cpmResult.recordset.map((r: { market: string }) => normalize(r.market)),
+      ...lookupResult.recordset.map((r: { market: string }) => normalize(r.market)),
     ])
     markets = Array.from(combined)
       .filter((m) => m && m.length > 1)

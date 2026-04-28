@@ -30,7 +30,11 @@ export async function refreshCache(): Promise<void> {
 
   const [schedulesRaw, holdsRaw] = await Promise.all([
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),
-    prisma.hold.findMany({ orderBy: { start_date: 'asc' } }),
+    // ATT_SOFT holds are soft placeholders — exclude them from conflict detection
+    prisma.hold.findMany({
+      where:   { status: { not: 'ATT_SOFT' } },
+      orderBy: { start_date: 'asc' },
+    }),
   ])
 
   const schedulesAll: ConflictSchedule[] = schedulesRaw.map((r) => ({

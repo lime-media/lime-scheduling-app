@@ -36,11 +36,11 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  const fetchSchedule = useCallback(async () => {
+  const fetchSchedule = useCallback(async (force = false) => {
     setLoading(true)
     setError('')
     try {
-      const res = await fetch('/api/schedule')
+      const res = await fetch(force ? '/api/schedule?force=1' : '/api/schedule')
       if (!res.ok) throw new Error('Failed to fetch schedule')
       const data = await res.json()
       setTrucks(data.trucks       || [])
@@ -68,8 +68,20 @@ export default function DashboardPage() {
   }, [])
 
   useEffect(() => {
-    fetchSchedule()
-    fetchMarkets()
+    const init = async () => {
+      await Promise.all([fetchSchedule(), fetchMarkets()])
+      // Auto-create ATT soft holds for next month; refresh grid if any were created
+      try {
+        const r = await fetch('/api/holds/att-sync', { method: 'POST' })
+        if (r.ok) {
+          const data = await r.json()
+          if (data.created > 0) fetchSchedule()
+        }
+      } catch {
+        // Non-critical — grid still works without ATT sync
+      }
+    }
+    init()
   }, [fetchSchedule, fetchMarkets])
 
   return (
@@ -88,7 +100,7 @@ export default function DashboardPage() {
                 </span>
               )}
               <button
-                onClick={fetchSchedule}
+                onClick={() => fetchSchedule(true)}
                 className="text-xs text-green-700 hover:text-green-900 font-medium border border-green-300 px-2 py-1 rounded"
               >
                 Refresh
@@ -110,7 +122,7 @@ export default function DashboardPage() {
                 <div className="text-5xl mb-4">⚠️</div>
                 <p className="text-gray-600 font-medium">{error}</p>
                 <button
-                  onClick={fetchSchedule}
+                  onClick={() => fetchSchedule(true)}
                   className="mt-4 bg-green-700 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-800"
                 >
                   Retry

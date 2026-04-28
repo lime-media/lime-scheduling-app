@@ -15,21 +15,21 @@
 export const SCHEDULED_QUERY = `
 SELECT
     t.truck_number,
-    COALESCE(cpm.market,  '') AS market,
+    COALESCE(cpm.market,               '') AS market,
+    COALESCE(cpm.standard_market_name, '') AS standard_market_name,
     COALESCE(cpm.state,   '') AS state,
     COALESCE(cp.program,  '') AS program,
     CAST(ps.start_time AS DATE) AS shift_start,
-    CAST(ps.end_time   AS DATE) AS shift_end
+    CAST(ps.start_time AS DATE) AS shift_end  -- use start date; end_time bleeds into next day for overnight shifts
 FROM dbo.program_schedule ps
 JOIN dbo.trucks t
     ON  t.truck_uid = ps.truck_uid
-JOIN dbo.client_program_markets cpm
+LEFT JOIN dbo.client_program_markets cpm
     ON  cpm.client_program_market_uid = ps.client_program_market_uid
-JOIN dbo.client_programs cp
+LEFT JOIN dbo.client_programs cp
     ON  cp.client_program_uid = ps.client_program_uid
 WHERE CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
   AND CAST(ps.start_time AS DATE) <= DATEADD(day,  60, CAST(GETDATE() AS DATE))
-  AND COALESCE(t.is_deleted, 0) = 0
 ORDER BY t.truck_number, ps.start_time
 `
 
@@ -37,8 +37,14 @@ ORDER BY t.truck_number, ps.start_time
 // Minimal — just what we need to build the truck list.
 export const ALL_TRUCKS_QUERY = `
 SELECT truck_number, samsara_id
-FROM dbo.trucks
-WHERE COALESCE(is_deleted, 0) = 0
+FROM dbo.trucks t
+WHERE COALESCE(t.is_deleted, 0) = 0
+   OR EXISTS (
+     SELECT 1 FROM dbo.program_schedule ps
+     WHERE ps.truck_uid = t.truck_uid
+       AND CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
+       AND CAST(ps.start_time AS DATE) <= DATEADD(day,  60, CAST(GETDATE() AS DATE))
+   )
 ORDER BY truck_number
 `
 
@@ -54,7 +60,7 @@ SELECT
     COALESCE(pm.market,  '') AS market,
     COALESCE(p.program,  '') AS program,
     CAST(ps.start_time AS DATE) AS schedule_start,
-    CAST(ps.end_time   AS DATE) AS schedule_end,
+    CAST(ps.start_time AS DATE) AS schedule_end,
     '' AS gps_address,
     COALESCE(lkm.last_known_market, '') AS last_known_market
 FROM dbo.trucks t

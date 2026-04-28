@@ -17,15 +17,27 @@ export async function GET() {
   // ── Scheduled markets (LED schedule only) ────────────────────────────────
   let markets: string[] = []
   try {
-    const marketsResult = await pool.request().query(`
-      SELECT DISTINCT LTRIM(RTRIM(market)) AS market
-      FROM dbo.client_program_markets
-      WHERE market IS NOT NULL AND LEN(LTRIM(RTRIM(market))) > 0
-      ORDER BY market
-    `)
-    markets = marketsResult.recordset
-      .map((r: { market: string }) => r.market?.trim())
-      .filter((m: string) => m && m.length > 1)
+    const [cpmResult, lookupResult] = await Promise.all([
+      pool.request().query(`
+        SELECT DISTINCT
+          COALESCE(standard_market_name, market) AS market
+        FROM dbo.client_program_markets
+        WHERE market IS NOT NULL AND LEN(LTRIM(RTRIM(market))) > 0
+        ORDER BY market
+      `),
+      pool.request().query(`
+        SELECT DISTINCT standard_market AS market
+        FROM dbo.standard_market_lookup
+        WHERE standard_market IS NOT NULL
+        ORDER BY standard_market
+      `),
+    ])
+    const combined = new Set<string>([
+      ...cpmResult.recordset.map((r: { market: string }) => r.market?.trim()),
+      ...lookupResult.recordset.map((r: { market: string }) => r.market?.trim()),
+    ])
+    markets = Array.from(combined)
+      .filter((m) => m && m.length > 1)
       .sort()
   } catch (err) {
     console.error('[/api/markets] scheduled markets query failed:', err)

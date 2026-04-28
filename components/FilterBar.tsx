@@ -18,10 +18,12 @@ interface FilterBarProps {
 }
 
 const STATUS_OPTIONS = [
-  { value: 'EMPTY',             label: 'Available',  color: 'bg-gray-400' },
-  { value: 'SCHEDULED_LED',     label: 'Scheduled',  color: 'bg-green-500' },
-  { value: 'HOLD_TENTATIVE',    label: 'On Hold',    color: 'bg-yellow-400' },
-  { value: 'COMMITTED_NOT_SET', label: 'Committed',  color: 'bg-red-500' },
+  { value: 'EMPTY',             label: 'Available',    color: 'bg-gray-400' },
+  { value: 'SCHEDULED_LED',     label: 'Scheduled',    color: 'bg-green-500' },
+  { value: 'MAINTENANCE',       label: 'Maintenance',  color: 'bg-orange-400' },
+  { value: 'HOLD_TENTATIVE',    label: 'On Hold',      color: 'bg-yellow-400' },
+  { value: 'COMMITTED_NOT_SET', label: 'Committed',    color: 'bg-red-500' },
+  { value: 'ATT_SOFT',          label: 'ATT Hold',     color: 'bg-blue-400' },
 ]
 
 export function FilterBar({ filters, onChange, states, markets }: FilterBarProps) {

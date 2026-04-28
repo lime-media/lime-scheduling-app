@@ -70,9 +70,8 @@ export function AISidebar({
     >
       {/* Branding */}
       <div className="flex items-center justify-between px-4 py-4 border-b border-green-800">
-        <Link href="/" className="flex items-center gap-2 text-white font-bold text-base">
-          <span className="text-xl">🍋</span>
-          <span>Lime Media</span>
+        <Link href="/" className="flex items-center">
+          <img src="/logo.png" alt="Lime Media" className="h-8 w-auto" />
         </Link>
       </div>
 

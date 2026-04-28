@@ -37,7 +37,9 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         {/* Logo / Brand */}
         <div className="text-center mb-8">
-          <div className="text-5xl mb-3">🍋</div>
+          <div className="flex justify-center mb-3">
+            <img src="/logo.png" alt="Lime Media" className="h-16 w-auto" />
+          </div>
           <h1 className="text-3xl font-bold text-white">Lime Media</h1>
           <p className="text-green-200 mt-1 text-sm">Scheduling Assistant</p>
         </div>

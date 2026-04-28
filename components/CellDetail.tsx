@@ -1,6 +1,6 @@
 'use client'
 
-import { format } from 'date-fns'
+import { format, parseISO } from 'date-fns'
 import toast from 'react-hot-toast'
 import type { ScheduleRow } from './ScheduleGrid'
 
@@ -17,6 +17,8 @@ const STATUS_BADGE: Record<string, string> = {
   SCHEDULED_LED:     'bg-green-100 text-green-800',
   HOLD_TENTATIVE:    'bg-yellow-100 text-yellow-800',
   COMMITTED_NOT_SET: 'bg-red-100 text-red-800',
+  ATT_SOFT:          'bg-blue-100 text-blue-800',
+  MAINTENANCE:       'bg-orange-100 text-orange-800',
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -24,13 +26,18 @@ const STATUS_LABELS: Record<string, string> = {
   SCHEDULED_LED:     'Scheduled',
   HOLD_TENTATIVE:    'On Hold',
   COMMITTED_NOT_SET: 'Committed',
+  ATT_SOFT:          'ATT Soft Hold',
+  MAINTENANCE:       'Under Maintenance',
 }
 
 export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHoldDeleted }: CellDetailProps) {
 
   const handleRelease = async () => {
     if (!cell?.hold_id) return
-    if (!confirm('Release this hold?')) return
+    const msg = cell.display_status === 'ATT_SOFT'
+      ? 'Release this AT&T soft hold for the whole month?'
+      : 'Release this hold?'
+    if (!confirm(msg)) return
     const res = await fetch(`/api/holds/${cell.hold_id}`, { method: 'DELETE' })
     if (res.ok) {
       toast.success('Hold released')
@@ -74,10 +81,12 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
 
   // ── Populated state ───────────────────────────────────────────────────────
   const status    = cell.display_status
-  const dateStr   = cell.calendar_date ? format(new Date(cell.calendar_date), 'MMM d, yyyy') : ''
+  const dateStr   = cell.calendar_date ? format(parseISO(cell.calendar_date + 'T12:00:00'), 'MMM d, yyyy') : ''
   const market    = cell.hold_market || cell.market || lastKnownMarket
-  const isHold      = status === 'HOLD_TENTATIVE' || status === 'COMMITTED_NOT_SET'
-  const isScheduled = status === 'SCHEDULED_LED'
+  const isHold        = status === 'HOLD_TENTATIVE' || status === 'COMMITTED_NOT_SET'
+  const isScheduled   = status === 'SCHEDULED_LED'
+  const isATTSoft     = status === 'ATT_SOFT'
+  const isMaintenance = status === 'MAINTENANCE'
 
   return (
     <div className="w-56 flex-shrink-0 border border-gray-200 rounded-lg bg-white flex flex-col overflow-hidden sticky top-0 h-fit">
@@ -110,8 +119,9 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
         {/* Scheduled cell details */}
         {isScheduled && (
           <>
-            {cell.program  && <Row label="Program" value={cell.program} />}
-            {market        && <Row label="Market"  value={market} />}
+            {cell.program              && <Row label="Program"    value={cell.program} />}
+            {market                    && <Row label="Market"     value={market} />}
+            <Row label="Std Market" value={cell.standard_market_name ?? ''} alwaysShow />
             {cell.shift_start && (
               <Row label="Dates" value={`${formatDate(cell.shift_start)} – ${formatDate(cell.shift_end ?? '')}`} />
             )}
@@ -125,6 +135,29 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
             {market             && <Row label="Market"  value={market} />}
             {cell.hold_notes    && <Row label="Notes"   value={cell.hold_notes} />}
             {cell.hold_created_by && <Row label="By"    value={cell.hold_created_by} />}
+          </>
+        )}
+
+        {/* ATT soft hold details */}
+        {isATTSoft && (
+          <>
+            {cell.client_name && <Row label="Client" value={cell.client_name} />}
+            {cell.hold_notes  && <Row label="Period" value={cell.hold_notes} />}
+          </>
+        )}
+
+        {/* Maintenance details */}
+        {isMaintenance && (
+          <>
+            <div className="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2.5">
+              <span className="text-orange-500 text-base leading-none mt-0.5">⚠</span>
+              <p className="text-xs text-orange-800 font-medium leading-relaxed">
+                This truck is under maintenance. Holds cannot be placed during this period.
+              </p>
+            </div>
+            {cell.shift_start && (
+              <Row label="Period" value={`${formatDate(cell.shift_start)} – ${formatDate(cell.shift_end ?? '')}`} />
+            )}
           </>
         )}
 
@@ -171,10 +204,27 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
           </>
         )}
 
+        {/* ATT soft hold: release button */}
+        {isATTSoft && (
+          <button
+            onClick={handleRelease}
+            className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm py-2 rounded-lg font-medium transition-colors"
+          >
+            Release ATT Hold
+          </button>
+        )}
+
         {/* Scheduled: read-only, no hold action */}
         {isScheduled && (
           <p className="text-xs text-gray-400 text-center">
             Scheduled in LED app — holds disabled
+          </p>
+        )}
+
+        {/* Maintenance: no hold action */}
+        {isMaintenance && (
+          <p className="text-xs text-orange-400 text-center font-medium">
+            Holds disabled during maintenance
           </p>
         )}
       </div>
@@ -182,8 +232,8 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
   )
 }
 
-function Row({ label, value }: { label: string; value: string }) {
-  if (!value) return null
+function Row({ label, value, alwaysShow }: { label: string; value: string; alwaysShow?: boolean }) {
+  if (!value && !alwaysShow) return null
   return (
     <div className="flex gap-2 items-start">
       <span className="text-gray-400 text-xs w-20 flex-shrink-0 pt-0.5">{label}</span>
@@ -194,5 +244,5 @@ function Row({ label, value }: { label: string; value: string }) {
 
 function formatDate(t: string): string {
   if (!t) return ''
-  try { return format(new Date(t), 'MMM d, yyyy') } catch { return t }
+  try { return format(parseISO(t + 'T12:00:00'), 'MMM d, yyyy') } catch { return t }
 }

@@ -31,10 +31,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
   }
 
-  // Check for conflicts with existing holds on same truck + date range
+  // Check for conflicts with existing holds on same truck + date range.
+  // ATT_SOFT holds are soft placeholders — they don't block regular hold creation.
   const conflictingHolds = await prisma.hold.findMany({
     where: {
       truck_number,
+      status: { not: 'ATT_SOFT' },
       OR: [{ start_date: { lte: new Date(end_date) }, end_date: { gte: new Date(start_date) } }],
     },
   })

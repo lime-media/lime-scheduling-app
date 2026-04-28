@@ -18,11 +18,14 @@ function toDateStr(val: unknown): string {
   try { return new Date(s).toISOString().split('T')[0] } catch { return '' }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const session = await getServerSession(authOptions)
   if (!session) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+
+  const { searchParams } = new URL(request.url)
+  const forceRefresh = searchParams.get('force') === '1'
 
   try {
     const holdsPromise = prisma.hold.findMany({
@@ -33,7 +36,7 @@ export async function GET() {
     let trucksRaw: Record<string, unknown>[]
     let schedulesRaw: Record<string, unknown>[]
 
-    if (sqlCache && Date.now() - sqlCache.timestamp < CACHE_TTL) {
+    if (!forceRefresh && sqlCache && Date.now() - sqlCache.timestamp < CACHE_TTL) {
       trucksRaw    = sqlCache.trucks    as Record<string, unknown>[]
       schedulesRaw = sqlCache.schedules as Record<string, unknown>[]
     } else {
@@ -55,7 +58,8 @@ export async function GET() {
       console.warn('[schedule] Samsara GPS failed, continuing without GPS:', (e as Error).message)
     }
 
-    // Schedule market/state per truck: most recent block (no date constraint) — fallback when no GPS
+    // Schedule market/state per truck: most recent block (no date constraint) — fallback when no GPS.
+    // Use standard_market_name when available so grouping shows standardised names.
     const scheduleInfo: Record<string, { market: string; state: string; shift_start: string }> = {}
     for (const row of schedulesRaw) {
       const num        = String(row.truck_number ?? '')
@@ -63,7 +67,7 @@ export async function GET() {
       const existing   = scheduleInfo[num]
       if (!existing || shiftStart > existing.shift_start) {
         scheduleInfo[num] = {
-          market:      String(row.market ?? ''),
+          market:      String(row.standard_market_name ?? '') || String(row.market ?? ''),
           state:       String(row.state  ?? ''),
           shift_start: shiftStart,
         }
@@ -93,14 +97,21 @@ export async function GET() {
       }
     })
 
+    // Debug: log first row to verify standard_market_name is populated in DB
+    if (schedulesRaw.length > 0) {
+      const s = schedulesRaw[0]
+      console.log('[schedule] first row - market:', s.market, '| standard_market_name:', s.standard_market_name)
+    }
+
     // schedules: { truck_number, market, state, program, shift_start, shift_end }
     const schedules = schedulesRaw.map((r) => ({
-      truck_number: String(r.truck_number ?? ''),
-      market:       String(r.market       ?? ''),
-      state:        String(r.state        ?? ''),
-      program:      String(r.program      ?? ''),
-      shift_start:  toDateStr(r.shift_start),
-      shift_end:    toDateStr(r.shift_end),
+      truck_number:        String(r.truck_number        ?? ''),
+      market:              String(r.market              ?? ''),
+      standard_market_name: String(r.standard_market_name ?? '') || undefined,
+      state:               String(r.state               ?? ''),
+      program:             String(r.program             ?? ''),
+      shift_start:         toDateStr(r.shift_start),
+      shift_end:           toDateStr(r.shift_end),
     }))
 
     const holdBlocks = holds.map((h) => ({
@@ -112,7 +123,7 @@ export async function GET() {
       notes:        h.notes ?? '',
       start_date:   h.start_date.toISOString().split('T')[0],
       end_date:     h.end_date.toISOString().split('T')[0],
-      status:       h.status as 'HOLD' | 'COMMITTED',
+      status:       h.status as 'HOLD' | 'COMMITTED' | 'ATT_SOFT',
       created_by:   h.created_by,
       user_name:    h.user?.name ?? null,
     }))

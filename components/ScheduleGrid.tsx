@@ -18,6 +18,7 @@ export type TruckInfo = {
 export type ScheduleBlock = {
   truck_number: string
   market: string
+  standard_market_name?: string
   state: string
   program: string
   shift_start: string        // YYYY-MM-DD
@@ -33,7 +34,7 @@ export type HoldBlock = {
   notes: string
   start_date: string         // YYYY-MM-DD
   end_date: string           // YYYY-MM-DD
-  status: 'HOLD' | 'COMMITTED'
+  status: 'HOLD' | 'COMMITTED' | 'ATT_SOFT'
   created_by: string
   user_name: string | null
 }
@@ -46,12 +47,13 @@ export type ScheduleRow = {
   state: string
   program: string
   formatted_location: string
-  display_status: 'EMPTY' | 'SCHEDULED_LED' | 'HOLD_TENTATIVE' | 'COMMITTED_NOT_SET'
+  display_status: 'EMPTY' | 'SCHEDULED_LED' | 'HOLD_TENTATIVE' | 'COMMITTED_NOT_SET' | 'ATT_SOFT' | 'MAINTENANCE'
   calendar_date: string
   shift_start: string | null
   shift_end: string | null
   last_known_market?: string
   last_gps_state?: string
+  standard_market_name?: string
   hold_id?: string
   client_name?: string
   hold_market?: string
@@ -75,6 +77,8 @@ const STATUS_COLORS: Record<string, string> = {
   SCHEDULED_LED:      'bg-green-500 hover:bg-green-600',
   HOLD_TENTATIVE:     'bg-yellow-400 hover:bg-yellow-500',
   COMMITTED_NOT_SET:  'bg-red-500 hover:bg-red-600',
+  ATT_SOFT:           'bg-blue-400 hover:bg-blue-500',
+  MAINTENANCE:        'bg-orange-400 hover:bg-orange-500',
 }
 
 const STATUS_BORDER: Record<string, string> = {
@@ -82,6 +86,8 @@ const STATUS_BORDER: Record<string, string> = {
   SCHEDULED_LED:      'border-green-600',
   HOLD_TENTATIVE:     'border-yellow-500',
   COMMITTED_NOT_SET:  'border-red-600',
+  ATT_SOFT:           'border-blue-500',
+  MAINTENANCE:        'border-orange-500',
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -89,6 +95,8 @@ const STATUS_LABELS: Record<string, string> = {
   SCHEDULED_LED:      'Scheduled',
   HOLD_TENTATIVE:     'On Hold',
   COMMITTED_NOT_SET:  'Committed',
+  ATT_SOFT:           'ATT Hold',
+  MAINTENANCE:        'Maintenance',
 }
 
 function getDates(from: Date, to: Date): Date[] {
@@ -175,10 +183,10 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         entry.last_schedule_state = block.state
       }
 
-      // last_known_market: most recent block with shift_start ≤ today
+      // last_known_market: most recent block with shift_start ≤ today; prefer standard market name
       if (block.shift_start <= todayStr && block.shift_start >= entry._bestSchedStart) {
         entry._bestSchedStart   = block.shift_start
-        entry.last_known_market = block.market
+        entry.last_known_market = block.standard_market_name || block.market
       }
     }
 
@@ -190,14 +198,15 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
   // Holds are layered on top of schedules; holds take priority in getCellData.
 
   const dataMap = useMemo(() => {
-    const m = new Map<string, { sched?: ScheduleBlock; hold?: HoldBlock }>()
+    const m = new Map<string, { sched?: ScheduleBlock; hold?: HoldBlock; attHold?: HoldBlock }>()
 
     for (const block of schedules) {
       if (!block.shift_start || !block.shift_end) continue
       let d = parseISO(block.shift_start)
       const end = parseISO(block.shift_end)
       while (d <= end) {
-        m.set(`${block.truck_number}__${format(d, 'yyyy-MM-dd')}`, { sched: block })
+        const key = `${block.truck_number}__${format(d, 'yyyy-MM-dd')}`
+        m.set(key, { ...m.get(key), sched: block })
         d = addDays(d, 1)
       }
     }
@@ -209,7 +218,12 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       while (d <= end) {
         const key      = `${hold.truck_number}__${format(d, 'yyyy-MM-dd')}`
         const existing = m.get(key) ?? {}
-        m.set(key, { ...existing, hold })
+        // ATT_SOFT stored separately so regular holds always win
+        if (hold.status === 'ATT_SOFT') {
+          m.set(key, { ...existing, attHold: hold })
+        } else {
+          m.set(key, { ...existing, hold })
+        }
         d = addDays(d, 1)
       }
     }
@@ -230,7 +244,8 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       if ((t.last_known_market ?? '').toLowerCase().trim() === fm) matched.add(t.truck_number)
     }
     for (const block of schedules) {
-      if (block.market.toLowerCase().trim() === fm) matched.add(block.truck_number)
+      const blockMarket = (block.standard_market_name || block.market).toLowerCase().trim()
+      if (blockMarket === fm || block.market.toLowerCase().trim() === fm) matched.add(block.truck_number)
     }
 
     truckNums = truckNums.filter((t) => matched.has(t))
@@ -254,13 +269,19 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     const matched = new Set<string>()
 
     if (filters.statusFilters.has('SCHEDULED_LED')) {
-      for (const b of schedules) matched.add(b.truck_number)
+      for (const b of schedules) if (b.program?.toLowerCase() !== 'truck maintenance') matched.add(b.truck_number)
+    }
+    if (filters.statusFilters.has('MAINTENANCE')) {
+      for (const b of schedules) if (b.program?.toLowerCase() === 'truck maintenance') matched.add(b.truck_number)
     }
     if (filters.statusFilters.has('HOLD_TENTATIVE')) {
       for (const h of holds) { if (h.status === 'HOLD') matched.add(h.truck_number) }
     }
     if (filters.statusFilters.has('COMMITTED_NOT_SET')) {
       for (const h of holds) { if (h.status === 'COMMITTED') matched.add(h.truck_number) }
+    }
+    if (filters.statusFilters.has('ATT_SOFT')) {
+      for (const h of holds) { if (h.status === 'ATT_SOFT') matched.add(h.truck_number) }
     }
     if (filters.statusFilters.has('EMPTY')) {
       const scheduledSet = new Set(schedules.map((b) => b.truck_number))
@@ -312,7 +333,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
 
     if (!entry) return base
 
-    // 1. Hold takes priority; flag if a schedule also exists (conflict)
+    // 1. Regular hold (highest priority; flag if a schedule also overlaps — conflict)
     if (entry.hold) {
       return {
         ...base,
@@ -327,20 +348,44 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       }
     }
 
-    // 2. Schedule block
-    if (entry.sched) {
+    // 2. Maintenance block — distinct orange; holds blocked
+    if (entry.sched?.program?.toLowerCase() === 'truck maintenance') {
       return {
         ...base,
-        display_status: 'SCHEDULED_LED',
-        market:         entry.sched.market,
-        state:          entry.sched.state,
+        display_status: 'MAINTENANCE',
         program:        entry.sched.program,
         shift_start:    entry.sched.shift_start,
         shift_end:      entry.sched.shift_end,
       }
     }
 
-    // 3. Empty (grey)
+    // 3. Scheduled LED block (overrides ATT soft hold — turns blue → green automatically)
+    if (entry.sched) {
+      return {
+        ...base,
+        display_status:       'SCHEDULED_LED',
+        market:               entry.sched.market,
+        standard_market_name: entry.sched.standard_market_name,
+        state:                entry.sched.state,
+        program:              entry.sched.program,
+        shift_start:          entry.sched.shift_start,
+        shift_end:            entry.sched.shift_end,
+      }
+    }
+
+    // 4. ATT soft hold (lowest priority — yields to any schedule or regular hold)
+    if (entry.attHold) {
+      return {
+        ...base,
+        display_status:  'ATT_SOFT',
+        hold_id:         entry.attHold.id,
+        client_name:     entry.attHold.client_name,
+        hold_notes:      entry.attHold.notes,
+        hold_created_by: entry.attHold.user_name ?? entry.attHold.created_by,
+      }
+    }
+
+    // 4. Empty (grey)
     return base
   }
 
@@ -363,7 +408,8 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
 
   const handleMouseEnter = (truckNum: string, dateIdx: number) => {
     if (!isDragging.current || !dragStart || dragStart.truck !== truckNum) return
-    if (pendingCell.current?.display_status === 'SCHEDULED_LED') return
+    if (pendingCell.current?.display_status === 'SCHEDULED_LED' ||
+        pendingCell.current?.display_status === 'MAINTENANCE') return
     if (truckNum !== dragStart.truck || dateIdx !== dragStart.dateIdx) hasMoved.current = true
     setDragEnd({ truck: truckNum, dateIdx })
   }
@@ -386,8 +432,11 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         }
 
         if (schedConflict) {
+          const isMaint = schedConflict.program?.toLowerCase() === 'truck maintenance'
           toast.error(
-            `Cannot place hold — Truck ${truckNum} is already scheduled for "${schedConflict.program}" on ${format(schedConflict.date, 'MMM d')}`
+            isMaint
+              ? `Truck ${truckNum} is under maintenance on ${format(schedConflict.date, 'MMM d')} — holds cannot be placed`
+              : `Cannot place hold — Truck ${truckNum} is already scheduled for "${schedConflict.program}" on ${format(schedConflict.date, 'MMM d')}`
           )
         } else {
           setHoldRange({ truck: truckNum, start: dates[minIdx], end: dates[maxIdx] })
@@ -617,7 +666,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       {/* Legend */}
       <div className="hidden xl:flex flex-col gap-2 pt-2 text-xs min-w-[100px] flex-shrink-0">
         <div className="font-semibold text-gray-500 uppercase tracking-wide mb-1">Legend</div>
-        {(['EMPTY', 'SCHEDULED_LED', 'HOLD_TENTATIVE', 'COMMITTED_NOT_SET'] as const).map((s) => (
+        {(['EMPTY', 'SCHEDULED_LED', 'MAINTENANCE', 'HOLD_TENTATIVE', 'COMMITTED_NOT_SET', 'ATT_SOFT'] as const).map((s) => (
           <div key={s} className="flex items-center gap-2">
             <div className={`w-4 h-4 rounded-sm ${STATUS_COLORS[s].split(' ')[0]} border ${STATUS_BORDER[s]}`} />
             <span className="text-gray-600">{STATUS_LABELS[s]}</span>

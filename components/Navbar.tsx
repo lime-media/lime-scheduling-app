@@ -97,16 +97,16 @@ export function Navbar() {
 
   return (
     <>
-      <nav className="bg-green-800 text-white px-6 py-3 flex items-center justify-between shadow-lg">
+      <nav className="bg-[#1a3028] text-white px-6 py-3 flex items-center justify-between shadow-lg">
         <div className="flex items-center gap-6">
-          <Link href="/" className="text-xl font-bold tracking-tight text-white">
-            🍋 Lime Media
+          <Link href="/" className="flex items-center">
+            <img src="/logo.png" alt="Lime Media" className="h-10 w-auto" />
           </Link>
           <div className="hidden sm:flex items-center gap-4 text-sm font-medium">
             <Link
               href="/"
               className={`px-3 py-1.5 rounded transition-colors ${
-                pathname === '/' ? 'bg-green-700 text-white' : 'text-green-100 hover:text-white hover:bg-green-700'
+                pathname === '/' ? 'bg-[#0f1f18] text-white' : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
               }`}
             >
               Schedule
@@ -114,7 +114,7 @@ export function Navbar() {
             <Link
               href="/map"
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition-colors ${
-                pathname === '/map' ? 'bg-green-700 text-white' : 'text-green-100 hover:text-white hover:bg-green-700'
+                pathname === '/map' ? 'bg-[#0f1f18] text-white' : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
               }`}
             >
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -126,7 +126,7 @@ export function Navbar() {
             <Link
               href="/ai"
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition-colors ${
-                pathname === '/ai' ? 'bg-green-700 text-white' : 'text-green-100 hover:text-white hover:bg-green-700'
+                pathname === '/ai' ? 'bg-[#0f1f18] text-white' : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
               }`}
             >
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -137,7 +137,7 @@ export function Navbar() {
             <Link
               href="/holds"
               className={`px-3 py-1.5 rounded transition-colors ${
-                pathname === '/holds' ? 'bg-green-700 text-white' : 'text-green-100 hover:text-white hover:bg-green-700'
+                pathname === '/holds' ? 'bg-[#0f1f18] text-white' : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
               }`}
             >
               Holds
@@ -145,7 +145,7 @@ export function Navbar() {
             <Link
               href="/conflicts"
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition-colors ${
-                pathname === '/conflicts' ? 'bg-green-700 text-white' : 'text-green-100 hover:text-white hover:bg-green-700'
+                pathname === '/conflicts' ? 'bg-[#0f1f18] text-white' : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
               }`}
             >
               Conflicts
@@ -163,7 +163,7 @@ export function Navbar() {
               <Link
                 href="/users"
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition-colors ${
-                  pathname === '/users' ? 'bg-green-700 text-white' : 'text-green-100 hover:text-white hover:bg-green-700'
+                  pathname === '/users' ? 'bg-[#0f1f18] text-white' : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
                 }`}
               >
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

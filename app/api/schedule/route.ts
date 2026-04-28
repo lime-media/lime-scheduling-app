@@ -89,7 +89,7 @@ export async function GET(request: Request) {
       }
     }
 
-    // trucks: GPS is primary (real-time); schedule/hold market are fallbacks
+    // trucks: standard market → raw market → GPS city (Samsara as last resort)
     const trucks = trucksRaw.map((r) => {
       const num     = String(r.truck_number ?? '')
       const gpsData = gpsMap.get(num)
@@ -98,8 +98,8 @@ export async function GET(request: Request) {
         last_gps:          gpsData?.formatted_address || null,
         last_gps_city:     gpsData?.city              || null,
         last_gps_state:    gpsData?.state             || null,
-        last_known_market: gpsData?.city   || scheduleInfo[num]?.market || holdMarkets[num]?.market || null,
-        last_known_state:  gpsData?.state  || scheduleInfo[num]?.state  || holdMarkets[num]?.state  || null,
+        last_known_market: scheduleInfo[num]?.market  || holdMarkets[num]?.market || gpsData?.city  || null,
+        last_known_state:  scheduleInfo[num]?.state   || holdMarkets[num]?.state  || gpsData?.state || null,
       }
     })
 

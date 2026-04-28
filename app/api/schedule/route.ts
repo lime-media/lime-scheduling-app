@@ -63,12 +63,14 @@ export async function GET(request: Request) {
       console.warn('[schedule] Samsara GPS failed, continuing without GPS:', (e as Error).message)
     }
 
-    // Schedule market/state per truck: most recent block (no date constraint) — fallback when no GPS.
-    // Use standard_market_name when available so grouping shows standardised names.
+    // Schedule market/state per truck: most recent block with shift_start ≤ today.
+    // Future schedules are excluded — GPS is more current for grouping purposes.
+    const todayStr = new Date().toISOString().split('T')[0]
     const scheduleInfo: Record<string, { market: string; state: string; shift_start: string }> = {}
     for (const row of schedulesRaw) {
       const num        = String(row.truck_number ?? '')
       const shiftStart = toDateStr(row.shift_start)
+      if (shiftStart > todayStr) continue   // skip future blocks
       const existing   = scheduleInfo[num]
       if (!existing || shiftStart > existing.shift_start) {
         scheduleInfo[num] = {
@@ -87,8 +89,7 @@ export async function GET(request: Request) {
       }
     }
 
-    // trucks: last_known_market = schedule market || hold market || GPS city
-    //         last_known_state  = schedule state  || hold state  || GPS state
+    // trucks: GPS is primary (real-time); schedule/hold market are fallbacks
     const trucks = trucksRaw.map((r) => {
       const num     = String(r.truck_number ?? '')
       const gpsData = gpsMap.get(num)
@@ -97,8 +98,8 @@ export async function GET(request: Request) {
         last_gps:          gpsData?.formatted_address || null,
         last_gps_city:     gpsData?.city              || null,
         last_gps_state:    gpsData?.state             || null,
-        last_known_market: scheduleInfo[num]?.market  || holdMarkets[num]?.market || gpsData?.city  || null,
-        last_known_state:  scheduleInfo[num]?.state   || holdMarkets[num]?.state  || gpsData?.state || null,
+        last_known_market: gpsData?.city   || scheduleInfo[num]?.market || holdMarkets[num]?.market || null,
+        last_known_state:  gpsData?.state  || scheduleInfo[num]?.state  || holdMarkets[num]?.state  || null,
       }
     })
 

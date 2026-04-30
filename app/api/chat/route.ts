@@ -5,6 +5,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { CHAT_CONTEXT_QUERY } from '@/lib/scheduleQuery'
+import { getLiveVehicleLocations } from '@/lib/samsaraService'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -175,27 +176,32 @@ async function executeReleaseHold(
 
 // ── Context builder ───────────────────────────────────────────────────────────
 
+const HIDDEN_TRUCKS = new Set(['0001'])
+
 async function buildScheduleContext(): Promise<string> {
   const today = new Date().toISOString().split('T')[0]
 
-  const [truckRows, holds] = await Promise.all([
+  const [truckRows, holds, gpsMap] = await Promise.all([
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
     prisma.hold.findMany({
       include: { user: { select: { name: true } } },
       orderBy: { start_date: 'asc' },
     }),
+    getLiveVehicleLocations().catch(() => new Map<string, { formatted_address: string; city: string; state: string }>()),
   ])
 
-  const trucks = truckRows as Record<string, string>[]
+  const trucks = (truckRows as Record<string, string>[]).filter(
+    (r) => !HIDDEN_TRUCKS.has(r.truck_number)
+  )
 
   const truckLines = trucks.map((r) => {
     const todayStatus = r.today_status ?? 'UNKNOWN'
+    const gpsData     = gpsMap.get(r.truck_number)
 
-    // Location: GPS address first, then last_known_market, then unknown
-    const gpsAddress = r.gps_address?.trim() || null
+    // Location: live Samsara GPS first, then last_known_market from DB, then unknown
     let location: string
-    if (gpsAddress) {
-      location = `GPS: ${gpsAddress}`
+    if (gpsData?.formatted_address) {
+      location = `GPS: ${gpsData.formatted_address}`
     } else if (r.last_known_market) {
       location = `Last market: ${r.last_known_market}`
     } else {
@@ -209,11 +215,13 @@ async function buildScheduleContext(): Promise<string> {
     return parts.join(' | ')
   })
 
-  const holdLines = holds.map((h) => {
-    const start = h.start_date.toISOString().split('T')[0]
-    const end   = h.end_date.toISOString().split('T')[0]
-    return `  Truck ${h.truck_number}: ${h.status} for "${h.client_name}" in ${h.market}${h.state ? ', ' + h.state : ''} (${start} → ${end})${h.notes ? ' — ' + h.notes : ''}`
-  })
+  const holdLines = holds
+    .filter((h) => !HIDDEN_TRUCKS.has(h.truck_number))
+    .map((h) => {
+      const start = h.start_date.toISOString().split('T')[0]
+      const end   = h.end_date.toISOString().split('T')[0]
+      return `  Truck ${h.truck_number}: ${h.status} for "${h.client_name}" in ${h.market}${h.state ? ', ' + h.state : ''} (${start} → ${end})${h.notes ? ' — ' + h.notes : ''}`
+    })
 
   return `TRUCK STATUS (today: ${today}):
 ${truckLines.join('\n')}
@@ -289,7 +297,7 @@ export async function POST(req: NextRequest) {
   ]
 
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: 'claude-opus-4-6',
     max_tokens: 2048,
     system: BASE_SYSTEM_PROMPT,
     messages,

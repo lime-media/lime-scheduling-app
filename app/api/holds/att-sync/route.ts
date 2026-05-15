@@ -26,7 +26,7 @@ export async function POST() {
       JOIN dbo.client_programs cp ON cp.client_program_uid = ps.client_program_uid
       WHERE UPPER(cp.program) LIKE '%ATT%'
         AND COALESCE(t.is_deleted, 0) = 0
-        AND CAST(ps.end_time AS DATE) >= CAST(GETDATE() AS DATE)
+        AND CAST(ps.end_time AS DATE) >= DATEADD(day, -45, CAST(GETDATE() AS DATE))
     `)
   } catch (err) {
     console.error('[att-sync] query failed:', err)

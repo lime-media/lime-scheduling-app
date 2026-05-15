@@ -29,8 +29,10 @@ export async function getLiveVehicleLocations(): Promise<Map<string, SamsaraVehi
     // Only process LED trucks (LED-XXXX format)
     if (!vehicle.name?.startsWith('LED-')) continue
 
-    const truck_number = vehicle.name.replace('LED-', '')
+    // Pad to 4 digits to match DB truck_number format (e.g. "LED-825" → "0825")
+    const truck_number = vehicle.name.replace('LED-', '').trim().padStart(4, '0')
     const loc = vehicle.location
+
     if (!loc?.reverseGeo?.formattedLocation) continue
 
     const formatted_address = loc.reverseGeo.formattedLocation

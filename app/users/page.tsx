@@ -145,110 +145,143 @@ export default function UsersPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-dvh bg-gray-50">
       <Navbar />
-      <div className="max-w-5xl mx-auto px-6 py-8">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
 
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold text-gray-900">User Management</h1>
+        <div className="flex items-center justify-between mb-5 sm:mb-6">
+          <h1 className="text-xl sm:text-2xl font-bold text-gray-900">User Management</h1>
           <button
             onClick={openAdd}
-            className="bg-green-700 hover:bg-green-600 text-white text-sm font-medium px-4 py-2 rounded transition-colors"
+            className="bg-green-700 hover:bg-green-600 text-white text-sm font-medium px-3 sm:px-4 py-2 rounded transition-colors"
           >
             + Add User
           </button>
         </div>
 
-        {/* Table */}
         {loading ? (
           <div className="text-center py-16 text-gray-400">Loading users…</div>
         ) : users.length === 0 ? (
           <div className="text-center py-16">
             <p className="text-gray-400 mb-4">No users yet</p>
-            <button
-              onClick={openAdd}
-              className="bg-green-700 hover:bg-green-600 text-white text-sm px-4 py-2 rounded"
-            >
+            <button onClick={openAdd} className="bg-green-700 hover:bg-green-600 text-white text-sm px-4 py-2 rounded">
               + Add User
             </button>
           </div>
         ) : (
-          <div className="bg-white rounded-lg shadow overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 border-b border-gray-200">
-                <tr>
-                  {['Name', 'Email', 'Role', 'Created', 'Actions'].map((h) => (
-                    <th key={h} className="text-left px-4 py-3 font-medium text-gray-600 text-xs uppercase tracking-wide">
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {users.map((user) => (
-                  <tr key={user.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 font-medium text-gray-900">
-                      {user.name}
-                      {user.id === myId && (
-                        <span className="ml-2 text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">you</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-gray-600">{user.email}</td>
-                    <td className="px-4 py-3">
-                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                        user.role === 'OPERATIONS'
-                          ? 'bg-green-100 text-green-800'
-                          : 'bg-blue-100 text-blue-800'
-                      }`}>
-                        {user.role === 'OPERATIONS' ? 'Operations' : 'Sales'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-gray-500">
-                      {new Date(user.created_at).toLocaleDateString('en-US', {
-                        month: 'short', day: 'numeric', year: 'numeric',
-                      })}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        {/* Edit */}
-                        <button
-                          onClick={() => openEdit(user)}
-                          title="Edit user"
-                          className="text-gray-400 hover:text-gray-700 transition-colors p-1"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                          </svg>
-                        </button>
-                        {/* Delete */}
-                        <button
-                          onClick={() => canDelete(user) && setDeleteId(user.id)}
-                          title={
-                            user.id === myId ? 'Cannot delete yourself'
-                            : !canDelete(user) ? 'Cannot delete last Operations admin'
-                            : 'Delete user'
-                          }
-                          disabled={!canDelete(user)}
-                          className={`p-1 transition-colors ${
-                            canDelete(user)
-                              ? 'text-red-400 hover:text-red-600'
-                              : 'text-gray-200 cursor-not-allowed'
-                          }`}
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                        </button>
+          <>
+            {/* ── Mobile: card list ─────────────────────────────────────────── */}
+            <div className="sm:hidden space-y-3">
+              {users.map((user) => (
+                <div key={user.id} className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-semibold text-gray-900">{user.name}</span>
+                        {user.id === myId && (
+                          <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">you</span>
+                        )}
+                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                          user.role === 'OPERATIONS' ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'
+                        }`}>
+                          {user.role === 'OPERATIONS' ? 'Operations' : 'Sales'}
+                        </span>
                       </div>
-                    </td>
+                      <div className="text-sm text-gray-500 mt-0.5 truncate">{user.email}</div>
+                      <div className="text-xs text-gray-400 mt-1">
+                        Added {new Date(user.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <button
+                        onClick={() => openEdit(user)}
+                        className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                        title="Edit user"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => canDelete(user) && setDeleteId(user.id)}
+                        disabled={!canDelete(user)}
+                        className={`p-2 rounded-lg transition-colors ${
+                          canDelete(user)
+                            ? 'text-red-400 hover:text-red-600 hover:bg-red-50'
+                            : 'text-gray-200 cursor-not-allowed'
+                        }`}
+                        title={user.id === myId ? 'Cannot delete yourself' : !canDelete(user) ? 'Cannot delete last Operations admin' : 'Delete user'}
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* ── Desktop: table ────────────────────────────────────────────── */}
+            <div className="hidden sm:block bg-white rounded-lg shadow overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    {['Name', 'Email', 'Role', 'Created', 'Actions'].map((h) => (
+                      <th key={h} className="text-left px-4 py-3 font-medium text-gray-600 text-xs uppercase tracking-wide">{h}</th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {users.map((user) => (
+                    <tr key={user.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 font-medium text-gray-900">
+                        {user.name}
+                        {user.id === myId && (
+                          <span className="ml-2 text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">you</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-gray-600">{user.email}</td>
+                      <td className="px-4 py-3">
+                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                          user.role === 'OPERATIONS' ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'
+                        }`}>
+                          {user.role === 'OPERATIONS' ? 'Operations' : 'Sales'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-gray-500">
+                        {new Date(user.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => openEdit(user)} title="Edit user" className="text-gray-400 hover:text-gray-700 transition-colors p-1">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => canDelete(user) && setDeleteId(user.id)}
+                            title={user.id === myId ? 'Cannot delete yourself' : !canDelete(user) ? 'Cannot delete last Operations admin' : 'Delete user'}
+                            disabled={!canDelete(user)}
+                            className={`p-1 transition-colors ${canDelete(user) ? 'text-red-400 hover:text-red-600' : 'text-gray-200 cursor-not-allowed'}`}
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </div>
 

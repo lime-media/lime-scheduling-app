@@ -64,8 +64,8 @@ export function AISidebar({
 }: Props) {
   return (
     <aside
-      className={`flex flex-col bg-green-900 text-white transition-all duration-200 flex-shrink-0 ${
-        sidebarOpen ? 'w-64' : 'w-0 overflow-hidden'
+      className={`flex flex-col bg-green-900 text-white h-full transition-all duration-200 flex-shrink-0 w-64 ${
+        !sidebarOpen ? 'md:w-0 md:overflow-hidden' : ''
       }`}
     >
       {/* Branding */}

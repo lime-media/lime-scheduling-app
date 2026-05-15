@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { format, addDays, startOfDay } from 'date-fns'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
 import { ScheduleGrid, type TruckInfo, type ScheduleBlock, type HoldBlock } from '@/components/ScheduleGrid'
 import { FilterBar } from '@/components/FilterBar'
@@ -27,6 +28,13 @@ const defaultFilters: Filters = {
 }
 
 export default function DashboardPage() {
+  const router = useRouter()
+
+  // Redirect mobile users to the AI assistant
+  useEffect(() => {
+    if (window.innerWidth < 768) router.replace('/ai')
+  }, [router])
+
   const [trucks,    setTrucks]    = useState<TruckInfo[]>([])
   const [schedules, setSchedules] = useState<ScheduleBlock[]>([])
   const [holdBlocks, setHoldBlocks] = useState<HoldBlock[]>([])
@@ -85,7 +93,7 @@ export default function DashboardPage() {
   }, [fetchSchedule, fetchMarkets])
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden">
+    <div className="flex flex-col h-dvh overflow-hidden">
       <Navbar />
 
       <div className="flex-1 flex overflow-hidden relative">
@@ -131,15 +139,17 @@ export default function DashboardPage() {
             ) : loading ? (
               <ScheduleSkeleton />
             ) : (
-              <ScheduleGrid
-                trucks={trucks}
-                schedules={schedules}
-                holds={holdBlocks}
-                filters={filters}
-                onHoldCreated={fetchSchedule}
-                markets={markets}
-                states={states}
-              />
+              <div className="min-w-[900px]">
+                <ScheduleGrid
+                  trucks={trucks}
+                  schedules={schedules}
+                  holds={holdBlocks}
+                  filters={filters}
+                  onHoldCreated={fetchSchedule}
+                  markets={markets}
+                  states={states}
+                />
+              </div>
             )}
           </div>
         </div>

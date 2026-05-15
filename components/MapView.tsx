@@ -113,22 +113,104 @@ export default function MapView() {
     } catch { return '' }
   }
 
+  const [panelOpen, setPanelOpen] = useState(false)
+
+  // Shared sidebar/panel content
+  const filterControls = (
+    <>
+      <div className="space-y-1.5">
+        {([
+          { key: 'SCHEDULED_LED' as const, label: 'Scheduled',  checked: showScheduled, set: setShowScheduled },
+          { key: 'HOLD'          as const, label: 'On Hold',    checked: showHold,      set: setShowHold      },
+          { key: 'COMMITTED'     as const, label: 'Committed',  checked: showCommitted, set: setShowCommitted },
+          { key: 'EMPTY'         as const, label: 'Available',  checked: showEmpty,     set: setShowEmpty     },
+        ] as const).map(({ key, label, checked, set }) => (
+          <label key={key} className="flex items-center gap-2 cursor-pointer select-none">
+            <input type="checkbox" checked={checked} onChange={(e) => set(e.target.checked)} className="rounded" />
+            <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: STATUS_COLORS[key] }} />
+            <span className="text-sm text-gray-700">{label}</span>
+          </label>
+        ))}
+      </div>
+      <select
+        value={stateFilter}
+        onChange={(e) => setStateFilter(e.target.value)}
+        className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white mt-3"
+      >
+        <option value="">All States</option>
+        {allStates.map((s) => <option key={s} value={s}>{s}</option>)}
+      </select>
+      <p className="text-xs text-gray-500 font-medium mt-2">
+        {filtered.length} truck{filtered.length !== 1 ? 's' : ''} shown
+      </p>
+    </>
+  )
+
+  const truckList = loading ? (
+    <div className="p-4 text-sm text-gray-400">Loading trucks…</div>
+  ) : filtered.length === 0 ? (
+    <div className="p-4 text-sm text-gray-400">No trucks match filters</div>
+  ) : (
+    filtered.map((truck) => (
+      <button
+        key={truck.truck_number}
+        onClick={() => { handleSelectTruck(truck); setPanelOpen(false) }}
+        className={`w-full text-left px-4 py-3 border-b border-gray-100 hover:bg-gray-50 transition-colors ${
+          selected === truck.truck_number
+            ? 'bg-green-50 border-l-4 border-l-green-600'
+            : 'border-l-4 border-l-transparent'
+        }`}
+      >
+        <div className="flex items-center gap-2 mb-0.5">
+          <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: STATUS_COLORS[truck.status] }} />
+          <span className="font-semibold text-sm text-gray-900">{truck.truck_number}</span>
+          <span className={`ml-auto text-xs px-1.5 py-0.5 rounded font-medium ${STATUS_BADGE[truck.status]}`}>
+            {STATUS_LABELS[truck.status]}
+          </span>
+        </div>
+        <p className="text-xs text-gray-500 pl-4 truncate">
+          {truck.city}{truck.state ? `, ${truck.state}` : ''}
+        </p>
+      </button>
+    ))
+  )
+
+  const mapMarkers = filtered.map((truck) => (
+    <Marker
+      key={truck.truck_number}
+      position={[truck.latitude, truck.longitude]}
+      icon={createMarkerIcon(truck.status, truck.truck_number, selected === truck.truck_number)}
+      eventHandlers={{ click: () => setSelected(truck.truck_number) }}
+    >
+      <Popup minWidth={210}>
+        <div style={{ fontFamily: 'sans-serif', lineHeight: 1.5 }}>
+          <p style={{ fontWeight: 700, fontSize: 16, margin: '0 0 6px' }}>{truck.truck_number}</p>
+          <span style={{ display: 'inline-block', background: STATUS_COLORS[truck.status], color: '#fff', fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 99, marginBottom: 8 }}>
+            {STATUS_LABELS[truck.status]}
+          </span>
+          {truck.program && <p style={{ fontSize: 13, margin: '0 0 2px' }}><b>Program:</b> {truck.program}</p>}
+          {truck.client  && <p style={{ fontSize: 13, margin: '0 0 2px' }}><b>Client:</b> {truck.client}</p>}
+          {truck.market  && <p style={{ fontSize: 13, margin: '0 0 2px' }}><b>Market:</b> {truck.market}</p>}
+          {truck.hold_end_date && <p style={{ fontSize: 13, margin: '0 0 2px' }}><b>Hold until:</b> {truck.hold_end_date}</p>}
+          <p style={{ fontSize: 12, color: '#666', margin: '4px 0 2px' }}>{truck.formatted_address}</p>
+          <p style={{ fontSize: 11, color: '#999', margin: '0 0 8px' }}>Updated {fmtTime(truck.last_updated)}</p>
+          <a href="/" style={{ fontSize: 12, color: '#16a34a', textDecoration: 'underline' }}>View in Schedule →</a>
+        </div>
+      </Popup>
+    </Marker>
+  ))
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
     <div className="flex w-full overflow-hidden" style={{ height: '100%' }}>
 
-      {/* ── Sidebar ─────────────────────────────────────────────────────────── */}
-      <div className="w-[300px] flex-shrink-0 bg-white border-r border-gray-200 flex flex-col overflow-hidden">
-
-        {/* Header */}
+      {/* ── Desktop sidebar (hidden on mobile) ──────────────────────────────── */}
+      <div className="hidden md:flex w-[300px] flex-shrink-0 bg-white border-r border-gray-200 flex-col overflow-hidden">
         <div className="p-4 border-b border-gray-200">
           <div className="flex items-center justify-between mb-1">
             <h2 className="text-lg font-bold text-gray-900">Fleet Map</h2>
-            <button
-              onClick={fetchLocations}
-              className="text-xs bg-green-700 hover:bg-green-600 text-white px-2.5 py-1 rounded transition-colors"
-            >
+            <button onClick={fetchLocations} className="text-xs bg-green-700 hover:bg-green-600 text-white px-2.5 py-1 rounded transition-colors">
               Refresh
             </button>
           </div>
@@ -138,136 +220,63 @@ export default function MapView() {
             </p>
           )}
         </div>
-
-        {/* Filters */}
-        <div className="p-4 border-b border-gray-200 space-y-3">
-          <div className="space-y-1.5">
-            {([
-              { key: 'SCHEDULED_LED' as const, label: 'Scheduled',  checked: showScheduled, set: setShowScheduled },
-              { key: 'HOLD'          as const, label: 'On Hold',    checked: showHold,      set: setShowHold      },
-              { key: 'COMMITTED'     as const, label: 'Committed',  checked: showCommitted, set: setShowCommitted },
-              { key: 'EMPTY'         as const, label: 'Available',  checked: showEmpty,     set: setShowEmpty     },
-            ] as const).map(({ key, label, checked, set }) => (
-              <label key={key} className="flex items-center gap-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={(e) => set(e.target.checked)}
-                  className="rounded"
-                />
-                <span
-                  className="w-3 h-3 rounded-full flex-shrink-0"
-                  style={{ background: STATUS_COLORS[key] }}
-                />
-                <span className="text-sm text-gray-700">{label}</span>
-              </label>
-            ))}
-          </div>
-
-          <select
-            value={stateFilter}
-            onChange={(e) => setStateFilter(e.target.value)}
-            className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white"
-          >
-            <option value="">All States</option>
-            {allStates.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-
-          <p className="text-xs text-gray-500 font-medium">
-            {filtered.length} truck{filtered.length !== 1 ? 's' : ''} shown
-          </p>
-        </div>
-
-        {/* Truck list */}
-        <div className="flex-1 overflow-y-auto">
-          {loading ? (
-            <div className="p-4 text-sm text-gray-400">Loading trucks…</div>
-          ) : filtered.length === 0 ? (
-            <div className="p-4 text-sm text-gray-400">No trucks match filters</div>
-          ) : (
-            filtered.map((truck) => (
-              <button
-                key={truck.truck_number}
-                onClick={() => handleSelectTruck(truck)}
-                className={`w-full text-left px-4 py-3 border-b border-gray-100 hover:bg-gray-50 transition-colors ${
-                  selected === truck.truck_number
-                    ? 'bg-green-50 border-l-4 border-l-green-600'
-                    : 'border-l-4 border-l-transparent'
-                }`}
-              >
-                <div className="flex items-center gap-2 mb-0.5">
-                  <span
-                    className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                    style={{ background: STATUS_COLORS[truck.status] }}
-                  />
-                  <span className="font-semibold text-sm text-gray-900">{truck.truck_number}</span>
-                  <span className={`ml-auto text-xs px-1.5 py-0.5 rounded font-medium ${STATUS_BADGE[truck.status]}`}>
-                    {STATUS_LABELS[truck.status]}
-                  </span>
-                </div>
-                <p className="text-xs text-gray-500 pl-4 truncate">
-                  {truck.city}{truck.state ? `, ${truck.state}` : ''}
-                </p>
-              </button>
-            ))
-          )}
-        </div>
+        <div className="p-4 border-b border-gray-200">{filterControls}</div>
+        <div className="flex-1 overflow-y-auto">{truckList}</div>
       </div>
 
-      {/* ── Map ─────────────────────────────────────────────────────────────── */}
+      {/* ── Map (full width on mobile, flex-1 on desktop) ───────────────────── */}
       <div className="flex-1 relative">
-        <MapContainer
-          center={[39.5, -98.35]}
-          zoom={4}
-          scrollWheelZoom
-          style={{ width: '100%', height: '100%' }}
-        >
+        <MapContainer center={[39.5, -98.35]} zoom={4} scrollWheelZoom style={{ width: '100%', height: '100%' }}>
           <TileLayer
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           />
           <MapFlyTo truck={flyTarget} />
-
-          {filtered.map((truck) => (
-            <Marker
-              key={truck.truck_number}
-              position={[truck.latitude, truck.longitude]}
-              icon={createMarkerIcon(truck.status, truck.truck_number, selected === truck.truck_number)}
-              eventHandlers={{ click: () => setSelected(truck.truck_number) }}
-            >
-              <Popup minWidth={210}>
-                <div style={{ fontFamily: 'sans-serif', lineHeight: 1.5 }}>
-                  <p style={{ fontWeight: 700, fontSize: 16, margin: '0 0 6px' }}>{truck.truck_number}</p>
-                  <span style={{
-                    display: 'inline-block',
-                    background: STATUS_COLORS[truck.status],
-                    color: '#fff',
-                    fontSize: 11,
-                    fontWeight: 600,
-                    padding: '2px 8px',
-                    borderRadius: 99,
-                    marginBottom: 8,
-                  }}>
-                    {STATUS_LABELS[truck.status]}
-                  </span>
-                  {truck.program && <p style={{ fontSize: 13, margin: '0 0 2px' }}><b>Program:</b> {truck.program}</p>}
-                  {truck.client  && <p style={{ fontSize: 13, margin: '0 0 2px' }}><b>Client:</b> {truck.client}</p>}
-                  {truck.market  && <p style={{ fontSize: 13, margin: '0 0 2px' }}><b>Market:</b> {truck.market}</p>}
-                  {truck.hold_end_date && (
-                    <p style={{ fontSize: 13, margin: '0 0 2px' }}><b>Hold until:</b> {truck.hold_end_date}</p>
-                  )}
-                  <p style={{ fontSize: 12, color: '#666', margin: '4px 0 2px' }}>{truck.formatted_address}</p>
-                  <p style={{ fontSize: 11, color: '#999', margin: '0 0 8px' }}>
-                    Updated {fmtTime(truck.last_updated)}
-                  </p>
-                  <a href="/" style={{ fontSize: 12, color: '#16a34a', textDecoration: 'underline' }}>
-                    View in Schedule →
-                  </a>
-                </div>
-              </Popup>
-            </Marker>
-          ))}
+          {mapMarkers}
         </MapContainer>
+
+        {/* ── Mobile bottom sheet ────────────────────────────────────────────── */}
+        <div className="md:hidden absolute bottom-0 left-0 right-0 z-[500]">
+          {/* Expanded panel */}
+          {panelOpen && (
+            <div className="bg-white border-t border-gray-200 max-h-[58vh] flex flex-col shadow-2xl">
+              {/* Filters */}
+              <div className="p-4 border-b border-gray-200 flex-shrink-0">{filterControls}</div>
+              {/* Truck list */}
+              <div className="flex-1 overflow-y-auto">{truckList}</div>
+            </div>
+          )}
+
+          {/* Bottom bar — always visible */}
+          <button
+            onClick={() => setPanelOpen((o) => !o)}
+            className="w-full bg-white/95 backdrop-blur-sm border-t border-gray-200 px-4 py-3 flex items-center justify-between shadow-lg"
+          >
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-full bg-gray-400" />
+                <div className="w-2 h-2 rounded-full bg-green-500" />
+                <div className="w-2 h-2 rounded-full bg-yellow-400" />
+                <div className="w-2 h-2 rounded-full bg-red-500" />
+              </div>
+              <span className="text-sm font-semibold text-gray-900">
+                {filtered.length} truck{filtered.length !== 1 ? 's' : ''}
+              </span>
+              <button
+                onClick={(e) => { e.stopPropagation(); fetchLocations() }}
+                className="text-xs bg-green-700 text-white px-2 py-0.5 rounded"
+              >
+                Refresh
+              </button>
+            </div>
+            <svg
+              className={`w-5 h-5 text-gray-400 transition-transform duration-200 ${panelOpen ? 'rotate-180' : ''}`}
+              fill="none" stroke="currentColor" viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
   )

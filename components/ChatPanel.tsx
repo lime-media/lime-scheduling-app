@@ -2,12 +2,143 @@
 
 import { useState, useRef, useEffect } from 'react'
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 type Message = {
   role: 'user' | 'assistant'
   content: string
   isAction?: boolean
   actionOk?: boolean
 }
+
+type ParsedTruck = {
+  number: string
+  location: string
+  distance: string
+}
+
+type ParsedEvent = {
+  name: string
+  dates: string
+  trucks: ParsedTruck[]
+  note?: string
+}
+
+type ParsedResponse = {
+  events: ParsedEvent[]
+  plainText: string
+}
+
+// ── Parser ────────────────────────────────────────────────────────────────────
+
+function parseAIResponse(text: string): ParsedResponse {
+  const events: ParsedEvent[] = []
+  const plainParts: string[] = []
+  const eventRE = /\[EVENT\]([\s\S]*?)\[\/EVENT\]/g
+
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+
+  while ((match = eventRE.exec(text)) !== null) {
+    const before = text.slice(lastIndex, match.index).trim()
+    if (before) plainParts.push(before)
+    lastIndex = match.index + match[0].length
+
+    const event: ParsedEvent = { name: '', dates: '', trucks: [] }
+
+    for (const line of match[1].split('\n')) {
+      const colon = line.indexOf(':')
+      if (colon === -1) continue
+      const key = line.slice(0, colon).trim()
+      const val = line.slice(colon + 1).trim()
+
+      if (key === 'name') event.name = val
+      else if (key === 'dates') event.dates = val
+      else if (key === 'note') event.note = val
+      else if (key === 'truck') {
+        const parts = val.split('|').map((p) => p.trim())
+        event.trucks.push({
+          number:   parts[0] ?? '',
+          location: parts[1] ?? '',
+          distance: parts[2] ?? '',
+        })
+      }
+    }
+
+    if (event.name || event.trucks.length > 0) events.push(event)
+  }
+
+  const after = text.slice(lastIndex).trim()
+  if (after) plainParts.push(after)
+
+  return { events, plainText: plainParts.join('\n\n') }
+}
+
+// ── Event Card ────────────────────────────────────────────────────────────────
+
+function EventCard({ event }: { event: ParsedEvent }) {
+  return (
+    <div className="border border-gray-200 rounded-xl overflow-hidden bg-white mb-3">
+      {/* Header */}
+      <div className="px-4 pt-4 pb-3 border-b border-gray-100">
+        <div className="text-[15px] font-semibold text-gray-900">{event.name}</div>
+        {event.dates && (
+          <div className="text-sm text-gray-500 mt-0.5">{event.dates}</div>
+        )}
+      </div>
+
+      {/* Trucks */}
+      {event.trucks.length > 0 && (
+        <div className="px-4 pt-3 pb-1">
+          <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1">
+            Assigned Trucks
+          </div>
+          <div className="divide-y divide-gray-100">
+            {event.trucks.map((t, i) => (
+              <div key={i} className="flex items-center py-2">
+                <span className="text-sm font-bold text-gray-900 w-14 flex-shrink-0">{t.number}</span>
+                <span className="text-sm text-gray-600 flex-1">{t.location}</span>
+                {t.distance && (
+                  <span className="text-sm text-gray-400 flex-shrink-0">{t.distance}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Note */}
+      {event.note && (
+        <div className="mx-4 mb-4 mt-2 bg-gray-50 rounded-lg px-3 py-2.5 flex gap-2">
+          <span className="text-gray-400 flex-shrink-0 mt-px">&#9651;</span>
+          <span className="text-sm text-gray-600 leading-snug">{event.note}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Message renderer ──────────────────────────────────────────────────────────
+
+function AssistantMessage({ content }: { content: string }) {
+  const parsed = parseAIResponse(content)
+  const hasEvents = parsed.events.length > 0
+
+  return (
+    <div className="w-full">
+      {parsed.plainText && (
+        <div className={`text-sm text-gray-800 leading-relaxed whitespace-pre-wrap ${hasEvents ? 'mb-3' : ''}`}>
+          {parsed.plainText}
+        </div>
+      )}
+      {parsed.events.map((ev, i) => (
+        <EventCard key={i} event={ev} />
+      ))}
+    </div>
+  )
+}
+
+// ── Chat Panel ────────────────────────────────────────────────────────────────
 
 export function ChatPanel() {
   const [messages, setMessages] = useState<Message[]>([
@@ -17,10 +148,10 @@ export function ChatPanel() {
         "Hi! I'm your Lime Media Scheduling Assistant. Ask me about truck availability, holds, conflicts, or anything related to the schedule.",
     },
   ])
-  const [input, setInput] = useState('')
+  const [input, setInput]   = useState('')
   const [loading, setLoading] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const inputRef  = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -42,7 +173,7 @@ export function ChatPanel() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: text,
-          history: messages.slice(-10), // last 10 messages for context
+          history: messages.slice(-10),
         }),
       })
       const data = await res.json()
@@ -51,13 +182,12 @@ export function ChatPanel() {
           ...newHistory,
           { role: 'assistant', content: data.reply },
         ]
-        // Append a system notice when an action was executed
         if (data.actionResult) {
           msgs.push({
-            role: 'assistant',
-            content: data.actionResult.message,
-            isAction: true,
-            actionOk: data.actionResult.success,
+            role:      'assistant',
+            content:   data.actionResult.message,
+            isAction:  true,
+            actionOk:  data.actionResult.success,
           })
         }
         setMessages(msgs)
@@ -104,22 +234,27 @@ export function ChatPanel() {
             {msg.isAction && (
               <div className="w-7 h-7 flex-shrink-0 mr-2 mt-0.5" />
             )}
-            <div
-              className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap leading-relaxed ${
-                msg.isAction
-                  ? msg.actionOk
-                    ? 'bg-green-50 text-green-800 border border-green-200 rounded-tl-sm font-medium'
-                    : 'bg-red-50 text-red-800 border border-red-200 rounded-tl-sm font-medium'
-                  : msg.role === 'user'
-                  ? 'bg-green-700 text-white rounded-tr-sm'
-                  : 'bg-gray-100 text-gray-800 rounded-tl-sm'
-              }`}
-            >
-              {msg.isAction && (
+
+            {msg.role === 'user' ? (
+              <div className="max-w-[85%] rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm bg-green-700 text-white leading-relaxed">
+                {msg.content}
+              </div>
+            ) : msg.isAction ? (
+              <div
+                className={`max-w-[85%] rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm font-medium leading-relaxed border ${
+                  msg.actionOk
+                    ? 'bg-green-50 text-green-800 border-green-200'
+                    : 'bg-red-50 text-red-800 border-red-200'
+                }`}
+              >
                 <span className="mr-1">{msg.actionOk ? '✓' : '✗'}</span>
-              )}
-              {msg.content}
-            </div>
+                {msg.content}
+              </div>
+            ) : (
+              <div className="max-w-[90%]">
+                <AssistantMessage content={msg.content} />
+              </div>
+            )}
           </div>
         ))}
 

@@ -89,50 +89,52 @@ export async function GET(request: Request) {
       }
     }
 
-    // trucks: standard market → raw market → GPS city (Samsara as last resort)
-    const trucks = trucksRaw.map((r) => {
-      const num     = String(r.truck_number ?? '')
-      const gpsData = gpsMap.get(num)
-      return {
-        truck_number:      num,
-        last_gps:          gpsData?.formatted_address || null,
-        last_gps_city:     gpsData?.city              || null,
-        last_gps_state:    gpsData?.state             || null,
-        last_known_market: scheduleInfo[num]?.market  || holdMarkets[num]?.market || gpsData?.city  || null,
-        last_known_state:  scheduleInfo[num]?.state   || holdMarkets[num]?.state  || gpsData?.state || null,
-      }
-    })
+    const HIDDEN_TRUCKS = new Set(['0001'])
 
-    // Debug: log first row to verify standard_market_name is populated in DB
-    if (schedulesRaw.length > 0) {
-      const s = schedulesRaw[0]
-      console.log('[schedule] first row - market:', s.market, '| standard_market_name:', s.standard_market_name)
-    }
+    // trucks: standard market → raw market → GPS city (Samsara as last resort)
+    const trucks = trucksRaw
+      .filter((r) => !HIDDEN_TRUCKS.has(String(r.truck_number ?? '')))
+      .map((r) => {
+        const num     = String(r.truck_number ?? '')
+        const gpsData = gpsMap.get(num)
+        return {
+          truck_number:      num,
+          last_gps:          gpsData?.formatted_address || null,
+          last_gps_city:     gpsData?.city              || null,
+          last_gps_state:    gpsData?.state             || null,
+          last_known_market: scheduleInfo[num]?.market  || holdMarkets[num]?.market || (gpsData?.city ? [gpsData.city, gpsData.state].filter(Boolean).join(', ') : null),
+          last_known_state:  scheduleInfo[num]?.state   || holdMarkets[num]?.state  || gpsData?.state || null,
+        }
+      })
 
     // schedules: { truck_number, market, state, program, shift_start, shift_end }
-    const schedules = schedulesRaw.map((r) => ({
-      truck_number:        String(r.truck_number        ?? ''),
-      market:              normalizeMarket(r.market),
-      standard_market_name: normalizeMarket(r.standard_market_name) || undefined,
-      state:               String(r.state               ?? ''),
-      program:             String(r.program             ?? ''),
-      shift_start:         toDateStr(r.shift_start),
-      shift_end:           toDateStr(r.shift_end),
-    }))
+    const schedules = schedulesRaw
+      .filter((r) => !HIDDEN_TRUCKS.has(String(r.truck_number ?? '')))
+      .map((r) => ({
+        truck_number:        String(r.truck_number        ?? ''),
+        market:              normalizeMarket(r.market),
+        standard_market_name: normalizeMarket(r.standard_market_name) || undefined,
+        state:               String(r.state               ?? ''),
+        program:             String(r.program             ?? ''),
+        shift_start:         toDateStr(r.shift_start),
+        shift_end:           toDateStr(r.shift_end),
+      }))
 
-    const holdBlocks = holds.map((h) => ({
-      id:           h.id,
-      truck_number: h.truck_number,
-      client_name:  h.client_name,
-      market:       h.market,
-      state:        h.state ?? '',
-      notes:        h.notes ?? '',
-      start_date:   h.start_date.toISOString().split('T')[0],
-      end_date:     h.end_date.toISOString().split('T')[0],
-      status:       h.status as 'HOLD' | 'COMMITTED' | 'ATT_SOFT',
-      created_by:   h.created_by,
-      user_name:    h.user?.name ?? null,
-    }))
+    const holdBlocks = holds
+      .filter((h) => !HIDDEN_TRUCKS.has(h.truck_number))
+      .map((h) => ({
+        id:           h.id,
+        truck_number: h.truck_number,
+        client_name:  h.client_name,
+        market:       h.market,
+        state:        h.state ?? '',
+        notes:        h.notes ?? '',
+        start_date:   h.start_date.toISOString().split('T')[0],
+        end_date:     h.end_date.toISOString().split('T')[0],
+        status:       h.status as 'HOLD' | 'COMMITTED' | 'ATT_SOFT',
+        created_by:   h.created_by,
+        user_name:    h.user?.name ?? null,
+      }))
 
     return NextResponse.json({ trucks, schedules, holds: holdBlocks })
   } catch (error) {

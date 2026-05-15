@@ -13,6 +13,96 @@ type Message = {
   actionOk?: boolean
 }
 
+type ParsedTruck = { number: string; location: string; distance: string }
+type ParsedEvent = { name: string; dates: string; trucks: ParsedTruck[]; note?: string }
+
+// ── Event block parser ────────────────────────────────────────────────────────
+
+function parseAIResponse(text: string): { events: ParsedEvent[]; plainText: string } {
+  const events: ParsedEvent[] = []
+  const plainParts: string[]  = []
+  const eventRE = /\[EVENT\]([\s\S]*?)\[\/EVENT\]/g
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+
+  while ((match = eventRE.exec(text)) !== null) {
+    const before = text.slice(lastIndex, match.index).trim()
+    if (before) plainParts.push(before)
+    lastIndex = match.index + match[0].length
+
+    const ev: ParsedEvent = { name: '', dates: '', trucks: [] }
+    for (const line of match[1].split('\n')) {
+      const colon = line.indexOf(':')
+      if (colon === -1) continue
+      const key = line.slice(0, colon).trim()
+      const val = line.slice(colon + 1).trim()
+      if (key === 'name')       ev.name  = val
+      else if (key === 'dates') ev.dates = val
+      else if (key === 'note')  ev.note  = val
+      else if (key === 'truck') {
+        const p = val.split('|').map((s) => s.trim())
+        ev.trucks.push({ number: p[0] ?? '', location: p[1] ?? '', distance: p[2] ?? '' })
+      }
+    }
+    if (ev.name || ev.trucks.length > 0) events.push(ev)
+  }
+
+  const after = text.slice(lastIndex).trim()
+  if (after) plainParts.push(after)
+  return { events, plainText: plainParts.join('\n\n') }
+}
+
+// ── Event card ────────────────────────────────────────────────────────────────
+
+function EventCard({ ev }: { ev: ParsedEvent }) {
+  return (
+    <div className="border border-gray-200 rounded-xl overflow-hidden bg-white mb-3">
+      <div className="px-4 pt-4 pb-3 border-b border-gray-100">
+        <div className="text-[15px] font-semibold text-gray-900">{ev.name}</div>
+        {ev.dates && <div className="text-sm text-gray-500 mt-0.5">{ev.dates}</div>}
+      </div>
+      {ev.trucks.length > 0 && (
+        <div className="px-4 pt-3 pb-1">
+          <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1">
+            Assigned Trucks
+          </div>
+          <div className="divide-y divide-gray-100">
+            {ev.trucks.map((t, i) => (
+              <div key={i} className="flex items-center py-2">
+                <span className="text-sm font-bold text-gray-900 w-14 flex-shrink-0">{t.number}</span>
+                <span className="text-sm text-gray-600 flex-1">{t.location}</span>
+                {t.distance && <span className="text-sm text-gray-400 flex-shrink-0">{t.distance}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {ev.note && (
+        <div className="mx-4 mb-4 mt-2 bg-gray-50 rounded-lg px-3 py-2.5 flex gap-2">
+          <span className="text-gray-400 flex-shrink-0 mt-px">&#9651;</span>
+          <span className="text-sm text-gray-600 leading-snug">{ev.note}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Assistant message renderer ────────────────────────────────────────────────
+
+function AssistantMessage({ content }: { content: string }) {
+  const { events, plainText } = parseAIResponse(content)
+  return (
+    <div className="w-full">
+      {plainText && (
+        <div className={`text-sm text-gray-800 leading-relaxed whitespace-pre-wrap ${events.length > 0 ? 'mb-3' : ''}`}>
+          {plainText}
+        </div>
+      )}
+      {events.map((ev, i) => <EventCard key={i} ev={ev} />)}
+    </div>
+  )
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const WELCOME_CONTENT =
@@ -30,7 +120,7 @@ const SUGGESTED = [
 export default function AIPage() {
   const { data: session } = useSession()
 
-  const [sidebarOpen, setSidebarOpen]                   = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [conversations, setConversations]               = useState<ConvSummary[]>([])
   const [convsLoading, setConvsLoading]                 = useState(true)
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
@@ -44,6 +134,11 @@ export default function AIPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
+
+  // Open sidebar by default on desktop
+  useEffect(() => {
+    if (window.innerWidth >= 768) setSidebarOpen(true)
+  }, [])
 
   // ── Fetch conversation list ────────────────────────────────────────────────
   const fetchConversations = useCallback(async (): Promise<ConvSummary[]> => {
@@ -61,6 +156,12 @@ export default function AIPage() {
     return []
   }, [])
 
+  const closeSidebarOnMobile = useCallback(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setSidebarOpen(false)
+    }
+  }, [])
+
   // ── Load a specific conversation ──────────────────────────────────────────
   const loadConversation = useCallback(async (id: string) => {
     try {
@@ -75,11 +176,12 @@ export default function AIPage() {
         )
         setMessages(msgs)
         setActiveConversationId(id)
+        closeSidebarOnMobile()
       }
     } catch (err) {
       console.error('Failed to load conversation:', err)
     }
-  }, [])
+  }, [closeSidebarOnMobile])
 
   // ── On mount: fetch conversations, auto-load most recent ──────────────────
   useEffect(() => {
@@ -190,18 +292,35 @@ export default function AIPage() {
   const isBlank = activeConversationId === null && messages.length === 0
 
   return (
-    <div className="flex h-screen bg-gray-50 overflow-hidden">
+    <div className="flex h-dvh bg-gray-50 overflow-hidden">
 
-      <AISidebar
-        sidebarOpen={sidebarOpen}
-        conversations={conversations}
-        convsLoading={convsLoading}
-        activeConversationId={activeConversationId}
-        onNewChat={startNewChat}
-        onSelectConversation={loadConversation}
-        onDeleteConversation={deleteConversation}
-        session={session}
-      />
+      {/* Mobile backdrop — tap to close sidebar */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar — fixed overlay on mobile, normal flow on desktop */}
+      <div
+        className={`
+          fixed inset-y-0 left-0 z-50 transition-transform duration-200
+          md:relative md:inset-auto md:z-auto md:translate-x-0 md:flex-shrink-0
+          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+        `}
+      >
+        <AISidebar
+          sidebarOpen={sidebarOpen}
+          conversations={conversations}
+          convsLoading={convsLoading}
+          activeConversationId={activeConversationId}
+          onNewChat={() => { startNewChat(); closeSidebarOnMobile() }}
+          onSelectConversation={loadConversation}
+          onDeleteConversation={deleteConversation}
+          session={session}
+        />
+      </div>
 
       {/* ── Main chat area ────────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-w-0">
@@ -234,7 +353,7 @@ export default function AIPage() {
                   <div className="w-7 h-7 rounded-full bg-green-700 flex items-center justify-center text-white text-xs font-bold mr-2 flex-shrink-0 mt-0.5">
                     AI
                   </div>
-                  <div className="max-w-[80%] rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm whitespace-pre-wrap leading-relaxed bg-white border border-gray-200 text-gray-800 shadow-sm">
+                  <div className="max-w-[90%] sm:max-w-[80%] rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm whitespace-pre-wrap leading-relaxed bg-white border border-gray-200 text-gray-800 shadow-sm">
                     {WELCOME_CONTENT}
                   </div>
                 </div>
@@ -269,20 +388,25 @@ export default function AIPage() {
                   </div>
                 )}
                 {msg.isAction && <div className="w-7 h-7 flex-shrink-0 mr-2 mt-0.5" />}
-                <div
-                  className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap leading-relaxed ${
-                    msg.isAction
-                      ? msg.actionOk
-                        ? 'bg-green-50 text-green-800 border border-green-200 rounded-tl-sm font-medium'
-                        : 'bg-red-50 text-red-800 border border-red-200 rounded-tl-sm font-medium'
-                      : msg.role === 'user'
-                      ? 'bg-green-700 text-white rounded-tr-sm'
-                      : 'bg-white border border-gray-200 text-gray-800 rounded-tl-sm shadow-sm'
-                  }`}
-                >
-                  {msg.isAction && <span className="mr-1">{msg.actionOk ? '✓' : '✗'}</span>}
-                  {msg.content}
-                </div>
+
+                {msg.role === 'user' ? (
+                  <div className="max-w-[85%] sm:max-w-[80%] rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm bg-green-700 text-white leading-relaxed">
+                    {msg.content}
+                  </div>
+                ) : msg.isAction ? (
+                  <div className={`max-w-[90%] sm:max-w-[80%] rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm font-medium leading-relaxed border ${
+                    msg.actionOk
+                      ? 'bg-green-50 text-green-800 border-green-200'
+                      : 'bg-red-50 text-red-800 border-red-200'
+                  }`}>
+                    <span className="mr-1">{msg.actionOk ? '✓' : '✗'}</span>
+                    {msg.content}
+                  </div>
+                ) : (
+                  <div className="w-full">
+                    <AssistantMessage content={msg.content} />
+                  </div>
+                )}
               </div>
             ))}
 
@@ -316,7 +440,7 @@ export default function AIPage() {
               onKeyDown={handleKeyDown}
               placeholder="Ask about availability, holds, conflicts…"
               rows={2}
-              className="flex-1 border border-gray-300 rounded-xl px-4 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+              className="flex-1 border border-gray-300 rounded-xl px-4 py-2.5 text-base sm:text-sm resize-none focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
             />
             <button
               onClick={() => sendMessage()}
@@ -326,7 +450,7 @@ export default function AIPage() {
               Send
             </button>
           </div>
-          <p className="max-w-3xl mx-auto text-xs text-gray-400 mt-1.5">
+          <p className="max-w-3xl mx-auto text-xs text-gray-400 mt-1.5 hidden sm:block">
             Press Enter to send · Shift+Enter for new line
           </p>
         </div>

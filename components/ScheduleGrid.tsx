@@ -11,6 +11,8 @@ import { CellDetail } from './CellDetail'
 export type TruckInfo = {
   truck_number:      string
   last_gps:          string        // full address string, e.g. "Street, City, ST, ZIP"
+  last_gps_city:     string | null
+  last_gps_state:    string | null
   last_known_market: string | null // market of most recent schedule block (any date)
   last_known_state:  string | null // state of most recent schedule block (any date)
 }
@@ -153,12 +155,12 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     const todayStr = format(startOfDay(new Date()), 'yyyy-MM-dd')
 
     const meta = new Map<string, {
-      last_gps:            string
-      last_gps_state:      string
-      last_schedule_state: string
-      last_known_market:   string
-      _bestSchedStart:     string  // internal: max shift_start for last_known_market
-      _bestStateStart:     string  // internal: max shift_start for last_schedule_state
+      last_gps:             string
+      last_gps_state:       string
+      last_schedule_state:  string
+      last_known_market:    string  // nearest current/future schedule market; empty = use GPS
+      _bestSchedStart:      string  // max shift_start for last_schedule_state (all dates)
+      _nearestActiveStart:  string  // min shift_start >= today (for market grouping)
     }>()
 
     for (const t of trucks) {
@@ -168,7 +170,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         last_schedule_state: '',
         last_known_market:   '',
         _bestSchedStart:     '',
-        _bestStateStart:     '',
+        _nearestActiveStart: '',
       })
     }
 
@@ -177,16 +179,19 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       const entry = meta.get(block.truck_number)
       if (!entry) continue
 
-      // last_schedule_state: most recent block overall (no date constraint)
-      if (block.shift_start >= entry._bestStateStart) {
-        entry._bestStateStart     = block.shift_start
+      // last_schedule_state: most recent block overall (no date limit — for state filter)
+      if (block.shift_start >= entry._bestSchedStart) {
+        entry._bestSchedStart     = block.shift_start
         entry.last_schedule_state = block.state
       }
 
-      // last_known_market: most recent block with shift_start ≤ today; prefer standard market name
-      if (block.shift_start <= todayStr && block.shift_start >= entry._bestSchedStart) {
-        entry._bestSchedStart   = block.shift_start
-        entry.last_known_market = block.standard_market_name || block.market
+      // Market grouping: only today or future blocks count.
+      // Past schedule = truck has moved on; GPS tells us where it is now.
+      if (block.shift_start >= todayStr) {
+        if (!entry._nearestActiveStart || block.shift_start < entry._nearestActiveStart) {
+          entry._nearestActiveStart = block.shift_start
+          entry.last_known_market   = block.standard_market_name || block.market
+        }
       }
     }
 
@@ -230,6 +235,17 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
 
     return m
   }, [schedules, holds])
+
+  // Pre-compute non-ATT schedules per truck for ATT_SOFT voiding logic
+  const nonAttSchedulesByTruck = useMemo(() => {
+    const m = new Map<string, Array<{ shift_start: string; shift_end: string }>>()
+    for (const block of schedules) {
+      if (block.program?.toLowerCase().includes('att')) continue
+      if (!m.has(block.truck_number)) m.set(block.truck_number, [])
+      m.get(block.truck_number)!.push({ shift_start: block.shift_start, shift_end: block.shift_end })
+    }
+    return m
+  }, [schedules])
 
   // ── Filtered truck list ───────────────────────────────────────────────────
 
@@ -294,12 +310,16 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     truckNums = truckNums.filter((t) => matched.has(t))
   }
 
-  // ── Market grouping — use truckMeta (same source as side panel) with API GPS as fallback ──
-  // truckMeta and trucks.last_known_market can diverge when multiple rows share the same
-  // shift_start date (tie-breaking differs). truckMeta is always consistent with the panel.
+  // ── Market grouping ───────────────────────────────────────────────────────
+  // Priority: (1) nearest future schedule OR recent past schedule (≤7 days) from truckMeta
+  //           (2) Samsara GPS city+state — truck is physically here with no near-term schedule
+  //           (3) API last_known_market fallback (holds, etc.)
   const truckMarketLookup = new Map(trucks.map((t) => {
     const metaMarket = truckMeta.get(t.truck_number)?.last_known_market
-    return [t.truck_number, metaMarket || t.last_known_market || 'Unassigned']
+    const gpsMarket  = t.last_gps_city
+      ? [t.last_gps_city, t.last_gps_state].filter(Boolean).join(', ')
+      : null
+    return [t.truck_number, metaMarket || gpsMarket || t.last_known_market || 'Unassigned']
   }))
   const groupMap = new Map<string, string[]>()
   for (const truckNum of truckNums) {
@@ -379,7 +399,15 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     }
 
     // 4. ATT soft hold (lowest priority — yields to any schedule or regular hold)
+    //    If the truck has any non-ATT scheduled block overlapping this hold's period,
+    //    treat the hold as void and show white/available instead of soft blue.
     if (entry.attHold) {
+      const holdStart = entry.attHold.start_date
+      const holdEnd   = entry.attHold.end_date
+      const voided = nonAttSchedulesByTruck.get(truckNum)?.some(
+        (s) => s.shift_start <= holdEnd && s.shift_end >= holdStart
+      )
+      if (voided) return base
       return {
         ...base,
         display_status:  'ATT_SOFT',

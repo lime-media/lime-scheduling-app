@@ -13,8 +13,11 @@ export function Navbar() {
   const [conflictCount,     setConflictCount]     = useState(0)
   const [hasRecentConflict, setHasRecentConflict] = useState(false)
 
-  // User dropdown
-  const [userMenuOpen,  setUserMenuOpen]  = useState(false)
+  // Mobile menu
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+
+  // User dropdown (desktop)
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
   const userMenuRef = useRef<HTMLDivElement>(null)
 
   // Change password modal
@@ -38,7 +41,7 @@ export function Navbar() {
       .catch(() => {})
   }, [session])
 
-  // Close user dropdown on outside click
+  // Close desktop dropdown on outside click
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
@@ -49,8 +52,12 @@ export function Navbar() {
     return () => document.removeEventListener('mousedown', handleClick)
   }, [userMenuOpen])
 
+  // Close mobile menu on route change
+  useEffect(() => { setMobileMenuOpen(false) }, [pathname])
+
   function openChangePw() {
     setUserMenuOpen(false)
+    setMobileMenuOpen(false)
     setChangePwForm({ current: '', next: '', confirm: '' })
     setChangePwError('')
     setShowCurrent(false)
@@ -61,7 +68,6 @@ export function Navbar() {
   async function handleChangePw(e: React.FormEvent) {
     e.preventDefault()
     setChangePwError('')
-
     if (changePwForm.next !== changePwForm.confirm) {
       setChangePwError('New passwords do not match')
       return
@@ -70,16 +76,12 @@ export function Navbar() {
       setChangePwError('New password must be at least 8 characters')
       return
     }
-
     setChangePwLoading(true)
     try {
       const res = await fetch('/api/users/me/change-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          currentPassword: changePwForm.current,
-          newPassword:     changePwForm.next,
-        }),
+        body: JSON.stringify({ currentPassword: changePwForm.current, newPassword: changePwForm.next }),
       })
       const data = await res.json()
       if (!res.ok) {
@@ -95,132 +97,149 @@ export function Navbar() {
 
   const isOps = session?.user?.role === 'OPERATIONS'
 
+  const navLinks = [
+    { href: '/',          label: 'Schedule' },
+    { href: '/map',       label: 'Map' },
+    { href: '/ai',        label: 'AI Assistant' },
+    { href: '/holds',     label: 'Holds' },
+    { href: '/conflicts', label: 'Conflicts', badge: conflictCount > 0 ? conflictCount : null, pulse: hasRecentConflict },
+    ...(isOps ? [{ href: '/users', label: 'Users', badge: null, pulse: false }] : []),
+  ]
+
   return (
     <>
-      <nav className="bg-[#1a3028] text-white px-6 py-3 flex items-center justify-between shadow-lg">
-        <div className="flex items-center gap-6">
-          <Link href="/" className="flex items-center">
-            <img src="/logo.png" alt="Lime Media" className="h-10 w-auto" />
-          </Link>
-          <div className="hidden sm:flex items-center gap-4 text-sm font-medium">
-            <Link
-              href="/"
-              className={`px-3 py-1.5 rounded transition-colors ${
-                pathname === '/' ? 'bg-[#0f1f18] text-white' : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
-              }`}
-            >
-              Schedule
+      <nav className="bg-[#1a3028] text-white shadow-lg">
+        <div className="px-4 sm:px-6 py-3 flex items-center justify-between">
+          {/* Logo */}
+          <div className="flex items-center gap-4 sm:gap-6">
+            <Link href="/" className="flex items-center flex-shrink-0">
+              <img src="/logo.png" alt="Lime Media" className="h-9 w-auto" />
             </Link>
-            <Link
-              href="/map"
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition-colors ${
-                pathname === '/map' ? 'bg-[#0f1f18] text-white' : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
-              }`}
-            >
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-              Map
-            </Link>
-            <Link
-              href="/ai"
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition-colors ${
-                pathname === '/ai' ? 'bg-[#0f1f18] text-white' : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
-              }`}
-            >
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-              </svg>
-              AI Assistant
-            </Link>
-            <Link
-              href="/holds"
-              className={`px-3 py-1.5 rounded transition-colors ${
-                pathname === '/holds' ? 'bg-[#0f1f18] text-white' : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
-              }`}
-            >
-              Holds
-            </Link>
-            <Link
-              href="/conflicts"
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition-colors ${
-                pathname === '/conflicts' ? 'bg-[#0f1f18] text-white' : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
-              }`}
-            >
-              Conflicts
-              {conflictCount > 0 && (
-                <span
-                  className={`bg-red-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full leading-none ${
-                    hasRecentConflict ? 'animate-pulse' : ''
+
+            {/* Desktop nav links */}
+            <div className="hidden sm:flex items-center gap-1 text-sm font-medium">
+              {navLinks.map((link) => (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition-colors ${
+                    pathname === link.href
+                      ? 'bg-[#0f1f18] text-white'
+                      : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
                   }`}
                 >
-                  {conflictCount}
-                </span>
-              )}
-            </Link>
-            {isOps && (
-              <Link
-                href="/users"
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition-colors ${
-                  pathname === '/users' ? 'bg-[#0f1f18] text-white' : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
-                }`}
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
-                </svg>
-                Users
-              </Link>
+                  {link.label}
+                  {link.badge != null && (
+                    <span className={`bg-red-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full leading-none ${link.pulse ? 'animate-pulse' : ''}`}>
+                      {link.badge}
+                    </span>
+                  )}
+                </Link>
+              ))}
+            </div>
+          </div>
+
+          {/* Right side */}
+          <div className="flex items-center gap-2">
+            {/* Desktop user dropdown */}
+            {session && (
+              <div ref={userMenuRef} className="relative hidden sm:block">
+                <button
+                  onClick={() => setUserMenuOpen((o) => !o)}
+                  className="flex items-center gap-1.5 text-sm text-green-200 hover:text-white transition-colors"
+                >
+                  <span>
+                    {session.user?.name} &middot;{' '}
+                    <span className="text-green-300 font-medium">{session.user?.role}</span>
+                  </span>
+                  <svg className="w-3.5 h-3.5 text-green-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {userMenuOpen && (
+                  <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50 text-gray-800">
+                    <button onClick={openChangePw} className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 flex items-center gap-2">
+                      <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                      </svg>
+                      Change Password
+                    </button>
+                    <hr className="my-1 border-gray-100" />
+                    <button onClick={() => signOut({ callbackUrl: '/login' })} className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 flex items-center gap-2 text-red-600">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                      </svg>
+                      Sign out
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
+
+            {/* Mobile hamburger */}
+            <button
+              onClick={() => setMobileMenuOpen((o) => !o)}
+              className="sm:hidden p-2 rounded text-green-200 hover:text-white hover:bg-[#0f1f18] transition-colors"
+              aria-label="Toggle menu"
+            >
+              {mobileMenuOpen ? (
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              ) : (
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                </svg>
+              )}
+            </button>
           </div>
         </div>
 
-        {/* Right side: user dropdown */}
-        <div className="flex items-center gap-4">
-          {session && (
-            <div ref={userMenuRef} className="relative">
-              <button
-                onClick={() => setUserMenuOpen((o) => !o)}
-                className="flex items-center gap-1.5 text-sm text-green-200 hover:text-white transition-colors hidden sm:flex"
+        {/* Mobile menu dropdown */}
+        {mobileMenuOpen && (
+          <div className="sm:hidden border-t border-green-800 bg-[#1a3028] px-4 py-3 space-y-1">
+            {navLinks.map((link) => (
+              <Link
+                key={link.href}
+                href={link.href}
+                onClick={() => setMobileMenuOpen(false)}
+                className={`flex items-center justify-between px-3 py-3 rounded-lg text-sm font-medium transition-colors ${
+                  pathname === link.href
+                    ? 'bg-[#0f1f18] text-white'
+                    : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
+                }`}
               >
-                <span>
-                  {session.user?.name} &middot;{' '}
-                  <span className="text-green-300 font-medium">{session.user?.role}</span>
-                </span>
-                <svg className="w-3.5 h-3.5 text-green-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
+                {link.label}
+                {link.badge != null && (
+                  <span className={`bg-red-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full ${link.pulse ? 'animate-pulse' : ''}`}>
+                    {link.badge}
+                  </span>
+                )}
+              </Link>
+            ))}
 
-              {userMenuOpen && (
-                <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50 text-gray-800">
-                  <button
-                    onClick={openChangePw}
-                    className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 flex items-center gap-2"
-                  >
-                    <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                        d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
-                    </svg>
-                    Change Password
-                  </button>
-                  <hr className="my-1 border-gray-100" />
-                  <button
-                    onClick={() => signOut({ callbackUrl: '/login' })}
-                    className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 flex items-center gap-2 text-red-600"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                        d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                    </svg>
-                    Sign out
-                  </button>
+            {/* Mobile user section */}
+            {session && (
+              <div className="pt-3 mt-2 border-t border-green-800">
+                <div className="px-3 py-1 text-xs text-green-400 mb-1">
+                  {session.user?.name} · <span className="text-green-300">{session.user?.role}</span>
                 </div>
-              )}
-            </div>
-          )}
-        </div>
+                <button
+                  onClick={openChangePw}
+                  className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-green-100 hover:text-white hover:bg-[#0f1f18] transition-colors"
+                >
+                  Change Password
+                </button>
+                <button
+                  onClick={() => signOut({ callbackUrl: '/login' })}
+                  className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-red-400 hover:text-red-300 hover:bg-[#0f1f18] transition-colors"
+                >
+                  Sign out
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </nav>
 
       {/* ── Change Password Modal ──────────────────────────────────────────────── */}
@@ -231,7 +250,6 @@ export function Navbar() {
               <h2 className="text-lg font-semibold text-gray-900">Change Password</h2>
             </div>
             <form onSubmit={handleChangePw} className="px-6 py-4 space-y-4">
-              {/* Current password */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Current Password</label>
                 <div className="relative">
@@ -240,7 +258,7 @@ export function Navbar() {
                     required
                     value={changePwForm.current}
                     onChange={(e) => setChangePwForm({ ...changePwForm, current: e.target.value })}
-                    className="w-full border border-gray-300 rounded px-3 py-2 pr-9 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                    className="w-full border border-gray-300 rounded px-3 py-2 pr-9 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                   />
                   <button type="button" onClick={() => setShowCurrent((s) => !s)}
                     className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
@@ -253,7 +271,6 @@ export function Navbar() {
                   </button>
                 </div>
               </div>
-              {/* New password */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">New Password</label>
                 <div className="relative">
@@ -262,7 +279,7 @@ export function Navbar() {
                     required
                     value={changePwForm.next}
                     onChange={(e) => setChangePwForm({ ...changePwForm, next: e.target.value })}
-                    className="w-full border border-gray-300 rounded px-3 py-2 pr-9 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                    className="w-full border border-gray-300 rounded px-3 py-2 pr-9 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                   />
                   <button type="button" onClick={() => setShowNext((s) => !s)}
                     className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
@@ -275,7 +292,6 @@ export function Navbar() {
                   </button>
                 </div>
               </div>
-              {/* Confirm */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Confirm New Password</label>
                 <input
@@ -283,27 +299,17 @@ export function Navbar() {
                   required
                   value={changePwForm.confirm}
                   onChange={(e) => setChangePwForm({ ...changePwForm, confirm: e.target.value })}
-                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                  className="w-full border border-gray-300 rounded px-3 py-2 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                 />
               </div>
-
-              {changePwError && (
-                <p className="text-sm text-red-600">{changePwError}</p>
-              )}
-
+              {changePwError && <p className="text-sm text-red-600">{changePwError}</p>}
               <div className="flex justify-end gap-3 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setChangePwOpen(false)}
-                  className="px-4 py-2 text-sm border border-gray-300 rounded text-gray-600 hover:text-gray-800 transition-colors"
-                >
+                <button type="button" onClick={() => setChangePwOpen(false)}
+                  className="px-4 py-2 text-sm border border-gray-300 rounded text-gray-600 hover:text-gray-800 transition-colors">
                   Cancel
                 </button>
-                <button
-                  type="submit"
-                  disabled={changePwLoading}
-                  className="px-4 py-2 text-sm bg-green-700 hover:bg-green-600 text-white rounded transition-colors disabled:opacity-50"
-                >
+                <button type="submit" disabled={changePwLoading}
+                  className="px-4 py-2 text-sm bg-green-700 hover:bg-green-600 text-white rounded transition-colors disabled:opacity-50">
                   {changePwLoading ? 'Saving…' : 'Save'}
                 </button>
               </div>

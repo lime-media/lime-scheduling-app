@@ -123,18 +123,17 @@ export default function HoldsPage() {
     : holds
 
   return (
-    <div className="flex flex-col min-h-screen">
+    <div className="flex flex-col min-h-dvh">
       <Navbar />
 
-      <div className="flex-1 p-6 max-w-7xl mx-auto w-full">
-        <div className="flex items-center justify-between mb-6">
+      <div className="flex-1 p-4 sm:p-6 max-w-7xl mx-auto w-full">
+        {/* Header */}
+        <div className="flex items-start sm:items-center justify-between mb-4 sm:mb-6 gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Holds & Commitments</h1>
-            <p className="text-sm text-gray-500 mt-1">
-              Manage all truck holds and committed bookings
-            </p>
+            <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Holds & Commitments</h1>
+            <p className="text-sm text-gray-500 mt-0.5">Manage all truck holds and committed bookings</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-shrink-0">
             {(['', 'HOLD', 'COMMITTED'] as const).map((s) => (
               <button
                 key={s}
@@ -160,93 +159,119 @@ export default function HoldsPage() {
             <p className="text-sm mt-1">Place holds from the Schedule Grid on the dashboard</p>
           </div>
         ) : (
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 border-b border-gray-200">
-                  <tr>
-                    {[
-                      'Truck',
-                      'Client',
-                      'Market',
-                      'State',
-                      'Start Date',
-                      'End Date',
-                      'Status',
-                      'Created By',
-                      'Actions',
-                    ].map((col) => (
-                      <th
-                        key={col}
-                        className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide"
-                      >
-                        {col}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {filtered.map((hold) => (
-                    <tr key={hold.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-4 py-3 font-semibold text-gray-900">
-                        {hold.truck_number}
-                      </td>
-                      <td className="px-4 py-3 text-gray-700">{hold.client_name}</td>
-                      <td className="px-4 py-3 text-gray-600">{hold.market}</td>
-                      <td className="px-4 py-3 text-gray-600">{hold.state}</td>
-                      <td className="px-4 py-3 text-gray-600">
-                        {format(new Date(hold.start_date), 'MMM d, yyyy')}
-                      </td>
-                      <td className="px-4 py-3 text-gray-600">
-                        {format(new Date(hold.end_date), 'MMM d, yyyy')}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[hold.status]}`}
+          <>
+            {/* ── Mobile: card list ─────────────────────────────────────────── */}
+            <div className="sm:hidden space-y-3">
+              {filtered.map((hold) => (
+                <div key={hold.id} className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+                  {/* Top row: truck + status badge */}
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-lg font-bold text-gray-900">Truck {hold.truck_number}</span>
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[hold.status]}`}>
+                      {hold.status}
+                    </span>
+                  </div>
+
+                  {/* Client */}
+                  <div className="text-sm font-medium text-gray-800 mb-1">{hold.client_name}</div>
+
+                  {/* Market + State */}
+                  <div className="text-sm text-gray-500 mb-2">
+                    {[hold.market, hold.state].filter(Boolean).join(', ')}
+                  </div>
+
+                  {/* Dates */}
+                  <div className="flex items-center gap-2 text-sm text-gray-600 mb-3">
+                    <span>{format(new Date(hold.start_date), 'MMM d, yyyy')}</span>
+                    <span className="text-gray-300">→</span>
+                    <span>{format(new Date(hold.end_date), 'MMM d, yyyy')}</span>
+                  </div>
+
+                  {/* Footer: created by + actions */}
+                  <div className="flex items-center justify-between border-t border-gray-100 pt-3">
+                    <span className="text-xs text-gray-400">
+                      {hold.user?.name || 'Unknown'} · {format(new Date(hold.created_at), 'MMM d')}
+                    </span>
+                    {canEdit(hold) && (
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => openEdit(hold)}
+                          className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded-lg transition-colors"
                         >
-                          {hold.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-gray-500 text-xs">
-                        {hold.user?.name || 'Unknown'}
-                        <div className="text-gray-400">
-                          {format(new Date(hold.created_at), 'MMM d')}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex gap-1.5">
-                          {canEdit(hold) && (
-                            <>
-                              <button
-                                onClick={() => openEdit(hold)}
-                                className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 px-2 py-1 rounded transition-colors"
-                              >
-                                Edit
-                              </button>
-                              {hold.status === 'HOLD' && (
-                                <button
-                                  onClick={() => handleUpgrade(hold)}
-                                  className="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-2 py-1 rounded transition-colors"
-                                >
-                                  Commit
-                                </button>
-                              )}
-                              <button
-                                onClick={() => handleRelease(hold)}
-                                className="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-2 py-1 rounded transition-colors"
-                              >
-                                Release
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                          Edit
+                        </button>
+                        {hold.status === 'HOLD' && (
+                          <button
+                            onClick={() => handleUpgrade(hold)}
+                            className="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors"
+                          >
+                            Commit
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleRelease(hold)}
+                          className="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          Release
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
-          </div>
+
+            {/* ── Desktop: table ────────────────────────────────────────────── */}
+            <div className="hidden sm:block bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 border-b border-gray-200">
+                    <tr>
+                      {['Truck', 'Client', 'Market', 'State', 'Start Date', 'End Date', 'Status', 'Created By', 'Actions'].map((col) => (
+                        <th key={col} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                          {col}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {filtered.map((hold) => (
+                      <tr key={hold.id} className="hover:bg-gray-50 transition-colors">
+                        <td className="px-4 py-3 font-semibold text-gray-900">{hold.truck_number}</td>
+                        <td className="px-4 py-3 text-gray-700">{hold.client_name}</td>
+                        <td className="px-4 py-3 text-gray-600">{hold.market}</td>
+                        <td className="px-4 py-3 text-gray-600">{hold.state}</td>
+                        <td className="px-4 py-3 text-gray-600">{format(new Date(hold.start_date), 'MMM d, yyyy')}</td>
+                        <td className="px-4 py-3 text-gray-600">{format(new Date(hold.end_date), 'MMM d, yyyy')}</td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[hold.status]}`}>
+                            {hold.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-gray-500 text-xs">
+                          {hold.user?.name || 'Unknown'}
+                          <div className="text-gray-400">{format(new Date(hold.created_at), 'MMM d')}</div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex gap-1.5">
+                            {canEdit(hold) && (
+                              <>
+                                <button onClick={() => openEdit(hold)} className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 px-2 py-1 rounded transition-colors">Edit</button>
+                                {hold.status === 'HOLD' && (
+                                  <button onClick={() => handleUpgrade(hold)} className="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-2 py-1 rounded transition-colors">Commit</button>
+                                )}
+                                <button onClick={() => handleRelease(hold)} className="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-2 py-1 rounded transition-colors">Release</button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
         )}
       </div>
 

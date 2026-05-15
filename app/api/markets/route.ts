@@ -19,11 +19,11 @@ export async function GET() {
   try {
     const [cpmResult, lookupResult] = await Promise.all([
       pool.request().query(`
-        SELECT DISTINCT
-          COALESCE(standard_market_name, market) AS market
+        SELECT DISTINCT standard_market_name AS market
         FROM dbo.client_program_markets
-        WHERE market IS NOT NULL AND LEN(LTRIM(RTRIM(market))) > 0
-        ORDER BY market
+        WHERE standard_market_name IS NOT NULL
+          AND LEN(LTRIM(RTRIM(standard_market_name))) > 0
+        ORDER BY standard_market_name
       `),
       pool.request().query(`
         SELECT DISTINCT standard_market AS market

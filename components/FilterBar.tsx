@@ -47,65 +47,58 @@ export function FilterBar({ filters, onChange, states, markets }: FilterBarProps
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-3 pb-3 border-b border-gray-200">
-      {/* State filter */}
-      <div className="flex items-center gap-1.5">
-        <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">State</label>
-        <select
-          value={filters.state}
-          onChange={(e) =>
-            onChange({ ...filters, state: e.target.value, market: '' })
-          }
-          className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
-        >
-          <option value="">All states</option>
-          {states.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
+    <div className="flex flex-col gap-2 pb-3 border-b border-gray-200">
+      {/* Row 1: State + Market + Dates */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        {/* State filter */}
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">State</label>
+          <select
+            value={filters.state}
+            onChange={(e) => onChange({ ...filters, state: e.target.value, market: '' })}
+            className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+          >
+            <option value="">All states</option>
+            {states.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+
+        {/* Market filter */}
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Market</label>
+          <select
+            value={filters.market}
+            onChange={(e) => onChange({ ...filters, market: e.target.value })}
+            className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white max-w-[160px] sm:max-w-none"
+          >
+            <option value="">All markets</option>
+            {markets.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </div>
+
+        {/* Date range */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">From</label>
+          <input
+            type="date"
+            value={filters.dateFrom}
+            onChange={(e) => onChange({ ...filters, dateFrom: e.target.value })}
+            className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+          />
+          <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">To</label>
+          <input
+            type="date"
+            value={filters.dateTo}
+            onChange={(e) => onChange({ ...filters, dateTo: e.target.value })}
+            className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+          />
+        </div>
       </div>
 
-      {/* Market filter */}
-      <div className="flex items-center gap-1.5">
-        <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Market</label>
-        <select
-          value={filters.market}
-          onChange={(e) => onChange({ ...filters, market: e.target.value })}
-          className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
-        >
-          <option value="">All markets</option>
-          {markets.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Date range */}
-      <div className="flex items-center gap-1.5">
-        <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">From</label>
-        <input
-          type="date"
-          value={filters.dateFrom}
-          onChange={(e) => onChange({ ...filters, dateFrom: e.target.value })}
-          className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-        />
-        <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">To</label>
-        <input
-          type="date"
-          value={filters.dateTo}
-          onChange={(e) => onChange({ ...filters, dateTo: e.target.value })}
-          className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-        />
-      </div>
-
-      {/* Status toggles */}
-      <div className="flex items-center gap-1.5">
-        <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Status</label>
-        <div className="flex gap-1">
+      {/* Row 2: Status toggles + Reset */}
+      <div className="flex items-start gap-1.5 flex-wrap">
+        <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mt-1.5 flex-shrink-0">Status</label>
+        <div className="flex flex-wrap gap-1 flex-1">
           {STATUS_OPTIONS.map((opt) => {
             const active = filters.statusFilters.has(opt.value)
             return (
@@ -119,21 +112,19 @@ export function FilterBar({ filters, onChange, states, markets }: FilterBarProps
                 }`}
                 title={`Filter by ${opt.label}`}
               >
-                <span className={`w-2.5 h-2.5 rounded-full ${opt.color}`} />
+                <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${opt.color}`} />
                 {opt.label}
               </button>
             )
           })}
         </div>
+        <button
+          onClick={reset}
+          className="text-xs text-gray-500 hover:text-gray-700 underline flex-shrink-0 mt-1.5"
+        >
+          Reset filters
+        </button>
       </div>
-
-      {/* Reset */}
-      <button
-        onClick={reset}
-        className="ml-auto text-xs text-gray-500 hover:text-gray-700 underline"
-      >
-        Reset filters
-      </button>
     </div>
   )
 }

@@ -30,14 +30,14 @@ const defaultFilters: Filters = {
 export default function DashboardPage() {
   const router = useRouter()
 
-  // Always redirect mobile users to /ai unless they explicitly tapped "Schedule" in the nav.
+  // On mobile: redirect to /ai unless the Schedule nav link was used (?from=nav).
+  // history.replaceState cleans the param from the URL without triggering a re-render.
   useEffect(() => {
-    if (window.innerWidth < 768) {
-      if (sessionStorage.getItem('goToSchedule')) {
-        sessionStorage.removeItem('goToSchedule')
-      } else {
-        router.replace('/ai')
-      }
+    const params = new URLSearchParams(window.location.search)
+    if (params.has('from')) {
+      history.replaceState({}, '', '/')
+    } else if (window.innerWidth < 768) {
+      router.replace('/ai')
     }
   }, [router])
 

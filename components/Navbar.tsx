@@ -98,17 +98,13 @@ export function Navbar() {
   const isOps = session?.user?.role === 'OPERATIONS'
 
   const navLinks = [
-    { href: '/',          label: 'Schedule', scheduleLink: true },
+    { href: '/?from=nav', label: 'Schedule' },
     { href: '/map',       label: 'Map' },
     { href: '/ai',        label: 'AI Assistant' },
     { href: '/holds',     label: 'Holds' },
     { href: '/conflicts', label: 'Conflicts', badge: conflictCount > 0 ? conflictCount : null, pulse: hasRecentConflict },
     ...(isOps ? [{ href: '/users', label: 'Users', badge: null, pulse: false }] : []),
   ]
-
-  function handleScheduleClick() {
-    sessionStorage.setItem('goToSchedule', '1')
-  }
 
   return (
     <>
@@ -126,9 +122,8 @@ export function Navbar() {
                 <Link
                   key={link.href}
                   href={link.href}
-                  onClick={link.scheduleLink ? handleScheduleClick : undefined}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition-colors ${
-                    pathname === link.href
+                    pathname === link.href.split('?')[0]
                       ? 'bg-[#0f1f18] text-white'
                       : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
                   }`}
@@ -207,9 +202,9 @@ export function Navbar() {
               <Link
                 key={link.href}
                 href={link.href}
-                onClick={() => { if (link.scheduleLink) handleScheduleClick(); setMobileMenuOpen(false) }}
+                onClick={() => setMobileMenuOpen(false)}
                 className={`flex items-center justify-between px-3 py-3 rounded-lg text-sm font-medium transition-colors ${
-                  pathname === link.href
+                  pathname === link.href.split('?')[0]
                     ? 'bg-[#0f1f18] text-white'
                     : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
                 }`}

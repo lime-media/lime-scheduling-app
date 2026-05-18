@@ -30,9 +30,13 @@ const defaultFilters: Filters = {
 export default function DashboardPage() {
   const router = useRouter()
 
-  // Redirect mobile users to the AI assistant
+  // Redirect mobile users to the AI assistant on first visit only.
+  // sessionStorage flag prevents redirect when user navigates back from /ai.
   useEffect(() => {
-    if (window.innerWidth < 768) router.replace('/ai')
+    if (window.innerWidth < 768 && !sessionStorage.getItem('visitedApp')) {
+      sessionStorage.setItem('visitedApp', '1')
+      router.replace('/ai')
+    }
   }, [router])
 
   const [trucks,    setTrucks]    = useState<TruckInfo[]>([])

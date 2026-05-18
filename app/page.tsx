@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { format, addDays, startOfDay } from 'date-fns'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
 import { ScheduleGrid, type TruckInfo, type ScheduleBlock, type HoldBlock } from '@/components/ScheduleGrid'
 import { FilterBar } from '@/components/FilterBar'
@@ -27,6 +28,14 @@ const defaultFilters: Filters = {
 }
 
 export default function DashboardPage() {
+  const router = useRouter()
+
+  useEffect(() => {
+    if (window.innerWidth < 768 && !sessionStorage.getItem('visitedApp')) {
+      sessionStorage.setItem('visitedApp', '1')
+      router.replace('/ai')
+    }
+  }, [router])
 
   const [trucks,    setTrucks]    = useState<TruckInfo[]>([])
   const [schedules, setSchedules] = useState<ScheduleBlock[]>([])

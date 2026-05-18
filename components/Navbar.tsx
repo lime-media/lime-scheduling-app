@@ -98,7 +98,7 @@ export function Navbar() {
   const isOps = session?.user?.role === 'OPERATIONS'
 
   const navLinks = [
-    { href: '/?from=nav', label: 'Schedule' },
+    { href: '/',          label: 'Schedule' },
     { href: '/map',       label: 'Map' },
     { href: '/ai',        label: 'AI Assistant' },
     { href: '/holds',     label: 'Holds' },
@@ -123,7 +123,7 @@ export function Navbar() {
                   key={link.href}
                   href={link.href}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition-colors ${
-                    pathname === link.href.split('?')[0]
+                    pathname === link.href
                       ? 'bg-[#0f1f18] text-white'
                       : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
                   }`}
@@ -204,7 +204,7 @@ export function Navbar() {
                 href={link.href}
                 onClick={() => setMobileMenuOpen(false)}
                 className={`flex items-center justify-between px-3 py-3 rounded-lg text-sm font-medium transition-colors ${
-                  pathname === link.href.split('?')[0]
+                  pathname === link.href
                     ? 'bg-[#0f1f18] text-white'
                     : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
                 }`}

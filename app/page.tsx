@@ -27,12 +27,6 @@ const defaultFilters: Filters = {
 }
 
 export default function DashboardPage() {
-  // Clean up ?from=nav param left by the Schedule nav link (middleware handles the redirect)
-  useEffect(() => {
-    if (window.location.search) {
-      history.replaceState({}, '', '/')
-    }
-  }, [])
 
   const [trucks,    setTrucks]    = useState<TruckInfo[]>([])
   const [schedules, setSchedules] = useState<ScheduleBlock[]>([])

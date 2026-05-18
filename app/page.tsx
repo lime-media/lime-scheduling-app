@@ -30,12 +30,14 @@ const defaultFilters: Filters = {
 export default function DashboardPage() {
   const router = useRouter()
 
-  // Redirect mobile users to the AI assistant on first visit only.
-  // sessionStorage flag prevents redirect when user navigates back from /ai.
+  // Always redirect mobile users to /ai unless they explicitly tapped "Schedule" in the nav.
   useEffect(() => {
-    if (window.innerWidth < 768 && !sessionStorage.getItem('visitedApp')) {
-      sessionStorage.setItem('visitedApp', '1')
-      router.replace('/ai')
+    if (window.innerWidth < 768) {
+      if (sessionStorage.getItem('goToSchedule')) {
+        sessionStorage.removeItem('goToSchedule')
+      } else {
+        router.replace('/ai')
+      }
     }
   }, [router])
 

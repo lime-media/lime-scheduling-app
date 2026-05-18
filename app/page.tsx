@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { format, addDays, startOfDay } from 'date-fns'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
 import { ScheduleGrid, type TruckInfo, type ScheduleBlock, type HoldBlock } from '@/components/ScheduleGrid'
 import { FilterBar } from '@/components/FilterBar'
@@ -28,18 +27,12 @@ const defaultFilters: Filters = {
 }
 
 export default function DashboardPage() {
-  const router = useRouter()
-
-  // On mobile: redirect to /ai unless the Schedule nav link was used (?from=nav).
-  // history.replaceState cleans the param from the URL without triggering a re-render.
+  // Clean up ?from=nav param left by the Schedule nav link (middleware handles the redirect)
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    if (params.has('from')) {
+    if (window.location.search) {
       history.replaceState({}, '', '/')
-    } else if (window.innerWidth < 768) {
-      router.replace('/ai')
     }
-  }, [router])
+  }, [])
 
   const [trucks,    setTrucks]    = useState<TruckInfo[]>([])
   const [schedules, setSchedules] = useState<ScheduleBlock[]>([])

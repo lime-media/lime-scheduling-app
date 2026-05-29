@@ -259,7 +259,13 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     for (const t of trucks) {
       if ((t.last_known_market ?? '').toLowerCase().trim() === fm) matched.add(t.truck_number)
     }
+    const dfStr = filters.dateFrom || ''
+    const dtStr = filters.dateTo   || ''
     for (const block of schedules) {
+      if (!block.shift_start || !block.shift_end) continue
+      // Skip blocks that don't overlap the visible date range
+      if (dfStr && block.shift_end   < dfStr) continue
+      if (dtStr && block.shift_start > dtStr) continue
       const blockMarket = (block.standard_market_name || block.market).toLowerCase().trim()
       if (blockMarket === fm || block.market.toLowerCase().trim() === fm) matched.add(block.truck_number)
     }

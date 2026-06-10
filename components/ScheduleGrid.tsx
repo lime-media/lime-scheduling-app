@@ -252,6 +252,9 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
 
   let truckNums = trucks.map((t) => t.truck_number).sort()
 
+  const dfStr = filters.dateFrom || ''
+  const dtStr = filters.dateTo   || ''
+
   // MARKET FILTER: truck.last_known_market matches OR any schedule block market matches.
   if (filters.market) {
     const fm = filters.market.toLowerCase().trim()
@@ -287,9 +290,6 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
 
   // STATUS FILTER: show trucks that have at least one cell with that status
   // within the visible date range only.
-  const dfStr = filters.dateFrom || ''
-  const dtStr = filters.dateTo   || ''
-
   if (filters.statusFilters.size > 0) {
     const matched = new Set<string>()
 

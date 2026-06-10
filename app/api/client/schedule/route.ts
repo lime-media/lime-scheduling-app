@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { SCHEDULED_QUERY, ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
+import { getLiveVehicleLocations } from '@/lib/samsaraService'
 
 let sqlCache: { trucks: unknown; schedules: unknown; timestamp: number } | null = null
 const CACHE_TTL = 5 * 60 * 1000
@@ -40,6 +41,11 @@ export async function GET() {
 
     const holds = await holdsPromise
 
+    let gpsMap = new Map<string, { city: string; state: string; formatted_address: string }>()
+    try {
+      gpsMap = await getLiveVehicleLocations()
+    } catch { /* continue without GPS */ }
+
     const todayStr = new Date().toISOString().split('T')[0]
     const scheduleInfo: Record<string, { market: string; state: string; shift_start: string }> = {}
     for (const row of schedulesRaw) {
@@ -66,14 +72,15 @@ export async function GET() {
     const trucks = trucksRaw
       .filter((r) => !HIDDEN_TRUCKS.has(String(r.truck_number ?? '')))
       .map((r) => {
-        const num = String(r.truck_number ?? '')
+        const num     = String(r.truck_number ?? '')
+        const gpsData = gpsMap.get(num)
         return {
           truck_number:      num,
-          last_gps:          null,
-          last_gps_city:     null,
-          last_gps_state:    null,
-          last_known_market: scheduleInfo[num]?.market || holdMarkets[num]?.market || null,
-          last_known_state:  scheduleInfo[num]?.state  || holdMarkets[num]?.state  || null,
+          last_gps:          gpsData?.formatted_address || null,
+          last_gps_city:     gpsData?.city              || null,
+          last_gps_state:    gpsData?.state             || null,
+          last_known_market: scheduleInfo[num]?.market || holdMarkets[num]?.market || (gpsData?.city ? [gpsData.city, gpsData.state].filter(Boolean).join(', ') : null),
+          last_known_state:  scheduleInfo[num]?.state  || holdMarkets[num]?.state  || gpsData?.state || null,
         }
       })
 

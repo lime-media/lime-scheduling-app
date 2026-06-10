@@ -15,6 +15,7 @@ interface FilterBarProps {
   onChange: (filters: Filters) => void
   states: string[]
   markets: string[]
+  clientView?: boolean
 }
 
 const STATUS_OPTIONS = [
@@ -26,7 +27,10 @@ const STATUS_OPTIONS = [
   { value: 'ATT_SOFT',          label: 'ATT Hold',     color: 'bg-blue-400' },
 ]
 
-export function FilterBar({ filters, onChange, states, markets }: FilterBarProps) {
+export function FilterBar({ filters, onChange, states, markets, clientView = false }: FilterBarProps) {
+  const statusOptions = STATUS_OPTIONS.map((o) =>
+    clientView && o.value === 'ATT_SOFT' ? { ...o, label: 'Long Term Hold' } : o
+  )
   const today = startOfDay(new Date())
 
   const toggleStatus = (status: string) => {
@@ -99,7 +103,7 @@ export function FilterBar({ filters, onChange, states, markets }: FilterBarProps
       <div className="flex items-start gap-1.5 flex-wrap">
         <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mt-1.5 flex-shrink-0">Status</label>
         <div className="flex flex-wrap gap-1 flex-1">
-          {STATUS_OPTIONS.map((opt) => {
+          {statusOptions.map((opt) => {
             const active = filters.statusFilters.has(opt.value)
             return (
               <button

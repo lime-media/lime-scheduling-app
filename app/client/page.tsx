@@ -79,6 +79,7 @@ export default function ClientPage() {
           onChange={setFilters}
           states={states}
           markets={markets}
+          clientView
         />
 
         <div className="flex-1 overflow-auto mt-3">

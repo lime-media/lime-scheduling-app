@@ -307,10 +307,12 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       for (const h of holds) { if (h.status === 'ATT_SOFT') matched.add(h.truck_number) }
     }
     if (filters.statusFilters.has('EMPTY')) {
-      const scheduledSet = new Set(schedules.map((b) => b.truck_number))
-      const holdSet      = new Set(holds.map((h) => h.truck_number))
       for (const t of truckNums) {
-        if (!scheduledSet.has(t) && !holdSet.has(t)) matched.add(t)
+        const hasAvailableDay = dates.some((date) => {
+          const entry = dataMap.get(`${t}__${format(date, 'yyyy-MM-dd')}`)
+          return !entry || (!entry.sched && !entry.hold && !entry.attHold)
+        })
+        if (hasAvailableDay) matched.add(t)
       }
     }
 

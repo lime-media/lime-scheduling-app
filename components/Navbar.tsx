@@ -103,6 +103,7 @@ export function Navbar() {
     { href: '/ai',        label: 'AI Assistant' },
     { href: '/holds',     label: 'Holds' },
     { href: '/conflicts', label: 'Conflicts', badge: conflictCount > 0 ? conflictCount : null, pulse: hasRecentConflict },
+    { href: '/quote',     label: 'LED Quote' },
     ...(isOps ? [{ href: '/users', label: 'Users', badge: null, pulse: false }] : []),
   ]
 

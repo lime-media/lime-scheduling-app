@@ -125,10 +125,11 @@ interface ScheduleGridProps {
   onHoldCreated: () => void
   markets: string[]
   states: string[]
+  clientView?: boolean
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated, markets, states: _states }: ScheduleGridProps) {
+export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated, markets, states: _states, clientView = false }: ScheduleGridProps) {
   const today = startOfDay(new Date())
   const dateFrom = filters.dateFrom ? startOfDay(parseISO(filters.dateFrom)) : addDays(today, -7)
   const dateTo   = filters.dateTo   ? startOfDay(parseISO(filters.dateTo))   : addDays(today, 90)
@@ -543,6 +544,10 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     ? (truckMeta.get(selectedCell.truck_number)?.last_known_market ?? '')
     : ''
 
+  const displayLabels = clientView
+    ? { ...STATUS_LABELS, ATT_SOFT: 'Long Term Hold' }
+    : STATUS_LABELS
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -622,16 +627,21 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
                           : undefined
                         const inDragConflict = inDrag && !!dragEntry?.sched
 
-                        const statusLabel = STATUS_LABELS[status] ?? status
+                        const statusLabel = displayLabels[status] ?? status
                         const mktLabel    = cell.hold_market || cell.market || cell.last_known_market || ''
                         const stateLabel  = cell.last_gps_state || ''
                         const clientLabel = cell.client_name
                         let tooltip = `${truckNum} · ${format(date, 'MMM d')} · ${statusLabel}`
-                        if (cell.conflictProgram) tooltip = `⚠️ CONFLICT: Hold for "${clientLabel}" + Scheduled "${cell.conflictProgram}"`
-                        else {
-                          if (mktLabel)    tooltip += ` · ${mktLabel}`
-                          if (stateLabel)  tooltip += ` · ${stateLabel}`
-                          if (clientLabel) tooltip += ` · ${clientLabel}`
+                        if (!clientView) {
+                          if (cell.conflictProgram) tooltip = `⚠️ CONFLICT: Hold for "${clientLabel}" + Scheduled "${cell.conflictProgram}"`
+                          else {
+                            if (mktLabel)    tooltip += ` · ${mktLabel}`
+                            if (stateLabel)  tooltip += ` · ${stateLabel}`
+                            if (clientLabel) tooltip += ` · ${clientLabel}`
+                          }
+                        } else {
+                          if (mktLabel)   tooltip += ` · ${mktLabel}`
+                          if (stateLabel) tooltip += ` · ${stateLabel}`
                         }
 
                         const isSelected =
@@ -648,7 +658,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
                         return (
                           <td
                             key={dateIdx}
-                            className={`w-10 min-w-[2.5rem] h-9 border-b border-r border-gray-100 cursor-pointer transition-all ${
+                            className={`w-10 min-w-[2.5rem] h-9 border-b border-r border-gray-100 ${clientView ? 'cursor-default' : 'cursor-pointer'} transition-all ${
                               isSelected
                                 ? 'ring-2 ring-blue-500 ring-inset z-[15]'
                                 : inDragConflict
@@ -660,8 +670,8 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
                                 : STATUS_COLORS[status]
                             } ${isToday ? 'border-l-2 border-l-green-700' : ''} ${groupTopBorder}`}
                             style={conflictStyle}
-                            onMouseDown={() => handleMouseDown(truckNum, dateIdx, cell)}
-                            onMouseEnter={() => handleMouseEnter(truckNum, dateIdx)}
+                            onMouseDown={clientView ? undefined : () => handleMouseDown(truckNum, dateIdx, cell)}
+                            onMouseEnter={clientView ? undefined : () => handleMouseEnter(truckNum, dateIdx)}
                             title={tooltip}
                           />
                         )
@@ -675,20 +685,22 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         </table>
       </div>
 
-      {/* Side panel */}
-      <CellDetail
-        cell={selectedCell}
-        lastKnownMarket={panelLastMarket}
-        onClose={() => setSelectedCell(null)}
-        onPlaceHold={handlePanelPlaceHold}
-        onHoldDeleted={() => {
-          onHoldCreated()
-          setSelectedCell(null)
-        }}
-      />
+      {/* Side panel — internal users only */}
+      {!clientView && (
+        <CellDetail
+          cell={selectedCell}
+          lastKnownMarket={panelLastMarket}
+          onClose={() => setSelectedCell(null)}
+          onPlaceHold={handlePanelPlaceHold}
+          onHoldDeleted={() => {
+            onHoldCreated()
+            setSelectedCell(null)
+          }}
+        />
+      )}
 
-      {/* Hold modal */}
-      {showHoldModal && holdRange && (
+      {/* Hold modal — internal users only */}
+      {!clientView && showHoldModal && holdRange && (
         <HoldModal
           truck={holdRange.truck}
           startDate={holdRange.start}
@@ -708,7 +720,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         {(['EMPTY', 'SCHEDULED_LED', 'MAINTENANCE', 'HOLD_TENTATIVE', 'COMMITTED_NOT_SET', 'ATT_SOFT'] as const).map((s) => (
           <div key={s} className="flex items-center gap-2">
             <div className={`w-4 h-4 rounded-sm ${STATUS_COLORS[s].split(' ')[0]} border ${STATUS_BORDER[s]}`} />
-            <span className="text-gray-600">{STATUS_LABELS[s]}</span>
+            <span className="text-gray-600">{displayLabels[s]}</span>
           </div>
         ))}
         <div className="mt-3 text-gray-400 leading-tight">

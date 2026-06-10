@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lime Media — LED Quote Generator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --green:#94CE3C;
+    --green-dk:#649B49;
+    --purple:#4B1F93;
+    --yellow:#DEE385;
+    --purple-lt:#DECCFC;
+    --olive:#495544;
+    --ink:#23291f;
+    --line:#e4e7dd;
+    --paper:#ffffff;
+    --canvas:#f4f6ef;
+    --display:'Bricolage Grotesque',sans-serif;
+    --body:'Hanken Grotesk',sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;font-family:var(--body);color:var(--ink);background:var(--canvas);
+    -webkit-font-smoothing:antialiased;line-height:1.5;
+  }
+  .wrap{max-width:1100px;margin:0 auto;padding:28px 24px 64px;}
+
+  /* ---------- CONTROL PANEL (screen only) ---------- */
+  .panel{
+    background:var(--paper);border:1px solid var(--line);border-radius:16px;
+    padding:22px 24px;margin-bottom:30px;
+  }
+  .panel h1{
+    font-family:var(--display);font-weight:800;font-size:20px;margin:0 0 2px;
+    letter-spacing:-.01em;color:var(--olive);
+  }
+  .panel .sub{font-size:13px;color:#7a8270;margin:0 0 20px;}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px 20px;align-items:end;}
+  .field label{display:block;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#7a8270;margin-bottom:6px;}
+  .field input[type=number], .field select{
+    width:100%;height:42px;border:1px solid var(--line);border-radius:10px;padding:0 12px;
+    font-family:var(--body);font-size:15px;font-weight:600;color:var(--ink);background:#fbfcf8;outline:none;
+  }
+  .field input:focus, .field select:focus{border-color:var(--green-dk);box-shadow:0 0 0 3px rgba(100,155,73,.18);}
+  .seg{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;height:42px;}
+  .seg button{flex:1;border:0;background:#fbfcf8;font-family:var(--body);font-size:14px;font-weight:600;color:#7a8270;cursor:pointer;transition:.15s;}
+  .seg button.on{background:var(--green-dk);color:#fff;}
+
+  .studies{margin-top:20px;padding-top:18px;border-top:1px dashed var(--line);}
+  .studies .hd{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:12px;flex-wrap:wrap;}
+  .studies .hd b{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--purple);}
+  .studies .note{font-size:12.5px;color:#7a8270;}
+  .chips{display:flex;flex-wrap:wrap;gap:10px;}
+  .chip{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:999px;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer;user-select:none;background:#fbfcf8;transition:.15s;}
+  .chip input{accent-color:var(--purple);width:15px;height:15px;}
+  .chip.on{background:var(--purple-lt);border-color:var(--purple);color:var(--purple);}
+  .chip.disabled{opacity:.4;cursor:not-allowed;}
+  .chip.g input{accent-color:var(--green-dk);}
+  .chip.g.on{background:#eef7df;border-color:var(--green-dk);color:var(--green-dk);}
+  .chip .px{font-size:12px;font-weight:600;opacity:.7;}
+  .opts{display:flex;gap:18px;flex-wrap:wrap;margin-top:16px;align-items:center;}
+  .opt{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:#5b6353;cursor:pointer;}
+  .opt input{accent-color:var(--green-dk);width:15px;height:15px;}
+  .actions{margin-top:22px;display:flex;gap:12px;flex-wrap:wrap;}
+  .btn{font-family:var(--body);font-weight:700;font-size:15px;border-radius:10px;padding:12px 22px;cursor:pointer;border:1px solid transparent;}
+  .btn-print{background:var(--green);color:var(--olive);border-color:var(--green-dk);}
+  .btn-print:hover{background:var(--green-dk);color:#fff;}
+  .btn-print[disabled]{opacity:.6;cursor:wait;}
+  .btn-ghost{background:transparent;color:var(--green-dk);border-color:var(--green-dk);}
+  .btn-ghost:hover{background:#eef7df;}
+
+  /* ---------- QUOTE DOCUMENT (the deliverable) ---------- */
+  .quote{background:var(--paper);border:1px solid var(--line);border-radius:18px;overflow:hidden;}
+  .q-head{padding:28px 32px 22px;}
+  .brand{font-family:var(--display);font-weight:800;font-size:26px;letter-spacing:-.02em;line-height:1;}
+  .brand .lime{color:var(--green-dk);}
+  .brand .med{color:var(--olive);}
+  .q-head .tag{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.18em;color:var(--green-dk);margin-top:6px;}
+  .q-meta{display:flex;flex-wrap:wrap;gap:8px 28px;margin-top:18px;}
+  .q-meta div{font-size:13px;}
+  .q-meta span{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#9aa192;font-weight:600;}
+  .q-meta b{font-size:15px;font-weight:700;color:var(--ink);}
+
+  .tiers{display:grid;grid-template-columns:repeat(3,1fr);}
+  .tier{padding:0 0 18px;border-right:1px solid var(--line);}
+  .tier:last-child{border-right:0;}
+  .t-band{padding:16px 22px 14px;color:#fff;}
+  .t-band.good{background:var(--green-dk);}
+  .t-band.better{background:var(--green);color:var(--olive);}
+  .t-band.best{background:var(--purple);}
+  .t-rank{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.16em;opacity:.85;}
+  .t-name{font-family:var(--display);font-weight:800;font-size:22px;line-height:1.05;margin:3px 0 4px;letter-spacing:-.01em;}
+  .t-promise{font-size:13px;font-weight:600;opacity:.95;}
+  .t-q{font-size:12px;font-style:italic;margin-top:9px;opacity:.9;}
+
+  .t-body{padding:18px 22px 0;}
+  .incl{list-style:none;margin:0 0 16px;padding:0;}
+  .incl li{font-size:12.5px;color:#5b6353;padding:3px 0 3px 18px;position:relative;}
+  .incl li::before{content:"";position:absolute;left:0;top:8px;width:7px;height:7px;border-radius:2px;background:var(--green);}
+  .tier.best .incl li::before{background:var(--purple);}
+  .tier.good .incl li::before{background:var(--green-dk);}
+  .incl li.plus{font-weight:700;color:var(--olive);}
+
+  .dband{background:#eef7df;border:1px solid var(--green);border-radius:12px;padding:11px 14px;margin-bottom:16px;}
+  .dband .num{font-family:var(--display);font-weight:800;font-size:23px;line-height:1;color:var(--green-dk);letter-spacing:-.02em;}
+  .dband .cap{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#6c7363;margin-top:4px;}
+
+  .lines{border-top:1px solid var(--line);padding-top:12px;}
+  .line{display:flex;justify-content:space-between;gap:10px;font-size:13px;padding:4px 0;}
+  .line .lbl{color:#6c7363;}
+  .line .val{font-weight:600;font-variant-numeric:tabular-nums;}
+  .line.muted .lbl,.line.muted .val{color:#a7ad9d;}
+
+  .total{margin-top:14px;padding-top:13px;border-top:2px solid var(--ink);display:flex;justify-content:space-between;align-items:baseline;}
+  .total .lbl{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6c7363;}
+  .total .amt{font-family:var(--display);font-weight:800;font-size:26px;letter-spacing:-.02em;}
+  .tier.best .total .amt{color:var(--purple);}
+
+  .locked{margin-top:14px;padding:16px;border:1px dashed var(--purple);border-radius:12px;background:#faf8ff;}
+  .locked .ttl{font-family:var(--display);font-weight:700;font-size:16px;color:var(--purple);display:flex;align-items:center;gap:7px;}
+  .locked .ttl svg{width:17px;height:17px;}
+  .locked p{font-size:12.5px;color:#6c7363;margin:7px 0 0;line-height:1.5;}
+
+  .q-foot{padding:16px 32px 24px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;}
+  .q-foot .disc{font-size:11px;color:#9aa192;max-width:620px;line-height:1.5;}
+  .q-foot .gbb{font-family:var(--display);font-weight:800;font-size:13px;letter-spacing:.04em;color:var(--green-dk);white-space:nowrap;}
+
+  @media (max-width:760px){ .tiers{grid-template-columns:1fr;} .tier{border-right:0;border-bottom:1px solid var(--line);} }
+
+  /* ---------- PRINT ---------- */
+  @media print{
+    @page{size:letter landscape;margin:0.4in;}
+    body{background:#fff;}
+    .wrap{max-width:none;margin:0;padding:0;}
+    .panel{display:none !important;}
+    .quote{border:0;border-radius:0;}
+    .tiers{grid-template-columns:repeat(3,1fr);}
+    .t-band.good{background:var(--green-dk) !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    .t-band.better{background:var(--green) !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    .t-band.best{background:var(--purple) !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    .incl li::before,.q-head{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ============ CONTROL PANEL (rep-facing, hidden on print) ============ -->
+  <div class="panel">
+    <h1>LED campaign quote builder</h1>
+    <p class="sub">Enter the request — the Good · Better · Best quote below updates live and prints to PDF.</p>
+
+    <div class="grid">
+      <div class="field">
+        <label>Trucks</label>
+        <input type="number" id="trucks" min="1" value="3">
+      </div>
+      <div class="field">
+        <label>Days</label>
+        <input type="number" id="days" min="1" value="2">
+      </div>
+      <div class="field">
+        <label>Market (rate)</label>
+        <div class="seg" id="market">
+          <button data-m="in" class="on">In-market</button>
+          <button data-m="out">Out-of-market</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>Market size (impressions)</label>
+        <select id="size">
+          <option value="1">Top 2 mega-DMAs</option>
+          <option value="2" selected>Top 10 major-metro DMAs</option>
+          <option value="3">Standard mid/large DMAs</option>
+          <option value="4">Sub-DMA / small metro</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Operating hours / day</label>
+        <select id="hours">
+          <option value="8">8 hrs (standard)</option>
+          <option value="10">10 hrs (+$150/hr)</option>
+          <option value="12">12 hrs (+$150/hr)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="studies addons">
+      <div class="hd">
+        <b style="color:var(--green-dk)">Tier 2 add-ons</b>
+        <span class="note">Optional — Shadow fencing is always included.</span>
+      </div>
+      <div class="chips" id="addonChips">
+        <label class="chip g"><input type="checkbox" id="sd">Smart Directional <span class="px">+$250 / truck-day</span></label>
+        <label class="chip g"><input type="checkbox" id="did">Device ID passback <span class="px">+$2,500 flat</span></label>
+      </div>
+    </div>
+
+    <div class="studies">
+      <div class="hd">
+        <b>Tier 3 studies — $7,500 each</b>
+        <span class="note" id="reachNote"></span>
+      </div>
+      <div class="chips" id="studyChips">
+        <label class="chip"><input type="checkbox" value="Web lift">Web lift</label>
+        <label class="chip"><input type="checkbox" value="Foot traffic">Foot traffic</label>
+        <label class="chip"><input type="checkbox" value="Sales lift">Sales lift</label>
+        <label class="chip"><input type="checkbox" value="Brand lift">Brand lift</label>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-print" onclick="downloadPDF(this)">Download PDF quote</button>
+      <button class="btn btn-ghost" onclick="printQuote()">Print</button>
+    </div>
+  </div>
+
+  <!-- ============ QUOTE DOCUMENT (client-facing deliverable) ============ -->
+  <div class="quote" id="quote">
+    <div class="q-head">
+      <div class="brand"><span class="lime">LIME</span> <span class="med">MEDIA</span></div>
+      <div class="tag">LED offering · campaign quote</div>
+      <div class="q-meta" id="meta"></div>
+    </div>
+
+    <div class="tiers">
+      <!-- GOOD -->
+      <div class="tier good">
+        <div class="t-band good">
+          <div class="t-rank">Good · Tier 1</div>
+          <div class="t-name">Execution</div>
+          <div class="t-promise">Guaranteed media in market.</div>
+          <div class="t-q">"Did we deliver the media?"</div>
+        </div>
+        <div class="t-body">
+          <ul class="incl">
+            <li>Operational mobile LED delivery</li>
+            <li>100% share of voice</li>
+            <li>Ad time guaranteed</li>
+            <li>Proof of performance</li>
+            <li>Physical impression capture &amp; route tracing</li>
+          </ul>
+          <div class="lines" id="lines-good"></div>
+          <div class="total"><span class="lbl">Total</span><span class="amt" id="tot-good">—</span></div>
+        </div>
+      </div>
+
+      <!-- BETTER -->
+      <div class="tier better">
+        <div class="t-band better">
+          <div class="t-rank">Better · Tier 2</div>
+          <div class="t-name">Strategic targeting</div>
+          <div class="t-promise">The right audience, on purpose.</div>
+          <div class="t-q">"Did we execute the strategy we designed?"</div>
+        </div>
+        <div class="t-body">
+          <div class="dband" id="digital-banner"></div>
+          <ul class="incl">
+            <li class="plus">Everything in Good, plus:</li>
+            <li>Trade-area control &amp; persona planning</li>
+            <li>Shadow fencing → digital impressions</li>
+            <li>Click-through &amp; incremental web traffic</li>
+            <li>Smart Directional — optional add-on</li>
+            <li>Device ID passback — optional add-on</li>
+          </ul>
+          <div class="lines" id="lines-better"></div>
+          <div class="total"><span class="lbl">Total</span><span class="amt" id="tot-better">—</span></div>
+        </div>
+      </div>
+
+      <!-- BEST -->
+      <div class="tier best">
+        <div class="t-band best">
+          <div class="t-rank">Best · Tier 3</div>
+          <div class="t-name">Measured impact</div>
+          <div class="t-promise">Lift you can prove.</div>
+          <div class="t-q">"Did the campaign drive measurable lift?"</div>
+        </div>
+        <div class="t-body">
+          <ul class="incl">
+            <li class="plus">Everything in Better, plus the studies you need:</li>
+            <li>Web lift study</li>
+            <li>Foot traffic study</li>
+            <li>Sales lift study</li>
+            <li>Brand lift study</li>
+          </ul>
+          <div id="best-content"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="q-foot">
+      <div class="disc">Directional estimate based on the standard LED rate card. Final pricing is subject to truck availability and routing feasibility. Shadow fencing and third-party lift studies require qualifying campaign scale.</div>
+      <div class="gbb">Good · Better · Best</div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" onerror="this.onerror=null;var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';document.head.appendChild(s);"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" onerror="this.onerror=null;var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';document.head.appendChild(s);"></script>
+<script>
+const CONFIG = {
+  // Per-truck, per-day rate card (8 operating hours). [in-market, out-of-market]
+  rateCard: [
+    { maxDays: 1,        in: 1850, out: 2850 },
+    { maxDays: 10,       in: 1350, out: 1750 },
+    { maxDays: 19,       in: 1200, out: 1500 },
+    { maxDays: Infinity, in: 1200, out: 1200 },
+  ],
+  smartDirectionalPerTruckDay: 250, // optional add-on, per truck-day
+  deviceIdPassback: 2500,           // optional add-on, flat unlimited
+  hourSurchargePerHour: 150,        // applied per truck-day for each hour over 8
+  standardHours: 8,
+  shadowFencingRate: 0.25,          // 25% of media base
+  shadowFencingFloor: 5000,         // <-- MINIMUM shadow fencing charge. Always billed
+                                    //     on Tier 2; if 10% of base is lower, this floor
+                                    //     applies. Shadow fencing is forced through.
+  shadowFencingCPM: 10,             // $10 CPM -> guaranteed digital impressions
+  studyPrice: 7500,                 // flat, per study
+  studyMinImpressions: 1200000,     // physical impressions required for a valid lift study
+  // Physical-impression model: A18+ per truck per operating day, by market size.
+  // Physical impressions = trucks x days x dailyA18 for the selected tier.
+  marketSizeTiers: [
+    { id: 1, label: 'Top 2 mega-DMAs',          short: 'Mega-DMA',     dailyA18: 90000 },
+    { id: 2, label: 'Top 10 major-metro DMAs',  short: 'Major-metro',  dailyA18: 60000 },
+    { id: 3, label: 'Standard mid/large DMAs',  short: 'Mid/large',    dailyA18: 40000 },
+    { id: 4, label: 'Sub-DMA / small metro',    short: 'Small metro',  dailyA18: 20000 },
+  ],
+};
+
+const fmt = n => '$' + Math.round(n).toLocaleString('en-US');
+let market = 'in';
+
+function rateFor(days, mkt){
+  const band = CONFIG.rateCard.find(b => days <= b.maxDays);
+  return mkt === 'in' ? band.in : band.out;
+}
+
+function compute(){
+  const trucks = Math.max(1, parseInt(document.getElementById('trucks').value) || 0);
+  const days   = Math.max(1, parseInt(document.getElementById('days').value) || 0);
+  const hours  = parseInt(document.getElementById('hours').value);
+  const truckDays = trucks * days;
+
+  // --- base rate: always use the more competitive band (per-truck duration vs.
+  //     cumulative truck-days). Cumulative is never worse, so this is automatic. ---
+  const perTruckRate = rateFor(days, market);
+  const cumRate = rateFor(truckDays, market);
+  const baseRate = Math.min(perTruckRate, cumRate);
+
+  const hourSurcharge = Math.max(0, hours - CONFIG.standardHours) * CONFIG.hourSurchargePerHour;
+  const dailyRate = baseRate + hourSurcharge;
+  const baseMedia = truckDays * dailyRate;
+
+  // --- Tier 2 layers ---
+  // Shadow fencing is forced through on every Better quote — the good->better lever.
+  const sfRaw = baseMedia * CONFIG.shadowFencingRate;
+  const shadowFloored = sfRaw < CONFIG.shadowFencingFloor;
+  const shadowFencing = Math.max(sfRaw, CONFIG.shadowFencingFloor);
+  // Guaranteed digital impressions from that shadow-fencing budget at $10 CPM.
+  const digitalImpressions = Math.round(shadowFencing / CONFIG.shadowFencingCPM * 1000);
+
+  // Optional add-ons.
+  const sdOn  = document.getElementById('sd').checked;
+  const didOn = document.getElementById('did').checked;
+  const smartDirectional = sdOn ? truckDays * CONFIG.smartDirectionalPerTruckDay : 0;
+  const deviceId = didOn ? CONFIG.deviceIdPassback : 0;
+
+  const better = baseMedia + shadowFencing + smartDirectional + deviceId;
+
+  // --- Tier 3 reach gate: based on real physical impressions ---
+  const sizeTier = CONFIG.marketSizeTiers.find(t => t.id === parseInt(document.getElementById('size').value));
+  const estImpressions = truckDays * sizeTier.dailyA18;
+  const reachOK = estImpressions >= CONFIG.studyMinImpressions;
+
+  const studies = [...document.querySelectorAll('#studyChips input:checked')].map(c=>c.value);
+  const studiesTotal = reachOK ? studies.length * CONFIG.studyPrice : 0;
+  const best = better + studiesTotal;
+
+  return { trucks, days, hours, baseRate, hourSurcharge, dailyRate, truckDays, baseMedia,
+           shadowFencing, shadowFloored, sfRaw, digitalImpressions, smartDirectional, sdOn, deviceId, didOn, better,
+           sizeTier, estImpressions, reachOK, studies, studiesTotal, best };
+}
+
+function lineRow(lbl, val, muted){
+  return `<div class="line${muted?' muted':''}"><span class="lbl">${lbl}</span><span class="val">${val}</span></div>`;
+}
+
+function render(){
+  const d = compute();
+  const mkt = market === 'in' ? 'In-market' : 'Out-of-market';
+
+  document.getElementById('meta').innerHTML =
+    `<div><span>Fleet</span><b>${d.trucks} truck${d.trucks>1?'s':''}</b></div>`+
+    `<div><span>Flight</span><b>${d.days} day${d.days>1?'s':''}</b></div>`+
+    `<div><span>Market</span><b>${mkt}</b></div>`+
+    `<div><span>Market size</span><b>${d.sizeTier.short}</b></div>`+
+    `<div><span>Hours / day</span><b>${d.hours} hrs</b></div>`+
+    `<div><span>Est. physical impressions (A18+)</span><b>${d.estImpressions.toLocaleString('en-US')}</b></div>`+
+    `<div><span>Date</span><b>${new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}</b></div>`;
+
+  // GOOD
+  document.getElementById('lines-good').innerHTML =
+    lineRow(`Base media (${d.trucks} × ${d.days} × ${fmt(d.dailyRate)})`, fmt(d.baseMedia));
+  document.getElementById('tot-good').textContent = fmt(d.baseMedia);
+
+  // BETTER
+  document.getElementById('digital-banner').innerHTML =
+    `<div class="num">${d.digitalImpressions.toLocaleString('en-US')}</div>`+
+    `<div class="cap">guaranteed digital impressions · shadow fencing @ $10 CPM</div>`;
+  let better = lineRow('Base media', fmt(d.baseMedia));
+  better += lineRow(
+    d.shadowFloored ? 'Shadow fencing (25% of base, $5,000 min)' : 'Shadow fencing (25% of media base)',
+    fmt(d.shadowFencing));
+  if(d.sdOn)  better += lineRow(`Smart Directional (${d.truckDays} truck-days × $250)`, fmt(d.smartDirectional));
+  if(d.didOn) better += lineRow('Device ID passback (flat)', fmt(d.deviceId));
+  document.getElementById('lines-better').innerHTML = better;
+  document.getElementById('tot-better').textContent = fmt(d.better);
+
+  // BEST
+  const best = document.getElementById('best-content');
+  if(!d.reachOK){
+    best.innerHTML = `<div class="locked">
+        <div class="ttl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Available with more reach</div>
+        <p>Lift studies need roughly ${CONFIG.studyMinImpressions.toLocaleString('en-US')} physical impressions (A18+) to be statistically valid. This campaign delivers about ${d.estImpressions.toLocaleString('en-US')} in a ${d.sizeTier.short.toLowerCase()} market. Add trucks or days — or run in a larger market — to unlock measured lift. Studies are ${fmt(CONFIG.studyPrice)} each.</p>
+      </div>`;
+  } else {
+    let lines = lineRow('Everything in Better', fmt(d.better));
+    if(d.studies.length){
+      d.studies.forEach(s => lines += lineRow(`${s} study`, fmt(CONFIG.studyPrice)));
+    } else {
+      lines += lineRow('Select studies above to price', '—', true);
+    }
+    best.innerHTML = `<div class="lines">${lines}</div>
+      <div class="total"><span class="lbl">Total</span><span class="amt">${fmt(d.best)}</span></div>`;
+  }
+
+  // add-on chip on-state
+  document.querySelectorAll('#addonChips .chip').forEach(chip=>{
+    chip.classList.toggle('on', chip.querySelector('input').checked);
+  });
+
+  // study chips enable/disable + reach note
+  const reachNote = document.getElementById('reachNote');
+  document.querySelectorAll('#studyChips .chip').forEach(chip=>{
+    const cb = chip.querySelector('input');
+    cb.disabled = !d.reachOK;
+    chip.classList.toggle('disabled', !d.reachOK);
+    chip.classList.toggle('on', cb.checked && d.reachOK);
+  });
+  reachNote.textContent = d.reachOK
+    ? `Reach gate met (${d.estImpressions.toLocaleString('en-US')} impressions).`
+    : `Locked — needs ${CONFIG.studyMinImpressions.toLocaleString('en-US')} impressions (currently ${d.estImpressions.toLocaleString('en-US')}).`;
+  reachNote.style.color = d.reachOK ? 'var(--green-dk)' : '#b08';
+}
+
+// --- export: render the quote and scale it to fit exactly one landscape page ---
+async function downloadPDF(btn){
+  const el = document.getElementById('quote');
+  if(typeof html2canvas === 'undefined' || !window.jspdf){ printQuote(); return; }
+  const label = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Generating…'; }
+  const prevW = el.style.width;
+  try{
+    if(document.fonts && document.fonts.ready){ try{ await document.fonts.ready; }catch(e){} }
+    // Force the wide 3-column layout regardless of preview width, so the capture is consistent.
+    el.style.width = '1040px';
+    const canvas = await html2canvas(el, { scale: 2, backgroundColor:'#ffffff', useCORS:true, windowWidth: 1100 });
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ unit:'pt', format:'letter', orientation:'landscape' });
+    const pageW = pdf.internal.pageSize.getWidth();
+    const pageH = pdf.internal.pageSize.getHeight();
+    const margin = 22;
+    // Scale to fit BOTH width and height -> guarantees a single page, centered.
+    const ratio = Math.min((pageW - margin*2) / canvas.width, (pageH - margin*2) / canvas.height);
+    const w = canvas.width * ratio, h = canvas.height * ratio;
+    pdf.addImage(canvas.toDataURL('image/jpeg', 0.98), 'JPEG', (pageW - w)/2, (pageH - h)/2, w, h);
+    pdf.save('lime-media-led-quote.pdf');
+  } catch(e){ printQuote(); }
+  finally{ el.style.width = prevW; if(btn){ btn.disabled = false; btn.textContent = label; } }
+}
+function printQuote(){ try{ window.print(); }catch(e){} }
+
+// wiring
+['trucks','days','hours','size','sd','did'].forEach(id=>{
+  document.getElementById(id).addEventListener('input', render);
+  document.getElementById(id).addEventListener('change', render);
+});
+document.querySelectorAll('#studyChips input').forEach(cb=>cb.addEventListener('change', render));
+document.querySelectorAll('#market button').forEach(b=>{
+  b.addEventListener('click', ()=>{
+    document.querySelectorAll('#market button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); market = b.dataset.m; render();
+  });
+});
+render();
+</script>
+</body>
+</html>

@@ -260,8 +260,6 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     for (const t of trucks) {
       if ((t.last_known_market ?? '').toLowerCase().trim() === fm) matched.add(t.truck_number)
     }
-    const dfStr = filters.dateFrom || ''
-    const dtStr = filters.dateTo   || ''
     for (const block of schedules) {
       if (!block.shift_start || !block.shift_end) continue
       // Skip blocks that don't overlap the visible date range
@@ -287,24 +285,53 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     })
   }
 
-  // STATUS FILTER: show trucks that have at least one cell with that status.
+  // STATUS FILTER: show trucks that have at least one cell with that status
+  // within the visible date range only.
+  const dfStr = filters.dateFrom || ''
+  const dtStr = filters.dateTo   || ''
+
   if (filters.statusFilters.size > 0) {
     const matched = new Set<string>()
 
     if (filters.statusFilters.has('SCHEDULED_LED')) {
-      for (const b of schedules) if (b.program?.toLowerCase() !== 'truck maintenance') matched.add(b.truck_number)
+      for (const b of schedules) {
+        if (b.program?.toLowerCase() === 'truck maintenance') continue
+        if (dfStr && b.shift_end   < dfStr) continue
+        if (dtStr && b.shift_start > dtStr) continue
+        matched.add(b.truck_number)
+      }
     }
     if (filters.statusFilters.has('MAINTENANCE')) {
-      for (const b of schedules) if (b.program?.toLowerCase() === 'truck maintenance') matched.add(b.truck_number)
+      for (const b of schedules) {
+        if (b.program?.toLowerCase() !== 'truck maintenance') continue
+        if (dfStr && b.shift_end   < dfStr) continue
+        if (dtStr && b.shift_start > dtStr) continue
+        matched.add(b.truck_number)
+      }
     }
     if (filters.statusFilters.has('HOLD_TENTATIVE')) {
-      for (const h of holds) { if (h.status === 'HOLD') matched.add(h.truck_number) }
+      for (const h of holds) {
+        if (h.status !== 'HOLD') continue
+        if (dfStr && h.end_date   < dfStr) continue
+        if (dtStr && h.start_date > dtStr) continue
+        matched.add(h.truck_number)
+      }
     }
     if (filters.statusFilters.has('COMMITTED_NOT_SET')) {
-      for (const h of holds) { if (h.status === 'COMMITTED') matched.add(h.truck_number) }
+      for (const h of holds) {
+        if (h.status !== 'COMMITTED') continue
+        if (dfStr && h.end_date   < dfStr) continue
+        if (dtStr && h.start_date > dtStr) continue
+        matched.add(h.truck_number)
+      }
     }
     if (filters.statusFilters.has('ATT_SOFT')) {
-      for (const h of holds) { if (h.status === 'ATT_SOFT') matched.add(h.truck_number) }
+      for (const h of holds) {
+        if (h.status !== 'ATT_SOFT') continue
+        if (dfStr && h.end_date   < dfStr) continue
+        if (dtStr && h.start_date > dtStr) continue
+        matched.add(h.truck_number)
+      }
     }
     if (filters.statusFilters.has('EMPTY')) {
       for (const t of truckNums) {

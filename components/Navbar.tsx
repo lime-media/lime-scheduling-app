@@ -109,7 +109,7 @@ export function Navbar() {
 
   return (
     <>
-      <nav className="bg-[#1a3028] text-white shadow-lg">
+      <nav className="bg-[#94ce3a] shadow-lg">
         <div className="px-4 sm:px-6 py-3 flex items-center justify-between">
           {/* Logo */}
           <div className="flex items-center gap-4 sm:gap-6">
@@ -125,8 +125,8 @@ export function Navbar() {
                   href={link.href}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition-colors ${
                     pathname === link.href
-                      ? 'bg-[#0f1f18] text-white'
-                      : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
+                      ? 'bg-[#1a3028] text-white'
+                      : 'text-[#1a3028] hover:text-white hover:bg-[#1a3028]'
                   }`}
                 >
                   {link.label}
@@ -147,13 +147,13 @@ export function Navbar() {
               <div ref={userMenuRef} className="relative hidden sm:block">
                 <button
                   onClick={() => setUserMenuOpen((o) => !o)}
-                  className="flex items-center gap-1.5 text-sm text-green-200 hover:text-white transition-colors"
+                  className="flex items-center gap-1.5 text-sm text-[#1a3028] hover:text-white transition-colors"
                 >
                   <span>
                     {session.user?.name} &middot;{' '}
-                    <span className="text-green-300 font-medium">{session.user?.role}</span>
+                    <span className="text-[#1a3028] font-medium">{session.user?.role}</span>
                   </span>
-                  <svg className="w-3.5 h-3.5 text-green-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-3.5 h-3.5 text-[#1a3028]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                   </svg>
                 </button>
@@ -180,7 +180,7 @@ export function Navbar() {
             {/* Mobile hamburger */}
             <button
               onClick={() => setMobileMenuOpen((o) => !o)}
-              className="sm:hidden p-2 rounded text-green-200 hover:text-white hover:bg-[#0f1f18] transition-colors"
+              className="sm:hidden p-2 rounded text-[#1a3028] hover:text-white hover:bg-[#1a3028] transition-colors"
               aria-label="Toggle menu"
             >
               {mobileMenuOpen ? (
@@ -198,7 +198,7 @@ export function Navbar() {
 
         {/* Mobile menu dropdown */}
         {mobileMenuOpen && (
-          <div className="sm:hidden border-t border-green-800 bg-[#1a3028] px-4 py-3 space-y-1">
+          <div className="sm:hidden border-t border-[#1a3028]/20 bg-[#94ce3a] px-4 py-3 space-y-1">
             {navLinks.map((link) => (
               <Link
                 key={link.href}
@@ -206,8 +206,8 @@ export function Navbar() {
                 onClick={() => setMobileMenuOpen(false)}
                 className={`flex items-center justify-between px-3 py-3 rounded-lg text-sm font-medium transition-colors ${
                   pathname === link.href
-                    ? 'bg-[#0f1f18] text-white'
-                    : 'text-green-100 hover:text-white hover:bg-[#0f1f18]'
+                    ? 'bg-[#1a3028] text-white'
+                    : 'text-[#1a3028] hover:text-white hover:bg-[#1a3028]'
                 }`}
               >
                 {link.label}
@@ -221,19 +221,19 @@ export function Navbar() {
 
             {/* Mobile user section */}
             {session && (
-              <div className="pt-3 mt-2 border-t border-green-800">
-                <div className="px-3 py-1 text-xs text-green-400 mb-1">
-                  {session.user?.name} · <span className="text-green-300">{session.user?.role}</span>
+              <div className="pt-3 mt-2 border-t border-[#1a3028]/20">
+                <div className="px-3 py-1 text-xs text-[#1a3028] mb-1">
+                  {session.user?.name} · <span className="text-[#1a3028] font-medium">{session.user?.role}</span>
                 </div>
                 <button
                   onClick={openChangePw}
-                  className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-green-100 hover:text-white hover:bg-[#0f1f18] transition-colors"
+                  className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-[#1a3028] hover:text-white hover:bg-[#1a3028] transition-colors"
                 >
                   Change Password
                 </button>
                 <button
                   onClick={() => signOut({ callbackUrl: '/login' })}
-                  className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-red-400 hover:text-red-300 hover:bg-[#0f1f18] transition-colors"
+                  className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-red-600 hover:text-red-700 hover:bg-[#1a3028]/10 transition-colors"
                 >
                   Sign out
                 </button>

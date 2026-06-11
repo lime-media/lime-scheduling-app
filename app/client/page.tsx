@@ -61,9 +61,9 @@ export default function ClientPage() {
 
   return (
     <div className="flex flex-col h-dvh overflow-hidden">
-      <header className="bg-[#94ce3a] shadow-lg px-4 sm:px-6 py-3 flex items-center justify-between flex-shrink-0">
+      <header className="bg-[#94ce3a] shadow-lg px-4 sm:px-6 py-3 flex items-center flex-shrink-0">
         <img src="/logo.png" alt="Lime Media" className="h-9 w-auto" />
-        <span className="text-[#1a3028] font-bold text-lg">Lime Media Scheduling Availability</span>
+        <span className="flex-1 text-center text-[#1a3028] font-bold text-lg">Lime Media Scheduling Availability</span>
       </header>
 
       <div className="flex-1 flex flex-col overflow-hidden p-4 min-w-0">

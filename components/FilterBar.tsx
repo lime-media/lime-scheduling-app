@@ -28,9 +28,9 @@ const STATUS_OPTIONS = [
 ]
 
 export function FilterBar({ filters, onChange, states, markets, clientView = false }: FilterBarProps) {
-  const statusOptions = STATUS_OPTIONS.map((o) =>
-    clientView && o.value === 'ATT_SOFT' ? { ...o, label: 'Long Term Hold' } : o
-  )
+  const statusOptions = STATUS_OPTIONS
+    .filter((o) => !clientView || o.value !== 'COMMITTED_NOT_SET')
+    .map((o) => clientView && o.value === 'ATT_SOFT' ? { ...o, label: 'Long Term Hold' } : o)
   const today = startOfDay(new Date())
 
   const toggleStatus = (status: string) => {

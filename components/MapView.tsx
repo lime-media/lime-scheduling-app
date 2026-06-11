@@ -15,11 +15,22 @@ const STATUS_COLORS: Record<TruckLocation['status'], string> = {
   EMPTY:         '#9ca3af',
 }
 
+// In client view, Committed shows as On Hold color
+const STATUS_COLORS_CLIENT: Record<TruckLocation['status'], string> = {
+  ...STATUS_COLORS,
+  COMMITTED: '#ca8a04',
+}
+
 const STATUS_LABELS: Record<TruckLocation['status'], string> = {
   SCHEDULED_LED: 'Scheduled',
   HOLD:          'On Hold',
   COMMITTED:     'Committed',
   EMPTY:         'Available',
+}
+
+const STATUS_LABELS_CLIENT: Record<TruckLocation['status'], string> = {
+  ...STATUS_LABELS,
+  COMMITTED: 'On Hold',
 }
 
 const STATUS_BADGE: Record<TruckLocation['status'], string> = {
@@ -29,10 +40,15 @@ const STATUS_BADGE: Record<TruckLocation['status'], string> = {
   EMPTY:         'bg-gray-100 text-gray-600',
 }
 
+const STATUS_BADGE_CLIENT: Record<TruckLocation['status'], string> = {
+  ...STATUS_BADGE,
+  COMMITTED: 'bg-yellow-100 text-yellow-800',
+}
+
 // ── Custom circular marker icon ───────────────────────────────────────────────
 
-function createMarkerIcon(status: TruckLocation['status'], truckNumber: string, selected: boolean) {
-  const color = STATUS_COLORS[status]
+function createMarkerIcon(status: TruckLocation['status'], truckNumber: string, selected: boolean, colorMap = STATUS_COLORS) {
+  const color = colorMap[status]
   const size  = selected ? 38 : 30
   const fs    = selected ? 10 : 8
   const border = selected
@@ -59,12 +75,16 @@ function MapFlyTo({ truck }: { truck: TruckLocation | null }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function MapView() {
+export default function MapView({ clientView = false }: { clientView?: boolean }) {
   const [trucks,      setTrucks]      = useState<TruckLocation[]>([])
   const [loading,     setLoading]     = useState(true)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [selected,    setSelected]    = useState<string | null>(null)
   const [flyTarget,   setFlyTarget]   = useState<TruckLocation | null>(null)
+
+  const colors = clientView ? STATUS_COLORS_CLIENT : STATUS_COLORS
+  const labels = clientView ? STATUS_LABELS_CLIENT : STATUS_LABELS
+  const badges = clientView ? STATUS_BADGE_CLIENT  : STATUS_BADGE
 
   // Filters
   const [showScheduled, setShowScheduled] = useState(true)
@@ -76,7 +96,7 @@ export default function MapView() {
   const fetchLocations = useCallback(async () => {
     setLoading(true)
     try {
-      const res  = await fetch('/api/trucks/locations')
+      const res  = await fetch(clientView ? '/api/client/map' : '/api/trucks/locations')
       const data = res.ok ? await res.json() : { trucks: [] }
       setTrucks(data.trucks ?? [])
       setLastUpdated(new Date())
@@ -120,14 +140,14 @@ export default function MapView() {
     <>
       <div className="space-y-1.5">
         {([
-          { key: 'SCHEDULED_LED' as const, label: 'Scheduled',  checked: showScheduled, set: setShowScheduled },
-          { key: 'HOLD'          as const, label: 'On Hold',    checked: showHold,      set: setShowHold      },
-          { key: 'COMMITTED'     as const, label: 'Committed',  checked: showCommitted, set: setShowCommitted },
-          { key: 'EMPTY'         as const, label: 'Available',  checked: showEmpty,     set: setShowEmpty     },
-        ] as const).map(({ key, label, checked, set }) => (
+          { key: 'SCHEDULED_LED' as const, label: 'Scheduled', checked: showScheduled, set: setShowScheduled },
+          { key: 'HOLD'          as const, label: 'On Hold',   checked: showHold,      set: setShowHold      },
+          ...(!clientView ? [{ key: 'COMMITTED' as const, label: 'Committed', checked: showCommitted, set: setShowCommitted }] : []),
+          { key: 'EMPTY'         as const, label: 'Available', checked: showEmpty,     set: setShowEmpty     },
+        ]).map(({ key, label, checked, set }) => (
           <label key={key} className="flex items-center gap-2 cursor-pointer select-none">
             <input type="checkbox" checked={checked} onChange={(e) => set(e.target.checked)} className="rounded" />
-            <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: STATUS_COLORS[key] }} />
+            <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: colors[key as TruckLocation['status']] }} />
             <span className="text-sm text-gray-700">{label}</span>
           </label>
         ))}
@@ -162,10 +182,10 @@ export default function MapView() {
         }`}
       >
         <div className="flex items-center gap-2 mb-0.5">
-          <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: STATUS_COLORS[truck.status] }} />
+          <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: colors[truck.status] }} />
           <span className="font-semibold text-sm text-gray-900">{truck.truck_number}</span>
-          <span className={`ml-auto text-xs px-1.5 py-0.5 rounded font-medium ${STATUS_BADGE[truck.status]}`}>
-            {STATUS_LABELS[truck.status]}
+          <span className={`ml-auto text-xs px-1.5 py-0.5 rounded font-medium ${badges[truck.status]}`}>
+            {labels[truck.status]}
           </span>
         </div>
         <p className="text-xs text-gray-500 pl-4 truncate">
@@ -179,22 +199,22 @@ export default function MapView() {
     <Marker
       key={truck.truck_number}
       position={[truck.latitude, truck.longitude]}
-      icon={createMarkerIcon(truck.status, truck.truck_number, selected === truck.truck_number)}
+      icon={createMarkerIcon(truck.status, truck.truck_number, selected === truck.truck_number, colors)}
       eventHandlers={{ click: () => setSelected(truck.truck_number) }}
     >
       <Popup minWidth={210}>
         <div style={{ fontFamily: 'sans-serif', lineHeight: 1.5 }}>
           <p style={{ fontWeight: 700, fontSize: 16, margin: '0 0 6px' }}>{truck.truck_number}</p>
-          <span style={{ display: 'inline-block', background: STATUS_COLORS[truck.status], color: '#fff', fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 99, marginBottom: 8 }}>
-            {STATUS_LABELS[truck.status]}
+          <span style={{ display: 'inline-block', background: colors[truck.status], color: '#fff', fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 99, marginBottom: 8 }}>
+            {labels[truck.status]}
           </span>
-          {truck.program && <p style={{ fontSize: 13, margin: '0 0 2px' }}><b>Program:</b> {truck.program}</p>}
-          {truck.client  && <p style={{ fontSize: 13, margin: '0 0 2px' }}><b>Client:</b> {truck.client}</p>}
+          {!clientView && truck.program && <p style={{ fontSize: 13, margin: '0 0 2px' }}><b>Program:</b> {truck.program}</p>}
+          {!clientView && truck.client  && <p style={{ fontSize: 13, margin: '0 0 2px' }}><b>Client:</b> {truck.client}</p>}
           {truck.market  && <p style={{ fontSize: 13, margin: '0 0 2px' }}><b>Market:</b> {truck.market}</p>}
           {truck.hold_end_date && <p style={{ fontSize: 13, margin: '0 0 2px' }}><b>Hold until:</b> {truck.hold_end_date}</p>}
           <p style={{ fontSize: 12, color: '#666', margin: '4px 0 2px' }}>{truck.formatted_address}</p>
           <p style={{ fontSize: 11, color: '#999', margin: '0 0 8px' }}>Updated {fmtTime(truck.last_updated)}</p>
-          <a href="/" style={{ fontSize: 12, color: '#16a34a', textDecoration: 'underline' }}>View in Schedule →</a>
+          <a href={clientView ? '/client' : '/'} style={{ fontSize: 12, color: '#16a34a', textDecoration: 'underline' }}>View in Schedule →</a>
         </div>
       </Popup>
     </Marker>

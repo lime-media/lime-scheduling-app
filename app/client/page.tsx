@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { format, addDays, startOfDay } from 'date-fns'
 import { ScheduleGrid, type TruckInfo, type ScheduleBlock, type HoldBlock } from '@/components/ScheduleGrid'
 import { FilterBar } from '@/components/FilterBar'
@@ -25,6 +27,7 @@ const defaultFilters: Filters = {
 }
 
 export default function ClientPage() {
+  const pathname = usePathname()
   const [trucks,     setTrucks]     = useState<TruckInfo[]>([])
   const [schedules,  setSchedules]  = useState<ScheduleBlock[]>([])
   const [holdBlocks, setHoldBlocks] = useState<HoldBlock[]>([])
@@ -64,6 +67,28 @@ export default function ClientPage() {
       <header className="bg-[#94ce3a] shadow-lg px-4 sm:px-6 py-3 flex items-center flex-shrink-0">
         <img src="/logo.png" alt="Lime Media" className="h-9 w-auto" />
         <span className="flex-1 text-center text-[#1a3028] font-bold text-lg">Lime Media Scheduling Availability</span>
+        <nav className="flex gap-1">
+          <Link
+            href="/client"
+            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+              pathname === '/client'
+                ? 'bg-[#1a3028] text-white'
+                : 'text-[#1a3028] hover:bg-[#1a3028]/20'
+            }`}
+          >
+            Schedule
+          </Link>
+          <Link
+            href="/client/map"
+            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+              pathname === '/client/map'
+                ? 'bg-[#1a3028] text-white'
+                : 'text-[#1a3028] hover:bg-[#1a3028]/20'
+            }`}
+          >
+            Map
+          </Link>
+        </nav>
       </header>
 
       <div className="flex-1 flex flex-col overflow-hidden p-4 min-w-0">

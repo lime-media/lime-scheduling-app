@@ -752,11 +752,13 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
             <span className="text-gray-600">{displayLabels[s]}</span>
           </div>
         ))}
-        <div className="mt-3 text-gray-400 leading-tight">
-          <div className="font-medium text-gray-500 mb-1">How to use</div>
-          <div>Click cell → details</div>
-          <div>Drag cells → hold</div>
-        </div>
+        {!clientView && (
+          <div className="mt-3 text-gray-400 leading-tight">
+            <div className="font-medium text-gray-500 mb-1">How to use</div>
+            <div>Click cell → details</div>
+            <div>Drag cells → hold</div>
+          </div>
+        )}
       </div>
     </div>
   )

@@ -110,6 +110,79 @@ The AI checks both sources and reports conflicts from either. The Schedule Grid 
 
 ---
 
+## Internal API (MCP Server Integration)
+
+Two read-only endpoints for service-to-service consumption by the Lime MCP server. These are **not** part of the UI application — they exist to let external integration layers (starting with OneScreen) query truck inventory and availability programmatically.
+
+### Authentication
+
+Both endpoints require a bearer token via the `Authorization` header:
+
+```
+Authorization: Bearer <value of INTERNAL_API_KEY env var>
+```
+
+This is separate from NextAuth. The MCP server is not a user — it authenticates as a privileged internal service.
+
+### `GET /api/v1/internal/inventory`
+
+Returns all active LED trucks with their projected market.
+
+**Request:** No parameters.
+
+**Response:**
+```json
+{
+  "trucks": [
+    {
+      "unit_id": "0042",
+      "projected_market": "Dallas-Ft. Worth, TX",
+      "projected_as_of": "2026-06-12T14:23:00.000Z",
+      "is_active": true
+    }
+  ],
+  "generated_at": "2026-06-12T14:23:00.000Z"
+}
+```
+
+`projected_market` uses the same cascade as the Schedule Grid: most recent LED schedule market → earliest hold market → live Samsara GPS city. It is a point-in-time snapshot, not a permanent attribute. Can be cached aggressively (changes rarely within a day).
+
+### `GET /api/v1/internal/availability`
+
+Returns booked (unavailable) intervals for trucks within a date range.
+
+**Query parameters:**
+| Param | Required | Description |
+|---|---|---|
+| `start_date` | Yes | ISO date (`YYYY-MM-DD`) |
+| `end_date` | Yes | ISO date (`YYYY-MM-DD`) |
+| `unit_ids` | No | Comma-separated truck numbers (e.g. `0042,0055`). Omit for all trucks. |
+
+**Response:**
+```json
+{
+  "trucks": [
+    {
+      "unit_id": "0042",
+      "projected_market_during_range": "Dallas-Ft. Worth, TX",
+      "booked_intervals": [
+        {
+          "start_date": "2026-07-05",
+          "end_date": "2026-07-18",
+          "status": "unavailable"
+        }
+      ]
+    }
+  ],
+  "query_range": { "start_date": "2026-07-01", "end_date": "2026-08-31" },
+  "generated_at": "2026-06-12T14:23:00.000Z"
+}
+```
+
+All internal status distinctions (SCHEDULE, HOLD, COMMITTED, ATT_SOFT) are collapsed to a single `"unavailable"` status. No client names, program names, notes, or other internal-only fields are returned. Overlapping or adjacent intervals are merged.
+
+---
+
 ## Environment Variables
 
 | Variable | Purpose |
@@ -119,6 +192,7 @@ The AI checks both sources and reports conflicts from either. The Schedule Grid 
 | `SAMSARA_API_TOKEN` | Samsara Fleet API authentication |
 | `ANTHROPIC_API_KEY` | Claude AI (chat assistant) |
 | `NEXTAUTH_SECRET` | NextAuth session secret |
+| `INTERNAL_API_KEY` | Bearer token for `/api/v1/internal/*` endpoints (MCP server) |
 
 ---
 

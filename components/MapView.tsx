@@ -105,7 +105,7 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [clientView])
 
   useEffect(() => { fetchLocations() }, [fetchLocations])
 

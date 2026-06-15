@@ -102,14 +102,6 @@ const CLIENT_STATUS_COLORS: Record<string, string> = {
   MAINTENANCE:        'bg-green-500 hover:bg-green-600',
 }
 
-const CLIENT_STATUS_BORDER: Record<string, string> = {
-  EMPTY:              'border-green-600',
-  SCHEDULED_LED:      'border-gray-400',
-  HOLD_TENTATIVE:     'border-gray-400',
-  COMMITTED_NOT_SET:  'border-gray-400',
-  ATT_SOFT:           'border-gray-400',
-  MAINTENANCE:        'border-green-600',
-}
 
 const STATUS_LABELS: Record<string, string> = {
   EMPTY:              'Available',

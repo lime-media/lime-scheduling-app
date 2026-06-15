@@ -201,7 +201,7 @@ async function executeReleaseHold(
 
 // ── Context builder ───────────────────────────────────────────────────────────
 
-const HIDDEN_TRUCKS = new Set(['0001', '1257'])
+const HIDDEN_TRUCKS = new Set(['0001', '1257', '00001257'])
 
 async function buildScheduleContext(): Promise<string> {
   const today = new Date().toISOString().split('T')[0]

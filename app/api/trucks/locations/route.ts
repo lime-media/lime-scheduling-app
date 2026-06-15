@@ -68,7 +68,7 @@ export async function GET() {
     if (!holdsMap.has(h.truck_number)) holdsMap.set(h.truck_number, h)
   }
 
-  const HIDDEN_TRUCKS = new Set(['0001', '1257'])
+  const HIDDEN_TRUCKS = new Set(['0001', '1257', '00001257'])
   const trucks: TruckLocation[] = []
 
   for (const [truck_number, gps] of gpsMap) {

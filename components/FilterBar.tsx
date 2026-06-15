@@ -32,7 +32,7 @@ export function FilterBar({ filters, onChange, states, markets, clientView = fal
     .filter((o) => !clientView || o.value !== 'COMMITTED_NOT_SET')
     .map((o) => {
       if (!clientView) return o
-      if (o.value === 'EMPTY') return { ...o, color: 'bg-green-500' }
+      if (o.value === 'EMPTY' || o.value === 'MAINTENANCE') return { ...o, color: 'bg-green-500' }
       if (o.value === 'ATT_SOFT') return { ...o, label: 'Long Term Hold', color: 'bg-gray-400' }
       return { ...o, color: 'bg-gray-400' }
     })

@@ -27,21 +27,23 @@ const STATUS_OPTIONS = [
   { value: 'ATT_SOFT',          label: 'ATT Hold',     color: 'bg-blue-400' },
 ]
 
+const BOOKED_STATUSES = ['SCHEDULED_LED', 'MAINTENANCE', 'HOLD_TENTATIVE', 'ATT_SOFT', 'COMMITTED_NOT_SET']
+
 export function FilterBar({ filters, onChange, states, markets, clientView = false }: FilterBarProps) {
-  const statusOptions = STATUS_OPTIONS
-    .filter((o) => !clientView || o.value !== 'COMMITTED_NOT_SET')
-    .map((o) => {
-      if (!clientView) return o
-      if (o.value === 'EMPTY' || o.value === 'MAINTENANCE') return { ...o, color: 'bg-green-500' }
-      if (o.value === 'ATT_SOFT') return { ...o, label: 'Long Term Hold', color: 'bg-gray-400' }
-      return { ...o, color: 'bg-gray-400' }
-    })
   const today = startOfDay(new Date())
 
   const toggleStatus = (status: string) => {
     const next = new Set(filters.statusFilters)
     if (next.has(status)) next.delete(status)
     else next.add(status)
+    onChange({ ...filters, statusFilters: next })
+  }
+
+  const toggleBooked = () => {
+    const next = new Set(filters.statusFilters)
+    const anyActive = BOOKED_STATUSES.some((s) => next.has(s))
+    if (anyActive) BOOKED_STATUSES.forEach((s) => next.delete(s))
+    else BOOKED_STATUSES.forEach((s) => next.add(s))
     onChange({ ...filters, statusFilters: next })
   }
 
@@ -108,24 +110,46 @@ export function FilterBar({ filters, onChange, states, markets, clientView = fal
       <div className="flex items-start gap-1.5 flex-wrap">
         <label className="text-xs font-medium text-gray-500 uppercase tracking-wide mt-1.5 flex-shrink-0">Status</label>
         <div className="flex flex-wrap gap-1 flex-1">
-          {statusOptions.map((opt) => {
-            const active = filters.statusFilters.has(opt.value)
-            return (
-              <button
-                key={opt.value}
-                onClick={() => toggleStatus(opt.value)}
-                className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium border transition-all ${
-                  active
-                    ? 'border-gray-400 bg-gray-100 text-gray-800 shadow-inner'
-                    : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50'
-                }`}
-                title={`Filter by ${opt.label}`}
-              >
-                <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${opt.color}`} />
-                {opt.label}
-              </button>
-            )
-          })}
+          {clientView ? (
+            <>
+              {[
+                { label: 'Available', color: 'bg-green-500', active: filters.statusFilters.has('EMPTY'), onClick: () => toggleStatus('EMPTY') },
+                { label: 'Booked',    color: 'bg-gray-400',  active: BOOKED_STATUSES.some((s) => filters.statusFilters.has(s)), onClick: toggleBooked },
+              ].map((opt) => (
+                <button
+                  key={opt.label}
+                  onClick={opt.onClick}
+                  className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium border transition-all ${
+                    opt.active
+                      ? 'border-gray-400 bg-gray-100 text-gray-800 shadow-inner'
+                      : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50'
+                  }`}
+                >
+                  <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${opt.color}`} />
+                  {opt.label}
+                </button>
+              ))}
+            </>
+          ) : (
+            STATUS_OPTIONS.map((opt) => {
+              const active = filters.statusFilters.has(opt.value)
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => toggleStatus(opt.value)}
+                  className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium border transition-all ${
+                    active
+                      ? 'border-gray-400 bg-gray-100 text-gray-800 shadow-inner'
+                      : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50'
+                  }`}
+                  title={`Filter by ${opt.label}`}
+                >
+                  <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${opt.color}`} />
+                  {opt.label}
+                </button>
+              )
+            })
+          )}
         </div>
         <button
           onClick={reset}

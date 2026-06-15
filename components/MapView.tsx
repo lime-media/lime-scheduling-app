@@ -15,10 +15,12 @@ const STATUS_COLORS: Record<TruckLocation['status'], string> = {
   EMPTY:         '#9ca3af',
 }
 
-// In client view, Committed shows as On Hold color
+// Client view: available = green, anything booked = gray
 const STATUS_COLORS_CLIENT: Record<TruckLocation['status'], string> = {
-  ...STATUS_COLORS,
-  COMMITTED: '#ca8a04',
+  SCHEDULED_LED: '#9ca3af',
+  HOLD:          '#9ca3af',
+  COMMITTED:     '#9ca3af',
+  EMPTY:         '#16a34a',
 }
 
 const STATUS_LABELS: Record<TruckLocation['status'], string> = {
@@ -29,8 +31,10 @@ const STATUS_LABELS: Record<TruckLocation['status'], string> = {
 }
 
 const STATUS_LABELS_CLIENT: Record<TruckLocation['status'], string> = {
-  ...STATUS_LABELS,
-  COMMITTED: 'On Hold',
+  SCHEDULED_LED: 'Booked',
+  HOLD:          'Booked',
+  COMMITTED:     'Booked',
+  EMPTY:         'Available',
 }
 
 const STATUS_BADGE: Record<TruckLocation['status'], string> = {
@@ -41,8 +45,10 @@ const STATUS_BADGE: Record<TruckLocation['status'], string> = {
 }
 
 const STATUS_BADGE_CLIENT: Record<TruckLocation['status'], string> = {
-  ...STATUS_BADGE,
-  COMMITTED: 'bg-yellow-100 text-yellow-800',
+  SCHEDULED_LED: 'bg-gray-100 text-gray-600',
+  HOLD:          'bg-gray-100 text-gray-600',
+  COMMITTED:     'bg-gray-100 text-gray-600',
+  EMPTY:         'bg-green-100 text-green-800',
 }
 
 // ── Custom circular marker icon ───────────────────────────────────────────────
@@ -139,18 +145,38 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
   const filterControls = (
     <>
       <div className="space-y-1.5">
-        {([
-          { key: 'SCHEDULED_LED' as const, label: 'Scheduled', checked: showScheduled, set: setShowScheduled },
-          { key: 'HOLD'          as const, label: 'On Hold',   checked: showHold,      set: setShowHold      },
-          ...(!clientView ? [{ key: 'COMMITTED' as const, label: 'Committed', checked: showCommitted, set: setShowCommitted }] : []),
-          { key: 'EMPTY'         as const, label: 'Available', checked: showEmpty,     set: setShowEmpty     },
-        ]).map(({ key, label, checked, set }) => (
-          <label key={key} className="flex items-center gap-2 cursor-pointer select-none">
-            <input type="checkbox" checked={checked} onChange={(e) => set(e.target.checked)} className="rounded" />
-            <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: colors[key as TruckLocation['status']] }} />
-            <span className="text-sm text-gray-700">{label}</span>
-          </label>
-        ))}
+        {clientView ? (
+          <>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" checked={showEmpty} onChange={(e) => setShowEmpty(e.target.checked)} className="rounded" />
+              <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: colors['EMPTY'] }} />
+              <span className="text-sm text-gray-700">Available</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={showScheduled || showHold}
+                onChange={(e) => { setShowScheduled(e.target.checked); setShowHold(e.target.checked) }}
+                className="rounded"
+              />
+              <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: colors['SCHEDULED_LED'] }} />
+              <span className="text-sm text-gray-700">Booked</span>
+            </label>
+          </>
+        ) : (
+          ([
+            { key: 'SCHEDULED_LED' as const, label: 'Scheduled', checked: showScheduled, set: setShowScheduled },
+            { key: 'HOLD'          as const, label: 'On Hold',   checked: showHold,      set: setShowHold      },
+            { key: 'COMMITTED'     as const, label: 'Committed', checked: showCommitted, set: setShowCommitted },
+            { key: 'EMPTY'         as const, label: 'Available', checked: showEmpty,     set: setShowEmpty     },
+          ] as const).map(({ key, label, checked, set }) => (
+            <label key={key} className="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" checked={checked} onChange={(e) => set(e.target.checked)} className="rounded" />
+              <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: colors[key] }} />
+              <span className="text-sm text-gray-700">{label}</span>
+            </label>
+          ))
+        )}
       </div>
       <select
         value={stateFilter}

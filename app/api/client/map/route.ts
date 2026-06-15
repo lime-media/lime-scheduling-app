@@ -13,7 +13,7 @@ function toDateStr(val: unknown): string {
   try { return new Date(s).toISOString().split('T')[0] } catch { return '' }
 }
 
-const HIDDEN_TRUCKS = new Set(['0001'])
+const HIDDEN_TRUCKS = new Set(['0001', '1257'])
 
 export async function GET() {
   try {

@@ -92,6 +92,25 @@ const STATUS_BORDER: Record<string, string> = {
   MAINTENANCE:        'border-orange-500',
 }
 
+// Client view: available = green, anything booked = gray
+const CLIENT_STATUS_COLORS: Record<string, string> = {
+  EMPTY:              'bg-green-500 hover:bg-green-600',
+  SCHEDULED_LED:      'bg-gray-300 hover:bg-gray-400',
+  HOLD_TENTATIVE:     'bg-gray-300 hover:bg-gray-400',
+  COMMITTED_NOT_SET:  'bg-gray-300 hover:bg-gray-400',
+  ATT_SOFT:           'bg-gray-300 hover:bg-gray-400',
+  MAINTENANCE:        'bg-gray-300 hover:bg-gray-400',
+}
+
+const CLIENT_STATUS_BORDER: Record<string, string> = {
+  EMPTY:              'border-green-600',
+  SCHEDULED_LED:      'border-gray-400',
+  HOLD_TENTATIVE:     'border-gray-400',
+  COMMITTED_NOT_SET:  'border-gray-400',
+  ATT_SOFT:           'border-gray-400',
+  MAINTENANCE:        'border-gray-400',
+}
+
 const STATUS_LABELS: Record<string, string> = {
   EMPTY:              'Available',
   SCHEDULED_LED:      'Scheduled',
@@ -696,7 +715,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
                                 ? 'ring-2 ring-blue-400 ring-inset brightness-90'
                                 : cell.conflictProgram
                                 ? ''
-                                : STATUS_COLORS[clientView && status === 'COMMITTED_NOT_SET' ? 'HOLD_TENTATIVE' : status]
+                                : (clientView ? CLIENT_STATUS_COLORS : STATUS_COLORS)[status]
                             } ${isToday ? 'border-l-2 border-l-green-700' : ''} ${groupTopBorder}`}
                             style={conflictStyle}
                             onMouseDown={clientView ? undefined : () => handleMouseDown(truckNum, dateIdx, cell)}
@@ -746,24 +765,31 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       {/* Legend */}
       <div className="hidden xl:flex flex-col gap-2 pt-2 text-xs min-w-[100px] flex-shrink-0">
         <div className="font-semibold text-gray-500 uppercase tracking-wide mb-1">Legend</div>
-        {(['EMPTY', 'SCHEDULED_LED', 'MAINTENANCE', 'HOLD_TENTATIVE', 'COMMITTED_NOT_SET', 'ATT_SOFT'] as const)
-          .filter((s) => !clientView || s !== 'COMMITTED_NOT_SET')
-          .map((s) => {
-            const effectiveColor = clientView && s === 'COMMITTED_NOT_SET' ? STATUS_COLORS['HOLD_TENTATIVE'] : STATUS_COLORS[s]
-            const effectiveBorder = clientView && s === 'COMMITTED_NOT_SET' ? STATUS_BORDER['HOLD_TENTATIVE'] : STATUS_BORDER[s]
-            return (
+        {clientView ? (
+          <>
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 rounded-sm bg-green-500 border border-green-600" />
+              <span className="text-gray-600">Available</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 rounded-sm bg-gray-300 border border-gray-400" />
+              <span className="text-gray-600">Booked</span>
+            </div>
+          </>
+        ) : (
+          <>
+            {(['EMPTY', 'SCHEDULED_LED', 'MAINTENANCE', 'HOLD_TENTATIVE', 'COMMITTED_NOT_SET', 'ATT_SOFT'] as const).map((s) => (
               <div key={s} className="flex items-center gap-2">
-                <div className={`w-4 h-4 rounded-sm ${effectiveColor.split(' ')[0]} border ${effectiveBorder}`} />
+                <div className={`w-4 h-4 rounded-sm ${STATUS_COLORS[s].split(' ')[0]} border ${STATUS_BORDER[s]}`} />
                 <span className="text-gray-600">{displayLabels[s]}</span>
               </div>
-            )
-          })}
-        {!clientView && (
-          <div className="mt-3 text-gray-400 leading-tight">
-            <div className="font-medium text-gray-500 mb-1">How to use</div>
-            <div>Click cell → details</div>
-            <div>Drag cells → hold</div>
-          </div>
+            ))}
+            <div className="mt-3 text-gray-400 leading-tight">
+              <div className="font-medium text-gray-500 mb-1">How to use</div>
+              <div>Click cell → details</div>
+              <div>Drag cells → hold</div>
+            </div>
+          </>
         )}
       </div>
     </div>

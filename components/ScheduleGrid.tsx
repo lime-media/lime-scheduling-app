@@ -92,14 +92,14 @@ const STATUS_BORDER: Record<string, string> = {
   MAINTENANCE:        'border-orange-500',
 }
 
-// Client view: available/maintenance = green, anything booked = gray
+// Client view: available = green, anything booked/unavailable = gray
 const CLIENT_STATUS_COLORS: Record<string, string> = {
   EMPTY:              'bg-green-500 hover:bg-green-600',
   SCHEDULED_LED:      'bg-gray-300 hover:bg-gray-400',
   HOLD_TENTATIVE:     'bg-gray-300 hover:bg-gray-400',
   COMMITTED_NOT_SET:  'bg-gray-300 hover:bg-gray-400',
   ATT_SOFT:           'bg-gray-300 hover:bg-gray-400',
-  MAINTENANCE:        'bg-green-500 hover:bg-green-600',
+  MAINTENANCE:        'bg-gray-300 hover:bg-gray-400',
 }
 
 

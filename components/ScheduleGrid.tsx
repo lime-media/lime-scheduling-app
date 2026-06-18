@@ -698,7 +698,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
                         const inDragConflict = inDrag && !!dragEntry?.sched
 
                         const statusLabel = displayLabels[status] ?? status
-                        const mktLabel    = cell.hold_market || cell.market || cell.last_known_market || ''
+                        const mktLabel    = cell.hold_market || cell.standard_market_name || cell.last_known_market || ''
                         const stateLabel  = cell.last_gps_state || ''
                         const clientLabel = cell.client_name
                         let tooltip = `${truckNum} · ${format(date, 'MMM d')} · ${statusLabel}`

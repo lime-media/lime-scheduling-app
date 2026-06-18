@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { query } from '@/lib/mssql'
+import { query, getPool } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { SCHEDULED_QUERY, ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
@@ -113,7 +113,22 @@ export async function GET() {
         user_name:    null,
       }))
 
-    return NextResponse.json({ trucks, schedules, holds: holdBlocks })
+    // Full markets list from lookup tables (same source as internal /api/markets)
+    let markets: string[] = []
+    try {
+      const pool = await getPool()
+      const [cpmResult, lookupResult] = await Promise.all([
+        pool.request().query(`SELECT DISTINCT standard_market_name AS market FROM dbo.client_program_markets WHERE standard_market_name IS NOT NULL AND LEN(LTRIM(RTRIM(standard_market_name))) > 0 ORDER BY standard_market_name`),
+        pool.request().query(`SELECT DISTINCT standard_market AS market FROM dbo.standard_market_lookup WHERE standard_market IS NOT NULL ORDER BY standard_market`),
+      ])
+      const normalize = (m: string) => m?.replace(/\s*,\s*/g, ', ').trim()
+      markets = Array.from(new Set([
+        ...cpmResult.recordset.map((r: { market: string }) => normalize(r.market)),
+        ...lookupResult.recordset.map((r: { market: string }) => normalize(r.market)),
+      ])).filter((m) => m && m.length > 1).sort()
+    } catch { /* return empty markets on error */ }
+
+    return NextResponse.json({ trucks, schedules, holds: holdBlocks, markets })
   } catch (error) {
     console.error('Client schedule query error:', error)
     return NextResponse.json({ error: 'Failed to fetch schedule' }, { status: 500 })

@@ -48,8 +48,7 @@ export default function ClientPage() {
       setTrucks(data.trucks       || [])
       setSchedules(schedulesData)
       setHoldBlocks(data.holds    || [])
-      // Derive markets and states from schedule data — no separate auth'd API call needed
-      setMarkets([...new Set(schedulesData.map((s) => s.standard_market_name || s.market).filter(Boolean))].sort())
+      setMarkets(data.markets?.length ? data.markets : [...new Set(schedulesData.map((s: ScheduleBlock) => s.standard_market_name || s.market).filter(Boolean))].sort())
       setStates([...new Set(schedulesData.map((s) => s.state).filter(Boolean))].sort())
     } catch {
       setError('Unable to load availability. Please try again later.')

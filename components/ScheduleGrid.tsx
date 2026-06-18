@@ -162,10 +162,10 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
   // last_gps_state      = address.split(',')[2].trim()  (index 2 of "Street, City, ST, ZIP")
   // last_schedule_state = state field of the most recent schedule block (any date)
   // last_known_market   = market resolved by these rules (used for row grouping + "Last market"):
-  //   - truck active today + next future shift  → next future shift's std market
-  //   - truck active today + no future shift    → '' (falls back to GPS in truckMarketLookup)
-  //   - no active shift today + past shift      → most recent past shift's std market
-  //   - no active shift, no past shift          → nearest future shift's std market or ''
+  //   - truck active today → walk the contiguous run of scheduled days from today forward;
+  //     use the std market of the LAST block in that run (the shift just before the first gap)
+  //   - no active shift today + past shift exists → most recent past shift's std market
+  //   - no active or past shift → '' (falls back to GPS in truckMarketLookup)
 
   const truckMeta = useMemo(() => {
     const todayStr = format(startOfDay(new Date()), 'yyyy-MM-dd')
@@ -176,11 +176,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       last_schedule_state:  string
       last_known_market:    string
       _bestSchedStart:      string
-      _isActiveToday:       boolean
-      _lastPastEnd:         string
-      _lastPastMarket:      string
-      _nextFutureStart:     string
-      _nextFutureMarket:    string
+      _blocks:              Array<{ shift_start: string; shift_end: string; market: string }>
     }>()
 
     for (const t of trucks) {
@@ -190,11 +186,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         last_schedule_state: '',
         last_known_market:   '',
         _bestSchedStart:     '',
-        _isActiveToday:      false,
-        _lastPastEnd:        '',
-        _lastPastMarket:     '',
-        _nextFutureStart:    '',
-        _nextFutureMarket:   '',
+        _blocks:             [],
       })
     }
 
@@ -209,36 +201,47 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         entry.last_schedule_state = block.state
       }
 
-      const blockMarket = block.standard_market_name || block.market
-
-      // Is this shift spanning today?
-      if (block.shift_start <= todayStr && block.shift_end >= todayStr) {
-        entry._isActiveToday = true
-      }
-
-      // Most recent completed shift (ended before today)
-      if (block.shift_end < todayStr) {
-        if (!entry._lastPastEnd || block.shift_end > entry._lastPastEnd) {
-          entry._lastPastEnd    = block.shift_end
-          entry._lastPastMarket = blockMarket
-        }
-      }
-
-      // Nearest upcoming shift (starts strictly after today)
-      if (block.shift_start > todayStr) {
-        if (!entry._nextFutureStart || block.shift_start < entry._nextFutureStart) {
-          entry._nextFutureStart  = block.shift_start
-          entry._nextFutureMarket = blockMarket
-        }
-      }
+      entry._blocks.push({
+        shift_start: block.shift_start,
+        shift_end:   block.shift_end,
+        market:      block.standard_market_name || block.market,
+      })
     }
 
-    // Resolve last_known_market per the market-grouping rules
     for (const entry of meta.values()) {
-      if (entry._isActiveToday) {
-        entry.last_known_market = entry._nextFutureMarket  // '' → GPS fallback
+      const blocks = entry._blocks
+      if (blocks.length === 0) continue
+      blocks.sort((a, b) => a.shift_start.localeCompare(b.shift_start))
+
+      const isActiveToday = blocks.some(b => b.shift_start <= todayStr && b.shift_end >= todayStr)
+
+      if (isActiveToday) {
+        // Walk the contiguous run of scheduled days starting from today.
+        // Two blocks are adjacent/overlapping if the next one starts no later than
+        // the day after the current run end. Track the market at the run's trailing edge.
+        const fromToday = blocks.filter(b => b.shift_end >= todayStr)
+        let runEnd    = todayStr
+        let runMarket = ''
+        for (const b of fromToday) {
+          const dayAfterRun = format(addDays(parseISO(runEnd), 1), 'yyyy-MM-dd')
+          if (b.shift_start <= dayAfterRun) {
+            if (b.shift_end > runEnd) {
+              runEnd    = b.shift_end
+              runMarket = b.market
+            }
+          } else {
+            break  // gap found — stop here
+          }
+        }
+        entry.last_known_market = runMarket  // '' → GPS fallback
       } else {
-        entry.last_known_market = entry._lastPastMarket || entry._nextFutureMarket || ''
+        // No active shift today: use most recent completed shift's std market
+        const pastBlocks = blocks.filter(b => b.shift_end < todayStr)
+        if (pastBlocks.length > 0) {
+          pastBlocks.sort((a, b) => b.shift_end.localeCompare(a.shift_end))
+          entry.last_known_market = pastBlocks[0].market
+        }
+        // If no past blocks either, leave empty → GPS fallback
       }
     }
 

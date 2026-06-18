@@ -165,7 +165,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
   //   - active today → today's shift's std market
   //   - not active today → most recent past shift's std market
   //   - no shifts → '' (falls back to GPS in truckMarketLookup)
-  // Note: "Last market" in available cell detail is computed separately per cell date.
+  // shiftsByEnd = shifts sorted by shift_end desc, used for per-cell "last market" lookup
 
   const truckMeta = useMemo(() => {
     const todayStr = format(startOfDay(new Date()), 'yyyy-MM-dd')
@@ -175,9 +175,10 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       last_gps_state:       string
       last_schedule_state:  string
       last_known_market:    string
+      shiftsByEnd:          Array<{ shift_end: string; market: string }>
       _bestSchedStart:      string
-      _todayShiftStart:     string  // latest shift_start <= today for active-today detection
-      _lastPastEnd:         string  // latest shift_end < today
+      _todayShiftStart:     string
+      _lastPastEnd:         string
       _lastPastMarket:      string
     }>()
 
@@ -187,6 +188,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         last_gps_state:      extractState(t.last_gps),
         last_schedule_state: '',
         last_known_market:   '',
+        shiftsByEnd:         [],
         _bestSchedStart:     '',
         _todayShiftStart:    '',
         _lastPastEnd:        '',
@@ -207,10 +209,12 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
 
       const blockMarket = block.standard_market_name || block.market
 
+      entry.shiftsByEnd.push({ shift_end: block.shift_end, market: blockMarket })
+
       // Active today: shift spans today — take the latest-starting one (most specific)
       if (block.shift_start <= todayStr && block.shift_end >= todayStr) {
         if (block.shift_start >= entry._todayShiftStart) {
-          entry._todayShiftStart = block.shift_start
+          entry._todayShiftStart  = block.shift_start
           entry.last_known_market = blockMarket
         }
       }
@@ -224,8 +228,10 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       }
     }
 
-    // If not active today, fall back to most recent past shift
+    // Sort shiftsByEnd descending so getCellData can find the last shift before a date quickly
     for (const entry of meta.values()) {
+      entry.shiftsByEnd.sort((a, b) => b.shift_end.localeCompare(a.shift_end))
+      // Row grouping fallback: if not active today, use most recent past shift
       if (!entry._todayShiftStart && entry._lastPastMarket) {
         entry.last_known_market = entry._lastPastMarket
       }
@@ -423,7 +429,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       shift_start:        null,
       shift_end:          null,
       formatted_location: meta?.last_gps          ?? '',
-      last_known_market:  meta?.last_known_market ?? '',
+      last_known_market:  meta?.shiftsByEnd.find(s => s.shift_end < dateStr)?.market ?? '',
       last_gps_state:     meta?.last_gps_state    ?? '',
     }
 
@@ -604,17 +610,9 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
   }
 
   const todayIdx       = dates.findIndex((d) => isSameDay(d, today))
-  // For available cells: "Last market" = std market of the shift ending most recently
-  // before this cell's date (not a truck-wide value — depends on which gap was clicked).
-  const panelLastMarket = useMemo(() => {
-    if (!selectedCell || selectedCell.display_status !== 'EMPTY') return ''
-    const dateStr = selectedCell.calendar_date
-    const prior = schedules
-      .filter(b => b.truck_number === selectedCell.truck_number && !!b.shift_end && b.shift_end < dateStr)
-      .sort((a, b) => b.shift_end!.localeCompare(a.shift_end!))
-    if (prior.length === 0) return ''
-    return prior[0].standard_market_name || prior[0].market || ''
-  }, [selectedCell, schedules])
+  const panelLastMarket = selectedCell?.display_status === 'EMPTY'
+    ? (selectedCell.last_known_market ?? '')
+    : ''
 
   const displayLabels = clientView
     ? { ...STATUS_LABELS, ATT_SOFT: 'Long Term Hold', COMMITTED_NOT_SET: 'On Hold' }

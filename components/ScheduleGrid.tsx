@@ -607,7 +607,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
   // For available cells: "Last market" = std market of the shift ending most recently
   // before this cell's date (not a truck-wide value — depends on which gap was clicked).
   const panelLastMarket = useMemo(() => {
-    if (!selectedCell || selectedCell.status !== 'EMPTY') return ''
+    if (!selectedCell || selectedCell.display_status !== 'EMPTY') return ''
     const dateStr = selectedCell.calendar_date
     const prior = schedules
       .filter(b => b.truck_number === selectedCell.truck_number && !!b.shift_end && b.shift_end < dateStr)

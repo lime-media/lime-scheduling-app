@@ -213,9 +213,6 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       }
 
       const blockMarket = block.standard_market_name || block.market
-      // Extract state from std market name ("Omaha, NE" → "NE"); fall back to block.state
-      const stdStatePart = block.standard_market_name?.split(',').pop()?.trim() ?? ''
-      const blockState   = stdStatePart.length === 2 ? stdStatePart : block.state
 
       entry.shiftsByEnd.push({ shift_end: block.shift_end, market: blockMarket })
 
@@ -224,7 +221,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         if (block.shift_start >= entry._todayShiftStart) {
           entry._todayShiftStart  = block.shift_start
           entry.last_known_market = blockMarket
-          entry._todayShiftState  = blockState
+          entry._todayShiftState  = block.state
         }
       }
 
@@ -233,7 +230,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         if (block.shift_end > entry._lastPastEnd) {
           entry._lastPastEnd    = block.shift_end
           entry._lastPastMarket = blockMarket
-          entry._lastPastState  = blockState
+          entry._lastPastState  = block.state
         }
       }
     }

@@ -175,11 +175,14 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       last_gps_state:       string
       last_schedule_state:  string
       last_known_market:    string
+      last_known_state:     string  // state from current/last std market; GPS only if no shifts
       shiftsByEnd:          Array<{ shift_end: string; market: string }>
       _bestSchedStart:      string
       _todayShiftStart:     string
+      _todayShiftState:     string
       _lastPastEnd:         string
       _lastPastMarket:      string
+      _lastPastState:       string
     }>()
 
     for (const t of trucks) {
@@ -188,11 +191,14 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         last_gps_state:      extractState(t.last_gps),
         last_schedule_state: '',
         last_known_market:   '',
+        last_known_state:    '',
         shiftsByEnd:         [],
         _bestSchedStart:     '',
         _todayShiftStart:    '',
+        _todayShiftState:    '',
         _lastPastEnd:        '',
         _lastPastMarket:     '',
+        _lastPastState:      '',
       })
     }
 
@@ -201,7 +207,6 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       const entry = meta.get(block.truck_number)
       if (!entry) continue
 
-      // last_schedule_state: most recent block overall (no date limit — for state filter)
       if (block.shift_start >= entry._bestSchedStart) {
         entry._bestSchedStart     = block.shift_start
         entry.last_schedule_state = block.state
@@ -211,19 +216,21 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
 
       entry.shiftsByEnd.push({ shift_end: block.shift_end, market: blockMarket })
 
-      // Active today: shift spans today — take the latest-starting one (most specific)
+      // Active today: take the latest-starting shift (most specific)
       if (block.shift_start <= todayStr && block.shift_end >= todayStr) {
         if (block.shift_start >= entry._todayShiftStart) {
           entry._todayShiftStart  = block.shift_start
           entry.last_known_market = blockMarket
+          entry._todayShiftState  = block.state
         }
       }
 
-      // Most recent completed shift (ended before today) — fallback if not active today
+      // Most recent completed shift — fallback if not active today
       if (block.shift_end < todayStr) {
         if (block.shift_end > entry._lastPastEnd) {
           entry._lastPastEnd    = block.shift_end
           entry._lastPastMarket = blockMarket
+          entry._lastPastState  = block.state
         }
       }
     }
@@ -231,10 +238,11 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     // Sort shiftsByEnd descending so getCellData can find the last shift before a date quickly
     for (const entry of meta.values()) {
       entry.shiftsByEnd.sort((a, b) => b.shift_end.localeCompare(a.shift_end))
-      // Row grouping fallback: if not active today, use most recent past shift
       if (!entry._todayShiftStart && entry._lastPastMarket) {
         entry.last_known_market = entry._lastPastMarket
       }
+      // State: current shift → last past shift → GPS fallback
+      entry.last_known_state = entry._todayShiftState || entry._lastPastState || entry.last_gps_state
     }
 
     return meta
@@ -316,16 +324,13 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     truckNums = truckNums.filter((t) => matched.has(t))
   }
 
-  // STATE FILTER — priority: GPS state → schedule state → no match.
-  // effectiveState = gpsState || scheduleState (first non-empty wins).
-  // Applied after market filter → when both active, truck must satisfy both (AND).
+  // STATE FILTER — priority: current/last std market state → GPS (only if no shifts).
   if (filters.state) {
     const fs = filters.state.toLowerCase().trim()
     truckNums = truckNums.filter((t) => {
       const meta = truckMeta.get(t)
       if (!meta) return false
-      const effectiveState = (meta.last_gps_state || meta.last_schedule_state || '').toLowerCase().trim()
-      return effectiveState === fs
+      return meta.last_known_state.toLowerCase().trim() === fs
     })
   }
 

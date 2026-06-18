@@ -161,7 +161,11 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
   //
   // last_gps_state      = address.split(',')[2].trim()  (index 2 of "Street, City, ST, ZIP")
   // last_schedule_state = state field of the most recent schedule block (any date)
-  // last_known_market   = market of the most recent schedule block with shift_start ≤ today
+  // last_known_market   = market resolved by these rules (used for row grouping + "Last market"):
+  //   - truck active today + next future shift  → next future shift's std market
+  //   - truck active today + no future shift    → '' (falls back to GPS in truckMarketLookup)
+  //   - no active shift today + past shift      → most recent past shift's std market
+  //   - no active shift, no past shift          → nearest future shift's std market or ''
 
   const truckMeta = useMemo(() => {
     const todayStr = format(startOfDay(new Date()), 'yyyy-MM-dd')
@@ -170,9 +174,13 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       last_gps:             string
       last_gps_state:       string
       last_schedule_state:  string
-      last_known_market:    string  // nearest current/future schedule market; empty = use GPS
-      _bestSchedStart:      string  // max shift_start for last_schedule_state (all dates)
-      _nearestActiveStart:  string  // min shift_start >= today (for market grouping)
+      last_known_market:    string
+      _bestSchedStart:      string
+      _isActiveToday:       boolean
+      _lastPastEnd:         string
+      _lastPastMarket:      string
+      _nextFutureStart:     string
+      _nextFutureMarket:    string
     }>()
 
     for (const t of trucks) {
@@ -182,12 +190,16 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         last_schedule_state: '',
         last_known_market:   '',
         _bestSchedStart:     '',
-        _nearestActiveStart: '',
+        _isActiveToday:      false,
+        _lastPastEnd:        '',
+        _lastPastMarket:     '',
+        _nextFutureStart:    '',
+        _nextFutureMarket:   '',
       })
     }
 
     for (const block of schedules) {
-      if (!block.shift_start) continue
+      if (!block.shift_start || !block.shift_end) continue
       const entry = meta.get(block.truck_number)
       if (!entry) continue
 
@@ -197,13 +209,36 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         entry.last_schedule_state = block.state
       }
 
-      // Market grouping: only today or future blocks count.
-      // Past schedule = truck has moved on; GPS tells us where it is now.
-      if (block.shift_start >= todayStr) {
-        if (!entry._nearestActiveStart || block.shift_start < entry._nearestActiveStart) {
-          entry._nearestActiveStart = block.shift_start
-          entry.last_known_market   = block.standard_market_name || block.market
+      const blockMarket = block.standard_market_name || block.market
+
+      // Is this shift spanning today?
+      if (block.shift_start <= todayStr && block.shift_end >= todayStr) {
+        entry._isActiveToday = true
+      }
+
+      // Most recent completed shift (ended before today)
+      if (block.shift_end < todayStr) {
+        if (!entry._lastPastEnd || block.shift_end > entry._lastPastEnd) {
+          entry._lastPastEnd    = block.shift_end
+          entry._lastPastMarket = blockMarket
         }
+      }
+
+      // Nearest upcoming shift (starts strictly after today)
+      if (block.shift_start > todayStr) {
+        if (!entry._nextFutureStart || block.shift_start < entry._nextFutureStart) {
+          entry._nextFutureStart  = block.shift_start
+          entry._nextFutureMarket = blockMarket
+        }
+      }
+    }
+
+    // Resolve last_known_market per the market-grouping rules
+    for (const entry of meta.values()) {
+      if (entry._isActiveToday) {
+        entry.last_known_market = entry._nextFutureMarket  // '' → GPS fallback
+      } else {
+        entry.last_known_market = entry._lastPastMarket || entry._nextFutureMarket || ''
       }
     }
 

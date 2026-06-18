@@ -161,11 +161,11 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
   //
   // last_gps_state      = address.split(',')[2].trim()  (index 2 of "Street, City, ST, ZIP")
   // last_schedule_state = state field of the most recent schedule block (any date)
-  // last_known_market   = market resolved by these rules (used for row grouping + "Last market"):
-  //   - truck active today → walk the contiguous run of scheduled days from today forward;
-  //     use the std market of the LAST block in that run (the shift just before the first gap)
-  //   - no active shift today + past shift exists → most recent past shift's std market
-  //   - no active or past shift → '' (falls back to GPS in truckMarketLookup)
+  // last_known_market   = std market of truck's CURRENT position (for row grouping):
+  //   - active today → today's shift's std market
+  //   - not active today → most recent past shift's std market
+  //   - no shifts → '' (falls back to GPS in truckMarketLookup)
+  // Note: "Last market" in available cell detail is computed separately per cell date.
 
   const truckMeta = useMemo(() => {
     const todayStr = format(startOfDay(new Date()), 'yyyy-MM-dd')
@@ -176,7 +176,9 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       last_schedule_state:  string
       last_known_market:    string
       _bestSchedStart:      string
-      _blocks:              Array<{ shift_start: string; shift_end: string; market: string }>
+      _todayShiftStart:     string  // latest shift_start <= today for active-today detection
+      _lastPastEnd:         string  // latest shift_end < today
+      _lastPastMarket:      string
     }>()
 
     for (const t of trucks) {
@@ -186,7 +188,9 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         last_schedule_state: '',
         last_known_market:   '',
         _bestSchedStart:     '',
-        _blocks:             [],
+        _todayShiftStart:    '',
+        _lastPastEnd:        '',
+        _lastPastMarket:     '',
       })
     }
 
@@ -201,47 +205,29 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         entry.last_schedule_state = block.state
       }
 
-      entry._blocks.push({
-        shift_start: block.shift_start,
-        shift_end:   block.shift_end,
-        market:      block.standard_market_name || block.market,
-      })
+      const blockMarket = block.standard_market_name || block.market
+
+      // Active today: shift spans today — take the latest-starting one (most specific)
+      if (block.shift_start <= todayStr && block.shift_end >= todayStr) {
+        if (block.shift_start >= entry._todayShiftStart) {
+          entry._todayShiftStart = block.shift_start
+          entry.last_known_market = blockMarket
+        }
+      }
+
+      // Most recent completed shift (ended before today) — fallback if not active today
+      if (block.shift_end < todayStr) {
+        if (block.shift_end > entry._lastPastEnd) {
+          entry._lastPastEnd    = block.shift_end
+          entry._lastPastMarket = blockMarket
+        }
+      }
     }
 
+    // If not active today, fall back to most recent past shift
     for (const entry of meta.values()) {
-      const blocks = entry._blocks
-      if (blocks.length === 0) continue
-      blocks.sort((a, b) => a.shift_start.localeCompare(b.shift_start))
-
-      const isActiveToday = blocks.some(b => b.shift_start <= todayStr && b.shift_end >= todayStr)
-
-      if (isActiveToday) {
-        // Walk the contiguous run of scheduled days starting from today.
-        // Two blocks are adjacent/overlapping if the next one starts no later than
-        // the day after the current run end. Track the market at the run's trailing edge.
-        const fromToday = blocks.filter(b => b.shift_end >= todayStr)
-        let runEnd    = todayStr
-        let runMarket = ''
-        for (const b of fromToday) {
-          const dayAfterRun = format(addDays(parseISO(runEnd), 1), 'yyyy-MM-dd')
-          if (b.shift_start <= dayAfterRun) {
-            if (b.shift_end > runEnd) {
-              runEnd    = b.shift_end
-              runMarket = b.market
-            }
-          } else {
-            break  // gap found — stop here
-          }
-        }
-        entry.last_known_market = runMarket  // '' → GPS fallback
-      } else {
-        // No active shift today: use most recent completed shift's std market
-        const pastBlocks = blocks.filter(b => b.shift_end < todayStr)
-        if (pastBlocks.length > 0) {
-          pastBlocks.sort((a, b) => b.shift_end.localeCompare(a.shift_end))
-          entry.last_known_market = pastBlocks[0].market
-        }
-        // If no past blocks either, leave empty → GPS fallback
+      if (!entry._todayShiftStart && entry._lastPastMarket) {
+        entry.last_known_market = entry._lastPastMarket
       }
     }
 
@@ -618,9 +604,17 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
   }
 
   const todayIdx       = dates.findIndex((d) => isSameDay(d, today))
-  const panelLastMarket = selectedCell
-    ? (truckMeta.get(selectedCell.truck_number)?.last_known_market ?? '')
-    : ''
+  // For available cells: "Last market" = std market of the shift ending most recently
+  // before this cell's date (not a truck-wide value — depends on which gap was clicked).
+  const panelLastMarket = useMemo(() => {
+    if (!selectedCell || selectedCell.status !== 'EMPTY') return ''
+    const dateStr = selectedCell.calendar_date
+    const prior = schedules
+      .filter(b => b.truck_number === selectedCell.truck_number && !!b.shift_end && b.shift_end < dateStr)
+      .sort((a, b) => b.shift_end!.localeCompare(a.shift_end!))
+    if (prior.length === 0) return ''
+    return prior[0].standard_market_name || prior[0].market || ''
+  }, [selectedCell, schedules])
 
   const displayLabels = clientView
     ? { ...STATUS_LABELS, ATT_SOFT: 'Long Term Hold', COMMITTED_NOT_SET: 'On Hold' }

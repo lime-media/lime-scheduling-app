@@ -89,7 +89,7 @@ export async function GET(request: Request) {
       }
     }
 
-    const HIDDEN_TRUCKS = new Set(['0001', '1257', '00001257'])
+    const HIDDEN_TRUCKS = new Set(['0001', '1257', '00001257', '7333'])
 
     // trucks: standard market → raw market → GPS city (Samsara as last resort)
     const trucks = trucksRaw

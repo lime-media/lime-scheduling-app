@@ -89,15 +89,6 @@ const STATUS_COLORS: Record<string, string> = {
   DEPARTING:          'bg-gray-200 hover:bg-gray-300',
 }
 
-const STATUS_BORDER: Record<string, string> = {
-  EMPTY:              'border-gray-300',
-  SCHEDULED_LED:      'border-green-600',
-  HOLD_TENTATIVE:     'border-yellow-500',
-  COMMITTED_NOT_SET:  'border-red-600',
-  ATT_SOFT:           'border-blue-500',
-  MAINTENANCE:        'border-orange-500',
-  DEPARTING:          'border-gray-300',
-}
 
 // Client view: available = green, anything booked/unavailable = gray
 const CLIENT_STATUS_COLORS: Record<string, string> = {
@@ -274,7 +265,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     }
 
     return meta
-  }, [trucks, schedules])
+  }, [trucks, schedules, holds])
 
   // ── Day-level lookup map ──────────────────────────────────────────────────
   // "truck__YYYY-MM-DD" → { sched?, hold? }

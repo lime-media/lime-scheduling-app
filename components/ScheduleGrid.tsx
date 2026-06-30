@@ -86,7 +86,7 @@ const STATUS_COLORS: Record<string, string> = {
   COMMITTED_NOT_SET:  'bg-red-500 hover:bg-red-600',
   ATT_SOFT:           'bg-blue-400 hover:bg-blue-500',
   MAINTENANCE:        'bg-orange-400 hover:bg-orange-500',
-  DEPARTING:          'bg-gray-200 hover:bg-gray-300',
+  DEPARTING:          'bg-green-500 hover:bg-green-600',
 }
 
 

@@ -37,14 +37,14 @@ export async function getLiveVehicleLocations(): Promise<Map<string, SamsaraVehi
 
     const formatted_address = loc.reverseGeo.formattedLocation
     const parts = formatted_address.split(',').map((p: string) => p.trim())
-    // Samsara sometimes uses relative format: "6.6 mi SE Royse City, Hunt County, TX"
-    // In that case parts[0] contains the real city; parts[1] is the county.
-    // Samsara sometimes uses relative format: "6.6 mi SE Royse City, Hunt County, TX"
-    // Extract the real city from parts[0] in that case; otherwise use parts[1] as normal.
-    const relMatch = parts[0].match(/^\d+(?:\.\d+)?\s+mi\s+[A-Z]+\s+(.+)$/i)
-    const rawCity = relMatch ? relMatch[1] : (parts[1] || '')
-    const city = rawCity.replace(/\s+(County|Parish|Borough|Census Area|Municipality|District|Township|Precinct)$/i, '').trim()
-    const state = parts[2] || ''
+    const stripAdmin = (s: string) => s.replace(/\s+(County|Parish|Borough|Census Area|Municipality|District|Township|Precinct)$/i, '').trim()
+    const rawCity = parts[1] || ''
+    const parsedCity = stripAdmin(rawCity)
+    // When parts[1] is a bare state abbreviation the format is "County, ST" (rural/no city).
+    // In that case use parts[0] (the county) as the city name.
+    const cityIsState = /^[A-Z]{2}$/.test(parsedCity)
+    const city  = cityIsState ? stripAdmin(parts[0]) : parsedCity
+    const state = cityIsState ? parsedCity : (parts[2] || '')
 
     locationMap.set(truck_number, {
       truck_number,

@@ -23,8 +23,8 @@ const defaultFilters: Filters = {
   state: '',
   market: '',
   statusFilters: new Set(),
-  dateFrom: format(addDays(today, -7), 'yyyy-MM-dd'),
-  dateTo: format(addDays(today, 90), 'yyyy-MM-dd'),
+  dateFrom: format(today, 'yyyy-MM-dd'),
+  dateTo: format(addDays(today, 14), 'yyyy-MM-dd'),
 }
 
 export default function DashboardPage() {

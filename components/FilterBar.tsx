@@ -52,8 +52,8 @@ export function FilterBar({ filters, onChange, states, markets, clientView = fal
       state: '',
       market: '',
       statusFilters: new Set(),
-      dateFrom: format(addDays(today, -7), 'yyyy-MM-dd'),
-      dateTo: format(addDays(today, 90), 'yyyy-MM-dd'),
+      dateFrom: format(today, 'yyyy-MM-dd'),
+      dateTo: format(addDays(today, 14), 'yyyy-MM-dd'),
     })
   }
 
@@ -87,23 +87,6 @@ export function FilterBar({ filters, onChange, states, markets, clientView = fal
           </select>
         </div>
 
-        {/* Date range */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">From</label>
-          <input
-            type="date"
-            value={filters.dateFrom}
-            onChange={(e) => onChange({ ...filters, dateFrom: e.target.value })}
-            className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-          />
-          <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">To</label>
-          <input
-            type="date"
-            value={filters.dateTo}
-            onChange={(e) => onChange({ ...filters, dateTo: e.target.value })}
-            className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-          />
-        </div>
       </div>
 
       {/* Row 2: Status toggles + Reset */}

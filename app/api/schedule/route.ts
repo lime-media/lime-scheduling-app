@@ -55,7 +55,7 @@ export async function GET(request: Request) {
     const holds = await holdsPromise
 
     // GPS map: live from Samsara API — always fresh, not cached
-    let gpsMap = new Map<string, { city: string; state: string; formatted_address: string }>()
+    let gpsMap = new Map<string, { city: string; state: string; formatted_address: string; latitude: number; longitude: number }>()
     try {
       gpsMap = await getLiveVehicleLocations()
       console.log('[schedule] Samsara GPS loaded:', gpsMap.size, 'trucks')
@@ -89,9 +89,10 @@ export async function GET(request: Request) {
       }
     }
 
-    const HIDDEN_TRUCKS = new Set(['0001', '1257', '00001257', '7333'])
+    const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '7333', '1991'])
 
     // trucks: standard market → raw market → GPS city (Samsara as last resort)
+    const sqlTruckNums = new Set(trucksRaw.map((r) => String(r.truck_number ?? '')))
     const trucks = trucksRaw
       .filter((r) => !HIDDEN_TRUCKS.has(String(r.truck_number ?? '')))
       .map((r) => {
@@ -102,10 +103,27 @@ export async function GET(request: Request) {
           last_gps:          gpsData?.formatted_address || null,
           last_gps_city:     gpsData?.city              || null,
           last_gps_state:    gpsData?.state             || null,
+          last_gps_lat:      gpsData?.latitude          ?? null,
+          last_gps_lng:      gpsData?.longitude         ?? null,
           last_known_market: scheduleInfo[num]?.market  || holdMarkets[num]?.market || (gpsData?.city ? [gpsData.city, gpsData.state].filter(Boolean).join(', ') : null),
           last_known_state:  scheduleInfo[num]?.state   || holdMarkets[num]?.state  || gpsData?.state || null,
         }
       })
+
+    // Include Samsara-only trucks (in GPS but not in LED app DB) — show under their GPS city/state
+    for (const [num, gpsData] of gpsMap) {
+      if (HIDDEN_TRUCKS.has(num) || sqlTruckNums.has(num)) continue
+      trucks.push({
+        truck_number:      num,
+        last_gps:          gpsData.formatted_address || null,
+        last_gps_city:     gpsData.city              || null,
+        last_gps_state:    gpsData.state             || null,
+        last_gps_lat:      gpsData.latitude          ?? null,
+        last_gps_lng:      gpsData.longitude         ?? null,
+        last_known_market: gpsData.city ? [gpsData.city, gpsData.state].filter(Boolean).join(', ') : null,
+        last_known_state:  gpsData.state             || null,
+      })
+    }
 
     // schedules: { truck_number, market, state, program, shift_start, shift_end }
     const schedules = schedulesRaw

@@ -5,6 +5,7 @@ import { format, addDays, startOfDay, parseISO, isSameDay } from 'date-fns'
 import toast from 'react-hot-toast'
 import { HoldModal } from './HoldModal'
 import { CellDetail } from './CellDetail'
+import { getNearbyMarkets, getMarketCoords, haversineDistance } from '@/lib/marketCoordinates'
 
 // ── Exported data types (match API response) ──────────────────────────────────
 
@@ -13,6 +14,8 @@ export type TruckInfo = {
   last_gps:          string        // full address string, e.g. "Street, City, ST, ZIP"
   last_gps_city:     string | null
   last_gps_state:    string | null
+  last_gps_lat:      number | null
+  last_gps_lng:      number | null
   last_known_market: string | null // market of most recent schedule block (any date)
   last_known_state:  string | null // state of most recent schedule block (any date)
 }
@@ -49,7 +52,7 @@ export type ScheduleRow = {
   state: string
   program: string
   formatted_location: string
-  display_status: 'EMPTY' | 'SCHEDULED_LED' | 'HOLD_TENTATIVE' | 'COMMITTED_NOT_SET' | 'ATT_SOFT' | 'MAINTENANCE'
+  display_status: 'EMPTY' | 'SCHEDULED_LED' | 'HOLD_TENTATIVE' | 'COMMITTED_NOT_SET' | 'ATT_SOFT' | 'MAINTENANCE' | 'DEPARTING'
   calendar_date: string
   shift_start: string | null
   shift_end: string | null
@@ -64,6 +67,8 @@ export type ScheduleRow = {
   hold_created_by?: string
   /** Set when a hold and a schedule block occupy the same cell — conflict indicator */
   conflictProgram?: string
+  departing_to?: string
+  departing_on?: string
 }
 
 type Filters = {
@@ -81,6 +86,7 @@ const STATUS_COLORS: Record<string, string> = {
   COMMITTED_NOT_SET:  'bg-red-500 hover:bg-red-600',
   ATT_SOFT:           'bg-blue-400 hover:bg-blue-500',
   MAINTENANCE:        'bg-orange-400 hover:bg-orange-500',
+  DEPARTING:          'bg-gray-200 hover:bg-gray-300',
 }
 
 const STATUS_BORDER: Record<string, string> = {
@@ -90,6 +96,7 @@ const STATUS_BORDER: Record<string, string> = {
   COMMITTED_NOT_SET:  'border-red-600',
   ATT_SOFT:           'border-blue-500',
   MAINTENANCE:        'border-orange-500',
+  DEPARTING:          'border-gray-300',
 }
 
 // Client view: available = green, anything booked/unavailable = gray
@@ -100,6 +107,7 @@ const CLIENT_STATUS_COLORS: Record<string, string> = {
   COMMITTED_NOT_SET:  'bg-gray-300 hover:bg-gray-400',
   ATT_SOFT:           'bg-gray-300 hover:bg-gray-400',
   MAINTENANCE:        'bg-gray-300 hover:bg-gray-400',
+  DEPARTING:          'bg-green-500 hover:bg-green-600',
 }
 
 
@@ -110,6 +118,7 @@ const STATUS_LABELS: Record<string, string> = {
   COMMITTED_NOT_SET:  'Committed',
   ATT_SOFT:           'ATT Hold',
   MAINTENANCE:        'Maintenance',
+  DEPARTING:          'Departing',
 }
 
 function getDates(from: Date, to: Date): Date[] {
@@ -173,10 +182,14 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     const meta = new Map<string, {
       last_gps:             string
       last_gps_state:       string
+      last_gps_lat:         number | null
+      last_gps_lng:         number | null
       last_schedule_state:  string
       last_known_market:    string
+      last_gps_city:        string
       last_known_state:     string  // state from current/last std market; GPS only if no shifts
       shiftsByEnd:          Array<{ shift_end: string; market: string }>
+      shiftsByStart:        Array<{ shift_start: string; market: string }>
       _bestSchedStart:      string
       _todayShiftStart:     string
       _todayShiftState:     string
@@ -188,11 +201,15 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     for (const t of trucks) {
       meta.set(t.truck_number, {
         last_gps:            t.last_gps,
+        last_gps_city:       t.last_gps_city || '',
         last_gps_state:      extractState(t.last_gps),
+        last_gps_lat:        t.last_gps_lat ?? null,
+        last_gps_lng:        t.last_gps_lng ?? null,
         last_schedule_state: '',
         last_known_market:   '',
         last_known_state:    '',
         shiftsByEnd:         [],
+        shiftsByStart:       [],
         _bestSchedStart:     '',
         _todayShiftStart:    '',
         _todayShiftState:    '',
@@ -215,6 +232,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       const blockMarket = block.standard_market_name || block.market
 
       entry.shiftsByEnd.push({ shift_end: block.shift_end, market: blockMarket })
+      entry.shiftsByStart.push({ shift_start: block.shift_start, market: blockMarket })
 
       // Active today: take the latest-starting shift (most specific)
       if (block.shift_start <= todayStr && block.shift_end >= todayStr) {
@@ -235,9 +253,19 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       }
     }
 
+    // Include holds so DEPARTING logic doesn't false-positive across hold→schedule same-market gaps
+    for (const hold of holds) {
+      if (!hold.start_date || !hold.end_date || !hold.market) continue
+      const entry = meta.get(hold.truck_number)
+      if (!entry) continue
+      entry.shiftsByEnd.push({ shift_end: hold.end_date, market: hold.market })
+      entry.shiftsByStart.push({ shift_start: hold.start_date, market: hold.market })
+    }
+
     // Sort shiftsByEnd descending so getCellData can find the last shift before a date quickly
     for (const entry of meta.values()) {
       entry.shiftsByEnd.sort((a, b) => b.shift_end.localeCompare(a.shift_end))
+      entry.shiftsByStart.sort((a, b) => a.shift_start.localeCompare(b.shift_start))
       if (!entry._todayShiftStart && entry._lastPastMarket) {
         entry.last_known_market = entry._lastPastMarket
       }
@@ -304,21 +332,42 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
   const dfStr = filters.dateFrom || ''
   const dtStr = filters.dateTo   || ''
 
-  // MARKET FILTER: truck.last_known_market matches OR any schedule block market matches.
+  // MARKET FILTER:
+  //   Uses the same market priority as the display grouping (today's shift → next future shift → GPS).
+  //   Proximity (250 miles): city-name table lookup first; if city unknown, fall back to actual GPS
+  //   coordinates so small/suburb cities (e.g. Rockwall, TX) work without being hardcoded.
+  //   Schedule blocks with the exact selected market also match (trucks heading there).
   if (filters.market) {
-    const fm = filters.market.toLowerCase().trim()
+    const _todayStr      = format(today, 'yyyy-MM-dd')
+    const nearbyMarkets  = getNearbyMarkets(filters.market, markets, 250)
+    const nearbyLower    = new Set(Array.from(nearbyMarkets).map((m) => m.toLowerCase().trim()))
+    const exactLower     = filters.market.toLowerCase().trim()
+    const selectedCoords = getMarketCoords(filters.market)
     const matched = new Set<string>()
 
     for (const t of trucks) {
-      if ((t.last_known_market ?? '').toLowerCase().trim() === fm) matched.add(t.truck_number)
+      const meta       = truckMeta.get(t.truck_number)
+      const todayMkt   = meta?._todayShiftStart ? meta.last_known_market : null
+      const futureMkt  = meta?.shiftsByStart.find(s => s.shift_start > _todayStr)?.market ?? null
+      const gpsMkt     = t.last_gps_city ? [t.last_gps_city, t.last_gps_state].filter(Boolean).join(', ') : null
+      const displayMkt = (todayMkt || futureMkt || gpsMkt || '').toLowerCase().trim()
+
+      if (nearbyLower.has(displayMkt)) {
+        matched.add(t.truck_number)
+      } else if (selectedCoords && !todayMkt && !futureMkt && meta?.last_gps_lat && meta?.last_gps_lng) {
+        // GPS-only truck whose city isn't in the name table — compare raw coordinates
+        const dist = haversineDistance(meta.last_gps_lat, meta.last_gps_lng, selectedCoords.lat, selectedCoords.lng)
+        if (dist <= 250) matched.add(t.truck_number)
+      }
     }
     for (const block of schedules) {
       if (!block.shift_start || !block.shift_end) continue
-      // Skip blocks that don't overlap the visible date range
       if (dfStr && block.shift_end   < dfStr) continue
       if (dtStr && block.shift_start > dtStr) continue
       const blockMarket = (block.standard_market_name || block.market).toLowerCase().trim()
-      if (blockMarket === fm || block.market.toLowerCase().trim() === fm) matched.add(block.truck_number)
+      if (blockMarket === exactLower || block.market.toLowerCase().trim() === exactLower) {
+        matched.add(block.truck_number)
+      }
     }
 
     truckNums = truckNums.filter((t) => matched.has(t))
@@ -396,12 +445,13 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
   // Priority: (1) nearest future schedule OR recent past schedule (≤7 days) from truckMeta
   //           (2) Samsara GPS city+state — truck is physically here with no near-term schedule
   //           (3) API last_known_market fallback (holds, etc.)
+  const todayStr = format(today, 'yyyy-MM-dd')
   const truckMarketLookup = new Map(trucks.map((t) => {
-    const metaMarket = truckMeta.get(t.truck_number)?.last_known_market
-    const gpsMarket  = t.last_gps_city
-      ? [t.last_gps_city, t.last_gps_state].filter(Boolean).join(', ')
-      : null
-    return [t.truck_number, metaMarket || gpsMarket || t.last_known_market || 'Unassigned']
+    const meta         = truckMeta.get(t.truck_number)
+    const todayMarket  = meta?._todayShiftStart ? meta.last_known_market : null
+    const futureMarket = meta?.shiftsByStart.find(s => s.shift_start > todayStr)?.market ?? null
+    const gpsMarket    = t.last_gps_city ? [t.last_gps_city, t.last_gps_state].filter(Boolean).join(', ') : null
+    return [t.truck_number, todayMarket || futureMarket || gpsMarket || 'Unassigned']
   }))
   const groupMap = new Map<string, string[]>()
   for (const truckNum of truckNums) {
@@ -434,11 +484,25 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       shift_start:        null,
       shift_end:          null,
       formatted_location: meta?.last_gps          ?? '',
-      last_known_market:  meta?.shiftsByEnd.find(s => s.shift_end < dateStr)?.market ?? '',
+      last_known_market:  meta?.shiftsByStart.find(s => s.shift_start > dateStr)?.market
+                          || (meta?.last_gps_city ? [meta.last_gps_city, meta.last_gps_state].filter(Boolean).join(', ') : '')
+                          || '',
       last_gps_state:     meta?.last_gps_state    ?? '',
     }
 
-    if (!entry) return base
+    const withDeparting = (row: ScheduleRow): ScheduleRow => {
+      if (row.display_status !== 'EMPTY') return row
+      const nextShift = meta?.shiftsByStart.find(s => s.shift_start > dateStr)
+      if (!nextShift?.market) return row
+      // Find the most recent past shift within 30 days — prevents false positives from old history.
+      // Any empty cell in a cross-market transition window inherits DEPARTING, not just the first.
+      const thirtyDaysAgo = format(addDays(date, -30), 'yyyy-MM-dd')
+      const prevShift = meta?.shiftsByEnd.find(s => s.shift_end < dateStr && s.shift_end >= thirtyDaysAgo)
+      if (!prevShift?.market || prevShift.market === nextShift.market) return row
+      return { ...row, display_status: 'DEPARTING', departing_to: nextShift.market, departing_on: nextShift.shift_start }
+    }
+
+    if (!entry) return withDeparting(base)
 
     // 1. Regular hold (highest priority; flag if a schedule also overlaps — conflict)
     if (entry.hold) {
@@ -459,10 +523,12 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     if (entry.sched?.program?.toLowerCase() === 'truck maintenance') {
       return {
         ...base,
-        display_status: 'MAINTENANCE',
-        program:        entry.sched.program,
-        shift_start:    entry.sched.shift_start,
-        shift_end:      entry.sched.shift_end,
+        display_status:       'MAINTENANCE',
+        market:               entry.sched.market,
+        standard_market_name: entry.sched.standard_market_name,
+        program:              entry.sched.program,
+        shift_start:          entry.sched.shift_start,
+        shift_end:            entry.sched.shift_end,
       }
     }
 
@@ -489,7 +555,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       const voided = nonAttSchedulesByTruck.get(truckNum)?.some(
         (s) => s.shift_start <= holdEnd && s.shift_end >= holdStart
       )
-      if (voided) return base
+      if (voided) return withDeparting(base)
       return {
         ...base,
         display_status:  'ATT_SOFT',
@@ -501,7 +567,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     }
 
     // 4. Empty (grey)
-    return base
+    return withDeparting(base)
   }
 
   // ── Drag interaction ──────────────────────────────────────────────────────
@@ -614,22 +680,39 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     setShowHoldModal(true)
   }
 
-  const todayIdx       = dates.findIndex((d) => isSameDay(d, today))
+  const todayIdx = dates.findIndex((d) => isSameDay(d, today))
+
+  // Near-term stripe dates: before 12pm CT → today + 1 next business day
+  //                         after  12pm CT → today + 2 next business days
+  const nearTermDates = useMemo(() => {
+    const ctNow  = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }))
+    const count  = ctNow.getHours() < 12 ? 1 : 2
+    const set    = new Set<string>()
+    set.add(format(today, 'yyyy-MM-dd'))
+    let d = addDays(today, 1)
+    let added = 0
+    while (added < count) {
+      const dow = d.getDay()
+      if (dow !== 0 && dow !== 6) { set.add(format(d, 'yyyy-MM-dd')); added++ }
+      d = addDays(d, 1)
+    }
+    return set
+  }, [today])
   const panelLastMarket = selectedCell?.display_status === 'EMPTY'
     ? (selectedCell.last_known_market ?? '')
     : ''
 
   const displayLabels = clientView
-    ? { ...STATUS_LABELS, ATT_SOFT: 'Long Term Hold', COMMITTED_NOT_SET: 'On Hold' }
+    ? { ...STATUS_LABELS, SCHEDULED_LED: 'Booked', HOLD_TENTATIVE: 'Booked', COMMITTED_NOT_SET: 'Booked', ATT_SOFT: 'Booked', MAINTENANCE: 'Booked' }
     : STATUS_LABELS
 
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex gap-3 h-full min-h-0">
+    <div className="flex gap-3">
 
       {/* Scrollable schedule grid */}
-      <div className="flex-1 overflow-auto select-none min-w-0">
+      <div className="select-none">
         <table className="border-separate border-spacing-0">
           <thead>
             <tr>
@@ -642,7 +725,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
               {dates.map((date, idx) => (
                 <th
                   key={idx}
-                  className={`sticky top-0 z-20 w-10 min-w-[2.5rem] text-center py-1 border-b border-r border-gray-200 text-xs font-medium ${
+                  className={`sticky top-0 z-20 w-20 min-w-[5rem] text-center py-1 border-b border-r border-gray-200 text-xs font-medium ${
                     isSameDay(date, today)
                       ? 'bg-green-700 text-white'
                       : date.getDay() === 0 || date.getDay() === 6
@@ -703,10 +786,10 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
                         const inDragConflict = inDrag && !!dragEntry?.sched
 
                         const statusLabel = displayLabels[status] ?? status
-                        const mktLabel    = cell.hold_market || cell.standard_market_name || cell.last_known_market || ''
+                        const mktLabel    = cell.hold_market || cell.standard_market_name || cell.market || cell.last_known_market || ''
                         const stateLabel  = cell.last_gps_state || ''
                         const clientLabel = cell.client_name
-                        let tooltip = `${truckNum} · ${format(date, 'MMM d')} · ${statusLabel}`
+                        let tooltip = `${truckNum} · ${statusLabel}`
                         if (!clientView) {
                           if (cell.conflictProgram) tooltip = `⚠️ CONFLICT: Hold for "${clientLabel}" + Scheduled "${cell.conflictProgram}"`
                           else {
@@ -715,8 +798,18 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
                             if (clientLabel) tooltip += ` · ${clientLabel}`
                           }
                         } else {
-                          if (mktLabel)   tooltip += ` · ${mktLabel}`
-                          if (stateLabel) tooltip += ` · ${stateLabel}`
+                          // Client view: GPS state ⟶ market (where truck is → where it works/heads)
+                          const clientMkt = cell.standard_market_name || cell.market || cell.hold_market || cell.last_known_market || ''
+                          if (stateLabel && clientMkt) {
+                            tooltip += ` · ${stateLabel} ⟶ ${clientMkt}`
+                          } else if (stateLabel) {
+                            tooltip += ` · ${stateLabel}`
+                          } else if (clientMkt) {
+                            tooltip += ` · ${clientMkt}`
+                          }
+                        }
+                        if (status === 'DEPARTING' && cell.departing_to && cell.departing_on) {
+                          tooltip = `${truckNum} · Shift in ${cell.departing_to} on ${format(parseISO(cell.departing_on + 'T12:00:00'), 'MMM d')}`
                         }
 
                         const isSelected =
@@ -730,10 +823,19 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
                             : 'repeating-linear-gradient(135deg,#fde68a 0px,#fbbf24 4px,#22c55e 4px,#22c55e 8px)',
                         } : undefined
 
+                        const isDeparting  = status === 'DEPARTING' && !!cell.departing_to
+                        const deptStateParts = isDeparting ? (cell.departing_to ?? '').split(',') : null
+                        const deptCity      = deptStateParts?.[0]?.trim() ?? ''
+                        const deptState     = deptStateParts?.[1]?.trim() ?? ''
+                        // Suppress text when the departure destination is the same as the truck's current group
+                        const truckGroupMkt = truckMarketLookup.get(truckNum) ?? ''
+                        const showDeptText  = isDeparting && (cell.departing_to ?? '').toLowerCase().trim() !== truckGroupMkt.toLowerCase().trim()
+                        const isNearTerm    = nearTermDates.has(format(date, 'yyyy-MM-dd'))
+
                         return (
                           <td
                             key={dateIdx}
-                            className={`w-10 min-w-[2.5rem] h-9 border-b border-r border-gray-100 ${clientView ? 'cursor-default' : 'cursor-pointer'} transition-all ${
+                            className={`w-20 min-w-[5rem] h-12 border-b border-r border-gray-100 ${clientView ? 'cursor-default' : 'cursor-pointer'} transition-all ${
                               isSelected
                                 ? 'ring-2 ring-blue-500 ring-inset z-[15]'
                                 : inDragConflict
@@ -743,12 +845,33 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
                                 : cell.conflictProgram
                                 ? ''
                                 : (clientView ? CLIENT_STATUS_COLORS : STATUS_COLORS)[status]
-                            } ${isToday ? 'border-l-2 border-l-green-700' : ''} ${groupTopBorder}`}
+                            } ${isToday ? 'border-l-2 border-l-green-700' : ''} ${groupTopBorder}${showDeptText ? ' relative overflow-visible group/dp' : isNearTerm ? ' relative' : ''}`}
                             style={conflictStyle}
                             onMouseDown={clientView ? undefined : () => handleMouseDown(truckNum, dateIdx, cell)}
                             onMouseEnter={clientView ? undefined : () => handleMouseEnter(truckNum, dateIdx)}
-                            title={tooltip}
-                          />
+                            title={showDeptText ? undefined : tooltip}
+                          >
+                            {isNearTerm && (
+                              <div className="absolute inset-0 pointer-events-none" style={{
+                                background: 'repeating-linear-gradient(135deg, rgba(239,68,68,0.35) 0px, rgba(239,68,68,0.35) 2px, transparent 2px, transparent 9px)',
+                              }} />
+                            )}
+                            {showDeptText && (
+                              <>
+                                <div className="flex flex-col items-center justify-center h-full gap-px group-hover/dp:opacity-0 transition-opacity duration-100 pointer-events-none px-0.5">
+                                  <span className="text-[10px] font-semibold text-gray-700 leading-tight w-full text-center truncate">{deptCity}</span>
+                                  <span className="text-[10px] font-bold text-amber-700 leading-tight">{deptState}</span>
+                                </div>
+                                <div className="hidden group-hover/dp:flex absolute left-1/2 -translate-x-1/2 top-full mt-0.5 z-50 bg-white border border-amber-200 rounded-lg shadow-xl px-2.5 py-1.5 flex-col gap-0.5 whitespace-nowrap pointer-events-none">
+                                  <span className="text-[10px] text-gray-400 uppercase tracking-wide">Moving to</span>
+                                  <span className="text-xs font-semibold text-gray-800">→ {cell.departing_to}</span>
+                                  {cell.departing_on && (
+                                    <span className="text-[10px] text-gray-500">Shift on {format(parseISO(cell.departing_on + 'T12:00:00'), 'MMM d')}</span>
+                                  )}
+                                </div>
+                              </>
+                            )}
+                          </td>
                         )
                       })}
                     </tr>
@@ -789,36 +912,6 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
         />
       )}
 
-      {/* Legend */}
-      <div className="hidden xl:flex flex-col gap-2 pt-2 text-xs min-w-[100px] flex-shrink-0">
-        <div className="font-semibold text-gray-500 uppercase tracking-wide mb-1">Legend</div>
-        {clientView ? (
-          <>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded-sm bg-green-500 border border-green-600" />
-              <span className="text-gray-600">Available</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded-sm bg-gray-300 border border-gray-400" />
-              <span className="text-gray-600">Booked</span>
-            </div>
-          </>
-        ) : (
-          <>
-            {(['EMPTY', 'SCHEDULED_LED', 'MAINTENANCE', 'HOLD_TENTATIVE', 'COMMITTED_NOT_SET', 'ATT_SOFT'] as const).map((s) => (
-              <div key={s} className="flex items-center gap-2">
-                <div className={`w-4 h-4 rounded-sm ${STATUS_COLORS[s].split(' ')[0]} border ${STATUS_BORDER[s]}`} />
-                <span className="text-gray-600">{displayLabels[s]}</span>
-              </div>
-            ))}
-            <div className="mt-3 text-gray-400 leading-tight">
-              <div className="font-medium text-gray-500 mb-1">How to use</div>
-              <div>Click cell → details</div>
-              <div>Drag cells → hold</div>
-            </div>
-          </>
-        )}
-      </div>
     </div>
   )
 }

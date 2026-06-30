@@ -163,7 +163,7 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
 
         {/* Available cell — show last known market if any */}
         {status === 'EMPTY' && lastKnownMarket && (
-          <Row label="Last market" value={lastKnownMarket} />
+          <Row label="Available in" value={lastKnownMarket} />
         )}
 
         {/* GPS address for all statuses */}

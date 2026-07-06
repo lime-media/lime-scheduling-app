@@ -84,6 +84,7 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
   const dateStr   = cell.calendar_date ? format(parseISO(cell.calendar_date + 'T12:00:00'), 'MMM d, yyyy') : ''
   const market    = cell.hold_market || cell.market || lastKnownMarket
   const isHold        = status === 'HOLD_TENTATIVE' || status === 'COMMITTED_NOT_SET'
+  const isHoldRequest = status === 'HOLD_REQUEST'
   const isScheduled   = status === 'SCHEDULED_LED'
   const isATTSoft     = status === 'ATT_SOFT'
   const isMaintenance = status === 'MAINTENANCE'
@@ -143,6 +144,14 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
           <>
             {cell.client_name && <Row label="Client" value={cell.client_name} />}
             {cell.hold_notes  && <Row label="Period" value={cell.hold_notes} />}
+          </>
+        )}
+
+        {/* Client hold request details */}
+        {isHoldRequest && (
+          <>
+            {cell.client_name && <Row label="Client"  value={cell.client_name} />}
+            {cell.hold_notes  && <Row label="Notes"   value={cell.hold_notes} />}
           </>
         )}
 

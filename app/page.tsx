@@ -5,7 +5,7 @@ import { format, addDays, startOfDay } from 'date-fns'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
-import { ScheduleGrid, type TruckInfo, type ScheduleBlock, type HoldBlock } from '@/components/ScheduleGrid'
+import { ScheduleGrid, type TruckInfo, type ScheduleBlock, type HoldBlock, type HoldRequestBlock } from '@/components/ScheduleGrid'
 import { FilterBar } from '@/components/FilterBar'
 import { ScheduleSkeleton } from '@/components/LoadingSkeleton'
 
@@ -37,9 +37,10 @@ export default function DashboardPage() {
     }
   }, [router])
 
-  const [trucks,    setTrucks]    = useState<TruckInfo[]>([])
-  const [schedules, setSchedules] = useState<ScheduleBlock[]>([])
-  const [holdBlocks, setHoldBlocks] = useState<HoldBlock[]>([])
+  const [trucks,       setTrucks]       = useState<TruckInfo[]>([])
+  const [schedules,    setSchedules]    = useState<ScheduleBlock[]>([])
+  const [holdBlocks,   setHoldBlocks]   = useState<HoldBlock[]>([])
+  const [holdRequests, setHoldRequests] = useState<HoldRequestBlock[]>([])
   const [markets, setMarkets] = useState<string[]>([])
   const [states,  setStates]  = useState<string[]>([])
   const [filters, setFilters] = useState<Filters>(defaultFilters)
@@ -53,9 +54,10 @@ export default function DashboardPage() {
       const res = await fetch(force ? '/api/schedule?force=1' : '/api/schedule')
       if (!res.ok) throw new Error('Failed to fetch schedule')
       const data = await res.json()
-      setTrucks(data.trucks       || [])
-      setSchedules(data.schedules || [])
-      setHoldBlocks(data.holds    || [])
+      setTrucks(data.trucks             || [])
+      setSchedules(data.schedules       || [])
+      setHoldBlocks(data.holds          || [])
+      setHoldRequests(data.holdRequests || [])
     } catch (err) {
       setError('Failed to load schedule data. Check your database connection.')
       console.error(err)
@@ -146,6 +148,7 @@ export default function DashboardPage() {
                   trucks={trucks}
                   schedules={schedules}
                   holds={holdBlocks}
+                  holdRequests={holdRequests}
                   filters={filters}
                   onHoldCreated={fetchSchedule}
                   markets={markets}

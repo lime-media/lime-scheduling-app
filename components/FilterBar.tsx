@@ -26,6 +26,7 @@ const STATUS_OPTIONS = [
   { value: 'HOLD_TENTATIVE',    label: 'On Hold',      color: 'bg-yellow-400' },
   { value: 'COMMITTED_NOT_SET', label: 'Committed',    color: 'bg-red-500' },
   { value: 'ATT_SOFT',          label: 'ATT Hold',     color: 'bg-blue-400' },
+  { value: 'HOLD_REQUEST',      label: 'Requested',    color: 'bg-yellow-400' },
 ]
 
 const BOOKED_STATUSES = ['SCHEDULED_LED', 'MAINTENANCE', 'HOLD_TENTATIVE', 'ATT_SOFT', 'COMMITTED_NOT_SET']

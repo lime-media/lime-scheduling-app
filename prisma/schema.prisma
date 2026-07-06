@@ -42,6 +42,34 @@ model Hold {
   @@map("app_holds")
 }
 
+// status: PENDING | APPROVED | REJECTED
+model HoldRequest {
+  id             String     @id @default(cuid())
+  client_user_id String
+  truck_number   String
+  market         String
+  state          String?
+  start_date     DateTime
+  end_date       DateTime
+  notes          String?    @db.NVarChar(Max)
+  status         String     @default("PENDING")
+  created_at     DateTime   @default(now())
+  client_user    ClientUser @relation(fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("app_hold_requests")
+}
+
+model ClientUser {
+  id            String        @id @default(cuid())
+  username      String        @unique
+  password_hash String
+  company_name  String
+  created_at    DateTime      @default(now())
+  hold_requests HoldRequest[]
+
+  @@map("app_client_users")
+}
+
 model AuditLog {
   id           String   @id @default(cuid())
   action       String

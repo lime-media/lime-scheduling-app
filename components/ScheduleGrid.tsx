@@ -44,6 +44,18 @@ export type HoldBlock = {
   user_name: string | null
 }
 
+export type HoldRequestBlock = {
+  id:           string
+  truck_number: string
+  market:       string
+  state:        string
+  notes:        string
+  start_date:   string       // YYYY-MM-DD
+  end_date:     string       // YYYY-MM-DD
+  status:       'PENDING' | 'APPROVED' | 'REJECTED'
+  company_name: string
+}
+
 // ── Internal synthesised row type (used by CellDetail / HoldModal) ────────────
 
 export type ScheduleRow = {
@@ -52,7 +64,7 @@ export type ScheduleRow = {
   state: string
   program: string
   formatted_location: string
-  display_status: 'EMPTY' | 'SCHEDULED_LED' | 'HOLD_TENTATIVE' | 'COMMITTED_NOT_SET' | 'ATT_SOFT' | 'MAINTENANCE' | 'DEPARTING'
+  display_status: 'EMPTY' | 'SCHEDULED_LED' | 'HOLD_TENTATIVE' | 'COMMITTED_NOT_SET' | 'ATT_SOFT' | 'MAINTENANCE' | 'DEPARTING' | 'HOLD_REQUEST'
   calendar_date: string
   shift_start: string | null
   shift_end: string | null
@@ -86,7 +98,8 @@ const STATUS_COLORS: Record<string, string> = {
   COMMITTED_NOT_SET:  'bg-red-500 hover:bg-red-600',
   ATT_SOFT:           'bg-blue-400 hover:bg-blue-500',
   MAINTENANCE:        'bg-orange-400 hover:bg-orange-500',
-  DEPARTING:          'bg-green-500 hover:bg-green-600',
+  DEPARTING:          'bg-gray-200 hover:bg-gray-300',
+  HOLD_REQUEST:       'bg-yellow-400 hover:bg-yellow-500',
 }
 
 
@@ -99,6 +112,7 @@ const CLIENT_STATUS_COLORS: Record<string, string> = {
   ATT_SOFT:           'bg-gray-300 hover:bg-gray-400',
   MAINTENANCE:        'bg-gray-300 hover:bg-gray-400',
   DEPARTING:          'bg-green-500 hover:bg-green-600',
+  HOLD_REQUEST:       'bg-yellow-400 hover:bg-yellow-500',
 }
 
 
@@ -110,6 +124,7 @@ const STATUS_LABELS: Record<string, string> = {
   ATT_SOFT:           'ATT Hold',
   MAINTENANCE:        'Maintenance',
   DEPARTING:          'Departing',
+  HOLD_REQUEST:       'Requested',
 }
 
 function getDates(from: Date, to: Date): Date[] {
@@ -132,15 +147,17 @@ interface ScheduleGridProps {
   trucks: TruckInfo[]
   schedules: ScheduleBlock[]
   holds: HoldBlock[]
+  holdRequests?: HoldRequestBlock[]
   filters: Filters
   onHoldCreated: () => void
+  onCellRangeSelected?: (truckNum: string, start: string, end: string, market: string) => void
   markets: string[]
   states: string[]
   clientView?: boolean
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated, markets, states: _states, clientView = false }: ScheduleGridProps) {
+export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filters, onHoldCreated, onCellRangeSelected, markets, states: _states, clientView = false }: ScheduleGridProps) {
   const today = startOfDay(new Date())
   const dateFrom = filters.dateFrom ? startOfDay(parseISO(filters.dateFrom)) : addDays(today, -7)
   const dateTo   = filters.dateTo   ? startOfDay(parseISO(filters.dateTo))   : addDays(today, 90)
@@ -152,9 +169,10 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
   const [showHoldModal, setShowHoldModal] = useState(false)
   const [holdRange, setHoldRange] = useState<{ truck: string; start: Date; end: Date } | null>(null)
 
-  const isDragging  = useRef(false)
-  const hasMoved    = useRef(false)
-  const pendingCell = useRef<ScheduleRow | null>(null)
+  const isDragging    = useRef(false)
+  const hasMoved      = useRef(false)
+  const pendingCell   = useRef<ScheduleRow | null>(null)
+  const dragStartRef  = useRef<{ truck: string; dateIdx: number } | null>(null)
 
   // ── Per-truck derived data ────────────────────────────────────────────────
   // Computed once when trucks/schedules change. Avoids per-cell recalculation.
@@ -272,7 +290,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
   // Holds are layered on top of schedules; holds take priority in getCellData.
 
   const dataMap = useMemo(() => {
-    const m = new Map<string, { sched?: ScheduleBlock; hold?: HoldBlock; attHold?: HoldBlock }>()
+    const m = new Map<string, { sched?: ScheduleBlock; hold?: HoldBlock; attHold?: HoldBlock; holdReq?: HoldRequestBlock }>()
 
     for (const block of schedules) {
       if (!block.shift_start || !block.shift_end) continue
@@ -302,8 +320,20 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       }
     }
 
+    for (const req of holdRequests) {
+      if (!req.start_date || !req.end_date) continue
+      let d = parseISO(req.start_date)
+      const end = parseISO(req.end_date)
+      while (d <= end) {
+        const key = `${req.truck_number}__${format(d, 'yyyy-MM-dd')}`
+        const existing = m.get(key) ?? {}
+        if (!existing.hold && !existing.sched) m.set(key, { ...existing, holdReq: req })
+        d = addDays(d, 1)
+      }
+    }
+
     return m
-  }, [schedules, holds])
+  }, [schedules, holds, holdRequests])
 
   // Pre-compute non-ATT schedules per truck for ATT_SOFT voiding logic
   const nonAttSchedulesByTruck = useMemo(() => {
@@ -546,7 +576,10 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       const voided = nonAttSchedulesByTruck.get(truckNum)?.some(
         (s) => s.shift_start <= holdEnd && s.shift_end >= holdStart
       )
-      if (voided) return withDeparting(base)
+      if (voided) {
+        if (entry.holdReq) return { ...base, display_status: 'HOLD_REQUEST', hold_id: entry.holdReq.id, client_name: entry.holdReq.company_name, hold_notes: entry.holdReq.notes }
+        return withDeparting(base)
+      }
       return {
         ...base,
         display_status:  'ATT_SOFT',
@@ -557,7 +590,18 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
       }
     }
 
-    // 4. Empty (grey)
+    // 5. Client hold request (purple)
+    if (entry.holdReq) {
+      return {
+        ...base,
+        display_status: 'HOLD_REQUEST',
+        hold_id:        entry.holdReq.id,
+        client_name:    entry.holdReq.company_name,
+        hold_notes:     entry.holdReq.notes,
+      }
+    }
+
+    // 6. Empty (grey)
     return withDeparting(base)
   }
 
@@ -571,9 +615,12 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
   }
 
   const handleMouseDown = (truckNum: string, dateIdx: number, cell: ScheduleRow) => {
-    isDragging.current  = true
-    hasMoved.current    = false
-    pendingCell.current = cell
+    // Client hold requests: only allow drag on empty/departing cells
+    if (onCellRangeSelected && clientView && cell.display_status !== 'EMPTY' && cell.display_status !== 'DEPARTING') return
+    isDragging.current    = true
+    hasMoved.current      = false
+    pendingCell.current   = cell
+    dragStartRef.current  = { truck: truckNum, dateIdx }
     setDragStart({ truck: truckNum, dateIdx })
     setDragEnd({ truck: truckNum, dateIdx })
   }
@@ -590,6 +637,18 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     if (!isDragging.current) return
     isDragging.current = false
 
+    // Single-cell click in client view — state may not have updated yet, so read from ref
+    // (handleMouseDown already gated on EMPTY/DEPARTING, so no need to re-check here)
+    if (onCellRangeSelected && clientView && !hasMoved.current && dragStartRef.current) {
+      const { truck: truckNum, dateIdx } = dragStartRef.current
+      const market = truckMarketLookup.get(truckNum) ?? ''
+      dragStartRef.current = null
+      setDragStart(null); setDragEnd(null); hasMoved.current = false
+      onCellRangeSelected(truckNum, format(dates[dateIdx], 'yyyy-MM-dd'), format(dates[dateIdx], 'yyyy-MM-dd'), market)
+      return
+    }
+    dragStartRef.current = null
+
     if (dragStart && dragEnd && dragStart.truck === dragEnd.truck) {
       const minIdx = Math.min(dragStart.dateIdx, dragEnd.dateIdx)
       const maxIdx = Math.max(dragStart.dateIdx, dragEnd.dateIdx)
@@ -603,7 +662,11 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
           if (entry?.sched) { schedConflict = { date: dates[i], program: entry.sched.program }; break }
         }
 
-        if (schedConflict) {
+        if (onCellRangeSelected && clientView) {
+          // Client hold request drag — no conflict blocking
+          const market = truckMarketLookup.get(truckNum) ?? ''
+          onCellRangeSelected(truckNum, format(dates[minIdx], 'yyyy-MM-dd'), format(dates[maxIdx], 'yyyy-MM-dd'), market)
+        } else if (schedConflict) {
           const isMaint = schedConflict.program?.toLowerCase() === 'truck maintenance'
           toast.error(
             isMaint
@@ -622,7 +685,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
     setDragStart(null)
     setDragEnd(null)
     hasMoved.current = false
-  }, [dragStart, dragEnd, dates, dataMap])
+  }, [dragStart, dragEnd, dates, dataMap, onCellRangeSelected, clientView, truckMarketLookup])
 
   useEffect(() => {
     window.addEventListener('mouseup', handleMouseUp)
@@ -826,7 +889,7 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
                         return (
                           <td
                             key={dateIdx}
-                            className={`w-20 min-w-[5rem] h-12 border-b border-r border-gray-100 ${clientView ? 'cursor-default' : 'cursor-pointer'} transition-all ${
+                            className={`w-20 min-w-[5rem] h-12 border-b border-r border-gray-100 ${clientView && !onCellRangeSelected ? 'cursor-default' : 'cursor-pointer'} transition-all ${
                               isSelected
                                 ? 'ring-2 ring-blue-500 ring-inset z-[15]'
                                 : inDragConflict
@@ -838,8 +901,8 @@ export function ScheduleGrid({ trucks, schedules, holds, filters, onHoldCreated,
                                 : (clientView ? CLIENT_STATUS_COLORS : STATUS_COLORS)[status]
                             } ${isToday ? 'border-l-2 border-l-green-700' : ''} ${groupTopBorder}${showDeptText ? ' relative overflow-visible group/dp' : isNearTerm ? ' relative' : ''}`}
                             style={conflictStyle}
-                            onMouseDown={clientView ? undefined : () => handleMouseDown(truckNum, dateIdx, cell)}
-                            onMouseEnter={clientView ? undefined : () => handleMouseEnter(truckNum, dateIdx)}
+                            onMouseDown={clientView && !onCellRangeSelected ? undefined : () => handleMouseDown(truckNum, dateIdx, cell)}
+                            onMouseEnter={clientView && !onCellRangeSelected ? undefined : () => handleMouseEnter(truckNum, dateIdx)}
                             title={showDeptText ? undefined : tooltip}
                           >
                             {isNearTerm && (

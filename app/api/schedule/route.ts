@@ -37,6 +37,10 @@ export async function GET(request: Request) {
       include: { user: { select: { name: true } } },
       orderBy: { start_date: 'asc' },
     })
+    const holdRequestsPromise = prisma.holdRequest.findMany({
+      include: { client_user: { select: { company_name: true } } },
+      orderBy: { created_at: 'asc' },
+    })
 
     let trucksRaw: Record<string, unknown>[]
     let schedulesRaw: Record<string, unknown>[]
@@ -52,7 +56,7 @@ export async function GET(request: Request) {
       sqlCache = { trucks: trucksRaw, schedules: schedulesRaw, timestamp: Date.now() }
     }
 
-    const holds = await holdsPromise
+    const [holds, holdRequestsRaw] = await Promise.all([holdsPromise, holdRequestsPromise])
 
     // GPS map: live from Samsara API — always fresh, not cached
     let gpsMap = new Map<string, { city: string; state: string; formatted_address: string; latitude: number; longitude: number }>()
@@ -154,7 +158,21 @@ export async function GET(request: Request) {
         user_name:    h.user?.name ?? null,
       }))
 
-    return NextResponse.json({ trucks, schedules, holds: holdBlocks })
+    const holdRequests = holdRequestsRaw
+      .filter((r) => !HIDDEN_TRUCKS.has(r.truck_number))
+      .map((r) => ({
+        id:           r.id,
+        truck_number: r.truck_number,
+        market:       r.market,
+        state:        r.state ?? '',
+        start_date:   r.start_date.toISOString().split('T')[0],
+        end_date:     r.end_date.toISOString().split('T')[0],
+        notes:        r.notes ?? '',
+        status:       r.status,
+        company_name: r.client_user.company_name,
+      }))
+
+    return NextResponse.json({ trucks, schedules, holds: holdBlocks, holdRequests })
   } catch (error) {
     console.error('Schedule query error:', error)
     return NextResponse.json({ error: 'Failed to fetch schedule' }, { status: 500 })

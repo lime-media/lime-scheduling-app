@@ -38,7 +38,7 @@ export async function GET(request: Request) {
       orderBy: { start_date: 'asc' },
     })
     const holdRequestsPromise = prisma.holdRequest.findMany({
-      include: { client_user: { select: { company_name: true } } },
+      include: { client_user: { select: { username: true, company_name: true } } },
       orderBy: { created_at: 'asc' },
     })
 
@@ -169,7 +169,7 @@ export async function GET(request: Request) {
         end_date:     r.end_date.toISOString().split('T')[0],
         notes:        r.notes ?? '',
         status:       r.status,
-        company_name: r.client_user.company_name,
+        company_name: r.client_user.username,
       }))
 
     return NextResponse.json({ trucks, schedules, holds: holdBlocks, holdRequests })

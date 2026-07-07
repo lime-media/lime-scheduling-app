@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
-import { format, addDays, startOfDay, parseISO, isSameDay, differenceInCalendarDays } from 'date-fns'
+import { format, addDays, startOfDay, parseISO, isSameDay } from 'date-fns'
 import toast from 'react-hot-toast'
 import { HoldModal } from './HoldModal'
 import { CellDetail } from './CellDetail'
@@ -463,19 +463,19 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
   }
 
   // ── Market grouping ───────────────────────────────────────────────────────
-  // Priority: (1) nearest future schedule OR recent past schedule (≤7 days) from truckMeta
-  //           (2) Samsara GPS city+state — truck is physically here with no near-term schedule
-  //           (3) API last_known_market fallback (holds, etc.)
   const todayStr = format(today, 'yyyy-MM-dd')
   const truckMarketLookup = new Map(trucks.map((t) => {
     const meta         = truckMeta.get(t.truck_number)
     const todayMarket  = meta?._todayShiftStart ? meta.last_known_market : null
     const nextShift    = meta?.shiftsByStart.find(s => s.shift_start > todayStr)
-    const daysUntil    = nextShift ? differenceInCalendarDays(parseISO(nextShift.shift_start), today) : Infinity
-    const nearMkt      = nextShift && daysUntil <= 7  ? nextShift.market : null   // ≤7 days → use shift market
+    const nextMkt      = nextShift?.market ?? null
     const gpsMarket    = t.last_gps_city ? [t.last_gps_city, t.last_gps_state].filter(Boolean).join(', ') : null
-    const farMkt       = nextShift && daysUntil > 7   ? nextShift.market : null   // >7 days → GPS takes priority; this is last fallback
-    return [t.truck_number, todayMarket || nearMkt || gpsMarket || farMkt || 'Unassigned']
+    // TODO: re-enable 7-day GPS threshold when ready:
+    // const daysUntil = nextShift ? differenceInCalendarDays(parseISO(nextShift.shift_start), today) : Infinity
+    // const nearMkt   = nextShift && daysUntil <= 7 ? nextShift.market : null  // ≤7 days → use shift market
+    // const farMkt    = nextShift && daysUntil > 7  ? nextShift.market : null  // >7 days → GPS takes priority; this is last fallback
+    // return [t.truck_number, todayMarket || nearMkt || gpsMarket || farMkt || 'Unassigned']
+    return [t.truck_number, todayMarket || nextMkt || gpsMarket || meta?.last_known_market || 'Unassigned']
   }))
   const groupMap = new Map<string, string[]>()
   for (const truckNum of truckNums) {

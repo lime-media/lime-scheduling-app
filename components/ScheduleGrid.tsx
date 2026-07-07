@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
-import { format, addDays, startOfDay, parseISO, isSameDay } from 'date-fns'
+import { format, addDays, startOfDay, parseISO, isSameDay, differenceInCalendarDays } from 'date-fns'
 import toast from 'react-hot-toast'
 import { HoldModal } from './HoldModal'
 import { CellDetail } from './CellDetail'
@@ -470,9 +470,12 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
   const truckMarketLookup = new Map(trucks.map((t) => {
     const meta         = truckMeta.get(t.truck_number)
     const todayMarket  = meta?._todayShiftStart ? meta.last_known_market : null
-    const futureMarket = meta?.shiftsByStart.find(s => s.shift_start > todayStr)?.market ?? null
+    const nextShift    = meta?.shiftsByStart.find(s => s.shift_start > todayStr)
+    const daysUntil    = nextShift ? differenceInCalendarDays(parseISO(nextShift.shift_start), today) : Infinity
+    const nearMkt      = nextShift && daysUntil <= 7  ? nextShift.market : null   // ≤7 days → use shift market
     const gpsMarket    = t.last_gps_city ? [t.last_gps_city, t.last_gps_state].filter(Boolean).join(', ') : null
-    return [t.truck_number, todayMarket || futureMarket || gpsMarket || 'Unassigned']
+    const farMkt       = nextShift && daysUntil > 7   ? nextShift.market : null   // >7 days → GPS takes priority; this is last fallback
+    return [t.truck_number, todayMarket || nearMkt || gpsMarket || farMkt || 'Unassigned']
   }))
   const groupMap = new Map<string, string[]>()
   for (const truckNum of truckNums) {
@@ -605,6 +608,23 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
     return withDeparting(base)
   }
 
+  // Near-term stripe dates: before 12pm CT → today + 1 next business day
+  //                         after  12pm CT → today + 2 next business days
+  const nearTermDates = useMemo(() => {
+    const ctNow  = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }))
+    const count  = ctNow.getHours() < 12 ? 1 : 2
+    const set    = new Set<string>()
+    set.add(format(today, 'yyyy-MM-dd'))
+    let d = addDays(today, 1)
+    let added = 0
+    while (added < count) {
+      const dow = d.getDay()
+      if (dow !== 0 && dow !== 6) { set.add(format(d, 'yyyy-MM-dd')); added++ }
+      d = addDays(d, 1)
+    }
+    return set
+  }, [today])
+
   // ── Drag interaction ──────────────────────────────────────────────────────
 
   const isInDragRange = (truckNum: string, dateIdx: number): boolean => {
@@ -617,6 +637,8 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
   const handleMouseDown = (truckNum: string, dateIdx: number, cell: ScheduleRow) => {
     // Client hold requests: only allow drag on empty/departing cells
     if (onCellRangeSelected && clientView && cell.display_status !== 'EMPTY' && cell.display_status !== 'DEPARTING') return
+    // Client hold requests: block near-term dates
+    if (onCellRangeSelected && clientView && nearTermDates.has(format(dates[dateIdx], 'yyyy-MM-dd'))) return
     isDragging.current    = true
     hasMoved.current      = false
     pendingCell.current   = cell
@@ -663,7 +685,9 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
         }
 
         if (onCellRangeSelected && clientView) {
-          // Client hold request drag — no conflict blocking
+          // Block if any date in the range is near-term
+          const hasNearTerm = Array.from({ length: maxIdx - minIdx + 1 }, (_, i) => format(dates[minIdx + i], 'yyyy-MM-dd')).some(d => nearTermDates.has(d))
+          if (hasNearTerm) { setDragStart(null); setDragEnd(null); hasMoved.current = false; return }
           const market = truckMarketLookup.get(truckNum) ?? ''
           onCellRangeSelected(truckNum, format(dates[minIdx], 'yyyy-MM-dd'), format(dates[maxIdx], 'yyyy-MM-dd'), market)
         } else if (schedConflict) {
@@ -685,7 +709,7 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
     setDragStart(null)
     setDragEnd(null)
     hasMoved.current = false
-  }, [dragStart, dragEnd, dates, dataMap, onCellRangeSelected, clientView, truckMarketLookup])
+  }, [dragStart, dragEnd, dates, dataMap, onCellRangeSelected, clientView, truckMarketLookup, nearTermDates])
 
   useEffect(() => {
     window.addEventListener('mouseup', handleMouseUp)
@@ -736,22 +760,6 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
 
   const todayIdx = dates.findIndex((d) => isSameDay(d, today))
 
-  // Near-term stripe dates: before 12pm CT → today + 1 next business day
-  //                         after  12pm CT → today + 2 next business days
-  const nearTermDates = useMemo(() => {
-    const ctNow  = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }))
-    const count  = ctNow.getHours() < 12 ? 1 : 2
-    const set    = new Set<string>()
-    set.add(format(today, 'yyyy-MM-dd'))
-    let d = addDays(today, 1)
-    let added = 0
-    while (added < count) {
-      const dow = d.getDay()
-      if (dow !== 0 && dow !== 6) { set.add(format(d, 'yyyy-MM-dd')); added++ }
-      d = addDays(d, 1)
-    }
-    return set
-  }, [today])
   const panelLastMarket = selectedCell?.display_status === 'EMPTY'
     ? (selectedCell.last_known_market ?? '')
     : ''

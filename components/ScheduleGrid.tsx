@@ -610,6 +610,8 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
 
   // Near-term stripe dates: before 12pm CT → today + 1 next business day
   //                         after  12pm CT → today + 2 next business days
+  // Walk forward day by day, blocking every date along the way (weekends included
+  // when they fall inside the span) until the target number of business days is hit.
   const nearTermDates = useMemo(() => {
     const ctNow  = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }))
     const count  = ctNow.getHours() < 12 ? 1 : 2
@@ -619,7 +621,8 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
     let added = 0
     while (added < count) {
       const dow = d.getDay()
-      if (dow !== 0 && dow !== 6) { set.add(format(d, 'yyyy-MM-dd')); added++ }
+      set.add(format(d, 'yyyy-MM-dd'))
+      if (dow !== 0 && dow !== 6) added++
       d = addDays(d, 1)
     }
     return set

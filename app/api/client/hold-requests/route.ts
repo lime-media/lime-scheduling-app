@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
 import { sendHoldRequestEmail } from '@/lib/email'
+import { appendHoldRequestToSheet } from '@/lib/googleSheets'
 
 export async function GET(req: NextRequest) {
   const session = getClientSession(req)
@@ -49,6 +50,19 @@ export async function POST(req: NextRequest) {
         status:     'PENDING',
       },
     })
+
+    // Append to Google Sheet (no-op if env vars not set)
+    appendHoldRequestToSheet({
+      submittedAt:  new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }),
+      companyName:  session.companyName,
+      truckNumber:  truck_number,
+      market:       market ?? '',
+      state:        state  ?? '',
+      startDate:    start_date,
+      endDate:      end_date,
+      notes:        notes  ?? '',
+      status:       'PENDING',
+    }).catch((e) => console.error('[sheets] append failed:', e))
 
     // Send email notification (no-op if SMTP not configured)
     await sendHoldRequestEmail({

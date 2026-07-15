@@ -227,7 +227,7 @@ export default function ClientPage() {
           {!loading && <span className="text-xs text-gray-400">{trucks.length} trucks</span>}
         </div>
 
-        <FilterBar filters={filters} onChange={setFilters} states={states} markets={markets} clientView />
+        <FilterBar filters={filters} onChange={setFilters} markets={markets} clientView />
 
         <div className="flex-1 overflow-auto mt-3">
           {error ? (

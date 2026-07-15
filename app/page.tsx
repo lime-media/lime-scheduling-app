@@ -123,7 +123,6 @@ export default function DashboardPage() {
           <FilterBar
             filters={filters}
             onChange={setFilters}
-            states={states}
             markets={markets}
           />
 

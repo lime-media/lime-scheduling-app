@@ -52,3 +52,5 @@ export const US_STATE_NAMES: Record<string, string> = {
   WY: 'Wyoming',
   PR: 'Puerto Rico',
 }
+
+export const US_STATE_ABBREVIATIONS = Object.keys(US_STATE_NAMES).sort()

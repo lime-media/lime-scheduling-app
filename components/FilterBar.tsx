@@ -1,7 +1,7 @@
 'use client'
 
 import { format, addDays, startOfDay } from 'date-fns'
-import { US_STATE_NAMES } from '@/lib/usStates'
+import { US_STATE_NAMES, US_STATE_ABBREVIATIONS } from '@/lib/usStates'
 import { SearchableSelect } from '@/components/SearchableSelect'
 
 type Filters = {
@@ -15,7 +15,6 @@ type Filters = {
 interface FilterBarProps {
   filters: Filters
   onChange: (filters: Filters) => void
-  states: string[]
   markets: string[]
   clientView?: boolean
 }
@@ -32,7 +31,7 @@ const STATUS_OPTIONS = [
 
 const BOOKED_STATUSES = ['SCHEDULED_LED', 'MAINTENANCE', 'HOLD_TENTATIVE', 'ATT_SOFT', 'COMMITTED_NOT_SET']
 
-export function FilterBar({ filters, onChange, states, markets, clientView = false }: FilterBarProps) {
+export function FilterBar({ filters, onChange, markets, clientView = false }: FilterBarProps) {
   const today = startOfDay(new Date())
 
   const toggleStatus = (status: string) => {
@@ -69,7 +68,7 @@ export function FilterBar({ filters, onChange, states, markets, clientView = fal
           <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">State</label>
           <SearchableSelect
             value={filters.state}
-            options={states}
+            options={US_STATE_ABBREVIATIONS}
             placeholder="All states"
             width="w-24"
             getAliasText={(abbr) => US_STATE_NAMES[abbr]}

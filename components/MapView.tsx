@@ -7,7 +7,7 @@ import 'leaflet/dist/leaflet.css'
 import { format, addDays, startOfDay } from 'date-fns'
 import type { TruckLocation } from '@/app/api/trucks/locations/route'
 import { getMarketCoords } from '@/lib/marketCoordinates'
-import { US_STATE_NAMES } from '@/lib/usStates'
+import { US_STATE_NAMES, US_STATE_ABBREVIATIONS } from '@/lib/usStates'
 import { SearchableSelect } from '@/components/SearchableSelect'
 
 type SchedEntry = { truck_number: string; shift_start: string; shift_end: string; market: string; program: string; standard_market_name?: string; state?: string }
@@ -370,10 +370,6 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
     })
   }, [trucks, selectedDate, schedEntries, holdEntries, clientView, todayStr])
 
-  const allStates = Array.from(
-    new Set(displayTrucks.map((t) => t.state).filter(Boolean))
-  ).sort()
-
   const filtered = displayTrucks.filter((t) => {
     if (!showScheduled && t.status === 'SCHEDULED_LED') return false
     if (!showHold      && t.status === 'HOLD')          return false
@@ -443,7 +439,7 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
       <div className="mt-3">
         <SearchableSelect
           value={stateFilter}
-          options={allStates}
+          options={US_STATE_ABBREVIATIONS}
           placeholder="All States"
           width="w-full"
           getAliasText={(abbr) => US_STATE_NAMES[abbr]}

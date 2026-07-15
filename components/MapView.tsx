@@ -7,6 +7,8 @@ import 'leaflet/dist/leaflet.css'
 import { format, addDays, startOfDay } from 'date-fns'
 import type { TruckLocation } from '@/app/api/trucks/locations/route'
 import { getMarketCoords } from '@/lib/marketCoordinates'
+import { US_STATE_NAMES } from '@/lib/usStates'
+import { SearchableSelect } from '@/components/SearchableSelect'
 
 type SchedEntry = { truck_number: string; shift_start: string; shift_end: string; market: string; program: string; standard_market_name?: string; state?: string }
 type HoldEntry  = { truck_number: string; start_date: string; end_date: string; status: string; market: string; client_name: string }
@@ -438,14 +440,16 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
           ))
         )}
       </div>
-      <select
-        value={stateFilter}
-        onChange={(e) => setStateFilter(e.target.value)}
-        className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white mt-3"
-      >
-        <option value="">All States</option>
-        {allStates.map((s) => <option key={s} value={s}>{s}</option>)}
-      </select>
+      <div className="mt-3">
+        <SearchableSelect
+          value={stateFilter}
+          options={allStates}
+          placeholder="All States"
+          width="w-full"
+          getAliasText={(abbr) => US_STATE_NAMES[abbr]}
+          onChange={setStateFilter}
+        />
+      </div>
       <p className="text-xs text-gray-500 font-medium mt-2">
         {filtered.length} truck{filtered.length !== 1 ? 's' : ''} shown
       </p>

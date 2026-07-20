@@ -24,20 +24,24 @@ model User {
 
 // status: HOLD | COMMITTED
 model Hold {
-  id           String     @id @default(cuid())
-  truck_number String
-  market       String
-  state        String
-  client_name  String
-  start_date   DateTime
-  end_date     DateTime
-  status       String     @default("HOLD")
-  notes        String?
-  created_by   String
-  created_at   DateTime   @default(now())
-  updated_at   DateTime   @updatedAt
-  user         User       @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  audit_logs   AuditLog[]
+  id                  String     @id @default(cuid())
+  truck_number        String
+  market              String
+  state               String
+  client_name         String
+  start_date          DateTime
+  end_date            DateTime
+  status              String     @default("HOLD")
+  notes               String?
+  created_by          String
+  created_at          DateTime   @default(now())
+  updated_at          DateTime   @updatedAt
+  // Set only for holds pushed in from Salesforce — lets repeat pushes for the
+  // same Opportunity update the existing hold instead of creating duplicates.
+  sfdc_opportunity_id String?
+  sfdc_hold_exp       DateTime?
+  user                User       @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  audit_logs          AuditLog[]
 
   @@map("app_holds")
 }

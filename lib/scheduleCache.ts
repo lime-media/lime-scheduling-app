@@ -10,6 +10,7 @@ import { getPool, query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
+import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────
 
@@ -56,12 +57,13 @@ export async function refreshCache(): Promise<void> {
   )
 
   const holds: ConflictHold[] = holdsRaw.map((h) => ({
-    id:           h.id,
-    truck_number: h.truck_number,
-    client_name:  h.client_name,
-    market:       h.market,
-    start_date:   h.start_date.toISOString().split('T')[0],
-    end_date:     h.end_date.toISOString().split('T')[0],
+    id:                  h.id,
+    truck_number:        h.truck_number,
+    client_name:         h.client_name,
+    market:              h.market,
+    start_date:          h.start_date.toISOString().split('T')[0],
+    end_date:            h.end_date.toISOString().split('T')[0],
+    sfdc_opportunity_id: h.sfdc_opportunity_id,
   }))
 
   await detectConflicts(schedules, holds)
@@ -71,12 +73,13 @@ export async function refreshCache(): Promise<void> {
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface ConflictHold {
-  id:           string
-  truck_number: string
-  client_name:  string
-  market:       string
-  start_date:   string  // YYYY-MM-DD
-  end_date:     string  // YYYY-MM-DD
+  id:                  string
+  truck_number:        string
+  client_name:         string
+  market:              string
+  start_date:          string  // YYYY-MM-DD
+  end_date:            string  // YYYY-MM-DD
+  sfdc_opportunity_id?: string | null
 }
 
 export interface ConflictSchedule {
@@ -97,6 +100,10 @@ export async function detectConflicts(
 
   const pool = await getPool()
 
+  // Only fetched if a Salesforce-sourced hold actually overlaps a schedule —
+  // needed to attribute the auto-release audit log entry.
+  let sfdcServiceUserId: string | null | undefined
+
   for (const hold of holds) {
     // Find schedule blocks that overlap this hold's date range on the same truck
     const overlapping = schedules.filter(
@@ -105,6 +112,40 @@ export async function detectConflicts(
         s.shift_start  <= hold.end_date &&
         s.shift_end    >= hold.start_date
     )
+
+    if (hold.sfdc_opportunity_id && overlapping.length > 0) {
+      // A real LED shift now covers this Salesforce-sourced hold — the deal has
+      // converted to a firm booking, so release the tentative hold instead of
+      // flagging it as a conflict for manual review.
+      if (sfdcServiceUserId === undefined) {
+        const serviceUser = await prisma.user.findUnique({ where: { email: SFDC_SERVICE_USER_EMAIL } })
+        sfdcServiceUserId = serviceUser?.id ?? null
+      }
+
+      if (sfdcServiceUserId) {
+        await prisma.auditLog.create({
+          data: {
+            action:       'DELETE_HOLD',
+            truck_number: hold.truck_number,
+            user_id:      sfdcServiceUserId,
+            hold_id:      hold.id,
+            details:      JSON.stringify({
+              reason:              'sfdc_converted_to_booked',
+              sfdc_opportunity_id: hold.sfdc_opportunity_id,
+              scheduled_program:   overlapping[0].program,
+            }),
+          },
+        })
+        await prisma.hold.delete({ where: { id: hold.id } })
+
+        console.log(
+          `[conflicts] auto-released Salesforce hold: truck ${hold.truck_number} | "${hold.client_name}" — now covered by schedule "${overlapping[0].program}"`
+        )
+        continue
+      }
+      // Service user missing — fall through to normal conflict flagging below
+      // rather than silently losing track of the overlap.
+    }
 
     for (const sched of overlapping) {
       // Compute overlap window first — the duplicate check uses these values

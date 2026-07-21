@@ -45,7 +45,26 @@ export async function POST(req: NextRequest) {
   const end_date   = new Date(holdStop)
   const sfdc_hold_exp = holdExp ? new Date(holdExp) : null
 
-  const results: Array<{ truck_number: string; hold_id: string; action: 'created' | 'updated' }> = []
+  const results: Array<{ truck_number: string; hold_id: string; action: 'created' | 'updated' | 'removed' }> = []
+
+  // Reconcile: drop holds this Opportunity previously pushed for trucks that
+  // are no longer in its current LED Trucks list (e.g. a truck got swapped out).
+  const stale = await prisma.hold.findMany({
+    where: { sfdc_opportunity_id: opportunityId, truck_number: { notIn: truckNumbers } },
+  })
+  for (const hold of stale) {
+    await prisma.auditLog.create({
+      data: {
+        action:       'DELETE_HOLD',
+        truck_number: hold.truck_number,
+        user_id:      serviceUser.id,
+        hold_id:      hold.id,
+        details:      JSON.stringify({ reason: 'sfdc_truck_removed_from_opportunity', opportunityId }),
+      },
+    })
+    await prisma.hold.delete({ where: { id: hold.id } })
+    results.push({ truck_number: hold.truck_number, hold_id: hold.id, action: 'removed' })
+  }
 
   for (const truck_number of truckNumbers) {
     const gps    = gpsMap.get(truck_number)

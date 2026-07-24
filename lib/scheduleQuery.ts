@@ -87,15 +87,17 @@ ORDER BY t.truck_number
 `
 
 // ── AI chat context: full schedule window (-30 / +60 days) ──────────────────
-// One row per program_schedule block per truck, true start/end dates (not the
-// shift_start=shift_end grid-rendering hack used by SCHEDULED_QUERY), so the
-// assistant can answer questions about any date in the -30/+60 day window,
-// not just "today".
+// One row per truck per scheduled day, so the assistant can answer questions
+// about any date in the -30/+60 day window, not just "today". Uses only
+// ps.start_time (like SCHEDULED_QUERY) — ps.end_time bleeds into the next
+// calendar day for overnight shifts, so casting it directly would make every
+// shift look like it runs one day longer than it does. The app groups
+// consecutive same-program days into a range after fetching (see
+// buildScheduleContext in app/api/chat/route.ts).
 export const CHAT_SCHEDULE_WINDOW_QUERY = `
 SELECT
     t.truck_number,
-    CAST(ps.start_time AS DATE) AS start_date,
-    CAST(ps.end_time   AS DATE) AS end_date,
+    CAST(ps.start_time AS DATE) AS shift_date,
     COALESCE(cpm.market, '') AS market,
     COALESCE(cpm.state,  '') AS state,
     COALESCE(cp.program, '') AS program

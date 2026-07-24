@@ -218,14 +218,34 @@ async function buildScheduleContext(): Promise<string> {
     (r) => !HIDDEN_TRUCKS.has(r.truck_number)
   )
 
-  // Group the -30/+60 day schedule window by truck so each truck line can list
-  // every upcoming/recent block, not just whatever's happening today.
-  const scheduleByTruck = new Map<string, Record<string, string>[]>()
+  // Group the -30/+60 day schedule window by truck, merging consecutive days
+  // of the same program/market into one range — CHAT_SCHEDULE_WINDOW_QUERY
+  // returns one row per scheduled day, matching how the grid renders blocks.
+  function nextDayStr(dateStr: string): string {
+    const d = new Date(dateStr + 'T00:00:00Z')
+    d.setUTCDate(d.getUTCDate() + 1)
+    return d.toISOString().split('T')[0]
+  }
+
+  type ScheduleBlock = { start: string; end: string; market: string; state: string; program: string }
+
+  const scheduleByTruck = new Map<string, ScheduleBlock[]>()
   for (const row of windowRows as Record<string, string>[]) {
     if (HIDDEN_TRUCKS.has(row.truck_number)) continue
-    const list = scheduleByTruck.get(row.truck_number) ?? []
-    list.push(row)
-    scheduleByTruck.set(row.truck_number, list)
+    const blocks = scheduleByTruck.get(row.truck_number) ?? []
+    const last = blocks[blocks.length - 1]
+    if (
+      last &&
+      row.shift_date === nextDayStr(last.end) &&
+      row.program === last.program &&
+      row.market === last.market &&
+      row.state === last.state
+    ) {
+      last.end = row.shift_date
+    } else {
+      blocks.push({ start: row.shift_date, end: row.shift_date, market: row.market, state: row.state, program: row.program })
+    }
+    scheduleByTruck.set(row.truck_number, blocks)
   }
 
   const truckLines = trucks.map((r) => {
@@ -248,7 +268,7 @@ async function buildScheduleContext(): Promise<string> {
     if (blocks.length) {
       const blockList = blocks
         .map((b) => {
-          const range = b.start_date === b.end_date ? b.start_date : `${b.start_date} → ${b.end_date}`
+          const range = b.start === b.end ? b.start : `${b.start} → ${b.end}`
           const where = [b.market, b.state].filter(Boolean).join(', ')
           return `${range}${where ? ` in ${where}` : ''}${b.program ? ` (${b.program})` : ''}`
         })

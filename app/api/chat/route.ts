@@ -4,7 +4,7 @@ import { authOptions } from '@/lib/auth'
 import Anthropic from '@anthropic-ai/sdk'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
-import { CHAT_CONTEXT_QUERY } from '@/lib/scheduleQuery'
+import { CHAT_CONTEXT_QUERY, CHAT_SCHEDULE_WINDOW_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -83,7 +83,7 @@ truck: <truck_number>
 [/ACTION]
 
 Always check for conflicts before placing a hold. If there is a conflict, do not emit the action block — report the conflict instead.
-Today's date is always provided in the schedule context.`
+Today's date is always provided in the schedule context. Truck schedule data covers a fixed window from 30 days before today through 60 days after today — if asked about a date outside that window, say so explicitly rather than guessing.`
 
 // ── Action block parsing & execution ─────────────────────────────────────────
 
@@ -204,8 +204,9 @@ const HIDDEN_TRUCKS = new Set(['0001', '1257', '00001257', '7333'])
 async function buildScheduleContext(): Promise<string> {
   const today = new Date().toISOString().split('T')[0]
 
-  const [truckRows, holds, gpsMap] = await Promise.all([
+  const [truckRows, windowRows, holds, gpsMap] = await Promise.all([
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
+    query<Record<string, unknown>[]>(CHAT_SCHEDULE_WINDOW_QUERY),
     prisma.hold.findMany({
       include: { user: { select: { name: true } } },
       orderBy: { start_date: 'asc' },
@@ -216,6 +217,16 @@ async function buildScheduleContext(): Promise<string> {
   const trucks = (truckRows as Record<string, string>[]).filter(
     (r) => !HIDDEN_TRUCKS.has(r.truck_number)
   )
+
+  // Group the -30/+60 day schedule window by truck so each truck line can list
+  // every upcoming/recent block, not just whatever's happening today.
+  const scheduleByTruck = new Map<string, Record<string, string>[]>()
+  for (const row of windowRows as Record<string, string>[]) {
+    if (HIDDEN_TRUCKS.has(row.truck_number)) continue
+    const list = scheduleByTruck.get(row.truck_number) ?? []
+    list.push(row)
+    scheduleByTruck.set(row.truck_number, list)
+  }
 
   const truckLines = trucks.map((r) => {
     const todayStatus = r.today_status ?? 'UNKNOWN'
@@ -232,9 +243,19 @@ async function buildScheduleContext(): Promise<string> {
     }
 
     const parts = [`- Truck ${r.truck_number}: ${todayStatus} | ${location}`]
-    if (r.program)        parts.push(`program="${r.program}"`)
-    if (r.market)         parts.push(`market=${r.market}`)
-    if (r.schedule_start) parts.push(`scheduled ${r.schedule_start} → ${r.schedule_end}`)
+
+    const blocks = scheduleByTruck.get(r.truck_number) ?? []
+    if (blocks.length) {
+      const blockList = blocks
+        .map((b) => {
+          const range = b.start_date === b.end_date ? b.start_date : `${b.start_date} → ${b.end_date}`
+          const where = [b.market, b.state].filter(Boolean).join(', ')
+          return `${range}${where ? ` in ${where}` : ''}${b.program ? ` (${b.program})` : ''}`
+        })
+        .join('; ')
+      parts.push(`schedule: ${blockList}`)
+    }
+
     return parts.join(' | ')
   })
 
@@ -246,7 +267,7 @@ async function buildScheduleContext(): Promise<string> {
       return `  Truck ${h.truck_number}: ${h.status} for "${h.client_name}" in ${h.market}${h.state ? ', ' + h.state : ''} (${start} → ${end})${h.notes ? ' — ' + h.notes : ''}`
     })
 
-  return `TRUCK STATUS (today: ${today}):
+  return `TRUCK STATUS (today: ${today}; schedule window covers 30 days before through 60 days after today):
 ${truckLines.join('\n')}
 
 ALL HOLDS & COMMITMENTS (${holds.length} total):

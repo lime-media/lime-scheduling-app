@@ -86,6 +86,32 @@ WHERE COALESCE(t.is_deleted, 0) = 0
 ORDER BY t.truck_number
 `
 
+// ── AI chat context: full schedule window (-30 / +60 days) ──────────────────
+// One row per program_schedule block per truck, true start/end dates (not the
+// shift_start=shift_end grid-rendering hack used by SCHEDULED_QUERY), so the
+// assistant can answer questions about any date in the -30/+60 day window,
+// not just "today".
+export const CHAT_SCHEDULE_WINDOW_QUERY = `
+SELECT
+    t.truck_number,
+    CAST(ps.start_time AS DATE) AS start_date,
+    CAST(ps.end_time   AS DATE) AS end_date,
+    COALESCE(cpm.market, '') AS market,
+    COALESCE(cpm.state,  '') AS state,
+    COALESCE(cp.program, '') AS program
+FROM dbo.program_schedule ps
+JOIN dbo.trucks t
+    ON  t.truck_uid = ps.truck_uid
+LEFT JOIN dbo.client_program_markets cpm
+    ON  cpm.client_program_market_uid = ps.client_program_market_uid
+LEFT JOIN dbo.client_programs cp
+    ON  cp.client_program_uid = ps.client_program_uid
+WHERE COALESCE(t.is_deleted, 0) = 0
+  AND CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
+  AND CAST(ps.start_time AS DATE) <= DATEADD(day,  60, CAST(GETDATE() AS DATE))
+ORDER BY t.truck_number, ps.start_time
+`
+
 export const SCHEDULE_SUMMARY_QUERY = `
 SELECT
     t.truck_number,

@@ -23,6 +23,7 @@ model User {
 }
 
 // status: HOLD | COMMITTED
+// source: INTERNAL | SALESFORCE | CLIENT
 model Hold {
   id                  String     @id @default(cuid())
   truck_number        String
@@ -32,6 +33,7 @@ model Hold {
   start_date          DateTime
   end_date            DateTime
   status              String     @default("HOLD")
+  source              String     @default("INTERNAL")
   notes               String?
   created_by          String
   created_at          DateTime   @default(now())
@@ -47,6 +49,7 @@ model Hold {
 }
 
 // status: PENDING | APPROVED | REJECTED
+// source: INTERNAL | SALESFORCE | CLIENT
 model HoldRequest {
   id             String     @id @default(cuid())
   client_user_id String
@@ -57,6 +60,7 @@ model HoldRequest {
   end_date       DateTime
   notes          String?    @db.NVarChar(Max)
   status         String     @default("PENDING")
+  source         String     @default("CLIENT")
   created_at     DateTime   @default(now())
   client_user    ClientUser @relation(fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 

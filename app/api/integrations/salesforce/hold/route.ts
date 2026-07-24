@@ -100,6 +100,7 @@ export async function POST(req: NextRequest) {
           start_date,
           end_date,
           status:              'HOLD',
+          source:              'SALESFORCE',
           notes:               `Auto-created from Salesforce Opportunity ${opportunityId}${market ? '' : ' — market/state unknown, no live GPS for this truck'}`,
           created_by:          serviceUser.id,
           sfdc_opportunity_id: opportunityId,

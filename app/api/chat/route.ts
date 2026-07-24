@@ -221,6 +221,15 @@ async function buildScheduleContext(): Promise<string> {
   // Group the -30/+60 day schedule window by truck, merging consecutive days
   // of the same program/market into one range — CHAT_SCHEDULE_WINDOW_QUERY
   // returns one row per scheduled day, matching how the grid renders blocks.
+  // mssql returns DATE columns as JS Date objects, not strings — normalize
+  // before doing any string/arithmetic comparisons on them.
+  function toDateStr(val: unknown): string {
+    if (!val) return ''
+    if (val instanceof Date) return val.toISOString().split('T')[0]
+    const s = String(val)
+    return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : ''
+  }
+
   function nextDayStr(dateStr: string): string {
     const d = new Date(dateStr + 'T00:00:00Z')
     d.setUTCDate(d.getUTCDate() + 1)
@@ -230,22 +239,28 @@ async function buildScheduleContext(): Promise<string> {
   type ScheduleBlock = { start: string; end: string; market: string; state: string; program: string }
 
   const scheduleByTruck = new Map<string, ScheduleBlock[]>()
-  for (const row of windowRows as Record<string, string>[]) {
-    if (HIDDEN_TRUCKS.has(row.truck_number)) continue
-    const blocks = scheduleByTruck.get(row.truck_number) ?? []
+  for (const row of windowRows as Record<string, unknown>[]) {
+    const truckNumber = String(row.truck_number ?? '')
+    if (HIDDEN_TRUCKS.has(truckNumber)) continue
+    const shiftDate = toDateStr(row.shift_date)
+    const market    = String(row.market  ?? '')
+    const state     = String(row.state   ?? '')
+    const program   = String(row.program ?? '')
+
+    const blocks = scheduleByTruck.get(truckNumber) ?? []
     const last = blocks[blocks.length - 1]
     if (
       last &&
-      row.shift_date === nextDayStr(last.end) &&
-      row.program === last.program &&
-      row.market === last.market &&
-      row.state === last.state
+      shiftDate === nextDayStr(last.end) &&
+      program === last.program &&
+      market === last.market &&
+      state === last.state
     ) {
-      last.end = row.shift_date
+      last.end = shiftDate
     } else {
-      blocks.push({ start: row.shift_date, end: row.shift_date, market: row.market, state: row.state, program: row.program })
+      blocks.push({ start: shiftDate, end: shiftDate, market, state, program })
     }
-    scheduleByTruck.set(row.truck_number, blocks)
+    scheduleByTruck.set(truckNumber, blocks)
   }
 
   const truckLines = trucks.map((r) => {

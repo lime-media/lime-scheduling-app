@@ -82,12 +82,12 @@ export default function DashboardPage() {
   useEffect(() => {
     const init = async () => {
       await Promise.all([fetchSchedule(), fetchMarkets()])
-      // Auto-create ATT soft holds for next month; refresh grid if any were created
+      // Auto-create/release ATT soft holds for next month; refresh grid if anything changed
       try {
         const r = await fetch('/api/holds/att-sync', { method: 'POST' })
         if (r.ok) {
           const data = await r.json()
-          if (data.created > 0) fetchSchedule()
+          if (data.created > 0 || data.released > 0) fetchSchedule()
         }
       } catch {
         // Non-critical — grid still works without ATT sync

@@ -29,6 +29,10 @@ function toDateStr(val: unknown): string {
 export async function refreshCache(): Promise<void> {
   console.log('[scheduleCache] refreshing...')
 
+  await releaseAttSoftHolds().catch((err) =>
+    console.error('[scheduleCache] ATT_SOFT release check failed:', err)
+  )
+
   const [schedulesRaw, holdsRaw] = await Promise.all([
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),
     // ATT_SOFT holds are soft placeholders — exclude them from conflict detection
@@ -68,6 +72,63 @@ export async function refreshCache(): Promise<void> {
 
   await detectConflicts(schedules, holds)
   console.log('[scheduleCache] refresh complete')
+}
+
+// ── ATT soft-hold release ───────────────────────────────────────────────────────
+
+/**
+ * Deletes any ATT_SOFT hold whose truck has picked up a real, non-ATT shift
+ * during the hold's date range — the hold's premise (truck idle / ATT-only)
+ * no longer holds. A new ATT shift in that window leaves the hold in place.
+ */
+export async function releaseAttSoftHolds(): Promise<number> {
+  const softHolds = await prisma.hold.findMany({ where: { status: 'ATT_SOFT' } })
+  if (softHolds.length === 0) return 0
+
+  let released = 0
+
+  for (const hold of softHolds) {
+    const startStr = toDateStr(hold.start_date)
+    const endStr   = toDateStr(hold.end_date)
+
+    // ps.start_time only — ps.end_time bleeds into the next calendar day for
+    // overnight shifts, so it's unsafe for date-range filtering.
+    const rows = await query<{ program: string }[]>(
+      `
+      SELECT cp.program
+      FROM dbo.program_schedule ps
+      JOIN dbo.trucks          t  ON t.truck_uid          = ps.truck_uid
+      JOIN dbo.client_programs cp ON cp.client_program_uid = ps.client_program_uid
+      WHERE t.truck_number = @truckNumber
+        AND CAST(ps.start_time AS DATE) BETWEEN @startDate AND @endDate
+      `,
+      { truckNumber: hold.truck_number, startDate: startStr, endDate: endStr }
+    )
+
+    const nonAtt = rows.find((r) => !String(r.program ?? '').trim().toUpperCase().startsWith('ATT'))
+    if (!nonAtt) continue
+
+    await prisma.auditLog.create({
+      data: {
+        action:       'DELETE_HOLD',
+        truck_number: hold.truck_number,
+        user_id:      hold.created_by,
+        hold_id:      hold.id,
+        details:      JSON.stringify({
+          reason:            'att_soft_superseded_by_non_att_shift',
+          scheduled_program: nonAtt.program,
+        }),
+      },
+    })
+    await prisma.hold.delete({ where: { id: hold.id } })
+    released++
+
+    console.log(
+      `[att-sync] released ATT_SOFT hold: truck ${hold.truck_number} — new shift "${nonAtt.program}" is not ATT`
+    )
+  }
+
+  return released
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────

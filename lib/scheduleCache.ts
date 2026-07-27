@@ -76,10 +76,33 @@ export async function refreshCache(): Promise<void> {
 
 // ── ATT soft-hold release ───────────────────────────────────────────────────────
 
+function isAttProgram(program: unknown): boolean {
+  return String(program ?? '').trim().toUpperCase().startsWith('ATT')
+}
+
+async function releaseHold(hold: { id: string; truck_number: string; created_by: string }, reason: string, scheduledProgram: string): Promise<void> {
+  await prisma.auditLog.create({
+    data: {
+      action:       'DELETE_HOLD',
+      truck_number: hold.truck_number,
+      user_id:      hold.created_by,
+      hold_id:      hold.id,
+      details:      JSON.stringify({ reason, scheduled_program: scheduledProgram }),
+    },
+  })
+  await prisma.hold.delete({ where: { id: hold.id } })
+  console.log(`[att-sync] released ATT_SOFT hold: truck ${hold.truck_number} — ${reason} ("${scheduledProgram}")`)
+}
+
 /**
- * Deletes any ATT_SOFT hold whose truck has picked up a real, non-ATT shift
- * during the hold's date range — the hold's premise (truck idle / ATT-only)
- * no longer holds. A new ATT shift in that window leaves the hold in place.
+ * Deletes an ATT_SOFT hold in either of two cases:
+ *  1. A real shift now overlaps the hold's date range and it isn't ATT — the
+ *     hold's premise (truck idle / ATT-only) no longer holds.
+ *  2. The truck's shift immediately before the hold started was never
+ *     actually ATT — re-validates att-sync's own creation criteria, so a hold
+ *     created from a stale lookback (e.g. skipping a same-month shift dated
+ *     after the sync's run time) self-heals instead of lingering forever.
+ * An ATT shift in either check leaves the hold in place.
  */
 export async function releaseAttSoftHolds(): Promise<number> {
   const softHolds = await prisma.hold.findMany({ where: { status: 'ATT_SOFT' } })
@@ -93,7 +116,7 @@ export async function releaseAttSoftHolds(): Promise<number> {
 
     // ps.start_time only — ps.end_time bleeds into the next calendar day for
     // overnight shifts, so it's unsafe for date-range filtering.
-    const rows = await query<{ program: string }[]>(
+    const overlapping = await query<{ program: string }[]>(
       `
       SELECT cp.program
       FROM dbo.program_schedule ps
@@ -105,27 +128,30 @@ export async function releaseAttSoftHolds(): Promise<number> {
       { truckNumber: hold.truck_number, startDate: startStr, endDate: endStr }
     )
 
-    const nonAtt = rows.find((r) => !String(r.program ?? '').trim().toUpperCase().startsWith('ATT'))
-    if (!nonAtt) continue
+    const nonAttOverlap = overlapping.find((r) => !isAttProgram(r.program))
+    if (nonAttOverlap) {
+      await releaseHold(hold, 'att_soft_superseded_by_non_att_shift', nonAttOverlap.program)
+      released++
+      continue
+    }
 
-    await prisma.auditLog.create({
-      data: {
-        action:       'DELETE_HOLD',
-        truck_number: hold.truck_number,
-        user_id:      hold.created_by,
-        hold_id:      hold.id,
-        details:      JSON.stringify({
-          reason:            'att_soft_superseded_by_non_att_shift',
-          scheduled_program: nonAtt.program,
-        }),
-      },
-    })
-    await prisma.hold.delete({ where: { id: hold.id } })
-    released++
-
-    console.log(
-      `[att-sync] released ATT_SOFT hold: truck ${hold.truck_number} — new shift "${nonAtt.program}" is not ATT`
+    const priorShift = await query<{ program: string }[]>(
+      `
+      SELECT TOP 1 cp.program
+      FROM dbo.program_schedule ps
+      JOIN dbo.trucks          t  ON t.truck_uid          = ps.truck_uid
+      JOIN dbo.client_programs cp ON cp.client_program_uid = ps.client_program_uid
+      WHERE t.truck_number = @truckNumber
+        AND CAST(ps.start_time AS DATE) < @startDate
+      ORDER BY ps.start_time DESC
+      `,
+      { truckNumber: hold.truck_number, startDate: startStr }
     )
+
+    if (priorShift.length > 0 && !isAttProgram(priorShift[0].program)) {
+      await releaseHold(hold, 'att_soft_premise_invalid_prior_shift_not_att', priorShift[0].program)
+      released++
+    }
   }
 
   return released

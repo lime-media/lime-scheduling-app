@@ -33,7 +33,10 @@ export async function POST() {
   }
 
   // Find trucks whose most recent previous shift was an ATT program, and that
-  // have no shift at all scheduled for next month. Date comparisons use only
+  // have no shift at all scheduled for next month. "Most recent" is relative
+  // to the start of next month, not real-world today — a shift dated the last
+  // day of this month (e.g. Jul 31, dated after the sync happens to run) still
+  // counts as the truck's most recent known shift. Date comparisons use only
   // ps.start_time — ps.end_time bleeds into the next calendar day for overnight
   // shifts (see CHAT_SCHEDULE_WINDOW_QUERY), so it's unsafe for date filtering.
   let attTrucks: { truck_number: string }[] = []
@@ -49,7 +52,7 @@ export async function POST() {
         JOIN dbo.trucks          t  ON t.truck_uid          = ps.truck_uid
         JOIN dbo.client_programs cp ON cp.client_program_uid = ps.client_program_uid
         WHERE COALESCE(t.is_deleted, 0) = 0
-          AND CAST(ps.start_time AS DATE) <= CAST(GETDATE() AS DATE)
+          AND CAST(ps.start_time AS DATE) < @nextMonthStart
       )
       SELECT truck_number
       FROM most_recent_shift

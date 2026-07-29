@@ -5,7 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 
-const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '7333', '1991'])
+const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
 
 function normalizeMarket(m: unknown): string {
   return String(m ?? '').replace(/\s*,\s*/g, ', ').trim()

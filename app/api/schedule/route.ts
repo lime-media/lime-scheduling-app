@@ -93,7 +93,7 @@ export async function GET(request: Request) {
       }
     }
 
-    const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '7333', '1991'])
+    const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
 
     // trucks: standard market → raw market → GPS city (Samsara as last resort)
     const sqlTruckNums = new Set(trucksRaw.map((r) => String(r.truck_number ?? '')))

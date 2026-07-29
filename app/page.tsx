@@ -18,13 +18,14 @@ type Filters = {
 }
 
 const today = startOfDay(new Date())
+const DEFAULT_RANGE_DAYS = 63 // 9 weeks
 
 const defaultFilters: Filters = {
   state: '',
   market: '',
   statusFilters: new Set(),
   dateFrom: format(today, 'yyyy-MM-dd'),
-  dateTo: format(addDays(today, 14), 'yyyy-MM-dd'),
+  dateTo: format(addDays(today, DEFAULT_RANGE_DAYS), 'yyyy-MM-dd'),
 }
 
 export default function DashboardPage() {
@@ -124,6 +125,7 @@ export default function DashboardPage() {
             filters={filters}
             onChange={setFilters}
             markets={markets}
+            rangeDays={DEFAULT_RANGE_DAYS}
           />
 
 

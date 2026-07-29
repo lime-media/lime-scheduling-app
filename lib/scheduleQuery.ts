@@ -29,7 +29,7 @@ LEFT JOIN dbo.client_program_markets cpm
 LEFT JOIN dbo.client_programs cp
     ON  cp.client_program_uid = ps.client_program_uid
 WHERE CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
-  AND CAST(ps.start_time AS DATE) <= DATEADD(day,  60, CAST(GETDATE() AS DATE))
+  AND CAST(ps.start_time AS DATE) <= DATEADD(day,  63, CAST(GETDATE() AS DATE))
 ORDER BY t.truck_number, ps.start_time
 `
 
@@ -43,7 +43,7 @@ WHERE COALESCE(t.is_deleted, 0) = 0
      SELECT 1 FROM dbo.program_schedule ps
      WHERE ps.truck_uid = t.truck_uid
        AND CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
-       AND CAST(ps.start_time AS DATE) <= DATEADD(day,  60, CAST(GETDATE() AS DATE))
+       AND CAST(ps.start_time AS DATE) <= DATEADD(day,  63, CAST(GETDATE() AS DATE))
    )
 ORDER BY truck_number
 `

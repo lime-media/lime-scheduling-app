@@ -17,6 +17,7 @@ interface FilterBarProps {
   onChange: (filters: Filters) => void
   markets: string[]
   clientView?: boolean
+  rangeDays?: number
 }
 
 const STATUS_OPTIONS = [
@@ -31,7 +32,7 @@ const STATUS_OPTIONS = [
 
 const BOOKED_STATUSES = ['SCHEDULED_LED', 'MAINTENANCE', 'HOLD_TENTATIVE', 'ATT_SOFT', 'COMMITTED_NOT_SET']
 
-export function FilterBar({ filters, onChange, markets, clientView = false }: FilterBarProps) {
+export function FilterBar({ filters, onChange, markets, clientView = false, rangeDays = 14 }: FilterBarProps) {
   const today = startOfDay(new Date())
 
   const toggleStatus = (status: string) => {
@@ -55,7 +56,7 @@ export function FilterBar({ filters, onChange, markets, clientView = false }: Fi
       market: '',
       statusFilters: new Set(),
       dateFrom: format(today, 'yyyy-MM-dd'),
-      dateTo: format(addDays(today, 14), 'yyyy-MM-dd'),
+      dateTo: format(addDays(today, rangeDays), 'yyyy-MM-dd'),
     })
   }
 

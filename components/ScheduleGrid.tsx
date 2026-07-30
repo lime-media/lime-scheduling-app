@@ -42,6 +42,7 @@ export type HoldBlock = {
   status: 'HOLD' | 'COMMITTED' | 'ATT_SOFT'
   created_by: string
   user_name: string | null
+  origination: string
 }
 
 export type HoldRequestBlock = {
@@ -77,6 +78,7 @@ export type ScheduleRow = {
   hold_state?: string
   hold_notes?: string
   hold_created_by?: string
+  hold_origination?: string
   /** Set when a hold and a schedule block occupy the same cell — conflict indicator */
   conflictProgram?: string
   departing_to?: string
@@ -539,6 +541,7 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
         hold_state:      entry.hold.state,
         hold_notes:      entry.hold.notes,
         hold_created_by: entry.hold.user_name ?? entry.hold.created_by,
+        hold_origination: entry.hold.origination,
         conflictProgram: entry.sched?.program,
       }
     }

@@ -136,6 +136,7 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
             {market             && <Row label="Market"  value={market} />}
             {cell.hold_notes    && <Row label="Notes"   value={cell.hold_notes} />}
             {cell.hold_created_by && <Row label="By"    value={cell.hold_created_by} />}
+            {cell.hold_origination === 'mcp' && <Row label="Via" value="MCP" />}
           </>
         )}
 

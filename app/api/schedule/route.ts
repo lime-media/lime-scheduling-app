@@ -156,6 +156,7 @@ export async function GET(request: Request) {
         status:       h.status as 'HOLD' | 'COMMITTED' | 'ATT_SOFT',
         created_by:   h.created_by,
         user_name:    h.user?.name ?? null,
+        origination:  h.origination ?? 'frontend',
       }))
 
     const holdRequests = holdRequestsRaw

@@ -10,20 +10,23 @@ datasource db {
 
 // role: SALES | OPERATIONS
 model User {
-  id            String     @id @default(cuid())
-  email         String     @unique
+  id            String         @id @default(cuid())
+  email         String         @unique
   name          String
   password_hash String
-  role          String     @default("SALES")
-  created_at    DateTime   @default(now())
+  role          String         @default("SALES")
+  created_at    DateTime       @default(now())
   holds         Hold[]
   audit_logs    AuditLog[]
+  mcp_tokens    McpToken[]
+  mcp_query_logs McpQueryLog[]
 
   @@map("app_users")
 }
 
 // status: HOLD | COMMITTED
 // source: INTERNAL | SALESFORCE | CLIENT
+// origination: frontend | mcp
 model Hold {
   id                  String     @id @default(cuid())
   truck_number        String
@@ -34,6 +37,7 @@ model Hold {
   end_date            DateTime
   status              String     @default("HOLD")
   source              String     @default("INTERNAL")
+  origination         String     @default("frontend")
   notes               String?
   created_by          String
   created_at          DateTime   @default(now())
@@ -90,4 +94,36 @@ model AuditLog {
   hold         Hold?    @relation(fields: [hold_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@map("app_audit_logs")
+}
+
+model McpToken {
+  id          String        @id @default(cuid())
+  token_hash  String
+  user_id     String
+  label       String
+  created_at  DateTime      @default(now())
+  revoked_at  DateTime?
+  user        User          @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  query_logs  McpQueryLog[]
+
+  @@map("mcp_tokens")
+}
+
+// outcome: success | no_availability | error
+model McpQueryLog {
+  id               String    @id @default(cuid())
+  user_id          String?
+  token_id         String?
+  tool_name        String
+  request_params   String?   @db.NVarChar(Max)
+  response_summary String?   @db.NVarChar(Max)
+  outcome          String
+  latency_ms       Int
+  created_at       DateTime  @default(now())
+  user             User?     @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  token            McpToken? @relation(fields: [token_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([user_id, created_at])
+  @@index([tool_name, outcome])
+  @@map("mcp_query_log")
 }

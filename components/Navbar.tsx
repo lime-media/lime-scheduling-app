@@ -104,6 +104,7 @@ export function Navbar() {
     { href: '/holds',     label: 'Holds' },
     { href: '/conflicts', label: 'Conflicts', badge: conflictCount > 0 ? conflictCount : null, pulse: hasRecentConflict },
     { href: '/quote',     label: 'LED Quote' },
+    { href: '/saturation-calculator', label: 'Saturation Calculator' },
     ...(isOps ? [{ href: '/users', label: 'Users', badge: null, pulse: false }] : []),
   ]
 

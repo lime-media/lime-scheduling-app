@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Lime Media — LED Saturation Curve</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    html, body { margin: 0; padding: 0; background: #FAFBF8; }
+    #root { min-height: 100vh; }
+    .boot { font-family: 'Inter', system-ui, sans-serif; color: #495544; text-align: center; padding: 80px 20px; }
+    input[type="range"] { accent-color: #94CE3C; }
+  </style>
+
+  <!-- Libraries (loaded from CDN — requires an internet connection) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js" crossorigin></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.min.js" crossorigin></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.6/babel.min.js" crossorigin></script>
+</head>
+<body>
+  <div id="root"><div class="boot">Loading the model…<br /><span style="font-size:12px;color:#A2A79C">If this message stays, check the internet connection.</span></div></div>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useMemo } = React;
+    const {
+      ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+      ReferenceArea, ReferenceLine, ReferenceDot, ResponsiveContainer,
+    } = Recharts;
+
+    /* ---------------------------------------------------------------- *
+     *  Lime Media — LED Effectiveness Curve Model
+     *  Directional projection tool. Every constant below is editable so
+     *  the curve can be calibrated against real campaign data.
+     * ---------------------------------------------------------------- */
+
+    const BRAND = {
+      green: "#94CE3C",
+      darkGreen: "#649B49",
+      purple: "#4B1F93",
+      litYellow: "#DEE385",
+      litPurple: "#DECCFC",
+      olive: "#495544",
+    };
+
+    const CONFIG = {
+      density: {
+        small: { label: "Small metro", dailyOTS: 22000, reachMax: 120000 },
+        mid:   { label: "Mid-size metro", dailyOTS: 45000, reachMax: 400000 },
+        major: { label: "Major metro", dailyOTS: 60000, reachMax: 1200000 },
+        mega:  { label: "Mega DMA", dailyOTS: 80000, reachMax: 3000000 },
+      },
+      existing: {
+        none:    { label: "None — we're the only presence", baseFreq: 0 },
+        digital: { label: "Digital / search only", baseFreq: 0.5 },
+        ooh:     { label: "Existing OOH in market", baseFreq: 1.0 },
+        omni:    { label: "Full omnichannel in market", baseFreq: 1.6 },
+      },
+      targetConcentration: 0.4,
+      effFrequency: 2.5,
+      steepness: 1.4,
+      studyFloor: 1000000,
+      costPerTruckDay: 1400,
+      plotDays: 90,
+    };
+
+    const logistic = (f) =>
+      100 / (1 + Math.exp(-CONFIG.steepness * (f - CONFIG.effFrequency)));
+
+    function evaluate(day, dailyImp, reachBase, baseFreq) {
+      const ci = dailyImp * day;
+      if (ci <= 0) return { ci: 0, reach: 0, freq: 0, eff: logistic(baseFreq) };
+      const reach = reachBase * (1 - Math.exp(-ci / reachBase));
+      const freqTruck = reach > 1 ? ci / reach : 0;
+      const freqEff = freqTruck + baseFreq;
+      return { ci, reach, freq: freqEff, eff: logistic(freqEff) };
+    }
+
+    const fmtM = (n) =>
+      n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1e3 ? (n / 1e3).toFixed(0) + "K" : Math.round(n);
+    const fmtMoney = (n) => "$" + Math.round(n).toLocaleString("en-US");
+
+    const Slider = ({ label, value, min, max, step, onChange, display }) => (
+      <label style={{ display: "block", marginBottom: 18 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: BRAND.olive, letterSpacing: 0.2 }}>{label}</span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: BRAND.darkGreen, fontVariantNumeric: "tabular-nums" }}>{display}</span>
+        </div>
+        <input
+          type="range" min={min} max={max} step={step} value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          style={{ width: "100%" }}
+        />
+      </label>
+    );
+
+    const Select = ({ label, value, options, onChange }) => (
+      <label style={{ display: "block", marginBottom: 18 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: BRAND.olive, marginBottom: 6, letterSpacing: 0.2 }}>{label}</div>
+        <select
+          value={value} onChange={(e) => onChange(e.target.value)}
+          style={{
+            width: "100%", padding: "8px 10px", fontSize: 13, borderRadius: 8,
+            border: "1px solid " + BRAND.litPurple, background: "#fff", color: BRAND.olive, fontWeight: 600,
+          }}
+        >
+          {Object.entries(options).map(([k, v]) => (
+            <option key={k} value={k}>{v.label}</option>
+          ))}
+        </select>
+      </label>
+    );
+
+    const Stat = ({ label, value, sub, accent }) => (
+      <div style={{ background: "#fff", border: "1px solid #ECECEC", borderRadius: 12, padding: "12px 14px", flex: "1 1 130px" }}>
+        <div style={{ fontSize: 11, color: "#8A8F86", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</div>
+        <div style={{ fontSize: 22, fontWeight: 800, color: accent || BRAND.olive, fontVariantNumeric: "tabular-nums", lineHeight: 1.2, marginTop: 2 }}>{value}</div>
+        {sub && <div style={{ fontSize: 11, color: "#A2A79C", marginTop: 1 }}>{sub}</div>}
+      </div>
+    );
+
+    function App() {
+      const [trucks, setTrucks] = useState(1);
+      const [hours, setHours] = useState(8);
+      const [campaignDays, setCampaignDays] = useState(30);
+      const [density, setDensity] = useState("major");
+      const [existing, setExisting] = useState("none");
+      const [targeted, setTargeted] = useState(false);
+      const [rate, setRate] = useState(CONFIG.costPerTruckDay);
+      const [showMethod, setShowMethod] = useState(false);
+
+      const model = useMemo(() => {
+        const d = CONFIG.density[density];
+        const baseFreq = CONFIG.existing[existing].baseFreq;
+        const dailyImp = d.dailyOTS * trucks * (hours / 8);
+        const reachBase = d.reachMax * (targeted ? CONFIG.targetConcentration : 1);
+
+        const data = [];
+        let inflectionDay = null, measureDay = null;
+        for (let day = 0; day <= CONFIG.plotDays; day++) {
+          const r = evaluate(day, dailyImp, reachBase, baseFreq);
+          data.push({ day, eff: +r.eff.toFixed(1), ci: Math.round(r.ci), freq: +r.freq.toFixed(2) });
+          if (inflectionDay === null && r.eff >= 50) inflectionDay = day;
+          if (measureDay === null && r.ci >= CONFIG.studyFloor) measureDay = day;
+        }
+
+        const at = (day) => {
+          const r = evaluate(day, dailyImp, reachBase, baseFreq);
+          const spend = rate * trucks * day;
+          return { ...r, spend, reachPct: (r.reach / reachBase) * 100 };
+        };
+        const atSpend = (spend) => {
+          const days = spend / (rate * trucks);
+          return { days, ...at(days) };
+        };
+
+        return { data, inflectionDay, measureDay, at, atSpend, current: at(campaignDays) };
+      }, [trucks, hours, campaignDays, density, existing, targeted, rate]);
+
+      const cur = model.current;
+      const low = model.atSpend(4000);
+      const high = model.atSpend(40000);
+
+      const CustomTip = ({ active, payload }) => {
+        if (!active || !payload || !payload.length) return null;
+        const p = payload[0].payload;
+        return (
+          <div style={{ background: "#fff", border: "1px solid " + BRAND.litPurple, borderRadius: 10, padding: "8px 12px", fontSize: 12, boxShadow: "0 4px 14px rgba(0,0,0,.08)" }}>
+            <div style={{ fontWeight: 700, color: BRAND.olive, marginBottom: 4 }}>Operating day {p.day}</div>
+            <div style={{ color: BRAND.darkGreen }}>Effectiveness: <b>{p.eff}%</b></div>
+            <div style={{ color: BRAND.purple }}>Cumulative impressions: <b>{fmtM(p.ci)}</b></div>
+            <div style={{ color: "#8A8F86" }}>Avg frequency: <b>{p.freq}×</b></div>
+          </div>
+        );
+      };
+
+      const btn = (active) => ({
+        flex: 1, padding: "8px 0", fontSize: 12, fontWeight: 700, cursor: "pointer",
+        border: "1px solid " + (active ? BRAND.darkGreen : BRAND.litPurple),
+        background: active ? BRAND.green : "#fff",
+        color: active ? "#fff" : BRAND.olive, borderRadius: 8,
+      });
+
+      return (
+        <div style={{ fontFamily: "'Inter', system-ui, -apple-system, sans-serif", color: BRAND.olive, background: "#FAFBF8", padding: 22, maxWidth: 1180, margin: "0 auto" }}>
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", color: BRAND.green }}>Lime Media · Mobile LED</div>
+            <h1 style={{ fontSize: 26, fontWeight: 800, margin: "4px 0 4px", letterSpacing: -0.5 }}>The Saturation Curve</h1>
+            <p style={{ fontSize: 14, color: "#7C8177", maxWidth: 720, margin: 0 }}>
+              More time on route builds frequency; frequency is what crosses the threshold from unseen to effective — and from unmeasurable to provable. Adjust the buy and watch where the break point lands.
+            </p>
+          </div>
+
+          <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+            <div style={{ flex: "1 1 250px", minWidth: 240, background: "#fff", border: "1px solid #ECECEC", borderRadius: 16, padding: "18px 18px 6px" }}>
+              <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 16, color: BRAND.olive }}>Build the campaign</div>
+              <Slider label="Trucks on route" value={trucks} min={1} max={8} step={1} onChange={setTrucks} display={"" + trucks} />
+              <Slider label="Operating hours / day" value={hours} min={4} max={12} step={1} onChange={setHours} display={hours + " hrs"} />
+              <Slider label="Campaign length" value={campaignDays} min={2} max={90} step={1} onChange={setCampaignDays} display={campaignDays + " op days · " + (campaignDays / 5).toFixed(0) + " wks"} />
+              <Select label="Market density" value={density} options={CONFIG.density} onChange={setDensity} />
+              <Select label="Media already in market" value={existing} options={CONFIG.existing} onChange={setExisting} />
+
+              <div style={{ fontSize: 12, fontWeight: 600, color: BRAND.olive, marginBottom: 6, letterSpacing: 0.2 }}>Routing</div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+                <button style={btn(!targeted)} onClick={() => setTargeted(false)}>Broadcast</button>
+                <button style={btn(targeted)} onClick={() => setTargeted(true)}>Targeted</button>
+              </div>
+
+              <label style={{ display: "block", marginBottom: 14 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: BRAND.olive, marginBottom: 6 }}>Cost per truck-day</div>
+                <input type="number" value={rate} min={800} max={2500} step={50} onChange={(e) => setRate(Number(e.target.value))}
+                  style={{ width: "100%", padding: "8px 10px", fontSize: 13, borderRadius: 8, border: "1px solid " + BRAND.litPurple, fontWeight: 600, color: BRAND.olive }} />
+              </label>
+            </div>
+
+            <div style={{ flex: "3 1 560px", minWidth: 320 }}>
+              <div style={{ background: "#fff", border: "1px solid #ECECEC", borderRadius: 16, padding: "14px 10px 6px" }}>
+                <ResponsiveContainer width="100%" height={340}>
+                  <ComposedChart data={model.data} margin={{ top: 10, right: 8, left: 4, bottom: 4 }}>
+                    <CartesianGrid stroke="#F0F0EC" vertical={false} />
+                    {model.inflectionDay != null && (
+                      <ReferenceArea x1={0} x2={model.inflectionDay} yAxisId="left" fill={BRAND.litPurple} fillOpacity={0.35} />
+                    )}
+                    <XAxis dataKey="day" tick={{ fontSize: 11, fill: "#9AA093" }} tickLine={false}
+                      label={{ value: "Operating days on route", position: "insideBottom", offset: -2, fontSize: 11, fill: "#9AA093" }} />
+                    <YAxis yAxisId="left" domain={[0, 100]} tick={{ fontSize: 11, fill: BRAND.darkGreen }} tickLine={false}
+                      tickFormatter={(v) => v + "%"} width={40} />
+                    <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11, fill: BRAND.purple }} tickLine={false}
+                      tickFormatter={fmtM} width={44} />
+                    <Tooltip content={<CustomTip />} />
+
+                    {model.measureDay != null && model.measureDay <= CONFIG.plotDays && (
+                      <ReferenceLine x={model.measureDay} yAxisId="left" stroke={BRAND.darkGreen} strokeDasharray="4 3"
+                        label={{ value: "Measurement-ready", fontSize: 10, fill: BRAND.darkGreen, position: "insideTopRight" }} />
+                    )}
+                    <ReferenceLine x={campaignDays} yAxisId="left" stroke={BRAND.olive} strokeWidth={1.5}
+                      label={{ value: "Your buy", fontSize: 10, fill: BRAND.olive, position: "top" }} />
+
+                    <Line yAxisId="right" type="monotone" dataKey="ci" stroke={BRAND.purple} strokeWidth={2} strokeDasharray="5 4" dot={false} />
+                    <Line yAxisId="left" type="monotone" dataKey="eff" stroke={BRAND.green} strokeWidth={3.5} dot={false} />
+                    <ReferenceDot x={campaignDays} y={cur.eff} yAxisId="left" r={5} fill={BRAND.darkGreen} stroke="#fff" strokeWidth={2} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+                <div style={{ display: "flex", gap: 18, flexWrap: "wrap", padding: "4px 12px 10px", fontSize: 11, color: "#8A8F86" }}>
+                  <span><span style={{ display: "inline-block", width: 18, height: 3, background: BRAND.green, verticalAlign: "middle", marginRight: 5 }} />Effectiveness index (left)</span>
+                  <span><span style={{ display: "inline-block", width: 18, height: 0, borderTop: "3px dashed " + BRAND.purple, verticalAlign: "middle", marginRight: 5 }} />Cumulative impressions (right)</span>
+                  <span><span style={{ display: "inline-block", width: 12, height: 12, background: BRAND.litPurple, verticalAlign: "middle", marginRight: 5 }} />Sub-critical zone</span>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
+                <Stat label="Total spend" value={fmtMoney(cur.spend)} accent={BRAND.purple} />
+                <Stat label="Cum. impressions" value={fmtM(cur.ci)} sub="A18+ OTS" />
+                <Stat label="Avg frequency" value={cur.freq.toFixed(1) + "×"} sub={"reach " + Math.round(cur.reachPct) + "% of trade area"} />
+                <Stat label="Effectiveness" value={Math.round(cur.eff) + "%"} accent={BRAND.darkGreen} />
+                <Stat label="Inflection" value={model.inflectionDay != null ? "Day " + model.inflectionDay : "Beyond 90d"} sub={model.inflectionDay != null ? "~" + (model.inflectionDay / 5).toFixed(0) + " wks" : "scale the buy"} />
+                <Stat label="Measurable" value={model.measureDay != null ? "Day " + model.measureDay : "Not at this buy"} sub={fmtM(CONFIG.studyFloor) + " imp. floor"} />
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 20, background: "#fff", border: "1px solid #ECECEC", borderRadius: 16, padding: "16px 20px" }}>
+            <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 4 }}>The break point: $4K vs $40K</div>
+            <div style={{ fontSize: 12, color: "#8A8F86", marginBottom: 14 }}>Same trucks, hours, market and routing above — only the budget changes.</div>
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+              {[{ tag: "$4,000", d: low, note: "Toe in the water" }, { tag: "$40,000", d: high, note: "Saturation buy" }].map(({ tag, d, note }) => {
+                const win = d.eff >= 50;
+                return (
+                  <div key={tag} style={{ flex: "1 1 280px", border: "1.5px solid " + (win ? BRAND.green : BRAND.litPurple), borderRadius: 12, padding: "14px 16px", background: win ? "#F6FBEC" : "#FBFAFE" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                      <span style={{ fontSize: 20, fontWeight: 800, color: BRAND.olive }}>{tag}</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: win ? BRAND.darkGreen : "#A08FC9", textTransform: "uppercase", letterSpacing: 0.5 }}>{note}</span>
+                    </div>
+                    <div style={{ display: "flex", gap: 16, marginTop: 10, fontSize: 12, color: "#7C8177" }}>
+                      <div><div style={{ fontSize: 18, fontWeight: 800, color: BRAND.olive }}>{Math.round(d.days)}</div>op days</div>
+                      <div><div style={{ fontSize: 18, fontWeight: 800, color: BRAND.purple }}>{fmtM(d.ci)}</div>impressions</div>
+                      <div><div style={{ fontSize: 18, fontWeight: 800, color: BRAND.olive }}>{d.freq.toFixed(1)}×</div>frequency</div>
+                      <div><div style={{ fontSize: 18, fontWeight: 800, color: win ? BRAND.darkGreen : "#A08FC9" }}>{Math.round(d.eff)}%</div>effective</div>
+                    </div>
+                    <div style={{ fontSize: 12, marginTop: 10, color: BRAND.olive }}>
+                      {d.ci >= CONFIG.studyFloor ? "✓ Enough impressions to run a valid lift study." : "✗ Below the impression floor — results can't be proven."}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 16, fontSize: 12, color: "#8A8F86" }}>
+            <button onClick={() => setShowMethod(!showMethod)} style={{ background: "none", border: "none", color: BRAND.darkGreen, fontWeight: 700, cursor: "pointer", padding: 0, fontSize: 12 }}>
+              {showMethod ? "▾ Hide" : "▸ Show"} how this is modeled
+            </button>
+            {showMethod && (
+              <div style={{ marginTop: 10, lineHeight: 1.6, maxWidth: 900 }}>
+                <p style={{ margin: "0 0 8px" }}><b>The mechanism.</b> Daily impressions = per-truck OTS × trucks × (hours ÷ 8). Reach saturates as impressions accumulate (reach = R<sub>max</sub> × (1 − e<sup>−impr/Rmax</sup>)), so beyond the first weeks each added truck-day converts almost entirely into <i>frequency</i> on people already reached. Effectiveness follows a logistic S-curve in frequency, with the inflection set at an effective-frequency threshold (~{CONFIG.effFrequency} exposures, per Krugman / Naples).</p>
+                <p style={{ margin: "0 0 8px" }}><b>The levers.</b> Bigger markets push the threshold right (more impressions to saturate). Media already in-market raises the audience's starting frequency, pulling the inflection left. Targeted routing concentrates the relevant audience, so frequency builds faster on the right people — at the cost of a smaller absolute reach base.</p>
+                <p style={{ margin: "0 0 8px" }}><b>Measurability.</b> A lift study needs a minimum cumulative-impression volume ({fmtM(CONFIG.studyFloor)}) before exposed-device samples are large enough to reach statistical significance — which is why a small buy literally can't be proven.</p>
+                <p style={{ margin: 0, color: "#A2A79C" }}>Directional projection for planning, not a guaranteed outcome. Constants are first-pass estimates from our modeled OTS and industry effective-frequency research; calibrate against measured campaigns as data accrues.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

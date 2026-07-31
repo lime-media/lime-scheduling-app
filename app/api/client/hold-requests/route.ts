@@ -51,18 +51,20 @@ export async function POST(req: NextRequest) {
       },
     })
 
-    // Append to Google Sheet (no-op if env vars not set)
-    appendHoldRequestToSheet({
-      submittedAt:  new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }),
-      companyName:  session.companyName,
-      truckNumber:  truck_number,
-      market:       market ?? '',
-      state:        state  ?? '',
-      startDate:    start_date,
-      endDate:      end_date,
-      notes:        notes  ?? '',
-      status:       'PENDING',
-    }).catch((e) => console.error('[sheets] append failed:', e))
+    // Append to Google Sheet — Firefly only (no-op if env vars not set)
+    if (session.companyName === 'Firefly' && session.username === 'firefly') {
+      appendHoldRequestToSheet({
+        submittedAt:  new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }),
+        companyName:  session.companyName,
+        truckNumber:  truck_number,
+        market:       market ?? '',
+        state:        state  ?? '',
+        startDate:    start_date,
+        endDate:      end_date,
+        notes:        notes  ?? '',
+        status:       'PENDING',
+      }).catch((e) => console.error('[sheets] append failed:', e))
+    }
 
     // Send email notification (no-op if SMTP not configured)
     await sendHoldRequestEmail({

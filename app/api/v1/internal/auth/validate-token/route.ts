@@ -17,15 +17,38 @@ export async function POST(req: NextRequest) {
   // Look up all non-revoked tokens and compare hashes
   const tokens = await prisma.mcpToken.findMany({
     where: { revoked_at: null },
-    include: { user: { select: { id: true, email: true, name: true } } },
   })
 
   for (const record of tokens) {
     const match = await bcrypt.compare(mcpToken, record.token_hash)
-    if (match) {
+    if (!match) continue
+
+    const userType = record.user_type || 'app_user'
+
+    // Look up user from the correct table based on user_type
+    if (userType === 'client_user') {
+      const clientUser = await prisma.clientUser.findUnique({ where: { id: record.user_id } })
+      if (!clientUser) {
+        return NextResponse.json({ error: 'Token references a deleted client user' }, { status: 401 })
+      }
       return NextResponse.json({
-        user_id: record.user.id,
-        email: record.user.email,
+        user_id: clientUser.id,
+        user_type: 'client_user',
+        username: clientUser.username,
+        company_name: clientUser.company_name,
+        label: record.label,
+        token_id: record.id,
+      })
+    } else {
+      const user = await prisma.user.findUnique({ where: { id: record.user_id } })
+      if (!user) {
+        return NextResponse.json({ error: 'Token references a deleted user' }, { status: 401 })
+      }
+      return NextResponse.json({
+        user_id: user.id,
+        user_type: 'app_user',
+        email: user.email,
+        name: user.name,
         label: record.label,
         token_id: record.id,
       })

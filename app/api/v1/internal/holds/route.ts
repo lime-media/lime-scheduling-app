@@ -48,17 +48,20 @@ export async function POST(req: NextRequest) {
     })
 
     // Fire-and-forget side effects — same as POST /api/client/hold-requests
-    appendHoldRequestToSheet({
-      submittedAt:  new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }),
-      companyName:  clientUser.company_name,
-      truckNumber:  truck_number,
-      market:       market ?? '',
-      state:        state  ?? '',
-      startDate:    start_date,
-      endDate:      end_date,
-      notes:        notes  ?? '',
-      status:       'PENDING',
-    }).catch((e) => console.error('[mcp/holds] sheets append failed:', e))
+    // Google Sheet export is Firefly-only — see app/api/client/hold-requests/route.ts
+    if (clientUser.company_name === 'Firefly' && clientUser.username === 'firefly') {
+      appendHoldRequestToSheet({
+        submittedAt:  new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }),
+        companyName:  clientUser.company_name,
+        truckNumber:  truck_number,
+        market:       market ?? '',
+        state:        state  ?? '',
+        startDate:    start_date,
+        endDate:      end_date,
+        notes:        notes  ?? '',
+        status:       'PENDING',
+      }).catch((e) => console.error('[mcp/holds] sheets append failed:', e))
+    }
 
     sendHoldRequestEmail({
       companyName: clientUser.company_name,

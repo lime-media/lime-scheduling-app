@@ -99,7 +99,7 @@ model AuditLog {
 model McpToken {
   id          String    @id @default(cuid())
   token_hash  String
-  user_id     String
+  user_id     String    @db.NVarChar(255)
   user_type   String    @default("app_user")
   label       String
   created_at  DateTime  @default(now())
@@ -113,7 +113,7 @@ model McpToken {
 // No hard FK on user_id or token_id — user_id target depends on user_type
 model McpQueryLog {
   id               String   @id @default(cuid())
-  user_id          String?
+  user_id          String?  @db.NVarChar(255)
   user_type        String?
   token_id         String?
   tool_name        String

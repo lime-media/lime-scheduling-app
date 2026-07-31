@@ -9,6 +9,7 @@ const ALWAYS_PUBLIC = [
   '/api/auth',
   '/api/client',
   '/api/v1/internal',
+  '/api/admin',
   '/api/integrations',
   '/_next',
   '/favicon.ico',

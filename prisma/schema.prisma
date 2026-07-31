@@ -5,7 +5,7 @@ generator client {
 datasource db {
   provider          = "sqlserver"
   url               = env("DATABASE_URL")
-  
+
 }
 
 // role: SALES | OPERATIONS
@@ -18,8 +18,6 @@ model User {
   created_at    DateTime       @default(now())
   holds         Hold[]
   audit_logs    AuditLog[]
-  mcp_tokens    McpToken[]
-  mcp_query_logs McpQueryLog[]
 
   @@map("app_users")
 }
@@ -96,32 +94,34 @@ model AuditLog {
   @@map("app_audit_logs")
 }
 
+// user_type: app_user | client_user
+// No hard FK on user_id — target table depends on user_type
 model McpToken {
-  id          String        @id @default(cuid())
+  id          String    @id @default(cuid())
   token_hash  String
   user_id     String
+  user_type   String    @default("app_user")
   label       String
-  created_at  DateTime      @default(now())
+  created_at  DateTime  @default(now())
   revoked_at  DateTime?
-  user        User          @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  query_logs  McpQueryLog[]
 
   @@map("mcp_tokens")
 }
 
 // outcome: success | no_availability | error
+// user_type: app_user | client_user
+// No hard FK on user_id or token_id — user_id target depends on user_type
 model McpQueryLog {
-  id               String    @id @default(cuid())
+  id               String   @id @default(cuid())
   user_id          String?
+  user_type        String?
   token_id         String?
   tool_name        String
-  request_params   String?   @db.NVarChar(Max)
-  response_summary String?   @db.NVarChar(Max)
+  request_params   String?  @db.NVarChar(Max)
+  response_summary String?  @db.NVarChar(Max)
   outcome          String
   latency_ms       Int
-  created_at       DateTime  @default(now())
-  user             User?     @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  token            McpToken? @relation(fields: [token_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  created_at       DateTime @default(now())
 
   @@index([user_id, created_at])
   @@index([tool_name, outcome])

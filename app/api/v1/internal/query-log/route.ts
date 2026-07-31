@@ -7,7 +7,7 @@ export async function POST(req: NextRequest) {
   if (keyError) return keyError
 
   const body = await req.json()
-  const { user_id, token_id, tool_name, request_params, response_summary, outcome, latency_ms } = body
+  const { user_id, user_type, token_id, tool_name, request_params, response_summary, outcome, latency_ms } = body
 
   if (!tool_name || !outcome || latency_ms === undefined) {
     return NextResponse.json(
@@ -19,6 +19,7 @@ export async function POST(req: NextRequest) {
   const entry = await prisma.mcpQueryLog.create({
     data: {
       user_id: user_id || null,
+      user_type: user_type || null,
       token_id: token_id || null,
       tool_name,
       request_params: request_params ? JSON.stringify(request_params) : null,

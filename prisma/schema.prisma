@@ -5,17 +5,17 @@ generator client {
 datasource db {
   provider          = "sqlserver"
   url               = env("DATABASE_URL")
-  
+
 }
 
 // role: SALES | OPERATIONS
 model User {
-  id            String     @id @default(cuid())
-  email         String     @unique
+  id            String         @id @default(cuid())
+  email         String         @unique
   name          String
   password_hash String
-  role          String     @default("SALES")
-  created_at    DateTime   @default(now())
+  role          String         @default("SALES")
+  created_at    DateTime       @default(now())
   holds         Hold[]
   audit_logs    AuditLog[]
 

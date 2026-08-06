@@ -201,6 +201,10 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
       last_known_state:     string  // state from current/last std market; GPS only if no shifts
       shiftsByEnd:          Array<{ shift_end: string; market: string }>
       shiftsByStart:        Array<{ shift_start: string; market: string }>
+      // Real LED-schedule shifts only (excludes holds) — used for the DEPARTING indicator so a
+      // hold placed in this app never gets shown as an actual upcoming shift change.
+      schedShiftsByEnd:     Array<{ shift_end: string; market: string }>
+      schedShiftsByStart:   Array<{ shift_start: string; market: string }>
       _bestSchedStart:      string
       _todayShiftStart:     string
       _todayShiftState:     string
@@ -221,6 +225,8 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
         last_known_state:    '',
         shiftsByEnd:         [],
         shiftsByStart:       [],
+        schedShiftsByEnd:    [],
+        schedShiftsByStart:  [],
         _bestSchedStart:     '',
         _todayShiftStart:    '',
         _todayShiftState:    '',
@@ -244,6 +250,8 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
 
       entry.shiftsByEnd.push({ shift_end: block.shift_end, market: blockMarket })
       entry.shiftsByStart.push({ shift_start: block.shift_start, market: blockMarket })
+      entry.schedShiftsByEnd.push({ shift_end: block.shift_end, market: blockMarket })
+      entry.schedShiftsByStart.push({ shift_start: block.shift_start, market: blockMarket })
 
       // Active today: take the latest-starting shift (most specific)
       if (block.shift_start <= todayStr && block.shift_end >= todayStr) {
@@ -264,7 +272,9 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
       }
     }
 
-    // Include holds so DEPARTING logic doesn't false-positive across hold→schedule same-market gaps
+    // Holds are merged into the combined shiftsByStart/shiftsByEnd (used for last_known_market
+    // etc.) but deliberately NOT into schedShiftsByStart/schedShiftsByEnd — those stay LED-schedule-only
+    // so the DEPARTING indicator never fires off of a hold that hasn't become a real shift yet.
     for (const hold of holds) {
       if (!hold.start_date || !hold.end_date || !hold.market) continue
       const entry = meta.get(hold.truck_number)
@@ -277,6 +287,8 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
     for (const entry of meta.values()) {
       entry.shiftsByEnd.sort((a, b) => b.shift_end.localeCompare(a.shift_end))
       entry.shiftsByStart.sort((a, b) => a.shift_start.localeCompare(b.shift_start))
+      entry.schedShiftsByEnd.sort((a, b) => b.shift_end.localeCompare(a.shift_end))
+      entry.schedShiftsByStart.sort((a, b) => a.shift_start.localeCompare(b.shift_start))
       if (!entry._todayShiftStart && entry._lastPastMarket) {
         entry.last_known_market = entry._lastPastMarket
       }
@@ -518,12 +530,14 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
 
     const withDeparting = (row: ScheduleRow): ScheduleRow => {
       if (row.display_status !== 'EMPTY') return row
-      const nextShift = meta?.shiftsByStart.find(s => s.shift_start > dateStr)
+      // Real LED-schedule shifts only — a hold placed in this app (not yet an actual LED
+      // shift) must never make an empty cell claim the truck is "departing" somewhere.
+      const nextShift = meta?.schedShiftsByStart.find(s => s.shift_start > dateStr)
       if (!nextShift?.market) return row
       // Find the most recent past shift within 30 days — prevents false positives from old history.
       // Any empty cell in a cross-market transition window inherits DEPARTING, not just the first.
       const thirtyDaysAgo = format(addDays(date, -30), 'yyyy-MM-dd')
-      const prevShift = meta?.shiftsByEnd.find(s => s.shift_end < dateStr && s.shift_end >= thirtyDaysAgo)
+      const prevShift = meta?.schedShiftsByEnd.find(s => s.shift_end < dateStr && s.shift_end >= thirtyDaysAgo)
       if (!prevShift?.market || prevShift.market === nextShift.market) return row
       return { ...row, display_status: 'DEPARTING', departing_to: nextShift.market, departing_on: nextShift.shift_start }
     }

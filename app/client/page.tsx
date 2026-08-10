@@ -1,12 +1,12 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import Link from 'next/link'
-import { useRouter, usePathname } from 'next/navigation'
 import { format, addDays, startOfDay, parseISO } from 'date-fns'
 import { ScheduleGrid, type TruckInfo, type ScheduleBlock, type HoldBlock, type HoldRequestBlock } from '@/components/ScheduleGrid'
 import { FilterBar } from '@/components/FilterBar'
+import { ClientHeader } from '@/components/ClientHeader'
 import { ScheduleSkeleton } from '@/components/LoadingSkeleton'
+import { useClientAuth } from '@/lib/useClientAuth'
 
 type Filters = {
   state: string
@@ -14,12 +14,6 @@ type Filters = {
   statusFilters: Set<string>
   dateFrom: string
   dateTo: string
-}
-
-type ClientUser = {
-  id: string
-  username: string
-  companyName: string
 }
 
 type HoldRequestDraft = {
@@ -46,11 +40,7 @@ const defaultFilters: Filters = {
 }
 
 export default function ClientPage() {
-  const router   = useRouter()
-  const pathname = usePathname()
-
-  const [clientUser,    setClientUser]    = useState<ClientUser | null>(null)
-  const [authChecked,   setAuthChecked]   = useState(false)
+  const { clientUser, authChecked } = useClientAuth()
 
   const [trucks,        setTrucks]        = useState<TruckInfo[]>([])
   const [schedules,     setSchedules]     = useState<ScheduleBlock[]>([])
@@ -68,28 +58,12 @@ export default function ClientPage() {
   const [draftLoading,  setDraftLoading]  = useState(false)
   const [draftError,    setDraftError]    = useState('')
 
-  // Change password modal
-  const [showPwModal,   setShowPwModal]   = useState(false)
-  const [currentPw,     setCurrentPw]     = useState('')
-  const [newPw,         setNewPw]         = useState('')
-  const [confirmPw,     setConfirmPw]     = useState('')
-  const [pwLoading,     setPwLoading]     = useState(false)
-  const [pwMsg,         setPwMsg]         = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
-
-  // Check auth on mount
+  // Firefly clients get a shorter default lookahead window
   useEffect(() => {
-    fetch('/api/client/auth/me')
-      .then((r) => r.json())
-      .then((d) => {
-        const user: ClientUser | null = d.user ?? null
-        setClientUser(user)
-        setAuthChecked(true)
-        if (isFirefly(user?.companyName)) {
-          setFilters((f) => ({ ...f, dateTo: format(addDays(today, FIREFLY_RANGE_DAYS), 'yyyy-MM-dd') }))
-        }
-      })
-      .catch(() => setAuthChecked(true))
-  }, [])
+    if (isFirefly(clientUser?.companyName)) {
+      setFilters((f) => ({ ...f, dateTo: format(addDays(today, FIREFLY_RANGE_DAYS), 'yyyy-MM-dd') }))
+    }
+  }, [clientUser])
 
   const fetchHoldRequests = useCallback(async () => {
     if (!clientUser) return
@@ -123,11 +97,6 @@ export default function ClientPage() {
 
   useEffect(() => { fetchSchedule() }, [fetchSchedule])
   useEffect(() => { fetchHoldRequests() }, [fetchHoldRequests])
-
-  const handleLogout = async () => {
-    await fetch('/api/client/auth/logout', { method: 'POST' })
-    router.replace('/client/login')
-  }
 
   const handleCellRangeSelected = (truckNum: string, start: string, end: string, market: string) => {
     setDraft({ truckNum, start, end, market })
@@ -177,57 +146,9 @@ export default function ClientPage() {
     }
   }
 
-  const handlePasswordChange = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (newPw !== confirmPw) { setPwMsg({ type: 'err', text: 'New passwords do not match' }); return }
-    setPwLoading(true)
-    setPwMsg(null)
-    try {
-      const res = await fetch('/api/client/auth/change-password', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ currentPassword: currentPw, newPassword: newPw }),
-      })
-      const data = await res.json()
-      if (!res.ok) { setPwMsg({ type: 'err', text: data.error || 'Failed' }); return }
-      setPwMsg({ type: 'ok', text: 'Password updated successfully.' })
-      setCurrentPw(''); setNewPw(''); setConfirmPw('')
-    } catch {
-      setPwMsg({ type: 'err', text: 'Failed to change password.' })
-    } finally {
-      setPwLoading(false)
-    }
-  }
-
   return (
     <div className="flex flex-col h-dvh overflow-hidden">
-      <header className="bg-[#94ce3a] shadow-lg px-4 sm:px-6 py-3 flex items-center flex-shrink-0">
-        <img src="/logo.png" alt="Lime Media" className="h-9 w-auto" />
-        <span className="flex-1 text-center text-[#1a3028] font-bold text-lg">Lime Media Scheduling Availability</span>
-        <nav className="flex gap-1 items-center">
-          <Link href="/client" className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${pathname === '/client' ? 'bg-[#1a3028] text-white' : 'text-[#1a3028] hover:bg-[#1a3028]/20'}`}>Schedule</Link>
-          <Link href="/client/map" className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${pathname === '/client/map' ? 'bg-[#1a3028] text-white' : 'text-[#1a3028] hover:bg-[#1a3028]/20'}`}>Map</Link>
-          {authChecked && (
-            clientUser ? (
-              <>
-                <span className="text-[#1a3028] text-xs ml-2 hidden sm:inline">{clientUser.companyName}</span>
-                <button onClick={() => { setPwMsg(null); setShowPwModal(true) }} className="ml-1 px-2 py-1.5 rounded text-xs text-[#1a3028] hover:bg-[#1a3028]/20">Password</button>
-                <button onClick={handleLogout} className="ml-1 px-2 py-1.5 rounded text-xs text-[#1a3028] hover:bg-[#1a3028]/20">Log out</button>
-              </>
-            ) : (
-              <button
-                onClick={async () => {
-                  await fetch('/api/client/auth/logout', { method: 'POST' })
-                  router.replace('/client/login')
-                }}
-                className="ml-2 px-3 py-1.5 rounded text-sm font-medium bg-[#1a3028] text-white hover:bg-[#1a3028]/90"
-              >
-                Log in
-              </button>
-            )
-          )}
-        </nav>
-      </header>
+      <ClientHeader clientUser={clientUser} authChecked={authChecked} />
 
       <div className="flex-1 flex flex-col overflow-hidden p-4 min-w-0">
         <div className="flex items-center justify-between mb-3">
@@ -306,41 +227,6 @@ export default function ClientPage() {
                 {draftLoading ? 'Submitting…' : 'Submit Request'}
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Change password modal */}
-      {showPwModal && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6">
-            <h2 className="text-base font-bold text-gray-900 mb-4">Change Password</h2>
-            <form onSubmit={handlePasswordChange} className="space-y-3">
-              {[
-                { label: 'Current password', value: currentPw, set: setCurrentPw, auto: 'current-password' },
-                { label: 'New password',     value: newPw,     set: setNewPw,     auto: 'new-password' },
-                { label: 'Confirm new',      value: confirmPw, set: setConfirmPw, auto: 'new-password' },
-              ].map(({ label, value, set, auto }) => (
-                <div key={label}>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">{label}</label>
-                  <input
-                    type="password"
-                    value={value}
-                    onChange={(e) => set(e.target.value)}
-                    autoComplete={auto}
-                    required
-                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                  />
-                </div>
-              ))}
-              {pwMsg && <p className={`text-xs ${pwMsg.type === 'ok' ? 'text-green-600' : 'text-red-600'}`}>{pwMsg.text}</p>}
-              <div className="flex gap-2 pt-1">
-                <button type="button" onClick={() => setShowPwModal(false)} className="flex-1 border border-gray-300 text-gray-600 py-2 rounded text-sm hover:bg-gray-50">Close</button>
-                <button type="submit" disabled={pwLoading} className="flex-1 bg-[#1a3028] text-white py-2 rounded text-sm font-medium hover:bg-[#1a3028]/90 disabled:opacity-50">
-                  {pwLoading ? 'Saving…' : 'Update'}
-                </button>
-              </div>
-            </form>
           </div>
         </div>
       )}

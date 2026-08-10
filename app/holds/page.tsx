@@ -6,6 +6,7 @@ import { useSession } from 'next-auth/react'
 import toast from 'react-hot-toast'
 import { Navbar } from '@/components/Navbar'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
+import { parseDateOnly } from '@/lib/dateOnly'
 
 type Hold = {
   id: string
@@ -195,9 +196,9 @@ export default function HoldsPage() {
 
                   {/* Dates */}
                   <div className="flex items-center gap-2 text-sm text-gray-600 mb-3">
-                    <span>{format(new Date(hold.start_date), 'MMM d, yyyy')}</span>
+                    <span>{format(parseDateOnly(hold.start_date), 'MMM d, yyyy')}</span>
                     <span className="text-gray-300">→</span>
-                    <span>{format(new Date(hold.end_date), 'MMM d, yyyy')}</span>
+                    <span>{format(parseDateOnly(hold.end_date), 'MMM d, yyyy')}</span>
                   </div>
 
                   {/* Footer: created by + actions */}
@@ -254,8 +255,8 @@ export default function HoldsPage() {
                         <td className="px-4 py-3 text-gray-700">{hold.client_name}</td>
                         <td className="px-4 py-3 text-gray-600">{hold.market}</td>
                         <td className="px-4 py-3 text-gray-600">{hold.state}</td>
-                        <td className="px-4 py-3 text-gray-600">{format(new Date(hold.start_date), 'MMM d, yyyy')}</td>
-                        <td className="px-4 py-3 text-gray-600">{format(new Date(hold.end_date), 'MMM d, yyyy')}</td>
+                        <td className="px-4 py-3 text-gray-600">{format(parseDateOnly(hold.start_date), 'MMM d, yyyy')}</td>
+                        <td className="px-4 py-3 text-gray-600">{format(parseDateOnly(hold.end_date), 'MMM d, yyyy')}</td>
                         <td className="px-4 py-3">
                           <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[hold.status]}`}>
                             {hold.status}

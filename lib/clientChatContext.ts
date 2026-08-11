@@ -1,6 +1,6 @@
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
-import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
+import { SCHEDULED_QUERY, CHAT_CONTEXT_QUERY } from '@/lib/scheduleQuery'
 import type { ClientSession } from '@/lib/clientAuth'
 
 const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
@@ -46,8 +46,9 @@ type Block = { start: string; end: string; market: string; state: string }
 export async function buildClientChatContext(session: ClientSession): Promise<string> {
   const today = new Date().toISOString().split('T')[0]
 
-  const [scheduleRows, holds, myRequests] = await Promise.all([
+  const [scheduleRows, contextRows, holds, myRequests] = await Promise.all([
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),
+    query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
     prisma.hold.findMany({ orderBy: { start_date: 'asc' } }),
     prisma.holdRequest.findMany({ where: { client_user_id: session.id }, orderBy: { created_at: 'desc' } }),
   ])
@@ -94,6 +95,22 @@ export async function buildClientChatContext(session: ClientSession): Promise<st
       return `- Truck ${truckNumber}: ${ranges || 'no bookings on file'}`
     })
 
+  // Trucks with no row in scheduleRows/holds above are fully open right now — but that also
+  // means byTruck has nothing to say about WHERE they are. Without this, the model has zero
+  // location data for exactly the trucks a client is most likely to ask about (open trucks),
+  // and would have to say so outright rather than answer. Same fallback the internal admin
+  // chat and the Schedule Grid itself use for idle trucks: last-known market from the LED
+  // schedule (CHAT_CONTEXT_QUERY's last_known_market). No client attribution involved — this
+  // is the truck's own most recent program's market, not another client's identity — so it
+  // doesn't touch the isolation guarantee described above.
+  const lastKnownLines = contextRows
+    .filter((row) => {
+      const truckNumber = String(row.truck_number ?? '')
+      return !HIDDEN_TRUCKS.has(truckNumber) && !byTruck.has(truckNumber) && normalizeMarket(row.last_known_market)
+    })
+    .sort((a, b) => String(a.truck_number).localeCompare(String(b.truck_number)))
+    .map((row) => `- Truck ${row.truck_number}: no bookings on file; last known market ${normalizeMarket(row.last_known_market)}`)
+
   const myRequestLines = myRequests.map((r) => {
     const start = toDateStr(r.start_date)
     const end   = toDateStr(r.end_date)
@@ -120,7 +137,7 @@ export async function buildClientChatContext(session: ClientSession): Promise<st
 VISIBILITY LIMIT — read before answering any availability question: the LED program schedule in this data is only populated through ${scheduleHorizon}. For any date ON OR BEFORE ${scheduleHorizon}, an absence of a listed booking below means the truck is genuinely available. For any date AFTER ${scheduleHorizon}, an absence of a listed booking means NOTHING — there is no data either way that far out, so you cannot confirm availability. (Holds are the exception: a hold below is reliable evidence regardless of date, even past ${scheduleHorizon}, whenever one is actually listed for that truck.)
 
 TRUCK AVAILABILITY (see the visibility limit above before treating "not listed" as "available"):
-${truckLines.join('\n') || 'No bookings on file.'}
+${[...truckLines, ...lastKnownLines].join('\n') || 'No bookings on file.'}
 
 ${session.companyName.toUpperCase()}'S OWN HOLD REQUESTS (${myRequests.length} total) — the only client whose hold-request details you may ever discuss:
 ${myRequestLines.join('\n') || 'No hold requests on file.'}`

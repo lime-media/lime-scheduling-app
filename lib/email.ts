@@ -40,7 +40,8 @@ export async function sendHoldRequestEmail(data: HoldRequestEmailData): Promise<
 
   await transporter.sendMail({
     from:    SMTP_FROM ?? SMTP_USER,
-    to:      'andrew@lime-media.com, bbenekos@lime-media.com',
+    // to:      'andrew@lime-media.com, bbenekos@lime-media.com',
+    to:      'schaudhari@lime-media.com',
     subject,
     text,
   })

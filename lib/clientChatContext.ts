@@ -81,9 +81,28 @@ export async function buildClientChatContext(session: ClientSession): Promise<st
     byTruck.set(h.truck_number, blocks)
   }
 
-  const truckLines = Array.from(byTruck.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([truckNumber, blocks]) => {
+  // Last-known market per truck (from CHAT_CONTEXT_QUERY) — the truck's own most recent
+  // program's market, no client attribution involved. Attached to EVERY truck below, not just
+  // idle ones: once a truck's listed booked ranges run out (or it has none), this is the best
+  // signal for where it's likely to be for any later date, including dates with no schedule
+  // entered yet at all — an unbuilt schedule means the truck is open, not "unknown."
+  const lastKnownMarketByTruck = new Map<string, string>()
+  for (const row of contextRows) {
+    const truckNumber = String(row.truck_number ?? '')
+    const market = normalizeMarket(row.last_known_market)
+    if (!HIDDEN_TRUCKS.has(truckNumber) && market) lastKnownMarketByTruck.set(truckNumber, market)
+  }
+
+  const allTruckNumbers = new Set<string>(byTruck.keys())
+  for (const row of contextRows) {
+    const truckNumber = String(row.truck_number ?? '')
+    if (!HIDDEN_TRUCKS.has(truckNumber)) allTruckNumbers.add(truckNumber)
+  }
+
+  const truckLines = Array.from(allTruckNumbers)
+    .sort((a, b) => a.localeCompare(b))
+    .map((truckNumber) => {
+      const blocks = byTruck.get(truckNumber) ?? []
       const ranges = blocks
         .sort((a, b) => a.start.localeCompare(b.start))
         .map((b) => {
@@ -92,24 +111,10 @@ export async function buildClientChatContext(session: ClientSession): Promise<st
           return `booked ${range}${where ? ` (${where})` : ''}`
         })
         .join('; ')
-      return `- Truck ${truckNumber}: ${ranges || 'no bookings on file'}`
+      const lastKnown = lastKnownMarketByTruck.get(truckNumber)
+      const lastKnownPart = lastKnown ? ` | last known market: ${lastKnown}` : ''
+      return `- Truck ${truckNumber}: ${ranges || 'no bookings on file'}${lastKnownPart}`
     })
-
-  // Trucks with no row in scheduleRows/holds above are fully open right now — but that also
-  // means byTruck has nothing to say about WHERE they are. Without this, the model has zero
-  // location data for exactly the trucks a client is most likely to ask about (open trucks),
-  // and would have to say so outright rather than answer. Same fallback the internal admin
-  // chat and the Schedule Grid itself use for idle trucks: last-known market from the LED
-  // schedule (CHAT_CONTEXT_QUERY's last_known_market). No client attribution involved — this
-  // is the truck's own most recent program's market, not another client's identity — so it
-  // doesn't touch the isolation guarantee described above.
-  const lastKnownLines = contextRows
-    .filter((row) => {
-      const truckNumber = String(row.truck_number ?? '')
-      return !HIDDEN_TRUCKS.has(truckNumber) && !byTruck.has(truckNumber) && normalizeMarket(row.last_known_market)
-    })
-    .sort((a, b) => String(a.truck_number).localeCompare(String(b.truck_number)))
-    .map((row) => `- Truck ${row.truck_number}: no bookings on file; last known market ${normalizeMarket(row.last_known_market)}`)
 
   const myRequestLines = myRequests.map((r) => {
     const start = toDateStr(r.start_date)
@@ -118,26 +123,12 @@ export async function buildClientChatContext(session: ClientSession): Promise<st
     return `- Truck ${r.truck_number}: ${r.status} in ${where} (${start} → ${end})${r.notes ? ' — notes: ' + r.notes : ''}`
   })
 
-  // The actual known-through date for the LED program schedule — NOT a fixed constant. The
-  // nominal query window is -30/+63 days, but real schedule data often thins out well before
-  // that (e.g. programs simply haven't been entered that far ahead yet). Computing this from
-  // the rows actually returned, rather than assuming the full nominal window is populated, is
-  // what caught a real bug: the assistant was confidently listing trucks as "available" on a
-  // date ~2 weeks past where the real data ends, purely because nothing existed to contradict
-  // it. Holds (unlike the LED schedule) have no date bound in the query, so a hold can reliably
-  // inform us about a date beyond this horizon whenever one exists — only the ABSENCE of a
-  // schedule/hold entry stops being meaningful once you're past it.
-  const scheduleHorizon = scheduleRows.reduce((max, row) => {
-    const d = toDateStr(row.shift_start)
-    return d && d > max ? d : max
-  }, today)
-
   return `Today's date: ${today}.
 
-VISIBILITY LIMIT — read before answering any availability question: the LED program schedule in this data is only populated through ${scheduleHorizon}. For any date ON OR BEFORE ${scheduleHorizon}, an absence of a listed booking below means the truck is genuinely available. For any date AFTER ${scheduleHorizon}, an absence of a listed booking means NOTHING — there is no data either way that far out, so you cannot confirm availability. (Holds are the exception: a hold below is reliable evidence regardless of date, even past ${scheduleHorizon}, whenever one is actually listed for that truck.)
+AVAILABILITY RULE: a truck is available for a requested date whenever no booked range listed below covers that date — this holds for near-term dates and far-future dates alike. An unbuilt/not-yet-entered LED schedule for a future date means the truck is genuinely open then, not unknown, so never refuse to confirm availability just because a date is far out. Each truck's "last known market" is its most recent program's market/state — use it as your best signal for WHERE an available truck is likely to be, especially once its listed booked ranges run out.
 
-TRUCK AVAILABILITY (see the visibility limit above before treating "not listed" as "available"):
-${[...truckLines, ...lastKnownLines].join('\n') || 'No bookings on file.'}
+TRUCK AVAILABILITY:
+${truckLines.join('\n') || 'No bookings on file.'}
 
 ${session.companyName.toUpperCase()}'S OWN HOLD REQUESTS (${myRequests.length} total) — the only client whose hold-request details you may ever discuss:
 ${myRequestLines.join('\n') || 'No hold requests on file.'}`

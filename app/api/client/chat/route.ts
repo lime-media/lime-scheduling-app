@@ -5,6 +5,7 @@ import { query } from '@/lib/mssql'
 import { getClientSession, type ClientSession } from '@/lib/clientAuth'
 import { buildClientChatContext } from '@/lib/clientChatContext'
 import { createHoldRequestForClient, type CreateHoldRequestParams } from '@/lib/holdRequestService'
+import { sendAssistanceRequestEmail } from '@/lib/email'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -49,17 +50,33 @@ truck: <truck_number> | market: <City, ST> | state: <2-letter state> | start: <Y
 [/ACTION]
   - Never emit this block without an explicit confirmation first.
   - Only include the trucks the client actually confirmed — never pad the list.
+  - No markdown inside the block. Plain text only.
+
+TAKING ACTION — requesting team assistance:
+- When a client's request can't be fully met from what's actually available (not enough trucks in/near the requested market, none available for part of the range, etc.), you may offer to notify the Lime Media team so a human can look into repositioning a truck or otherwise helping — but only as an option alongside submitting a hold request for whatever IS available, never as the only option.
+- This is informational only — it does not create a hold or any commitment, it just emails the team with what the client is looking for. Make that distinction clear when offering it.
+- Only send this after the client clearly confirms they want you to reach out (same confirmation bar as hold requests — a vague reply is not confirmation).
+- Once confirmed, append this block at the very end of your reply, describing exactly what was discussed:
+[ACTION: REQUEST_ASSISTANCE]
+market: <City, ST>
+state: <2-letter state>
+start: <YYYY-MM-DD>
+end: <YYYY-MM-DD>
+details: <one or two plain sentences: what the client needs and why current inventory can't cover it>
+[/ACTION]
+  - Never emit this block without an explicit confirmation first.
   - No markdown inside the block. Plain text only.`
 }
 
 // ── Action block parsing & execution ─────────────────────────────────────────
 // Mirrors the internal assistant's [ACTION: ...] pattern (app/api/chat/route.ts), but scoped to
-// the one action a client is allowed to take: creating their own PENDING HoldRequest rows via
-// the same shared service the manual Schedule Grid submission uses. There is no equivalent of
-// the internal assistant's PLACE_HOLD (a confirmed Hold) or RELEASE_HOLD here — clients never
-// get that capability, staff-only review still gates every request.
+// the two actions a client is allowed to take: creating their own PENDING HoldRequest rows via
+// the same shared service the manual Schedule Grid submission uses, or emailing the team an
+// informational assistance request. There is no equivalent of the internal assistant's PLACE_HOLD
+// (a confirmed Hold) or RELEASE_HOLD here — clients never get that capability, staff-only review
+// still gates every request.
 
-const ACTION_RE = /\[ACTION:\s*PLACE_HOLD_REQUESTS\]([\s\S]*?)\[\/ACTION\]/
+const ACTION_RE = /\[ACTION:\s*(PLACE_HOLD_REQUESTS|REQUEST_ASSISTANCE)\]([\s\S]*?)\[\/ACTION\]/
 const MAX_HOLD_REQUESTS_PER_TURN = 20
 
 function stripActionBlock(text: string): string {
@@ -125,6 +142,44 @@ async function executePlaceHoldRequests(
     message += ` (Couldn't submit for ${failed.map((t) => `#${t}`).join(', ')} — please try those again.)`
   }
   return { success: true, message }
+}
+
+function parseAssistanceRequestFields(body: string): Record<string, string> {
+  const fields: Record<string, string> = {}
+  for (const line of body.trim().split('\n')) {
+    const colon = line.indexOf(':')
+    if (colon === -1) continue
+    const k = line.slice(0, colon).trim().toLowerCase()
+    const v = line.slice(colon + 1).trim()
+    if (k && v) fields[k] = v
+  }
+  return fields
+}
+
+async function executeRequestAssistance(
+  actionBody: string,
+  session: ClientSession
+): Promise<{ success: boolean; message: string }> {
+  const fields = parseAssistanceRequestFields(actionBody)
+  if (!fields.market || !fields.start || !fields.end || !fields.details) {
+    return { success: false, message: "Sorry, I couldn't send that request — some details were missing." }
+  }
+
+  try {
+    await sendAssistanceRequestEmail({
+      companyName: session.companyName,
+      market:      fields.market,
+      state:       fields.state,
+      startDate:   fields.start,
+      endDate:     fields.end,
+      details:     fields.details,
+    })
+  } catch (err) {
+    console.error('[client/chat] failed to send assistance request email:', err)
+    return { success: false, message: "Sorry, I couldn't reach the team right now — please try again or contact them directly." }
+  }
+
+  return { success: true, message: "I've let the Lime Media team know — they'll follow up on this directly. This is informational only; it hasn't created a hold." }
 }
 
 // ── Output guardrail ─────────────────────────────────────────────────────────
@@ -247,8 +302,11 @@ export async function POST(req: NextRequest) {
 
   let actionResult: { success: boolean; message: string } | null = null
   if (actionMatch) {
+    const [, actionType, actionBody] = actionMatch
     try {
-      actionResult = await executePlaceHoldRequests(actionMatch[1], session)
+      actionResult = actionType === 'REQUEST_ASSISTANCE'
+        ? await executeRequestAssistance(actionBody, session)
+        : await executePlaceHoldRequests(actionBody, session)
     } catch (err) {
       console.error('[client/chat] action execution failed:', err)
       actionResult = { success: false, message: 'Failed to submit your request due to a server error.' }

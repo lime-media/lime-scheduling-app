@@ -45,7 +45,8 @@ export default function ClientPage() {
   const [trucks,        setTrucks]        = useState<TruckInfo[]>([])
   const [schedules,     setSchedules]     = useState<ScheduleBlock[]>([])
   const [holdBlocks,    setHoldBlocks]    = useState<HoldBlock[]>([])
-  const [holdRequests,  setHoldRequests]  = useState<HoldRequestBlock[]>([])
+  const [holdRequests,       setHoldRequests]       = useState<HoldRequestBlock[]>([])  // this client's own requests, full detail
+  const [otherHoldRequests,  setOtherHoldRequests]  = useState<HoldRequestBlock[]>([])  // other clients' pending requests, redacted
   const [markets,       setMarkets]       = useState<string[]>([])
   const [states,        setStates]        = useState<string[]>([])
   const [filters,       setFilters]       = useState<Filters>(defaultFilters)
@@ -86,6 +87,7 @@ export default function ClientPage() {
       setTrucks(data.trucks       || [])
       setSchedules(schedulesData)
       setHoldBlocks(data.holds    || [])
+      setOtherHoldRequests(data.holdRequests || [])
       setMarkets(data.markets?.length ? data.markets : [...new Set(schedulesData.map((s: ScheduleBlock) => s.standard_market_name || s.market).filter(Boolean))].sort())
       setStates([...new Set(schedulesData.map((s) => s.state).filter(Boolean))].sort())
     } catch {
@@ -184,7 +186,7 @@ export default function ClientPage() {
                 trucks={trucks}
                 schedules={schedules}
                 holds={holdBlocks}
-                holdRequests={holdRequests}
+                holdRequests={[...holdRequests, ...otherHoldRequests]}
                 filters={filters}
                 onHoldCreated={() => {}}
                 onCellRangeSelected={clientUser ? handleCellRangeSelected : undefined}

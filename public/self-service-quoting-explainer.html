@@ -1,0 +1,1081 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lime Media — Self-Service Quoting Model</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f8f9fa;
+    color: #1a1a2e;
+    line-height: 1.5;
+  }
+
+  .header {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    color: #fff;
+    padding: 32px 24px;
+    text-align: center;
+  }
+  .header h1 { font-size: 28px; font-weight: 700; margin-bottom: 6px; }
+  .header p { color: #a0aec0; font-size: 15px; }
+
+  .container { max-width: 1100px; margin: 0 auto; padding: 24px; }
+
+  /* ---- Map section ---- */
+  .map-section {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    padding: 24px;
+    margin-bottom: 24px;
+  }
+  .map-section h2 { font-size: 18px; margin-bottom: 4px; }
+  .map-section .subtitle { color: #718096; font-size: 14px; margin-bottom: 16px; }
+
+  #map { width: 100%; height: 550px; border-radius: 8px; }
+
+  .map-legend {
+    display: flex;
+    gap: 20px;
+    margin-top: 12px;
+    font-size: 13px;
+    color: #4a5568;
+    flex-wrap: wrap;
+  }
+  .map-legend .item { display: flex; align-items: center; gap: 6px; }
+  .map-legend .swatch {
+    width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0;
+  }
+
+  /* ---- Lookup section ---- */
+  .lookup-section {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 24px;
+  }
+  @media (max-width: 700px) { .lookup-section { grid-template-columns: 1fr; } }
+
+  .card {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    padding: 24px;
+  }
+  .card h3 { font-size: 16px; margin-bottom: 12px; }
+
+  .input-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .search-wrap {
+    position: relative;
+    flex: 1;
+  }
+  .search-wrap input {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    font-size: 14px;
+    outline: none;
+  }
+  .search-wrap input:focus { border-color: #667eea; box-shadow: 0 0 0 3px rgba(102,126,234,0.15); }
+  .search-wrap .suggestions {
+    position: absolute;
+    top: 100%;
+    left: 0; right: 0;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    z-index: 1000;
+    max-height: 240px;
+    overflow-y: auto;
+    display: none;
+  }
+  .search-wrap .suggestions.open { display: block; }
+  .search-wrap .sug-item {
+    padding: 10px 14px;
+    cursor: pointer;
+    font-size: 14px;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .search-wrap .sug-item:last-child { border-bottom: none; }
+  .search-wrap .sug-item:hover, .search-wrap .sug-item.active { background: #f7fafc; }
+  .search-wrap .sug-item .sug-main { font-weight: 600; color: #1a1a2e; }
+  .search-wrap .sug-item .sug-detail { font-size: 12px; color: #718096; margin-top: 1px; }
+  .search-wrap .sug-loading {
+    padding: 12px 14px;
+    color: #a0aec0;
+    font-size: 13px;
+    text-align: center;
+  }
+  .input-row button {
+    padding: 10px 20px;
+    background: #1a1a2e;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .input-row button:hover { background: #16213e; }
+  .input-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .result-box {
+    background: #f7fafc;
+    border-radius: 8px;
+    padding: 16px;
+    min-height: 120px;
+    font-size: 14px;
+  }
+  .result-box .label { color: #718096; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+  .result-box .value { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+  .result-box .detail { color: #4a5568; margin-bottom: 2px; }
+  .result-box .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-right: 4px;
+    margin-top: 6px;
+  }
+  .tag-green { background: #c6f6d5; color: #22543d; }
+  .tag-yellow { background: #fefcbf; color: #744210; }
+  .tag-blue { background: #bee3f8; color: #2a4365; }
+
+  /* ---- Quote simulator ---- */
+  .sim-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  @media (max-width: 700px) { .sim-grid { grid-template-columns: 1fr 1fr; } }
+  .sim-grid label {
+    display: flex;
+    flex-direction: column;
+    font-size: 12px;
+    color: #718096;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .sim-grid select, .sim-grid input[type="number"] {
+    margin-top: 4px;
+    padding: 8px 10px;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    font-size: 14px;
+    outline: none;
+  }
+  .sim-grid select:focus, .sim-grid input[type="number"]:focus { border-color: #667eea; }
+
+  /* ---- Tiers ---- */
+  .tiers { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  @media (max-width: 700px) { .tiers { grid-template-columns: 1fr; } }
+  .tier {
+    border-radius: 10px;
+    padding: 16px;
+    text-align: center;
+  }
+  .tier .tier-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; margin-bottom: 4px; }
+  .tier .tier-price { font-size: 26px; font-weight: 800; margin-bottom: 4px; }
+  .tier .tier-desc { font-size: 12px; opacity: 0.8; }
+  .tier-good { background: #e8f5e9; color: #1b5e20; }
+  .tier-better { background: #e3f2fd; color: #0d47a1; }
+  .tier-best { background: #f3e5f5; color: #4a148c; }
+  .tier-best.locked {
+    background: #f0f0f0;
+    color: #a0aec0;
+    position: relative;
+  }
+  .tier-best.locked .tier-price {
+    text-decoration: line-through;
+    text-decoration-thickness: 2px;
+    opacity: 0.5;
+  }
+  .tier-best.locked .tier-lock {
+    font-size: 11px;
+    font-weight: 600;
+    margin-top: 4px;
+    color: #e53e3e;
+    opacity: 0.8;
+  }
+
+  .transport-result {
+    margin-top: 12px;
+    padding: 12px;
+    border-radius: 8px;
+    font-size: 13px;
+  }
+  .transport-included { background: #e8f5e9; color: #2e7d32; }
+  .transport-billed { background: #fff3e0; color: #e65100; }
+
+  /* ---- Cost breakdown ---- */
+  .breakdown-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+  .breakdown-table col.col-label { width: 35%; }
+  .breakdown-table col.col-detail { width: 45%; }
+  .breakdown-table col.col-amount { width: 20%; }
+  .breakdown-table td {
+    padding: 7px 0;
+    vertical-align: top;
+  }
+  .breakdown-table td:nth-child(2) {
+    color: #718096;
+    font-size: 13px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .breakdown-table td:last-child {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .breakdown-table .row-math td {
+    color: #718096;
+    font-size: 13px;
+  }
+  .breakdown-table .row-label {
+    color: #1a1a2e;
+    font-weight: 500;
+  }
+  .breakdown-table .row-section td {
+    padding-top: 18px;
+    padding-bottom: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #718096;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .breakdown-table .row-total td {
+    border-top: 2px solid #1a1a2e;
+    padding-top: 12px;
+    font-weight: 800;
+    font-size: 16px;
+  }
+  .breakdown-table .row-subtotal td {
+    border-top: 1px solid #cbd5e0;
+    padding-top: 8px;
+    font-weight: 700;
+  }
+
+  /* ---- Flow diagram ---- */
+  .flow-section {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    padding: 24px;
+    margin-bottom: 24px;
+  }
+  .flow-section h2 { font-size: 18px; margin-bottom: 16px; }
+  .flow-steps {
+    display: flex;
+    gap: 0;
+    align-items: stretch;
+    overflow-x: auto;
+  }
+  .flow-step {
+    flex: 1;
+    min-width: 160px;
+    padding: 16px;
+    text-align: center;
+    position: relative;
+  }
+  .flow-step::after {
+    content: '\2192';
+    position: absolute;
+    right: -8px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 20px;
+    color: #a0aec0;
+  }
+  .flow-step:last-child::after { content: ''; }
+  .flow-icon { font-size: 28px; margin-bottom: 6px; }
+  .flow-title { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+  .flow-desc { font-size: 12px; color: #718096; }
+
+  .footnote {
+    text-align: center;
+    color: #a0aec0;
+    font-size: 12px;
+    padding: 24px;
+  }
+
+  /* ---- Config panel ---- */
+  .config-section {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    margin-bottom: 24px;
+    overflow: hidden;
+  }
+  .config-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .config-toggle h2 { font-size: 18px; margin: 0; }
+  .config-toggle .toggle-hint { font-size: 13px; color: #a0aec0; }
+  .config-toggle .arrow { font-size: 14px; color: #a0aec0; transition: transform 0.2s; }
+  .config-toggle.open .arrow { transform: rotate(180deg); }
+  .config-body {
+    display: none;
+    padding: 0 24px 24px;
+  }
+  .config-body.open { display: block; }
+
+  .config-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+  }
+  @media (max-width: 700px) { .config-grid { grid-template-columns: 1fr; } }
+
+  .config-group h4 {
+    font-size: 13px;
+    color: #718096;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .config-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    font-size: 14px;
+  }
+  .config-row label { color: #4a5568; flex: 1; }
+  .config-row input[type="number"] {
+    width: 90px;
+    padding: 6px 8px;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    font-size: 14px;
+    text-align: right;
+    outline: none;
+    font-variant-numeric: tabular-nums;
+  }
+  .config-row input[type="number"]:focus { border-color: #667eea; }
+  .config-row .unit { color: #a0aec0; font-size: 12px; margin-left: 4px; min-width: 24px; }
+  .config-reset {
+    margin-top: 12px;
+    padding: 6px 14px;
+    background: #edf2f7;
+    color: #4a5568;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .config-reset:hover { background: #e2e8f0; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Self-Service Quoting Model</h1>
+  <p>How pricing, transport, and availability work together</p>
+</div>
+
+<div class="container">
+
+  <!-- Config panel -->
+  <div class="config-section">
+    <div class="config-toggle" id="configToggle" onclick="toggleConfig()">
+      <div>
+        <h2>Configuration</h2>
+        <span class="toggle-hint">Rate card overrides, inclusion zone radius, transport costs</span>
+      </div>
+      <span class="arrow">&#9660;</span>
+    </div>
+    <div class="config-body" id="configBody">
+      <div class="config-grid">
+
+        <div class="config-group">
+          <h4>Rate Card (per truck/day)</h4>
+          <div class="config-row"><label>1 day</label><input type="number" id="cfgRate1" value="1850"><span class="unit">$</span></div>
+          <div class="config-row"><label>2-10 days</label><input type="number" id="cfgRate2" value="1350"><span class="unit">$</span></div>
+          <div class="config-row"><label>11-19 days</label><input type="number" id="cfgRate3" value="1200"><span class="unit">$</span></div>
+          <div class="config-row"><label>20+ days</label><input type="number" id="cfgRate4" value="1200"><span class="unit">$</span></div>
+        </div>
+
+        <div class="config-group">
+          <h4>Service Area</h4>
+          <div class="config-row"><label>Inclusion zone radius</label><input type="number" id="cfgRadius" value="450" min="50" step="50"><span class="unit">mi</span></div>
+
+          <h4 style="margin-top:20px;">Add-ons &amp; Surcharges</h4>
+          <div class="config-row"><label>Hour surcharge (per hr over 8)</label><input type="number" id="cfgHourSurcharge" value="150"><span class="unit">$</span></div>
+          <div class="config-row"><label>Smart Directional (per truck/day)</label><input type="number" id="cfgSmartDir" value="250"><span class="unit">$</span></div>
+          <div class="config-row"><label>Shadow fencing floor</label><input type="number" id="cfgSFFloor" value="5000"><span class="unit">$</span></div>
+          <div class="config-row"><label>Shadow fencing %</label><input type="number" id="cfgSFPct" value="25" min="1" max="100"><span class="unit">%</span></div>
+          <div class="config-row"><label>Study cost (each)</label><input type="number" id="cfgStudy" value="7500"><span class="unit">$</span></div>
+
+          <h4 style="margin-top:20px;">Transport Costs</h4>
+          <div class="config-row"><label>Exception day rate</label><input type="number" id="cfgTransDay" value="750"><span class="unit">$</span></div>
+          <div class="config-row"><label>Airfare home (one-way)</label><input type="number" id="cfgAirfare" value="350"><span class="unit">$</span></div>
+          <div class="config-row"><label>Hotel/per diem (per night)</label><input type="number" id="cfgHotel" value="210"><span class="unit">$</span></div>
+
+          <button class="config-reset" onclick="resetConfig()">Reset to defaults</button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Map -->
+  <div class="map-section">
+    <h2>Operational Coverage</h2>
+    <p class="subtitle" id="mapSubtitle">Each accepted market radiates a 450-mile inclusion zone (green). Any campaign city inside a zone is serviceable with transport included. Search a city below to see it on the map.</p>
+    <div id="map"></div>
+    <div class="map-legend">
+      <div class="item"><div class="swatch" style="background:rgba(56,161,105,0.25); border: 2px solid rgba(56,161,105,0.5);"></div> <span id="legendRadius">450</span>-mi inclusion zone</div>
+      <div class="item"><div class="swatch" style="background:#2f855a;"></div> Accepted market</div>
+      <div class="item"><div class="swatch" style="background:#e53e3e;"></div> Searched city</div>
+    </div>
+  </div>
+
+  <!-- Lookup + Quote sim -->
+  <div class="lookup-section">
+    <div class="card">
+      <h3>Market Lookup</h3>
+      <div class="input-row">
+        <div class="search-wrap">
+          <input type="text" id="cityInput" placeholder="Start typing a city name..." autocomplete="off" />
+          <div class="suggestions" id="suggestions"></div>
+        </div>
+      </div>
+      <div class="result-box" id="lookupResult">
+        <div style="color:#a0aec0; text-align:center; padding-top:30px;">Enter a city to check coverage, pricing zone, and transport status.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Quote Simulator</h3>
+      <div class="sim-grid">
+        <label>Trucks <input type="number" id="simTrucks" value="1" min="1" max="20"></label>
+        <label>Days <input type="number" id="simDays" value="5" min="1" max="60"></label>
+        <label>Hours/Day
+          <select id="simHours"><option value="8">8</option><option value="10">10</option><option value="12">12</option></select>
+        </label>
+        <label>Lead (biz days) <input type="number" id="simLead" value="15" min="1" max="60"></label>
+        <label>Smart Dir.
+          <select id="simSD"><option value="no">No</option><option value="yes">Yes</option></select>
+        </label>
+      </div>
+      <div id="quoteResult">
+        <div class="tiers">
+          <div class="tier tier-good"><div class="tier-label">Good</div><div class="tier-price" id="tGood">&mdash;</div><div class="tier-desc">Base media</div></div>
+          <div class="tier tier-better"><div class="tier-label">Better</div><div class="tier-price" id="tBetter">&mdash;</div><div class="tier-desc">+ Shadow fencing & add-ons</div></div>
+          <div class="tier tier-best"><div class="tier-label">Best</div><div class="tier-price" id="tBest">&mdash;</div><div class="tier-desc">+ Lift studies</div></div>
+        </div>
+        <div id="transportLine"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cost Breakdown -->
+  <div class="card" style="margin-bottom:24px;">
+    <h3>Cost Breakdown</h3>
+    <div id="breakdownContent" style="font-size:14px;">
+      <div style="color:#a0aec0; text-align:center; padding:20px 0;">Adjust the quote simulator above to see a detailed breakdown.</div>
+    </div>
+  </div>
+
+  <!-- Flow -->
+  <div class="flow-section">
+    <h2>End-to-End Flow</h2>
+    <div class="flow-steps">
+      <div class="flow-step">
+        <div class="flow-icon">&#x1F50D;</div>
+        <div class="flow-title">Check Coverage</div>
+        <div class="flow-desc">Is the market within 450 mi of an operational base?</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">&#x1F4B0;</div>
+        <div class="flow-title">Get Quote</div>
+        <div class="flow-desc">Good / Better / Best tiers with transport evaluation</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">&#x1F4C5;</div>
+        <div class="flow-title">Check Availability</div>
+        <div class="flow-desc">Which trucks are free for the requested dates?</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">&#x2705;</div>
+        <div class="flow-title">Book Campaign</div>
+        <div class="flow-desc">Create holds, confirm pricing, assign trucks</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="footnote">Lime Media Group &mdash; Self-Service Quoting Model v1</div>
+
+<script>
+// ---- Data ----
+const MARKETS = [
+  { name:"New York, NY",          lat:40.7128, lng:-74.0060 },
+  { name:"Los Angeles, CA",       lat:34.0522, lng:-118.2437 },
+  { name:"Chicago, IL",           lat:41.8781, lng:-87.6298 },
+  { name:"Dallas, TX",            lat:32.7767, lng:-96.7970 },
+  { name:"Philadelphia, PA",      lat:39.9526, lng:-75.1652 },
+  { name:"Houston, TX",           lat:29.7604, lng:-95.3698 },
+  { name:"Atlanta, GA",           lat:33.7490, lng:-84.3880 },
+  { name:"Washington, DC",        lat:38.9072, lng:-77.0369 },
+  { name:"San Francisco, CA",     lat:37.7749, lng:-122.4194 },
+  { name:"Boston, MA",            lat:42.3601, lng:-71.0589 },
+  { name:"Tampa, FL",             lat:27.9506, lng:-82.4572 },
+  { name:"Phoenix, AZ",           lat:33.4484, lng:-112.0740 },
+  { name:"Seattle, WA",           lat:47.6062, lng:-122.3321 },
+  { name:"Detroit, MI",           lat:42.3314, lng:-83.0458 },
+  { name:"Orlando, FL",           lat:28.5383, lng:-81.3792 },
+  { name:"Minneapolis, MN",       lat:44.9778, lng:-93.2650 },
+  { name:"Denver, CO",            lat:39.7392, lng:-104.9903 },
+  { name:"Miami, FL",             lat:25.7617, lng:-80.1918 },
+  { name:"Cleveland, OH",         lat:41.4993, lng:-81.6944 },
+  { name:"Sacramento, CA",        lat:38.5816, lng:-121.4944 },
+  { name:"Charlotte, NC",         lat:35.2271, lng:-80.8431 },
+  { name:"Raleigh, NC",           lat:35.7796, lng:-78.6382 },
+  { name:"Portland, OR",          lat:45.5152, lng:-122.6784 },
+  { name:"St. Louis, MO",         lat:38.6270, lng:-90.1994 },
+  { name:"Nashville, TN",         lat:36.1627, lng:-86.7816 },
+  { name:"Indianapolis, IN",      lat:39.7684, lng:-86.1581 },
+  { name:"Pittsburgh, PA",        lat:40.4406, lng:-79.9959 },
+  { name:"Salt Lake City, UT",    lat:40.7608, lng:-111.8910 },
+  { name:"Baltimore, MD",         lat:39.2904, lng:-76.6122 },
+  { name:"San Diego, CA",         lat:32.7157, lng:-117.1611 },
+  { name:"San Antonio, TX",       lat:29.4241, lng:-98.4936 },
+  { name:"Kansas City, MO",       lat:39.0997, lng:-94.5786 },
+  { name:"Hartford, CT",          lat:41.7658, lng:-72.6734 },
+  { name:"Austin, TX",            lat:30.2672, lng:-97.7431 },
+  { name:"Columbus, OH",          lat:39.9612, lng:-82.9988 },
+  { name:"Greenville, SC",        lat:34.8526, lng:-82.3940 },
+  { name:"Cincinnati, OH",        lat:39.1031, lng:-84.5120 },
+  { name:"Milwaukee, WI",         lat:43.0389, lng:-87.9065 },
+  { name:"West Palm Beach, FL",   lat:26.7153, lng:-80.0534 },
+  { name:"Las Vegas, NV",         lat:36.1699, lng:-115.1398 },
+  { name:"Jacksonville, FL",      lat:30.3322, lng:-81.6557 },
+  { name:"Harrisburg, PA",        lat:40.2732, lng:-76.8867 },
+  { name:"Grand Rapids, MI",      lat:42.9634, lng:-85.6681 },
+  { name:"Norfolk, VA",           lat:36.8508, lng:-76.2859 },
+  { name:"Birmingham, AL",        lat:33.5186, lng:-86.8104 },
+  { name:"Greensboro, NC",        lat:36.0726, lng:-79.7920 },
+  { name:"Oklahoma City, OK",     lat:35.4676, lng:-97.5164 },
+  { name:"Albuquerque, NM",       lat:35.0844, lng:-106.6504 },
+  { name:"Louisville, KY",        lat:38.2527, lng:-85.7585 },
+  { name:"New Orleans, LA",       lat:29.9511, lng:-90.0715 },
+];
+
+const MILES_TO_METERS = 1609.34;
+
+// ---- Config readers ----
+function cfg(id) { return parseFloat(document.getElementById(id).value) || 0; }
+function getRadius() { return cfg('cfgRadius'); }
+function getSFPct() { return cfg('cfgSFPct') / 100; }
+
+function getRateCard() {
+  return [
+    { min:1,  max:1,        rate: cfg('cfgRate1') },
+    { min:2,  max:10,       rate: cfg('cfgRate2') },
+    { min:11, max:19,       rate: cfg('cfgRate3') },
+    { min:20, max:Infinity, rate: cfg('cfgRate4') },
+  ];
+}
+
+function dailyRate(days, trucks) {
+  const card = getRateCard();
+  const truckDays = days * trucks;
+  function lookup(d) {
+    for (const t of card) { if (d >= t.min && d <= t.max) return t.rate; }
+    return 1200;
+  }
+  return Math.min(lookup(days), lookup(truckDays));
+}
+
+// ---- Config toggle & reset ----
+function toggleConfig() {
+  const toggle = document.getElementById('configToggle');
+  const body = document.getElementById('configBody');
+  toggle.classList.toggle('open');
+  body.classList.toggle('open');
+}
+
+const DEFAULTS = {
+  cfgRate1:1850, cfgRate2:1350, cfgRate3:1200, cfgRate4:1200,
+  cfgRadius:450, cfgHourSurcharge:150, cfgSmartDir:250,
+  cfgSFFloor:5000, cfgSFPct:25, cfgStudy:7500,
+  cfgTransDay:750, cfgAirfare:350, cfgHotel:210,
+};
+
+function resetConfig() {
+  for (const [id, val] of Object.entries(DEFAULTS)) {
+    document.getElementById(id).value = val;
+  }
+  redrawZones();
+  updateQuote();
+  if (searchedCity) applySelection(searchedCity.lat, searchedCity.lng, document.getElementById('cityInput').value);
+}
+
+// Bind config inputs
+const CONFIG_IDS = Object.keys(DEFAULTS);
+CONFIG_IDS.forEach(id => {
+  document.getElementById(id).addEventListener('input', () => {
+    if (id === 'cfgRadius') redrawZones();
+    updateQuote();
+    if (searchedCity) {
+      // Re-evaluate the result box with new radius
+      const { market, distance } = findNearest(searchedCity.lat, searchedCity.lng);
+      searchedCity = { ...searchedCity, nearest: market, distance };
+      updateResultBox();
+    }
+  });
+});
+
+// ---- Geo helpers ----
+function haversine(lat1, lng1, lat2, lng2) {
+  const R = 3958.8;
+  const dLat = (lat2-lat1)*Math.PI/180;
+  const dLng = (lng2-lng1)*Math.PI/180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function findNearest(lat, lng) {
+  let best = null, bestDist = Infinity;
+  for (const m of MARKETS) {
+    const d = haversine(lat, lng, m.lat, m.lng);
+    if (d < bestDist) { bestDist = d; best = m; }
+  }
+  return { market: best, distance: Math.round(bestDist) };
+}
+
+// ---- Leaflet map ----
+const map = L.map('map', { scrollWheelZoom: true }).setView([39.0, -98.0], 4);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors',
+  maxZoom: 18,
+}).addTo(map);
+
+// Inclusion zones — redrawable when radius changes
+const inclusionLayer = L.layerGroup().addTo(map);
+
+function redrawZones() {
+  const r = getRadius();
+  inclusionLayer.clearLayers();
+  for (const m of MARKETS) {
+    L.circle([m.lat, m.lng], {
+      radius: r * MILES_TO_METERS,
+      color: 'rgba(56,161,105,0.4)',
+      fillColor: 'rgba(56,161,105,0.08)',
+      fillOpacity: 1,
+      weight: 1,
+      interactive: false,
+    }).addTo(inclusionLayer);
+  }
+  // Update legend and subtitle
+  document.getElementById('legendRadius').textContent = r;
+  document.getElementById('mapSubtitle').textContent =
+    `Each accepted market radiates a ${r}-mile inclusion zone (green). Any campaign city inside a zone is serviceable with transport included. Search a city below to see it on the map.`;
+}
+redrawZones();
+
+// Market markers
+const marketIcon = L.divIcon({
+  html: '<div style="width:12px;height:12px;background:#2f855a;border:2px solid #fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,0.3);"></div>',
+  iconSize: [12, 12],
+  iconAnchor: [6, 6],
+  className: '',
+});
+
+for (const m of MARKETS) {
+  L.marker([m.lat, m.lng], { icon: marketIcon })
+    .bindTooltip(m.name, { direction: 'top', offset: [0, -8] })
+    .addTo(map);
+}
+
+// Search layers
+let searchLayerGroup = L.layerGroup().addTo(map);
+
+// ---- Autocomplete search ----
+const cityInput = document.getElementById('cityInput');
+const sugBox = document.getElementById('suggestions');
+let debounceTimer = null;
+let activeSugIndex = -1;
+let sugItems = [];
+
+cityInput.addEventListener('input', () => {
+  clearTimeout(debounceTimer);
+  const q = cityInput.value.trim();
+  if (q.length < 2) { closeSuggestions(); return; }
+  debounceTimer = setTimeout(() => fetchSuggestions(q), 300);
+});
+
+cityInput.addEventListener('keydown', (e) => {
+  if (!sugBox.classList.contains('open')) {
+    if (e.key === 'Enter') { e.preventDefault(); }
+    return;
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    activeSugIndex = Math.min(activeSugIndex + 1, sugItems.length - 1);
+    highlightSuggestion();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    activeSugIndex = Math.max(activeSugIndex - 1, 0);
+    highlightSuggestion();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (activeSugIndex >= 0 && sugItems[activeSugIndex]) {
+      selectSuggestion(sugItems[activeSugIndex].dataset);
+    }
+  } else if (e.key === 'Escape') {
+    closeSuggestions();
+  }
+});
+
+cityInput.addEventListener('blur', () => { setTimeout(closeSuggestions, 200); });
+
+async function fetchSuggestions(q) {
+  sugBox.innerHTML = '<div class="sug-loading">Searching...</div>';
+  sugBox.classList.add('open');
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q + ', USA')}&format=json&limit=5&addressdetails=1&countrycodes=us`;
+    const res = await fetch(url, { headers: { 'User-Agent': 'lime-quoting-widget/1.0' } });
+    const data = await res.json();
+    if (!data.length) {
+      sugBox.innerHTML = '<div class="sug-loading">No results found</div>';
+      return;
+    }
+    let html = '';
+    data.forEach((item, i) => {
+      const parts = item.display_name.split(', ');
+      const main = parts.slice(0, 2).join(', ');
+      const detail = parts.slice(2, 4).join(', ');
+      const { market, distance } = findNearest(parseFloat(item.lat), parseFloat(item.lon));
+      const inZone = distance <= getRadius();
+      const badge = inZone
+        ? `<span style="background:#c6f6d5;color:#22543d;padding:1px 5px;border-radius:3px;font-size:11px;font-weight:600;">${distance} mi</span>`
+        : `<span style="background:#fefcbf;color:#744210;padding:1px 5px;border-radius:3px;font-size:11px;font-weight:600;">${distance} mi</span>`;
+      html += `<div class="sug-item" data-lat="${item.lat}" data-lng="${item.lon}" data-name="${main}" onclick="selectSuggestion(this.dataset)">
+        <div class="sug-main">${main} ${badge}</div>
+        <div class="sug-detail">${detail} &mdash; nearest base: ${market.name}</div>
+      </div>`;
+    });
+    sugBox.innerHTML = html;
+    sugItems = sugBox.querySelectorAll('.sug-item');
+    activeSugIndex = -1;
+  } catch (e) {
+    sugBox.innerHTML = `<div class="sug-loading">Error: ${e.message}</div>`;
+  }
+}
+
+function highlightSuggestion() {
+  sugItems.forEach((el, i) => el.classList.toggle('active', i === activeSugIndex));
+  if (sugItems[activeSugIndex]) sugItems[activeSugIndex].scrollIntoView({ block: 'nearest' });
+}
+
+function closeSuggestions() {
+  sugBox.classList.remove('open');
+  activeSugIndex = -1;
+}
+
+function selectSuggestion(ds) {
+  const lat = parseFloat(ds.lat);
+  const lng = parseFloat(ds.lng);
+  const name = ds.name;
+  cityInput.value = name;
+  closeSuggestions();
+  applySelection(lat, lng, name);
+}
+
+// ---- Searched city state ----
+let searchedCity = null;
+
+function updateResultBox() {
+  if (!searchedCity) return;
+  const { nearest: market, distance } = searchedCity;
+  const radius = getRadius();
+  const inZone = distance <= radius;
+  const transportDays = Math.max(1, Math.ceil(distance / 450));
+
+  const resultEl = document.getElementById('lookupResult');
+  let html = `<div class="label">Nearest operational base</div>`;
+  html += `<div class="value">${market.name}</div>`;
+  html += `<div class="detail"><strong>${distance} miles</strong> away</div>`;
+
+  if (inZone) {
+    html += `<span class="tag tag-green">Within inclusion zone</span>`;
+    html += `<span class="tag tag-green">Transport included</span>`;
+  } else {
+    html += `<span class="tag tag-yellow">Outside inclusion zone</span>`;
+    html += `<div class="detail" style="margin-top:8px;">${transportDays} transport day${transportDays>1?'s':''} &mdash; transport billed per truck</div>`;
+  }
+  resultEl.innerHTML = html;
+}
+
+function applySelection(lat, lng, displayName) {
+  const { market, distance } = findNearest(lat, lng);
+
+  searchedCity = { lat, lng, nearest: market, distance };
+
+  // Update map
+  searchLayerGroup.clearLayers();
+
+  const searchIcon = L.divIcon({
+    html: '<div style="width:14px;height:14px;background:#e53e3e;border:2px solid #fff;border-radius:50%;box-shadow:0 1px 4px rgba(0,0,0,0.4);"></div>',
+    iconSize: [14, 14],
+    iconAnchor: [7, 7],
+    className: '',
+  });
+  L.marker([lat, lng], { icon: searchIcon })
+    .bindTooltip(displayName, { direction: 'top', offset: [0, -10], permanent: true, className: '' })
+    .addTo(searchLayerGroup);
+
+  L.polyline([[lat, lng], [market.lat, market.lng]], {
+    color: '#e53e3e', weight: 2, dashArray: '6, 4', opacity: 0.7,
+  }).addTo(searchLayerGroup);
+
+  const midLat = (lat + market.lat) / 2;
+  const midLng = (lng + market.lng) / 2;
+  L.marker([midLat, midLng], {
+    icon: L.divIcon({
+      html: `<div style="background:#fff;color:#e53e3e;font-size:12px;font-weight:700;padding:2px 6px;border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,0.2);white-space:nowrap;">${distance} mi</div>`,
+      iconAnchor: [20, 10],
+      className: '',
+    }),
+    interactive: false,
+  }).addTo(searchLayerGroup);
+
+  const bounds = L.latLngBounds([[lat, lng], [market.lat, market.lng]]);
+  map.fitBounds(bounds.pad(0.4));
+
+  updateResultBox();
+  updateQuote();
+}
+
+// ---- Quote simulator ----
+function fmt(n) { return '$' + n.toLocaleString(); }
+
+function updateQuote() {
+  const trucks = parseInt(document.getElementById('simTrucks').value) || 1;
+  const days = parseInt(document.getElementById('simDays').value) || 1;
+  const hours = parseInt(document.getElementById('simHours').value);
+  const lead = parseInt(document.getElementById('simLead').value) || 15;
+  const sd = document.getElementById('simSD').value === 'yes';
+
+  // Read config
+  const radius = getRadius();
+  const hourSurchargeRate = cfg('cfgHourSurcharge');
+  const smartDirRate = cfg('cfgSmartDir');
+  const sfPct = getSFPct();
+  const sfFloor = cfg('cfgSFFloor');
+  const studyCost = cfg('cfgStudy');
+  const transDayRate = cfg('cfgTransDay');
+  const airfare = cfg('cfgAirfare');
+  const hotel = cfg('cfgHotel');
+
+  const distMiles = searchedCity ? searchedCity.distance : 0;
+  const outsideZone = distMiles > radius;
+
+  const truckDays = trucks * days;
+  const rate = dailyRate(days, trucks);
+  const hourSurcharge = Math.max(0, hours - 8) * hourSurchargeRate;
+  const effectiveRate = rate + hourSurcharge;
+
+  // Good
+  const baseMedia = truckDays * effectiveRate;
+
+  // Better
+  const sfRaw = baseMedia * sfPct;
+  const shadowFencing = Math.max(sfRaw, sfFloor);
+  const sfFloored = sfRaw < sfFloor;
+  const digitalImpressions = (shadowFencing / 10) * 1000;
+  const smartDir = sd ? truckDays * smartDirRate : 0;
+  const betterTotal = baseMedia + shadowFencing + smartDir;
+
+  // Best
+  const impressions = trucks * days * 40000;
+  const reachOk = impressions >= 1200000;
+  const bestTotal = betterTotal + (reachOk ? studyCost : 0);
+
+  document.getElementById('tGood').textContent = fmt(baseMedia);
+  document.getElementById('tBetter').textContent = fmt(betterTotal);
+
+  const bestEl = document.getElementById('tBest').closest('.tier');
+  if (reachOk) {
+    document.getElementById('tBest').textContent = fmt(bestTotal);
+    bestEl.className = 'tier tier-best';
+    bestEl.querySelector('.tier-desc').textContent = '+ Lift studies';
+    const oldLock = bestEl.querySelector('.tier-lock');
+    if (oldLock) oldLock.remove();
+  } else {
+    document.getElementById('tBest').textContent = fmt(betterTotal);
+    bestEl.className = 'tier tier-best locked';
+    bestEl.querySelector('.tier-desc').textContent = 'Requires more reach';
+    if (!bestEl.querySelector('.tier-lock')) {
+      const lockDiv = document.createElement('div');
+      lockDiv.className = 'tier-lock';
+      lockDiv.textContent = 'Need 1.2M+ impressions';
+      bestEl.appendChild(lockDiv);
+    }
+  }
+
+  // Transport — per truck
+  const isShort = days < 3;
+  const isRush = lead < 10;
+
+  const billed = isShort || isRush || outsideZone;
+  const tLine = document.getElementById('transportLine');
+
+  let transportDays = 0;
+  let chargePerTruck = 0;
+  let totalTransport = 0;
+  let triggers = [];
+
+  if (!billed) {
+    tLine.innerHTML = '<div class="transport-result transport-included">Transport included &mdash; no additional charge</div>';
+  } else {
+    transportDays = distMiles > 0 ? Math.max(1, Math.ceil(distMiles / 450)) : 1;
+    const overnights = Math.max(transportDays - 1, 0);
+    chargePerTruck = transportDays * transDayRate + airfare + overnights * hotel;
+    totalTransport = chargePerTruck * trucks;
+    if (isShort) triggers.push('Short flight');
+    if (isRush) triggers.push('Rush');
+    if (outsideZone) triggers.push('Outside inclusion zone');
+    tLine.innerHTML = `<div class="transport-result transport-billed">
+      <strong>Transport billed: ${fmt(totalTransport)}</strong>
+      (${fmt(chargePerTruck)}/truck &times; ${trucks} truck${trucks>1?'s':''}, ${transportDays} transport day${transportDays>1?'s':''})
+      <br><span style="font-size:12px;">Triggers: ${triggers.join(', ')}</span>
+    </div>`;
+  }
+
+  // ---- Cost Breakdown ----
+  const bd = document.getElementById('breakdownContent');
+  const rateContext = searchedCity
+    ? `${distMiles} mi from ${searchedCity.nearest.name}`
+    : 'Select a market above';
+  let rows = '';
+
+  // Section: Base media
+  rows += sec('Tier 1 — Good (Base Media)');
+  rows += row(`Daily rate`, rateContext, fmt(rate) + '/truck/day');
+  if (hourSurcharge > 0) {
+    rows += math(`Hour surcharge: (${hours} - 8) hrs &times; ${fmt(hourSurchargeRate)}`, '+' + fmt(hourSurcharge) + '/truck/day');
+    rows += row('Effective daily rate', '', fmt(effectiveRate) + '/truck/day');
+  }
+  rows += math(`${trucks} truck${trucks>1?'s':''} &times; ${days} day${days>1?'s':''} &times; ${fmt(effectiveRate)}`, '');
+  rows += sub('Base media total', fmt(baseMedia));
+
+  // Section: Better
+  rows += sec('Tier 2 — Better (Strategic Targeting)');
+  rows += row('Base media', '', fmt(baseMedia));
+  if (sfFloored) {
+    rows += math(`Shadow fencing: ${Math.round(sfPct*100)}% of ${fmt(baseMedia)} = ${fmt(Math.round(sfRaw))}, floored to ${fmt(sfFloor)}`, '');
+  } else {
+    rows += math(`Shadow fencing: ${Math.round(sfPct*100)}% of ${fmt(baseMedia)}`, '');
+  }
+  rows += row('Shadow fencing', Math.round(digitalImpressions).toLocaleString() + ' digital impressions', fmt(shadowFencing));
+  if (sd) {
+    rows += math(`Smart Directional: ${trucks} &times; ${days} &times; ${fmt(smartDirRate)}`, '');
+    rows += row('Smart Directional', '', fmt(smartDir));
+  }
+  rows += sub('Better total', fmt(betterTotal));
+
+  // Section: Best
+  rows += sec('Tier 3 — Best (Measured Impact)');
+  if (reachOk) {
+    rows += row('Better total', '', fmt(betterTotal));
+    rows += row('Lift study (1 study)', impressions.toLocaleString() + ' est. impressions', fmt(studyCost));
+    rows += sub('Best total', fmt(bestTotal));
+  } else {
+    const neededTrucks = Math.ceil(1200000 / (days * 40000));
+    const neededDays = Math.ceil(1200000 / (trucks * 40000));
+    rows += row('Lift studies', 'Not available', '\u2014');
+    rows += `<tr class="row-math"><td colspan="3" style="padding:4px 0 0;font-size:13px;color:#991b1b;">
+      Requires 1.2M+ impressions. This campaign: ${impressions.toLocaleString()} (${trucks}&times;${days}&times;40k).
+      Try ${neededTrucks} trucks &times; ${days} days, or ${trucks} truck${trucks>1?'s':''} &times; ${neededDays} days.
+    </td></tr>`;
+  }
+
+  // Section: Transport
+  if (billed) {
+    rows += sec('Transport (per truck)');
+    rows += row('Drive cost', transportDays + ' day' + (transportDays>1?'s':'') + ' &times; ' + fmt(transDayRate), fmt(transportDays * transDayRate));
+    rows += row('Airfare home', '1 one-way flight', fmt(airfare));
+    if (transportDays > 1) {
+      const overnights = transportDays - 1;
+      rows += row('Hotel/per diem', overnights + ' night' + (overnights>1?'s':'') + ' &times; ' + fmt(hotel), fmt(overnights * hotel));
+    }
+    rows += sub('Per truck', fmt(chargePerTruck));
+    if (trucks > 1) {
+      rows += math(`${fmt(chargePerTruck)} &times; ${trucks} trucks`, '');
+    }
+    rows += sub('Total transport', fmt(totalTransport));
+    rows += row('Triggers', triggers.join(', '), '');
+  }
+
+  // Grand total
+  const grandTotal = bestTotal + totalTransport;
+  rows += total('Grand total (Best + Transport)', fmt(grandTotal));
+
+  bd.innerHTML = `<table class="breakdown-table">
+    <colgroup><col class="col-label"><col class="col-detail"><col class="col-amount"></colgroup>
+    ${rows}</table>`;
+}
+
+function sec(label) {
+  return `<tr class="row-section"><td colspan="3">${label}</td></tr>`;
+}
+function row(label, note, amount) {
+  return `<tr><td class="row-label">${label}</td><td>${note}</td><td>${amount}</td></tr>`;
+}
+function math(expr, amount) {
+  return `<tr class="row-math"><td colspan="2">${expr}</td><td>${amount}</td></tr>`;
+}
+function sub(label, amount) {
+  return `<tr class="row-subtotal"><td colspan="2">${label}</td><td>${amount}</td></tr>`;
+}
+function total(label, amount) {
+  return `<tr class="row-total"><td colspan="2">${label}</td><td>${amount}</td></tr>`;
+}
+
+// Bind all sim inputs
+['simTrucks','simDays','simHours','simLead','simSD'].forEach(id => {
+  document.getElementById(id).addEventListener('input', updateQuote);
+  document.getElementById(id).addEventListener('change', updateQuote);
+});
+
+// ---- Init ----
+updateQuote();
+</script>
+
+</body>
+</html>

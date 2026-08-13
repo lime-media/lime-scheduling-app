@@ -145,3 +145,40 @@ model McpQueryLog {
   @@index([tool_name, outcome])
   @@map("mcp_query_log")
 }
+
+// --- Self-Service Quoting ---
+
+// agreement_type: standard | volume_discount | flat_rate | custom
+model RateAgreement {
+  id              String   @id @default(cuid())
+  partner_id      String
+  name            String
+  agreement_type  String   @default("standard")
+  effective_date  DateTime
+  expiration_date DateTime
+  rate_overrides  String   // JSON: selective overrides to the standard rate card
+  created_by      String
+  notes           String?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@map("app_rate_agreements")
+}
+
+// Operational bases where Lime maintains driver pools and fleet presence.
+// Any campaign city within 450 miles of an accepted market is serviceable.
+// Beyond 450 miles = outside service area.
+model AcceptedMarket {
+  id               String   @id @default(cuid())
+  dma_code         String   @unique
+  dma_name         String
+  lat              Float
+  lng              Float
+  base_concurrency Int      @default(1)  // max simultaneous trucks before swarm trigger
+  notes            String?
+  is_active        Boolean  @default(true)
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  @@map("app_accepted_markets")
+}

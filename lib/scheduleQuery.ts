@@ -29,7 +29,7 @@ LEFT JOIN dbo.client_program_markets cpm
 LEFT JOIN dbo.client_programs cp
     ON  cp.client_program_uid = ps.client_program_uid
 WHERE CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
-  AND CAST(ps.start_time AS DATE) <= DATEADD(day,  60, CAST(GETDATE() AS DATE))
+  AND CAST(ps.start_time AS DATE) <= DATEADD(day,  63, CAST(GETDATE() AS DATE))
 ORDER BY t.truck_number, ps.start_time
 `
 
@@ -43,7 +43,7 @@ WHERE COALESCE(t.is_deleted, 0) = 0
      SELECT 1 FROM dbo.program_schedule ps
      WHERE ps.truck_uid = t.truck_uid
        AND CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
-       AND CAST(ps.start_time AS DATE) <= DATEADD(day,  60, CAST(GETDATE() AS DATE))
+       AND CAST(ps.start_time AS DATE) <= DATEADD(day,  63, CAST(GETDATE() AS DATE))
    )
 ORDER BY truck_number
 `
@@ -73,7 +73,7 @@ LEFT JOIN dbo.client_programs p
 LEFT JOIN dbo.client_program_markets pm
     ON  pm.client_program_market_uid = ps.client_program_market_uid
 OUTER APPLY (
-    SELECT TOP 1 pm_lk.market AS last_known_market
+    SELECT TOP 1 COALESCE(pm_lk.standard_market_name, pm_lk.market) AS last_known_market
     FROM dbo.program_schedule ps_lk
     JOIN dbo.client_program_markets pm_lk
         ON  pm_lk.client_program_market_uid = ps_lk.client_program_market_uid
@@ -84,6 +84,34 @@ OUTER APPLY (
 ) lkm
 WHERE COALESCE(t.is_deleted, 0) = 0
 ORDER BY t.truck_number
+`
+
+// ── AI chat context: full schedule window (-30 / +60 days) ──────────────────
+// One row per truck per scheduled day, so the assistant can answer questions
+// about any date in the -30/+60 day window, not just "today". Uses only
+// ps.start_time (like SCHEDULED_QUERY) — ps.end_time bleeds into the next
+// calendar day for overnight shifts, so casting it directly would make every
+// shift look like it runs one day longer than it does. The app groups
+// consecutive same-program days into a range after fetching (see
+// buildScheduleContext in app/api/chat/route.ts).
+export const CHAT_SCHEDULE_WINDOW_QUERY = `
+SELECT
+    t.truck_number,
+    CAST(ps.start_time AS DATE) AS shift_date,
+    COALESCE(cpm.market, '') AS market,
+    COALESCE(cpm.state,  '') AS state,
+    COALESCE(cp.program, '') AS program
+FROM dbo.program_schedule ps
+JOIN dbo.trucks t
+    ON  t.truck_uid = ps.truck_uid
+LEFT JOIN dbo.client_program_markets cpm
+    ON  cpm.client_program_market_uid = ps.client_program_market_uid
+LEFT JOIN dbo.client_programs cp
+    ON  cp.client_program_uid = ps.client_program_uid
+WHERE COALESCE(t.is_deleted, 0) = 0
+  AND CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
+  AND CAST(ps.start_time AS DATE) <= DATEADD(day,  60, CAST(GETDATE() AS DATE))
+ORDER BY t.truck_number, ps.start_time
 `
 
 export const SCHEDULE_SUMMARY_QUERY = `

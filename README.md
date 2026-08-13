@@ -112,17 +112,39 @@ The AI checks both sources and reports conflicts from either. The Schedule Grid 
 
 ## Internal API (MCP Server Integration)
 
-Two read-only endpoints for service-to-service consumption by the Lime MCP server. These are **not** part of the UI application — they exist to let external integration layers (starting with OneScreen) query truck inventory and availability programmatically.
+Endpoints for service-to-service consumption by the Lime MCP server. These are **not** part of the UI application — they exist to let external integration layers (starting with OneScreen) query truck inventory, availability, and create holds programmatically.
 
 ### Authentication
 
-Both endpoints require a bearer token via the `Authorization` header:
+All internal endpoints require the service-level bearer token:
 
 ```
 Authorization: Bearer <value of INTERNAL_API_KEY env var>
 ```
 
-This is separate from NextAuth. The MCP server is not a user — it authenticates as a privileged internal service.
+This is separate from NextAuth. The MCP server authenticates as a privileged internal service.
+
+#### Per-user MCP tokens (V2)
+
+Individual MCP users are identified via tokens stored in the `mcp_tokens` table. Each token is tied to either an `app_users` record (internal staff) or an `app_client_users` record (external customers like OneScreen), distinguished by the `user_type` column (`app_user` | `client_user`).
+
+The MCP server validates user tokens by calling the `validate-token` endpoint, then passes the resolved `user_id` and `user_type` via `X-Acting-User-Id` and `X-Acting-User-Type` headers on write operations.
+
+**Behavior differs by user type:**
+- **`app_user`** — creates actual holds in `app_holds` (same as the internal UI)
+- **`client_user`** — creates hold *requests* in `app_hold_requests` (same as the client portal), which go through the existing approval flow
+
+**Minting a new token:**
+
+```bash
+# For internal staff:
+npx ts-node --compiler-options '{"module":"CommonJS"}' scripts/mint-mcp-token.ts app_user <user_id> "label"
+
+# For external customers:
+npx ts-node --compiler-options '{"module":"CommonJS"}' scripts/mint-mcp-token.ts client_user <user_id> "OneScreen production"
+```
+
+The raw token is printed once to stdout. Only the bcrypt hash is stored in the database. Hand the raw token to the MCP consumer.
 
 ### `GET /api/v1/internal/inventory`
 
@@ -180,6 +202,98 @@ Returns booked (unavailable) intervals for trucks within a date range.
 ```
 
 All internal status distinctions (SCHEDULE, HOLD, COMMITTED, ATT_SOFT) are collapsed to a single `"unavailable"` status. No client names, program names, notes, or other internal-only fields are returned. Overlapping or adjacent intervals are merged.
+
+### `POST /api/v1/internal/auth/validate-token`
+
+Validates an MCP user token. Called by the MCP server to resolve a user's identity before forwarding requests.
+
+**Request headers:**
+- `Authorization: Bearer <INTERNAL_API_KEY>` (service-level auth)
+- `X-MCP-Token: <raw user token>` (the token to validate)
+
+**Response (200) for `app_user`:**
+```json
+{
+  "user_id": "clxyz123",
+  "user_type": "app_user",
+  "email": "staff@lime-media.com",
+  "name": "Staff Name",
+  "label": "Internal dev",
+  "token_id": "cltoken456"
+}
+```
+
+**Response (200) for `client_user`:**
+```json
+{
+  "user_id": "clxyz789",
+  "user_type": "client_user",
+  "username": "onescreen",
+  "company_name": "OneScreen",
+  "label": "OneScreen production",
+  "token_id": "cltoken456"
+}
+```
+
+Returns `401` if the token is missing, invalid, or revoked.
+
+### `POST /api/v1/internal/holds`
+
+Creates a hold or hold request on behalf of an MCP user. Behavior depends on `user_type`:
+
+- **`app_user`** — creates an actual hold in `app_holds` with conflict checking (same as the internal UI)
+- **`client_user`** — creates a hold *request* in `app_hold_requests` (same as the client portal), triggers email notification and Google Sheets logging
+
+**Request headers:**
+- `Authorization: Bearer <INTERNAL_API_KEY>`
+- `X-Acting-User-Id: <user_id>` (resolved from validate-token)
+- `X-Acting-User-Type: app_user | client_user` (defaults to `app_user`)
+
+**Request body:**
+```json
+{
+  "truck_number": "0042",
+  "market": "Dallas-Ft. Worth, TX",
+  "state": "TX",
+  "client_name": "Acme Corp",
+  "start_date": "2026-08-01",
+  "end_date": "2026-08-15",
+  "status": "HOLD",
+  "notes": "Optional notes"
+}
+```
+
+For `app_user`: requires `truck_number`, `market`, `state`, `client_name`, `start_date`, `end_date`.
+For `client_user`: requires `truck_number`, `start_date`, `end_date` (market/state optional, matching client portal).
+
+**Response (201):** The created record. Includes `"type": "hold"` or `"type": "hold_request"` to distinguish.
+**Response (409):** Conflict (app_user holds only) — truck has an existing hold or LED schedule in the requested date range.
+
+### `POST /api/v1/internal/query-log`
+
+Logs an MCP tool invocation for analytics. The MCP server calls this on every tool call (fire-and-forget — do not block the tool response on this succeeding).
+
+**Request headers:**
+- `Authorization: Bearer <INTERNAL_API_KEY>`
+
+**Request body:**
+```json
+{
+  "user_id": "clxyz123",
+  "user_type": "client_user",
+  "token_id": "cltoken456",
+  "tool_name": "check_availability",
+  "request_params": { "start_date": "2026-08-01", "end_date": "2026-08-31" },
+  "response_summary": { "available_count": 12 },
+  "outcome": "success",
+  "latency_ms": 342
+}
+```
+
+Required: `tool_name`, `outcome` (`success` | `no_availability` | `error`), `latency_ms`.
+Optional: `user_id`, `token_id`, `request_params`, `response_summary`.
+
+**Response (201):** `{ "id": "<log entry id>" }`
 
 ---
 

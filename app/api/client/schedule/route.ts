@@ -1,8 +1,9 @@
-import { NextResponse } from 'next/server'
-import { query } from '@/lib/mssql'
+import { NextRequest, NextResponse } from 'next/server'
+import { query, getPool } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { SCHEDULED_QUERY, ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
+import { getClientSession } from '@/lib/clientAuth'
 
 let sqlCache: { trucks: unknown; schedules: unknown; timestamp: number } | null = null
 const CACHE_TTL = 5 * 60 * 1000
@@ -19,11 +20,25 @@ function toDateStr(val: unknown): string {
   try { return new Date(s).toISOString().split('T')[0] } catch { return '' }
 }
 
-const HIDDEN_TRUCKS = new Set(['0001'])
+const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const session = getClientSession(req)
+
     const holdsPromise = prisma.hold.findMany({ orderBy: { start_date: 'asc' } })
+    // Other clients' non-rejected hold requests also occupy a truck/day, even before staff
+    // approval — a pending request should read as "booked" to everyone else, same as a
+    // confirmed Hold, just without exposing who requested it (see holdRequestBlocks below).
+    // The requesting client's OWN pending requests are excluded here — those come back in
+    // full detail (with their own status/notes) from /api/client/hold-requests instead.
+    const holdRequestsPromise = prisma.holdRequest.findMany({
+      where: {
+        status: { not: 'REJECTED' },
+        ...(session ? { client_user_id: { not: session.id } } : {}),
+      },
+      orderBy: { created_at: 'asc' },
+    })
 
     let trucksRaw: Record<string, unknown>[]
     let schedulesRaw: Record<string, unknown>[]
@@ -39,9 +54,9 @@ export async function GET() {
       sqlCache = { trucks: trucksRaw, schedules: schedulesRaw, timestamp: Date.now() }
     }
 
-    const holds = await holdsPromise
+    const [holds, otherHoldRequests] = await Promise.all([holdsPromise, holdRequestsPromise])
 
-    let gpsMap = new Map<string, { city: string; state: string; formatted_address: string }>()
+    let gpsMap = new Map<string, { city: string; state: string; formatted_address: string; latitude: number; longitude: number }>()
     try {
       gpsMap = await getLiveVehicleLocations()
     } catch { /* continue without GPS */ }
@@ -69,6 +84,7 @@ export async function GET() {
       }
     }
 
+    const sqlTruckNums = new Set(trucksRaw.map((r) => String(r.truck_number ?? '')))
     const trucks = trucksRaw
       .filter((r) => !HIDDEN_TRUCKS.has(String(r.truck_number ?? '')))
       .map((r) => {
@@ -79,10 +95,27 @@ export async function GET() {
           last_gps:          gpsData?.formatted_address || null,
           last_gps_city:     gpsData?.city              || null,
           last_gps_state:    gpsData?.state             || null,
+          last_gps_lat:      gpsData?.latitude          ?? null,
+          last_gps_lng:      gpsData?.longitude         ?? null,
           last_known_market: scheduleInfo[num]?.market || holdMarkets[num]?.market || (gpsData?.city ? [gpsData.city, gpsData.state].filter(Boolean).join(', ') : null),
           last_known_state:  scheduleInfo[num]?.state  || holdMarkets[num]?.state  || gpsData?.state || null,
         }
       })
+
+    // Include Samsara-only trucks (in GPS but not in LED app DB) — show under their GPS city/state
+    for (const [num, gpsData] of gpsMap) {
+      if (HIDDEN_TRUCKS.has(num) || sqlTruckNums.has(num)) continue
+      trucks.push({
+        truck_number:      num,
+        last_gps:          gpsData.formatted_address || null,
+        last_gps_city:     gpsData.city              || null,
+        last_gps_state:    gpsData.state             || null,
+        last_gps_lat:      gpsData.latitude          ?? null,
+        last_gps_lng:      gpsData.longitude         ?? null,
+        last_known_market: gpsData.city ? [gpsData.city, gpsData.state].filter(Boolean).join(', ') : null,
+        last_known_state:  gpsData.state             || null,
+      })
+    }
 
     const schedules = schedulesRaw
       .filter((r) => !HIDDEN_TRUCKS.has(String(r.truck_number ?? '')))
@@ -113,7 +146,37 @@ export async function GET() {
         user_name:    null,
       }))
 
-    return NextResponse.json({ trucks, schedules, holds: holdBlocks })
+    // Same redaction as holdBlocks above — no client attribution, just occupies the day
+    const holdRequestBlocks = otherHoldRequests
+      .filter((r) => !HIDDEN_TRUCKS.has(r.truck_number))
+      .map((r) => ({
+        id:           r.id,
+        truck_number: r.truck_number,
+        market:       r.market,
+        state:        r.state ?? '',
+        notes:        '',
+        start_date:   r.start_date.toISOString().split('T')[0],
+        end_date:     r.end_date.toISOString().split('T')[0],
+        status:       r.status as 'PENDING' | 'APPROVED',
+        company_name: '',
+      }))
+
+    // Full markets list from lookup tables (same source as internal /api/markets)
+    let markets: string[] = []
+    try {
+      const pool = await getPool()
+      const [cpmResult, lookupResult] = await Promise.all([
+        pool.request().query(`SELECT DISTINCT standard_market_name AS market FROM dbo.client_program_markets WHERE standard_market_name IS NOT NULL AND LEN(LTRIM(RTRIM(standard_market_name))) > 0 ORDER BY standard_market_name`),
+        pool.request().query(`SELECT DISTINCT standard_market AS market FROM dbo.standard_market_lookup WHERE standard_market IS NOT NULL ORDER BY standard_market`),
+      ])
+      const normalize = (m: string) => m?.replace(/\s*,\s*/g, ', ').trim()
+      markets = Array.from(new Set([
+        ...cpmResult.recordset.map((r: { market: string }) => normalize(r.market)),
+        ...lookupResult.recordset.map((r: { market: string }) => normalize(r.market)),
+      ])).filter((m) => m && m.length > 1).sort()
+    } catch { /* return empty markets on error */ }
+
+    return NextResponse.json({ trucks, schedules, holds: holdBlocks, holdRequests: holdRequestBlocks, markets })
   } catch (error) {
     console.error('Client schedule query error:', error)
     return NextResponse.json({ error: 'Failed to fetch schedule' }, { status: 500 })

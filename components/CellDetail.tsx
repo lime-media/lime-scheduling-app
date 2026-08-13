@@ -84,6 +84,7 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
   const dateStr   = cell.calendar_date ? format(parseISO(cell.calendar_date + 'T12:00:00'), 'MMM d, yyyy') : ''
   const market    = cell.hold_market || cell.market || lastKnownMarket
   const isHold        = status === 'HOLD_TENTATIVE' || status === 'COMMITTED_NOT_SET'
+  const isHoldRequest = status === 'HOLD_REQUEST'
   const isScheduled   = status === 'SCHEDULED_LED'
   const isATTSoft     = status === 'ATT_SOFT'
   const isMaintenance = status === 'MAINTENANCE'
@@ -135,6 +136,7 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
             {market             && <Row label="Market"  value={market} />}
             {cell.hold_notes    && <Row label="Notes"   value={cell.hold_notes} />}
             {cell.hold_created_by && <Row label="By"    value={cell.hold_created_by} />}
+            {cell.hold_origination === 'mcp' && <Row label="Via" value="MCP" />}
           </>
         )}
 
@@ -143,6 +145,14 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
           <>
             {cell.client_name && <Row label="Client" value={cell.client_name} />}
             {cell.hold_notes  && <Row label="Period" value={cell.hold_notes} />}
+          </>
+        )}
+
+        {/* Client hold request details */}
+        {isHoldRequest && (
+          <>
+            {cell.client_name && <Row label="Client"  value={cell.client_name} />}
+            {cell.hold_notes  && <Row label="Notes"   value={cell.hold_notes} />}
           </>
         )}
 
@@ -163,7 +173,7 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
 
         {/* Available cell — show last known market if any */}
         {status === 'EMPTY' && lastKnownMarket && (
-          <Row label="Last market" value={lastKnownMarket} />
+          <Row label="Available in" value={lastKnownMarket} />
         )}
 
         {/* GPS address for all statuses */}

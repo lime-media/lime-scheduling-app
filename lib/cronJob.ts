@@ -1,15 +1,11 @@
 import cron from 'node-cron'
 import { refreshCache } from '@/lib/scheduleCache'
 
-let started = false
+const g = global as typeof globalThis & { __cronStarted?: boolean }
 
-/**
- * Start all background cron jobs. Safe to call multiple times — only starts once.
- * Called from app/layout.tsx on server boot (both dev and prod).
- */
 export function startCronJobs(): void {
-  if (started) return
-  started = true
+  if (g.__cronStarted) return
+  g.__cronStarted = true
 
   console.log('[cron] scheduler started - refreshing every hour')
 

@@ -6,6 +6,7 @@ import { useSession } from 'next-auth/react'
 import toast from 'react-hot-toast'
 import { Navbar } from '@/components/Navbar'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
+import { parseDateOnly } from '@/lib/dateOnly'
 
 type Hold = {
   id: string
@@ -16,6 +17,7 @@ type Hold = {
   start_date: string
   end_date: string
   status: 'HOLD' | 'COMMITTED'
+  origination: string
   notes: string | null
   created_at: string
   created_by: string
@@ -25,6 +27,11 @@ type Hold = {
 const STATUS_BADGE: Record<string, string> = {
   HOLD: 'bg-yellow-100 text-yellow-800 border border-yellow-200',
   COMMITTED: 'bg-red-100 text-red-800 border border-red-200',
+}
+
+const ORIGINATION_BADGE: Record<string, string> = {
+  frontend: 'bg-gray-100 text-gray-600 border border-gray-200',
+  mcp: 'bg-purple-100 text-purple-800 border border-purple-200',
 }
 
 export default function HoldsPage() {
@@ -164,12 +171,19 @@ export default function HoldsPage() {
             <div className="sm:hidden space-y-3">
               {filtered.map((hold) => (
                 <div key={hold.id} className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
-                  {/* Top row: truck + status badge */}
+                  {/* Top row: truck + status badge + origination */}
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-lg font-bold text-gray-900">Truck {hold.truck_number}</span>
-                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[hold.status]}`}>
-                      {hold.status}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {hold.origination === 'mcp' && (
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${ORIGINATION_BADGE.mcp}`}>
+                          MCP
+                        </span>
+                      )}
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[hold.status]}`}>
+                        {hold.status}
+                      </span>
+                    </div>
                   </div>
 
                   {/* Client */}
@@ -182,9 +196,9 @@ export default function HoldsPage() {
 
                   {/* Dates */}
                   <div className="flex items-center gap-2 text-sm text-gray-600 mb-3">
-                    <span>{format(new Date(hold.start_date), 'MMM d, yyyy')}</span>
+                    <span>{format(parseDateOnly(hold.start_date), 'MMM d, yyyy')}</span>
                     <span className="text-gray-300">→</span>
-                    <span>{format(new Date(hold.end_date), 'MMM d, yyyy')}</span>
+                    <span>{format(parseDateOnly(hold.end_date), 'MMM d, yyyy')}</span>
                   </div>
 
                   {/* Footer: created by + actions */}
@@ -227,7 +241,7 @@ export default function HoldsPage() {
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 border-b border-gray-200">
                     <tr>
-                      {['Truck', 'Client', 'Market', 'State', 'Start Date', 'End Date', 'Status', 'Created By', 'Actions'].map((col) => (
+                      {['Truck', 'Client', 'Market', 'State', 'Start Date', 'End Date', 'Status', 'Source', 'Created By', 'Actions'].map((col) => (
                         <th key={col} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
                           {col}
                         </th>
@@ -241,11 +255,16 @@ export default function HoldsPage() {
                         <td className="px-4 py-3 text-gray-700">{hold.client_name}</td>
                         <td className="px-4 py-3 text-gray-600">{hold.market}</td>
                         <td className="px-4 py-3 text-gray-600">{hold.state}</td>
-                        <td className="px-4 py-3 text-gray-600">{format(new Date(hold.start_date), 'MMM d, yyyy')}</td>
-                        <td className="px-4 py-3 text-gray-600">{format(new Date(hold.end_date), 'MMM d, yyyy')}</td>
+                        <td className="px-4 py-3 text-gray-600">{format(parseDateOnly(hold.start_date), 'MMM d, yyyy')}</td>
+                        <td className="px-4 py-3 text-gray-600">{format(parseDateOnly(hold.end_date), 'MMM d, yyyy')}</td>
                         <td className="px-4 py-3">
                           <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[hold.status]}`}>
                             {hold.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${ORIGINATION_BADGE[hold.origination] || ORIGINATION_BADGE.frontend}`}>
+                            {hold.origination === 'mcp' ? 'MCP' : 'App'}
                           </span>
                         </td>
                         <td className="px-4 py-3 text-gray-500 text-xs">

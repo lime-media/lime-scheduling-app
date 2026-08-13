@@ -4,7 +4,7 @@ import { authOptions } from '@/lib/auth'
 import Anthropic from '@anthropic-ai/sdk'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
-import { CHAT_CONTEXT_QUERY } from '@/lib/scheduleQuery'
+import { CHAT_CONTEXT_QUERY, CHAT_SCHEDULE_WINDOW_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -23,13 +23,16 @@ STATUS MEANINGS:
 - ATT_SOFT (blue): Soft hold reserved for AT&T — may be voided if assigned to a non-ATT program
 
 ANSWER RULES — ALWAYS follow these:
+- Be concise by default. Lead with the direct answer in a sentence or two. Only add supporting detail (client/program name, exact date ranges, GPS movement history) when the user explicitly asks for it, or when it's necessary to justify a recommendation.
 - Always include specific truck numbers in your answers, never just counts
 - When asked "how many trucks in X" → give the count AND list every truck number
-- When asked about availability → list which trucks are free AND which are not
-- When asked about a specific truck → give its full current status, market, program, dates, and last known GPS location
-- When asked about a date range → check every day in that range, flag any gaps
+- When asked about availability → state which trucks are free and which aren't, in plain language, with current market and hold status — do not dump a full day-by-day schedule unless asked
+- When asked something like "is there a truck near/available for market X" → answer directly: if a truck is at or near that market, say so and confirm it's available. If not, name the nearest available truck (or the truck requiring the smallest move) as an option — that's the answer, not a rundown of every truck's schedule
+- When asked about a specific truck's current location/status → answer in one or two sentences: current market and status. Don't narrate how it got there or where it's been (e.g. "it's bouncing around the Midwest"), and don't mention which client/program it's booked for unless explicitly asked — just say SCHEDULED/COMMITTED/etc. and the market
+- When asked about a date range → check every day in that range, but report gaps/conflicts, not a full recap of every day, unless asked
 - When asked about conflicts → identify the exact overlap with truck numbers and dates
-- Be direct and concise — lead with the answer, then give detail
+- Be direct — lead with the answer, then add only the detail that's needed
+- Verify the data before you answer. Give one clean, final answer — do not think out loud, second-guess, or "correct" yourself mid-response.
 - Always reference today's date when answering relative questions like "this week", "next week", "today"
 - If the data doesn't contain enough information to answer confidently, say so clearly and explain what's missing
 - Never make up or estimate data — only answer from what's provided
@@ -37,7 +40,13 @@ ANSWER RULES — ALWAYS follow these:
 
 RESPONSE FORMAT — mandatory, do not deviate:
 
-For any question involving truck assignments, event planning, or availability across one or more events/locations — output structured [EVENT] blocks, one per event or location. The UI will render these as styled cards.
+For multi-truck or multi-market requests (e.g. "I want N trucks in City X and City Y from A to B") — write a prose breakdown first, formatted with markdown:
+- One bold header per market/location (e.g. **DALLAS**)
+- Under each header, explain the pick: which trucks are cleanest, which nearby trucks are blocked and why (hold type, program, dates), and how far you had to pull if the in-market options were blocked
+- Use "-" bullet lists for blocked/alternate trucks when useful
+- End the prose with a one-line summary of ATT_SOFT/hold conflicts across all recommended trucks, then ask the user to confirm before placing holds (client name, and HOLD vs COMMITTED status)
+
+After the prose, output structured [EVENT] blocks, one per event or location, so the UI can render them as styled cards. Every truck-assignment / event-planning / multi-location availability answer needs both the prose breakdown above AND the [EVENT] blocks below — never one without the other.
 
 Each [EVENT] block must follow this exact format:
 
@@ -58,7 +67,7 @@ Rules for [EVENT] blocks:
 - No markdown inside [EVENT] blocks. Plain text only.
 - Output one [EVENT] block per event, back to back, with no extra text between them
 
-For simple factual questions (single truck lookup, quick counts, yes/no, hold status) — answer in 2–4 lines of plain text without any [EVENT] blocks. No markdown, no bold, no tables.
+For single-truck lookups and simple yes/no availability questions — answer in 1-3 short sentences: current status, market, and whether it's near/available for whatever was asked. Skip client/program names, exact dates, and GPS movement history unless the user explicitly asks for that detail. [EVENT] blocks aren't needed here unless the user is assigning or holding a truck.
 
 TAKING ACTIONS:
 You can place and release holds when the user explicitly asks and confirms.
@@ -85,7 +94,7 @@ truck: <truck_number>
 [/ACTION]
 
 Always check for conflicts before placing a hold. If there is a conflict, do not emit the action block — report the conflict instead.
-Today's date is always provided in the schedule context.`
+Today's date is always provided in the schedule context. Truck schedule data covers a fixed window from 30 days before today through 60 days after today — if asked about a date outside that window, say so explicitly rather than guessing.`
 
 // ── Action block parsing & execution ─────────────────────────────────────────
 
@@ -201,13 +210,14 @@ async function executeReleaseHold(
 
 // ── Context builder ───────────────────────────────────────────────────────────
 
-const HIDDEN_TRUCKS = new Set(['0001'])
+const HIDDEN_TRUCKS = new Set(['0001', '1257', '00001257'])
 
 async function buildScheduleContext(): Promise<string> {
   const today = new Date().toISOString().split('T')[0]
 
-  const [truckRows, holds, gpsMap] = await Promise.all([
+  const [truckRows, windowRows, holds, gpsMap] = await Promise.all([
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
+    query<Record<string, unknown>[]>(CHAT_SCHEDULE_WINDOW_QUERY),
     prisma.hold.findMany({
       include: { user: { select: { name: true } } },
       orderBy: { start_date: 'asc' },
@@ -218,6 +228,51 @@ async function buildScheduleContext(): Promise<string> {
   const trucks = (truckRows as Record<string, string>[]).filter(
     (r) => !HIDDEN_TRUCKS.has(r.truck_number)
   )
+
+  // Group the -30/+60 day schedule window by truck, merging consecutive days
+  // of the same program/market into one range — CHAT_SCHEDULE_WINDOW_QUERY
+  // returns one row per scheduled day, matching how the grid renders blocks.
+  // mssql returns DATE columns as JS Date objects, not strings — normalize
+  // before doing any string/arithmetic comparisons on them.
+  function toDateStr(val: unknown): string {
+    if (!val) return ''
+    if (val instanceof Date) return val.toISOString().split('T')[0]
+    const s = String(val)
+    return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : ''
+  }
+
+  function nextDayStr(dateStr: string): string {
+    const d = new Date(dateStr + 'T00:00:00Z')
+    d.setUTCDate(d.getUTCDate() + 1)
+    return d.toISOString().split('T')[0]
+  }
+
+  type ScheduleBlock = { start: string; end: string; market: string; state: string; program: string }
+
+  const scheduleByTruck = new Map<string, ScheduleBlock[]>()
+  for (const row of windowRows as Record<string, unknown>[]) {
+    const truckNumber = String(row.truck_number ?? '')
+    if (HIDDEN_TRUCKS.has(truckNumber)) continue
+    const shiftDate = toDateStr(row.shift_date)
+    const market    = String(row.market  ?? '')
+    const state     = String(row.state   ?? '')
+    const program   = String(row.program ?? '')
+
+    const blocks = scheduleByTruck.get(truckNumber) ?? []
+    const last = blocks[blocks.length - 1]
+    if (
+      last &&
+      shiftDate === nextDayStr(last.end) &&
+      program === last.program &&
+      market === last.market &&
+      state === last.state
+    ) {
+      last.end = shiftDate
+    } else {
+      blocks.push({ start: shiftDate, end: shiftDate, market, state, program })
+    }
+    scheduleByTruck.set(truckNumber, blocks)
+  }
 
   const truckLines = trucks.map((r) => {
     const todayStatus = r.today_status ?? 'UNKNOWN'
@@ -234,9 +289,19 @@ async function buildScheduleContext(): Promise<string> {
     }
 
     const parts = [`- Truck ${r.truck_number}: ${todayStatus} | ${location}`]
-    if (r.program)        parts.push(`program="${r.program}"`)
-    if (r.market)         parts.push(`market=${r.market}`)
-    if (r.schedule_start) parts.push(`scheduled ${r.schedule_start} → ${r.schedule_end}`)
+
+    const blocks = scheduleByTruck.get(r.truck_number) ?? []
+    if (blocks.length) {
+      const blockList = blocks
+        .map((b) => {
+          const range = b.start === b.end ? b.start : `${b.start} → ${b.end}`
+          const where = [b.market, b.state].filter(Boolean).join(', ')
+          return `${range}${where ? ` in ${where}` : ''}${b.program ? ` (${b.program})` : ''}`
+        })
+        .join('; ')
+      parts.push(`schedule: ${blockList}`)
+    }
+
     return parts.join(' | ')
   })
 
@@ -248,7 +313,7 @@ async function buildScheduleContext(): Promise<string> {
       return `  Truck ${h.truck_number}: ${h.status} for "${h.client_name}" in ${h.market}${h.state ? ', ' + h.state : ''} (${start} → ${end})${h.notes ? ' — ' + h.notes : ''}`
     })
 
-  return `TRUCK STATUS (today: ${today}):
+  return `TRUCK STATUS (today: ${today}; schedule window covers 30 days before through 60 days after today):
 ${truckLines.join('\n')}
 
 ALL HOLDS & COMMITMENTS (${holds.length} total):

@@ -23,6 +23,21 @@ interface UserForm {
 
 const EMPTY_FORM: UserForm = { name: '', email: '', password: '', role: 'SALES' }
 
+interface ClientPortalUser {
+  id:           string
+  username:     string
+  company_name: string
+  created_at:   string
+}
+
+interface ClientForm {
+  username:     string
+  company_name: string
+  password:     string
+}
+
+const EMPTY_CLIENT_FORM: ClientForm = { username: '', company_name: '', password: '' }
+
 export default function UsersPage() {
   const { data: session, status } = useSession()
   const router = useRouter()
@@ -35,6 +50,16 @@ export default function UsersPage() {
   const [showPw,      setShowPw]      = useState(false)
   const [saving,      setSaving]      = useState(false)
   const [deleteId,    setDeleteId]    = useState<string | null>(null)
+
+  // Client portal users
+  const [clientUsers,      setClientUsers]      = useState<ClientPortalUser[]>([])
+  const [clientLoading,    setClientLoading]    = useState(true)
+  const [clientModalMode,  setClientModalMode]  = useState<'add' | 'edit' | null>(null)
+  const [clientEditTarget, setClientEditTarget] = useState<ClientPortalUser | null>(null)
+  const [clientForm,       setClientForm]       = useState<ClientForm>(EMPTY_CLIENT_FORM)
+  const [clientShowPw,     setClientShowPw]     = useState(false)
+  const [clientSaving,     setClientSaving]     = useState(false)
+  const [clientDeleteId,   setClientDeleteId]   = useState<string | null>(null)
 
   // Role guard
   useEffect(() => {
@@ -53,7 +78,18 @@ export default function UsersPage() {
     }
   }
 
-  useEffect(() => { fetchUsers() }, [])
+  async function fetchClientUsers() {
+    setClientLoading(true)
+    try {
+      const res  = await fetch('/api/admin/client-users')
+      const data = res.ok ? await res.json() : { users: [] }
+      setClientUsers(data.users ?? [])
+    } finally {
+      setClientLoading(false)
+    }
+  }
+
+  useEffect(() => { fetchUsers(); fetchClientUsers() }, [])
 
   function openAdd() {
     setForm(EMPTY_FORM)
@@ -131,6 +167,77 @@ export default function UsersPage() {
     setDeleteId(null)
   }
 
+  function openClientAdd() {
+    setClientForm(EMPTY_CLIENT_FORM)
+    setClientShowPw(false)
+    setClientEditTarget(null)
+    setClientModalMode('add')
+  }
+
+  function openClientEdit(user: ClientPortalUser) {
+    setClientForm({ username: user.username, company_name: user.company_name, password: '' })
+    setClientShowPw(false)
+    setClientEditTarget(user)
+    setClientModalMode('edit')
+  }
+
+  function closeClientModal() {
+    setClientModalMode(null)
+    setClientEditTarget(null)
+    setClientForm(EMPTY_CLIENT_FORM)
+  }
+
+  async function handleClientSave(e: React.FormEvent) {
+    e.preventDefault()
+    if (!clientForm.username.trim() || !clientForm.company_name.trim()) {
+      toast.error('Username and company name are required')
+      return
+    }
+    if (clientModalMode === 'add' && !clientForm.password) {
+      toast.error('Password is required for new client users')
+      return
+    }
+
+    setClientSaving(true)
+    try {
+      const isEdit = clientModalMode === 'edit' && clientEditTarget
+      const url    = isEdit ? `/api/admin/client-users/${clientEditTarget.id}` : '/api/admin/client-users'
+      const method = isEdit ? 'PUT' : 'POST'
+
+      const body: Record<string, string> = {
+        username:     clientForm.username.trim(),
+        company_name: clientForm.company_name.trim(),
+      }
+      if (clientForm.password) body.password = clientForm.password
+
+      const res  = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const data = await res.json()
+
+      if (!res.ok) {
+        toast.error(data.error || 'Failed to save client user')
+        return
+      }
+
+      toast.success(isEdit ? 'Client user updated' : 'Client user created')
+      closeClientModal()
+      fetchClientUsers()
+    } finally {
+      setClientSaving(false)
+    }
+  }
+
+  async function handleClientDelete(id: string) {
+    const res  = await fetch(`/api/admin/client-users/${id}`, { method: 'DELETE' })
+    const data = await res.json()
+    if (!res.ok) {
+      toast.error(data.error || 'Failed to delete client user')
+    } else {
+      toast.success('Client user deleted')
+      fetchClientUsers()
+    }
+    setClientDeleteId(null)
+  }
+
   const opsCount = users.filter((u) => u.role === 'OPERATIONS').length
   const myId     = session?.user?.id ?? ''
 
@@ -161,7 +268,7 @@ export default function UsersPage() {
         </div>
 
         {loading ? (
-          <div className="text-center py-16 text-gray-400">Loading users…</div>
+          <div className="text-center py-12 text-gray-400">Loading users…</div>
         ) : users.length === 0 ? (
           <div className="text-center py-16">
             <p className="text-gray-400 mb-4">No users yet</p>
@@ -283,6 +390,118 @@ export default function UsersPage() {
             </div>
           </>
         )}
+
+        {/* ── Client Portal Users ─────────────────────────────────────────────── */}
+        <div className="mt-10">
+          <div className="flex items-center justify-between mb-5">
+            <div>
+              <h2 className="text-lg sm:text-xl font-bold text-gray-900">Client Portal Users</h2>
+              <p className="text-xs text-gray-500 mt-0.5">Accounts that log in to the client-facing scheduling portal</p>
+            </div>
+            <button
+              onClick={openClientAdd}
+              className="bg-purple-700 hover:bg-purple-600 text-white text-sm font-medium px-3 sm:px-4 py-2 rounded transition-colors"
+            >
+              + Add Client User
+            </button>
+          </div>
+
+          {clientLoading ? (
+            <div className="text-center py-10 text-gray-400">Loading…</div>
+          ) : clientUsers.length === 0 ? (
+            <div className="text-center py-10">
+              <p className="text-gray-400 mb-4">No client portal users yet</p>
+              <button onClick={openClientAdd} className="bg-purple-700 hover:bg-purple-600 text-white text-sm px-4 py-2 rounded">
+                + Add Client User
+              </button>
+            </div>
+          ) : (
+            <>
+              {/* Mobile cards */}
+              <div className="sm:hidden space-y-3">
+                {clientUsers.map((cu) => (
+                  <div key={cu.id} className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-semibold text-gray-900">{cu.company_name}</div>
+                        <div className="text-sm text-gray-500 mt-0.5">{cu.username}</div>
+                        <div className="text-xs text-gray-400 mt-1">
+                          Added {new Date(cu.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        <button
+                          onClick={() => openClientEdit(cu)}
+                          className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                          title="Edit client user"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                          </svg>
+                        </button>
+                        <button
+                          onClick={() => setClientDeleteId(cu.id)}
+                          className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                          title="Delete client user"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Desktop table */}
+              <div className="hidden sm:block bg-white rounded-lg shadow overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 border-b border-gray-200">
+                    <tr>
+                      {['Company', 'Username', 'Created', 'Actions'].map((h) => (
+                        <th key={h} className="text-left px-4 py-3 font-medium text-gray-600 text-xs uppercase tracking-wide">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {clientUsers.map((cu) => (
+                      <tr key={cu.id} className="hover:bg-gray-50">
+                        <td className="px-4 py-3 font-medium text-gray-900">{cu.company_name}</td>
+                        <td className="px-4 py-3 text-gray-600">{cu.username}</td>
+                        <td className="px-4 py-3 text-gray-500">
+                          {new Date(cu.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <button onClick={() => openClientEdit(cu)} title="Edit client user" className="text-gray-400 hover:text-gray-700 transition-colors p-1">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              </svg>
+                            </button>
+                            <button
+                              onClick={() => setClientDeleteId(cu.id)}
+                              title="Delete client user"
+                              className="p-1 text-red-400 hover:text-red-600 transition-colors"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {/* ── Add/Edit Modal ─────────────────────────────────────────────────────── */}
@@ -408,6 +627,115 @@ export default function UsersPage() {
               </button>
               <button
                 onClick={() => handleDelete(deleteId)}
+                className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Client Portal User Add/Edit Modal ─────────────────────────────────── */}
+      {clientModalMode && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md">
+            <div className="px-6 py-4 border-b border-gray-200">
+              <h2 className="text-lg font-semibold text-gray-900">
+                {clientModalMode === 'add' ? 'Add Client User' : 'Edit Client User'}
+              </h2>
+            </div>
+            <form onSubmit={handleClientSave} className="px-6 py-4 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                <input
+                  type="text"
+                  required
+                  value={clientForm.username}
+                  onChange={(e) => setClientForm({ ...clientForm, username: e.target.value })}
+                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Company Name</label>
+                <input
+                  type="text"
+                  required
+                  value={clientForm.company_name}
+                  onChange={(e) => setClientForm({ ...clientForm, company_name: e.target.value })}
+                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Password{clientModalMode === 'edit' && <span className="text-gray-400 font-normal ml-1">(leave blank to keep current)</span>}
+                </label>
+                <div className="relative">
+                  <input
+                    type={clientShowPw ? 'text' : 'password'}
+                    value={clientForm.password}
+                    onChange={(e) => setClientForm({ ...clientForm, password: e.target.value })}
+                    required={clientModalMode === 'add'}
+                    className="w-full border border-gray-300 rounded px-3 py-2 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setClientShowPw(!clientShowPw)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  >
+                    {clientShowPw ? (
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                      </svg>
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </div>
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={closeClientModal}
+                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={clientSaving}
+                  className="px-4 py-2 text-sm bg-purple-700 hover:bg-purple-600 text-white rounded transition-colors disabled:opacity-50"
+                >
+                  {clientSaving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Client Portal Delete Confirm Modal ────────────────────────────────── */}
+      {clientDeleteId && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-sm p-6">
+            <h2 className="text-lg font-semibold text-gray-900 mb-2">Delete Client User</h2>
+            <p className="text-sm text-gray-600 mb-6">
+              This will permanently delete the client account. Any pending hold requests will remain in the system.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setClientDeleteId(null)}
+                className="px-4 py-2 text-sm border border-gray-300 rounded text-gray-600 hover:text-gray-800 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleClientDelete(clientDeleteId)}
                 className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
               >
                 Delete

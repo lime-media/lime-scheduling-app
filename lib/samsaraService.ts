@@ -26,19 +26,25 @@ export async function getLiveVehicleLocations(): Promise<Map<string, SamsaraVehi
   const locationMap = new Map<string, SamsaraVehicleLocation>()
 
   for (const vehicle of data.data || []) {
-    // Only process LED trucks (LED-XXXX format)
-    if (!vehicle.name?.startsWith('LED-')) continue
+    // Only process LED trucks (LED-XXXX or LED XXXX format)
+    if (!vehicle.name?.startsWith('LED-') && !vehicle.name?.startsWith('LED ')) continue
 
-    // Pad to 4 digits to match DB truck_number format (e.g. "LED-825" → "0825")
-    const truck_number = vehicle.name.replace('LED-', '').trim().padStart(4, '0')
+    // Pad to 4 digits to match DB truck_number format (e.g. "LED- 825" → "0825", "LED 0766" → "0766")
+    const truck_number = vehicle.name.replace(/^LED[-\s]\s*/, '').replace(/^[-\s]+/, '').trim().padStart(4, '0')
     const loc = vehicle.location
 
     if (!loc?.reverseGeo?.formattedLocation) continue
 
     const formatted_address = loc.reverseGeo.formattedLocation
     const parts = formatted_address.split(',').map((p: string) => p.trim())
-    const city  = parts[1] || ''
-    const state = parts[2] || ''
+    const stripAdmin = (s: string) => s.replace(/\s+(County|Parish|Borough|Census Area|Municipality|District|Township|Precinct)$/i, '').trim()
+    const rawCity = parts[1] || ''
+    const parsedCity = stripAdmin(rawCity)
+    // When parts[1] is a bare state abbreviation the format is "County, ST" (rural/no city).
+    // In that case use parts[0] (the county) as the city name.
+    const cityIsState = /^[A-Z]{2}$/.test(parsedCity)
+    const city  = cityIsState ? stripAdmin(parts[0]) : parsedCity
+    const state = cityIsState ? parsedCity : (parts[2] || '')
 
     locationMap.set(truck_number, {
       truck_number,

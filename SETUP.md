@@ -17,39 +17,61 @@ ANTHROPIC_API_KEY="sk-ant-..."
 
 MSSQL_SERVER="limemediauat.database.windows.net"
 MSSQL_PORT=1433
-MSSQL_DATABASE="limemediauat"
+MSSQL_DATABASE="limemediauat_PROD"
 MSSQL_USER="limeuatadmin"
 MSSQL_PASSWORD="YOUR_PASSWORD"
 ```
 
-## 2. Create the Three New Tables in Azure SQL
+## 2. Create the App Tables in Azure SQL
 
-> **IMPORTANT:** Do NOT run `prisma db push` or `prisma migrate` — those commands
-> inspect the entire database and may attempt to drop or alter existing tables.
+> **IMPORTANT:** Do NOT run `prisma db push` or `prisma migrate deploy` — those
+> commands inspect the entire database and may attempt to drop or alter existing
+> tables (this DB also holds many non-Prisma legacy tables Prisma doesn't know
+> about — `led_app_*`, `samsara_*`, etc.).
 >
-> Instead, run the safe SQL script below. It uses `IF NOT EXISTS` guards on each
-> table and will no-op if the tables already exist. It does not touch any
-> `led_app_*` or `samsara_*` tables.
+> Instead, run the SQL scripts below in order, by hand, against limemediauat.
+> Every statement uses `IF NOT EXISTS` / `COL_LENGTH` guards, so scripts are
+> safe to re-run and will no-op for anything that already exists. None of them
+> touch `led_app_*` or `samsara_*` tables.
 
-Run `prisma/create-new-tables.sql` against limemediauat using any SQL client:
+Schema changes now live as numbered migrations under `prisma/migrations/`
+(the historical flat `prisma/*.sql` scripts are still there and still valid —
+new changes go in `prisma/migrations/` going forward). Run them **in order**
+against limemediauat using any SQL client:
 
-**Option A — sqlcmd (CLI):**
+1. `prisma/create-new-tables.sql` — `app_users`, `app_holds`, `app_audit_logs`
+2. `prisma/migrations/20260420000001_add_schedule_conflicts_table/migration.sql` — `schedule_conflicts`
+3. `prisma/create-chat-tables.sql` — `chat_conversations`, `chat_messages`
+4. `prisma/migrations/20260706000000_add_client_users_and_hold_requests/migration.sql` — `app_client_users`, `app_hold_requests`
+5. `prisma/mcp-v2-migration.sql` — `app_holds.origination`, `mcp_tokens`, `mcp_query_log`
+6. `prisma/migrations/20260720000000_add_sfdc_columns_to_holds/migration.sql` — `app_holds.sfdc_opportunity_id`, `app_holds.sfdc_hold_exp`
+7. `prisma/migrations/20260724000000_add_source_column/migration.sql` — `source` on `app_holds` and `app_hold_requests`
+8. `prisma/mcp-v2-client-users-migration.sql` — `mcp_tokens.user_type`, `mcp_query_log.user_type`, drops hard FKs
+9. `prisma/mcp-widen-user-id-migration.sql` — widens `user_id` to `NVARCHAR(255)` on `mcp_tokens`/`mcp_query_log`
+10. `prisma/migrations/20260810000000_add_client_chat_tables/migration.sql` — `client_chat_conversations`, `client_chat_messages` (**not yet applied anywhere** — required by the in-progress client-portal AI chat feature; run this before that code path goes live)
+
+**Option A — sqlcmd (CLI), one file at a time:**
 ```bash
 sqlcmd -S limemediauat.database.windows.net -d limemediauat \
        -U limeuatadmin -P 'YOUR_PASSWORD' \
        -i prisma/create-new-tables.sql
+# repeat for each file above, in order
 ```
 
 **Option B — Azure Data Studio / SSMS:**
-Open `prisma/create-new-tables.sql` and execute it against the limemediauat database.
+Open each file and execute it against the limemediauat database, in order.
 
 **Option C — VS Code SQL Server extension:**
-Connect to limemediauat, open the file, right-click → Run Query.
+Connect to limemediauat, open each file, right-click → Run Query, in order.
 
-The script creates:
-- `dbo.app_users`
-- `dbo.app_holds`
-- `dbo.app_audit_logs`
+> On a database that's already up to date (e.g. `limemediaprod`), all of the
+> above are safe no-ops. They matter most for standing up a **new** database
+> from scratch (fresh UAT/dev environment) — running them in order is what
+> reconstructs the full current schema.
+>
+> `prisma/migrations/` uses Prisma's standard migration folder format so the
+> history is browsable with tooling, but files inside it are still meant to be
+> run by hand like the rest — never via `prisma migrate deploy` against this DB.
 
 ## 3. Generate Prisma Client
 
@@ -90,10 +112,16 @@ Azure SQL (app_holds, app_users) ◄──────────┘
 Anthropic Claude API ◄── /api/chat ──────────┘
 ```
 
-### New Tables (managed by this app — created via SQL script)
+### New Tables (managed by this app — created via SQL script, see step 2 above)
 - `dbo.app_users` — Login accounts with SALES or OPERATIONS role
 - `dbo.app_holds` — Truck holds (HOLD or COMMITTED status)
 - `dbo.app_audit_logs` — Full audit trail of all hold actions
+- `dbo.app_client_users` — Client portal login accounts
+- `dbo.app_hold_requests` — Client-submitted hold requests (PENDING/APPROVED/REJECTED)
+- `dbo.mcp_tokens`, `dbo.mcp_query_log` — MCP server auth + telemetry
+- `dbo.chat_conversations`, `dbo.chat_messages` — Internal AI chat history
+- `dbo.client_chat_conversations`, `dbo.client_chat_messages` — Client-portal AI chat history (not yet deployed — see step 2, item 10)
+- `dbo.schedule_conflicts` — Hold-vs-real-schedule conflict records (`/conflicts` page)
 
 ### Existing Tables (read-only, never modified)
 - `dbo.led_app_trucks`

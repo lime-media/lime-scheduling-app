@@ -49,10 +49,10 @@ export async function sendHoldRequestEmail(data: HoldRequestEmailData): Promise<
 
 export interface AssistanceRequestEmailData {
   companyName: string
-  market:      string
+  market?:     string
   state?:      string
-  startDate:   string
-  endDate:     string
+  startDate?:  string
+  endDate?:    string
   details:     string
 }
 
@@ -71,16 +71,16 @@ export async function sendAssistanceRequestEmail(data: AssistanceRequestEmailDat
     auth:   { user: SMTP_USER, pass: SMTP_PASS },
   })
 
-  const subject = `Assistance Request — ${data.companyName} · ${data.market}`
+  const subject = `Assistance Request — ${data.companyName}${data.market ? ' · ' + data.market : ''}`
   const text = [
-    `${data.companyName} asked the client portal assistant for help beyond what's currently available.`,
+    `${data.companyName} asked the client portal assistant to relay a question/need to the Lime Media team.`,
     ``,
-    `Market:  ${data.market}${data.state ? ', ' + data.state : ''}`,
-    `Dates:   ${data.startDate} → ${data.endDate}`,
+    data.market              ? `Market:  ${data.market}${data.state ? ', ' + data.state : ''}` : null,
+    data.startDate && data.endDate ? `Dates:   ${data.startDate} → ${data.endDate}` : null,
     `Details: ${data.details}`,
     ``,
     `Log in at https://led.lime-media.com to review.`,
-  ].join('\n')
+  ].filter(Boolean).join('\n')
 
   await transporter.sendMail({
     from:    SMTP_FROM ?? SMTP_USER,

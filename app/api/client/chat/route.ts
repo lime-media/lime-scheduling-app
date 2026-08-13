@@ -35,6 +35,7 @@ WHAT YOU CAN HELP WITH:
   2. "A few other options near your dates:" — only trucks whose booked range ACTUALLY OVERLAPS part of the requested window (available for the remainder of it), each as one short line naming just the open sub-range (e.g. "Truck 0783 — available from Aug 15"). Only include this list if list 1 is thin or empty.
   Do NOT explain a truck's full booking history, when its last booking ended, what other cities it's booked in, or walk through your reasoning for each truck — the client only needs to know what's open, not the calendar detail behind it. If NOTHING is available at all, say so plainly and stop; don't pad the answer with unavailable trucks and their booking details.
 - Ground every answer in the data provided below. If something isn't in the data, say you don't have that information rather than guessing.
+- If asked how to contact/reach Lime Media, or to ask the team something you can't answer yourself from the data — never send them off to go find contact info on their own (no "check your portal," no "contact your account rep"). Tell them to just say what they need and you'll pass it straight to the team, and they'll hear back by email within 12-24 hours. See TAKING ACTION — requesting team assistance below for the mechanics.
 - Keep every answer short and scannable. No walls of text, no restating the same fact multiple ways.
 - Be concise and direct. Plain sentences or short bullet lists — no markdown tables needed.
 
@@ -53,18 +54,19 @@ truck: <truck_number> | market: <City, ST> | state: <2-letter state> | start: <Y
   - No markdown inside the block. Plain text only.
 
 TAKING ACTION — requesting team assistance:
-- When a client's request can't be fully met from what's actually available (not enough trucks in/near the requested market, none available for part of the range, etc.), you may offer to notify the Lime Media team so a human can look into repositioning a truck or otherwise helping — but only as an option alongside submitting a hold request for whatever IS available, never as the only option.
-- This is informational only — it does not create a hold or any commitment, it just emails the team with what the client is looking for. Make that distinction clear when offering it.
-- Only send this after the client clearly confirms they want you to reach out (same confirmation bar as hold requests — a vague reply is not confirmation).
-- Once confirmed, append this block at the very end of your reply, describing exactly what was discussed:
+- This is your general "get a human involved" tool — use it any time the client wants to reach Lime Media or ask them something, not just inventory shortfalls. Common cases: not enough trucks available for a request (repositioning help), a question outside what you can answer from the data, or the client directly asking how to contact/reach the team.
+- This is informational only — it does not create a hold or any commitment, it just emails the team with the client's question or need. Make that distinction clear when relevant (e.g. alongside a hold request for whatever IS available).
+- No separate yes/no confirmation step is needed here (unlike hold requests) — once the client has stated an actual question or need, that alone is enough to send it. If they've only asked "how do I contact you" without yet saying what they need, ask what they'd like relayed first, then send it as soon as they answer.
+- Once you have an actual question/need to relay, append this block at the very end of your reply:
 [ACTION: REQUEST_ASSISTANCE]
-market: <City, ST>
-state: <2-letter state>
-start: <YYYY-MM-DD>
-end: <YYYY-MM-DD>
-details: <one or two plain sentences: what the client needs and why current inventory can't cover it>
+market: <City, ST — omit this line entirely if not relevant to the question>
+state: <2-letter state — omit this line entirely if not relevant>
+start: <YYYY-MM-DD — omit this line entirely if not relevant>
+end: <YYYY-MM-DD — omit this line entirely if not relevant>
+details: <the client's question or need, in plain language>
 [/ACTION]
-  - Never emit this block without an explicit confirmation first.
+  - "details" is the only required line — market/state/start/end only apply when the question is actually about specific trucks/markets/dates.
+  - Tell the client, once sent: you'll hear back from the Lime Media team by email within 12-24 hours.
   - No markdown inside the block. Plain text only.`
 }
 
@@ -161,8 +163,8 @@ async function executeRequestAssistance(
   session: ClientSession
 ): Promise<{ success: boolean; message: string }> {
   const fields = parseAssistanceRequestFields(actionBody)
-  if (!fields.market || !fields.start || !fields.end || !fields.details) {
-    return { success: false, message: "Sorry, I couldn't send that request — some details were missing." }
+  if (!fields.details) {
+    return { success: false, message: "Sorry, I couldn't send that request — no question or need was included." }
   }
 
   try {
@@ -176,10 +178,10 @@ async function executeRequestAssistance(
     })
   } catch (err) {
     console.error('[client/chat] failed to send assistance request email:', err)
-    return { success: false, message: "Sorry, I couldn't reach the team right now — please try again or contact them directly." }
+    return { success: false, message: "Sorry, I couldn't reach the team right now — please try again." }
   }
 
-  return { success: true, message: "I've let the Lime Media team know — they'll follow up on this directly. This is informational only; it hasn't created a hold." }
+  return { success: true, message: "I've sent this to the Lime Media team — you'll hear back by email within 12-24 hours." }
 }
 
 // ── Output guardrail ─────────────────────────────────────────────────────────

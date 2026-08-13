@@ -73,7 +73,7 @@ LEFT JOIN dbo.client_programs p
 LEFT JOIN dbo.client_program_markets pm
     ON  pm.client_program_market_uid = ps.client_program_market_uid
 OUTER APPLY (
-    SELECT TOP 1 pm_lk.market AS last_known_market
+    SELECT TOP 1 COALESCE(pm_lk.standard_market_name, pm_lk.market) AS last_known_market
     FROM dbo.program_schedule ps_lk
     JOIN dbo.client_program_markets pm_lk
         ON  pm_lk.client_program_market_uid = ps_lk.client_program_market_uid

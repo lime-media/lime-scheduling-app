@@ -1,6 +1,7 @@
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { SCHEDULED_QUERY, CHAT_CONTEXT_QUERY } from '@/lib/scheduleQuery'
+import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import type { ClientSession } from '@/lib/clientAuth'
 
 const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
@@ -46,7 +47,7 @@ type Block = { start: string; end: string; market: string; state: string }
 export async function buildClientChatContext(session: ClientSession): Promise<string> {
   const today = new Date().toISOString().split('T')[0]
 
-  const [scheduleRows, contextRows, holds, otherRequests, myRequests] = await Promise.all([
+  const [scheduleRows, contextRows, holds, otherRequests, myRequests, gpsMap] = await Promise.all([
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
     prisma.hold.findMany({ orderBy: { start_date: 'asc' } }),
@@ -59,6 +60,11 @@ export async function buildClientChatContext(session: ClientSession): Promise<st
       orderBy: { created_at: 'asc' },
     }),
     prisma.holdRequest.findMany({ where: { client_user_id: session.id }, orderBy: { created_at: 'desc' } }),
+    // Live GPS — the internal assistant and both schedule APIs already fall back to this when a
+    // truck has no recent LED-schedule market; this context was the one place missing it, which
+    // meant a truck sitting in a market only via GPS (no recent program) had NO location at all
+    // here and could never be matched against a client's requested city.
+    getLiveVehicleLocations().catch(() => new Map<string, { formatted_address: string; city: string; state: string }>()),
   ])
 
   // Merge consecutive same-market schedule days into ranges (same approach as the internal
@@ -107,8 +113,14 @@ export async function buildClientChatContext(session: ClientSession): Promise<st
   const lastKnownMarketByTruck = new Map<string, string>()
   for (const row of contextRows) {
     const truckNumber = String(row.truck_number ?? '')
+    if (HIDDEN_TRUCKS.has(truckNumber)) continue
     const market = normalizeMarket(row.last_known_market)
-    if (!HIDDEN_TRUCKS.has(truckNumber) && market) lastKnownMarketByTruck.set(truckNumber, market)
+    if (market) {
+      lastKnownMarketByTruck.set(truckNumber, market)
+    } else {
+      const gpsData = gpsMap.get(truckNumber)
+      if (gpsData?.city) lastKnownMarketByTruck.set(truckNumber, [gpsData.city, gpsData.state].filter(Boolean).join(', '))
+    }
   }
 
   const allTruckNumbers = new Set<string>(byTruck.keys())

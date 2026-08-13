@@ -5,41 +5,80 @@ generator client {
 datasource db {
   provider          = "sqlserver"
   url               = env("DATABASE_URL")
-  
+
 }
 
 // role: SALES | OPERATIONS
 model User {
-  id            String     @id @default(cuid())
-  email         String     @unique
+  id            String         @id @default(cuid())
+  email         String         @unique
   name          String
   password_hash String
-  role          String     @default("SALES")
-  created_at    DateTime   @default(now())
+  role          String         @default("SALES")
+  created_at    DateTime       @default(now())
   holds         Hold[]
   audit_logs    AuditLog[]
+  otp_codes     OtpCode[]
 
   @@map("app_users")
 }
 
 // status: HOLD | COMMITTED
+// source: INTERNAL | SALESFORCE | CLIENT
+// origination: frontend | mcp
 model Hold {
-  id           String     @id @default(cuid())
-  truck_number String
-  market       String
-  state        String
-  client_name  String
-  start_date   DateTime
-  end_date     DateTime
-  status       String     @default("HOLD")
-  notes        String?
-  created_by   String
-  created_at   DateTime   @default(now())
-  updated_at   DateTime   @updatedAt
-  user         User       @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  audit_logs   AuditLog[]
+  id                  String     @id @default(cuid())
+  truck_number        String
+  market              String
+  state               String
+  client_name         String
+  start_date          DateTime
+  end_date            DateTime
+  status              String     @default("HOLD")
+  source              String     @default("INTERNAL")
+  origination         String     @default("frontend")
+  notes               String?
+  created_by          String
+  created_at          DateTime   @default(now())
+  updated_at          DateTime   @updatedAt
+  // Set only for holds pushed in from Salesforce — lets repeat pushes for the
+  // same Opportunity update the existing hold instead of creating duplicates.
+  sfdc_opportunity_id String?
+  sfdc_hold_exp       DateTime?
+  user                User       @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  audit_logs          AuditLog[]
 
   @@map("app_holds")
+}
+
+// status: PENDING | APPROVED | REJECTED
+// source: INTERNAL | SALESFORCE | CLIENT
+model HoldRequest {
+  id             String     @id @default(cuid())
+  client_user_id String
+  truck_number   String
+  market         String
+  state          String?
+  start_date     DateTime
+  end_date       DateTime
+  notes          String?    @db.NVarChar(Max)
+  status         String     @default("PENDING")
+  source         String     @default("CLIENT")
+  created_at     DateTime   @default(now())
+  client_user    ClientUser @relation(fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("app_hold_requests")
+}
+
+model ClientUser {
+  id            String        @id @default(cuid())
+  username      String        @unique
+  password_hash String
+  company_name  String
+  created_at    DateTime      @default(now())
+  hold_requests HoldRequest[]
+
+  @@map("app_client_users")
 }
 
 model AuditLog {
@@ -54,6 +93,57 @@ model AuditLog {
   hold         Hold?    @relation(fields: [hold_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@map("app_audit_logs")
+}
+
+// Login OTP — one active (non-consumed) row per user at a time. A fresh
+// request-otp call deletes any prior unconsumed row for that user before
+// inserting a new one, so there's never more than one code valid at once.
+model OtpCode {
+  id          String    @id @default(cuid())
+  user_id     String
+  code_hash   String
+  expires_at  DateTime
+  attempts    Int       @default(0)
+  consumed_at DateTime?
+  created_at  DateTime  @default(now())
+  user        User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id])
+  @@map("app_login_otps")
+}
+
+// user_type: app_user | client_user
+// No hard FK on user_id — target table depends on user_type
+model McpToken {
+  id          String    @id @default(cuid())
+  token_hash  String
+  user_id     String    @db.NVarChar(255)
+  user_type   String    @default("app_user")
+  label       String
+  created_at  DateTime  @default(now())
+  revoked_at  DateTime?
+
+  @@map("mcp_tokens")
+}
+
+// outcome: success | no_availability | error
+// user_type: app_user | client_user
+// No hard FK on user_id or token_id — user_id target depends on user_type
+model McpQueryLog {
+  id               String   @id @default(cuid())
+  user_id          String?  @db.NVarChar(255)
+  user_type        String?
+  token_id         String?
+  tool_name        String
+  request_params   String?  @db.NVarChar(Max)
+  response_summary String?  @db.NVarChar(Max)
+  outcome          String
+  latency_ms       Int
+  created_at       DateTime @default(now())
+
+  @@index([user_id, created_at])
+  @@index([tool_name, outcome])
+  @@map("mcp_query_log")
 }
 
 // --- Self-Service Quoting ---

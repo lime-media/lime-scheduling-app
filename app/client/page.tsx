@@ -7,6 +7,7 @@ import { format, addDays, startOfDay, parseISO } from 'date-fns'
 import { ScheduleGrid, type TruckInfo, type ScheduleBlock, type HoldBlock, type HoldRequestBlock } from '@/components/ScheduleGrid'
 import { FilterBar } from '@/components/FilterBar'
 import { ScheduleSkeleton } from '@/components/LoadingSkeleton'
+import { ClientHeader } from '@/components/ClientHeader'
 
 type Filters = {
   state: string
@@ -52,10 +53,16 @@ export default function ClientPage() {
   const [clientUser,    setClientUser]    = useState<ClientUser | null>(null)
   const [authChecked,   setAuthChecked]   = useState(false)
 
+  // Staged rollout — the redesigned header/nav and cross-client hold-request visibility are
+  // limited to the testclient account in production until validated more broadly. Everyone
+  // else keeps the current portal experience unchanged. See app/api/client/chat/route.ts.
+  const isTestClient = clientUser?.username === 'testclient'
+
   const [trucks,        setTrucks]        = useState<TruckInfo[]>([])
   const [schedules,     setSchedules]     = useState<ScheduleBlock[]>([])
   const [holdBlocks,    setHoldBlocks]    = useState<HoldBlock[]>([])
-  const [holdRequests,  setHoldRequests]  = useState<HoldRequestBlock[]>([])
+  const [holdRequests,       setHoldRequests]       = useState<HoldRequestBlock[]>([])  // this client's own requests, full detail
+  const [otherHoldRequests,  setOtherHoldRequests]  = useState<HoldRequestBlock[]>([])  // other clients' pending requests, redacted — testclient rollout only, see isTestClient below
   const [markets,       setMarkets]       = useState<string[]>([])
   const [states,        setStates]        = useState<string[]>([])
   const [filters,       setFilters]       = useState<Filters>(defaultFilters)
@@ -112,6 +119,7 @@ export default function ClientPage() {
       setTrucks(data.trucks       || [])
       setSchedules(schedulesData)
       setHoldBlocks(data.holds    || [])
+      setOtherHoldRequests(data.holdRequests || [])
       setMarkets(data.markets?.length ? data.markets : [...new Set(schedulesData.map((s: ScheduleBlock) => s.standard_market_name || s.market).filter(Boolean))].sort())
       setStates([...new Set(schedulesData.map((s) => s.state).filter(Boolean))].sort())
     } catch {
@@ -201,33 +209,37 @@ export default function ClientPage() {
 
   return (
     <div className="flex flex-col h-dvh overflow-hidden">
-      <header className="bg-[#94ce3a] shadow-lg px-4 sm:px-6 py-3 flex items-center flex-shrink-0">
-        <img src="/logo.png" alt="Lime Media" className="h-9 w-auto" />
-        <span className="flex-1 text-center text-[#1a3028] font-bold text-lg">Lime Media Scheduling Availability</span>
-        <nav className="flex gap-1 items-center">
-          <Link href="/client" className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${pathname === '/client' ? 'bg-[#1a3028] text-white' : 'text-[#1a3028] hover:bg-[#1a3028]/20'}`}>Schedule</Link>
-          <Link href="/client/map" className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${pathname === '/client/map' ? 'bg-[#1a3028] text-white' : 'text-[#1a3028] hover:bg-[#1a3028]/20'}`}>Map</Link>
-          {authChecked && (
-            clientUser ? (
-              <>
-                <span className="text-[#1a3028] text-xs ml-2 hidden sm:inline">{clientUser.companyName}</span>
-                <button onClick={() => { setPwMsg(null); setShowPwModal(true) }} className="ml-1 px-2 py-1.5 rounded text-xs text-[#1a3028] hover:bg-[#1a3028]/20">Password</button>
-                <button onClick={handleLogout} className="ml-1 px-2 py-1.5 rounded text-xs text-[#1a3028] hover:bg-[#1a3028]/20">Log out</button>
-              </>
-            ) : (
-              <button
-                onClick={async () => {
-                  await fetch('/api/client/auth/logout', { method: 'POST' })
-                  router.replace('/client/login')
-                }}
-                className="ml-2 px-3 py-1.5 rounded text-sm font-medium bg-[#1a3028] text-white hover:bg-[#1a3028]/90"
-              >
-                Log in
-              </button>
-            )
-          )}
-        </nav>
-      </header>
+      {isTestClient ? (
+        <ClientHeader clientUser={clientUser} authChecked={authChecked} />
+      ) : (
+        <header className="bg-[#94ce3a] shadow-lg px-4 sm:px-6 py-3 flex items-center flex-shrink-0">
+          <img src="/logo.png" alt="Lime Media" className="h-9 w-auto" />
+          <span className="flex-1 text-center text-[#1a3028] font-bold text-lg">Lime Media Scheduling Availability</span>
+          <nav className="flex gap-1 items-center">
+            <Link href="/client" className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${pathname === '/client' ? 'bg-[#1a3028] text-white' : 'text-[#1a3028] hover:bg-[#1a3028]/20'}`}>Schedule</Link>
+            <Link href="/client/map" className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${pathname === '/client/map' ? 'bg-[#1a3028] text-white' : 'text-[#1a3028] hover:bg-[#1a3028]/20'}`}>Map</Link>
+            {authChecked && (
+              clientUser ? (
+                <>
+                  <span className="text-[#1a3028] text-xs ml-2 hidden sm:inline">{clientUser.companyName}</span>
+                  <button onClick={() => { setPwMsg(null); setShowPwModal(true) }} className="ml-1 px-2 py-1.5 rounded text-xs text-[#1a3028] hover:bg-[#1a3028]/20">Password</button>
+                  <button onClick={handleLogout} className="ml-1 px-2 py-1.5 rounded text-xs text-[#1a3028] hover:bg-[#1a3028]/20">Log out</button>
+                </>
+              ) : (
+                <button
+                  onClick={async () => {
+                    await fetch('/api/client/auth/logout', { method: 'POST' })
+                    router.replace('/client/login')
+                  }}
+                  className="ml-2 px-3 py-1.5 rounded text-sm font-medium bg-[#1a3028] text-white hover:bg-[#1a3028]/90"
+                >
+                  Log in
+                </button>
+              )
+            )}
+          </nav>
+        </header>
+      )}
 
       <div className="flex-1 flex flex-col overflow-hidden p-4 min-w-0">
         <div className="flex items-center justify-between mb-3">
@@ -263,7 +275,7 @@ export default function ClientPage() {
                 trucks={trucks}
                 schedules={schedules}
                 holds={holdBlocks}
-                holdRequests={holdRequests}
+                holdRequests={isTestClient ? [...holdRequests, ...otherHoldRequests] : holdRequests}
                 filters={filters}
                 onHoldCreated={() => {}}
                 onCellRangeSelected={clientUser ? handleCellRangeSelected : undefined}

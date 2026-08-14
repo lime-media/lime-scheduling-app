@@ -1,8 +1,9 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { query, getPool } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { SCHEDULED_QUERY, ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
+import { getClientSession } from '@/lib/clientAuth'
 
 let sqlCache: { trucks: unknown; schedules: unknown; timestamp: number } | null = null
 const CACHE_TTL = 5 * 60 * 1000
@@ -21,9 +22,23 @@ function toDateStr(val: unknown): string {
 
 const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const session = getClientSession(req)
+
     const holdsPromise = prisma.hold.findMany({ orderBy: { start_date: 'asc' } })
+    // Other clients' non-rejected hold requests also occupy a truck/day, even before staff
+    // approval — a pending request should read as "booked" to everyone else, same as a
+    // confirmed Hold, just without exposing who requested it (see holdRequestBlocks below).
+    // The requesting client's OWN pending requests are excluded here — those come back in
+    // full detail (with their own status/notes) from /api/client/hold-requests instead.
+    const holdRequestsPromise = prisma.holdRequest.findMany({
+      where: {
+        status: { not: 'REJECTED' },
+        ...(session ? { client_user_id: { not: session.id } } : {}),
+      },
+      orderBy: { created_at: 'asc' },
+    })
 
     let trucksRaw: Record<string, unknown>[]
     let schedulesRaw: Record<string, unknown>[]
@@ -39,7 +54,7 @@ export async function GET() {
       sqlCache = { trucks: trucksRaw, schedules: schedulesRaw, timestamp: Date.now() }
     }
 
-    const holds = await holdsPromise
+    const [holds, otherHoldRequests] = await Promise.all([holdsPromise, holdRequestsPromise])
 
     let gpsMap = new Map<string, { city: string; state: string; formatted_address: string; latitude: number; longitude: number }>()
     try {
@@ -131,6 +146,21 @@ export async function GET() {
         user_name:    null,
       }))
 
+    // Same redaction as holdBlocks above — no client attribution, just occupies the day
+    const holdRequestBlocks = otherHoldRequests
+      .filter((r) => !HIDDEN_TRUCKS.has(r.truck_number))
+      .map((r) => ({
+        id:           r.id,
+        truck_number: r.truck_number,
+        market:       r.market,
+        state:        r.state ?? '',
+        notes:        '',
+        start_date:   r.start_date.toISOString().split('T')[0],
+        end_date:     r.end_date.toISOString().split('T')[0],
+        status:       r.status as 'PENDING' | 'APPROVED',
+        company_name: '',
+      }))
+
     // Full markets list from lookup tables (same source as internal /api/markets)
     let markets: string[] = []
     try {
@@ -146,7 +176,7 @@ export async function GET() {
       ])).filter((m) => m && m.length > 1).sort()
     } catch { /* return empty markets on error */ }
 
-    return NextResponse.json({ trucks, schedules, holds: holdBlocks, markets })
+    return NextResponse.json({ trucks, schedules, holds: holdBlocks, holdRequests: holdRequestBlocks, markets })
   } catch (error) {
     console.error('Client schedule query error:', error)
     return NextResponse.json({ error: 'Failed to fetch schedule' }, { status: 500 })

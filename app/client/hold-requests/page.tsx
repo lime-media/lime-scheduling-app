@@ -75,7 +75,7 @@ export default function ClientHoldRequestsPage() {
           // Staged rollout — see app/api/client/chat/route.ts
           <div className="flex flex-col items-center justify-center h-64 text-center">
             <div className="text-5xl mb-4">🚧</div>
-            <p className="text-gray-600 font-medium">This page isn't available on your account yet.</p>
+            <p className="text-gray-600 font-medium">This page isn&apos;t available on your account yet.</p>
             <Link href="/client" className="mt-4 bg-[#1a3028] text-white px-4 py-2 rounded-lg text-sm hover:bg-[#1a3028]/90">
               Back to Schedule
             </Link>

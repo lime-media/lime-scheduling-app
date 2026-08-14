@@ -176,7 +176,7 @@ export default function ClientAiPage() {
     return (
       <div className="flex flex-col items-center justify-center h-dvh text-center p-4">
         <div className="text-5xl mb-4">🚧</div>
-        <p className="text-gray-600 font-medium">The assistant isn't available on your account yet.</p>
+        <p className="text-gray-600 font-medium">The assistant isn&apos;t available on your account yet.</p>
         <Link href="/client" className="mt-4 bg-[#1a3028] text-white px-4 py-2 rounded-lg text-sm hover:bg-[#1a3028]/90">
           Back to Schedule
         </Link>

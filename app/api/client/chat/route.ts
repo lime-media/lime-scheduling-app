@@ -264,6 +264,14 @@ export async function POST(req: NextRequest) {
     convId = null
   }
 
+  // Flat, client-wise log of every question asked — separate from the conversation-threaded
+  // persistence above (dbo.client_chat_conversations / dbo.client_chat_messages), which already
+  // stores this too. This is for simple cross-client reporting without needing that join.
+  // Non-fatal: a logging failure must never block the actual chat response.
+  prisma.clientAiQuestion.create({
+    data: { client_user_id: session.id, question: message },
+  }).catch((err) => console.error('[client/chat] failed to log question:', err))
+
   let context: string
   try {
     context = await buildClientChatContext(session)

@@ -71,14 +71,31 @@ model HoldRequest {
 }
 
 model ClientUser {
-  id            String        @id @default(cuid())
-  username      String        @unique
+  id            String             @id @default(cuid())
+  username      String             @unique
   password_hash String
   company_name  String
-  created_at    DateTime      @default(now())
+  created_at    DateTime           @default(now())
   hold_requests HoldRequest[]
+  ai_questions  ClientAiQuestion[]
 
   @@map("app_client_users")
+}
+
+// Every question a client has asked the client-portal AI assistant, across all
+// clients in one table — a dedicated log for reporting, decoupled from the
+// conversation-threading internals of dbo.client_chat_conversations /
+// dbo.client_chat_messages (which already store this too, but joined through
+// conversations rather than as a flat per-question log).
+model ClientAiQuestion {
+  id             String     @id @default(cuid())
+  client_user_id String
+  question       String     @db.NVarChar(Max)
+  asked_at       DateTime   @default(now())
+  client_user    ClientUser @relation(fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([client_user_id])
+  @@map("app_client_ai_questions")
 }
 
 model AuditLog {

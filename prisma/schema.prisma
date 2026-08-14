@@ -90,6 +90,9 @@ model ClientUser {
 model ClientAiQuestion {
   id             String     @id @default(cuid())
   client_user_id String
+  // Denormalized at write time so this table alone (no join) shows who asked — a log/audit
+  // table like this should reflect the name AT THE TIME the question was asked anyway.
+  company_name   String     @default("")
   question       String     @db.NVarChar(Max)
   asked_at       DateTime   @default(now())
   client_user    ClientUser @relation(fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)

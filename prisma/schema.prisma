@@ -94,6 +94,10 @@ model ClientAiQuestion {
   // table like this should reflect the name AT THE TIME the question was asked anyway.
   company_name   String     @default("")
   question       String     @db.NVarChar(Max)
+  // The assistant's reply text (plus the action-result message, if any) for this question.
+  // Written together with the row once the reply is ready, not at question time — so a row
+  // always has both sides, or neither if the assistant call itself failed.
+  answer         String     @default("") @db.NVarChar(Max)
   asked_at       DateTime   @default(now())
   client_user    ClientUser @relation(fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 

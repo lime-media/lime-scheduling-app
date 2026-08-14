@@ -230,12 +230,6 @@ export async function POST(req: NextRequest) {
   const { message, history = [] } = await req.json()
   if (!message) return NextResponse.json({ error: 'Message required' }, { status: 400 })
 
-  // Flat, client-wise log of every question asked, for simple cross-client reporting.
-  // Non-fatal: a logging failure must never block the actual chat response.
-  prisma.clientAiQuestion.create({
-    data: { client_user_id: session.id, company_name: session.companyName, question: message },
-  }).catch((err) => console.error('[client/chat] failed to log question:', err))
-
   let context: string
   try {
     context = await buildClientChatContext(session)
@@ -286,6 +280,14 @@ export async function POST(req: NextRequest) {
       actionResult = { success: false, message: 'Failed to submit your request due to a server error.' }
     }
   }
+
+  // Flat, client-wise log of both sides of the exchange, for simple cross-client reporting.
+  // Written here (not at question time) so question and answer land in the same row.
+  // Non-fatal: a logging failure must never block the actual chat response.
+  const answer = actionResult ? `${reply}\n\n${actionResult.message}` : reply
+  prisma.clientAiQuestion.create({
+    data: { client_user_id: session.id, company_name: session.companyName, question: message, answer },
+  }).catch((err) => console.error('[client/chat] failed to log question/answer:', err))
 
   return NextResponse.json({ reply, actionResult })
 }

@@ -37,6 +37,10 @@ export async function GET(request: Request) {
       include: { user: { select: { name: true } } },
       orderBy: { start_date: 'asc' },
     })
+    const holdRequestsPromise = prisma.holdRequest.findMany({
+      include: { client_user: { select: { username: true, company_name: true } } },
+      orderBy: { created_at: 'asc' },
+    })
 
     let trucksRaw: Record<string, unknown>[]
     let schedulesRaw: Record<string, unknown>[]
@@ -52,10 +56,10 @@ export async function GET(request: Request) {
       sqlCache = { trucks: trucksRaw, schedules: schedulesRaw, timestamp: Date.now() }
     }
 
-    const holds = await holdsPromise
+    const [holds, holdRequestsRaw] = await Promise.all([holdsPromise, holdRequestsPromise])
 
     // GPS map: live from Samsara API — always fresh, not cached
-    let gpsMap = new Map<string, { city: string; state: string; formatted_address: string }>()
+    let gpsMap = new Map<string, { city: string; state: string; formatted_address: string; latitude: number; longitude: number }>()
     try {
       gpsMap = await getLiveVehicleLocations()
       console.log('[schedule] Samsara GPS loaded:', gpsMap.size, 'trucks')
@@ -89,9 +93,10 @@ export async function GET(request: Request) {
       }
     }
 
-    const HIDDEN_TRUCKS = new Set(['0001'])
+    const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
 
     // trucks: standard market → raw market → GPS city (Samsara as last resort)
+    const sqlTruckNums = new Set(trucksRaw.map((r) => String(r.truck_number ?? '')))
     const trucks = trucksRaw
       .filter((r) => !HIDDEN_TRUCKS.has(String(r.truck_number ?? '')))
       .map((r) => {
@@ -102,10 +107,27 @@ export async function GET(request: Request) {
           last_gps:          gpsData?.formatted_address || null,
           last_gps_city:     gpsData?.city              || null,
           last_gps_state:    gpsData?.state             || null,
+          last_gps_lat:      gpsData?.latitude          ?? null,
+          last_gps_lng:      gpsData?.longitude         ?? null,
           last_known_market: scheduleInfo[num]?.market  || holdMarkets[num]?.market || (gpsData?.city ? [gpsData.city, gpsData.state].filter(Boolean).join(', ') : null),
           last_known_state:  scheduleInfo[num]?.state   || holdMarkets[num]?.state  || gpsData?.state || null,
         }
       })
+
+    // Include Samsara-only trucks (in GPS but not in LED app DB) — show under their GPS city/state
+    for (const [num, gpsData] of gpsMap) {
+      if (HIDDEN_TRUCKS.has(num) || sqlTruckNums.has(num)) continue
+      trucks.push({
+        truck_number:      num,
+        last_gps:          gpsData.formatted_address || null,
+        last_gps_city:     gpsData.city              || null,
+        last_gps_state:    gpsData.state             || null,
+        last_gps_lat:      gpsData.latitude          ?? null,
+        last_gps_lng:      gpsData.longitude         ?? null,
+        last_known_market: gpsData.city ? [gpsData.city, gpsData.state].filter(Boolean).join(', ') : null,
+        last_known_state:  gpsData.state             || null,
+      })
+    }
 
     // schedules: { truck_number, market, state, program, shift_start, shift_end }
     const schedules = schedulesRaw
@@ -134,9 +156,24 @@ export async function GET(request: Request) {
         status:       h.status as 'HOLD' | 'COMMITTED' | 'ATT_SOFT',
         created_by:   h.created_by,
         user_name:    h.user?.name ?? null,
+        origination:  h.origination ?? 'frontend',
       }))
 
-    return NextResponse.json({ trucks, schedules, holds: holdBlocks })
+    const holdRequests = holdRequestsRaw
+      .filter((r) => !HIDDEN_TRUCKS.has(r.truck_number))
+      .map((r) => ({
+        id:           r.id,
+        truck_number: r.truck_number,
+        market:       r.market,
+        state:        r.state ?? '',
+        start_date:   r.start_date.toISOString().split('T')[0],
+        end_date:     r.end_date.toISOString().split('T')[0],
+        notes:        r.notes ?? '',
+        status:       r.status,
+        company_name: r.client_user.username,
+      }))
+
+    return NextResponse.json({ trucks, schedules, holds: holdBlocks, holdRequests })
   } catch (error) {
     console.error('Schedule query error:', error)
     return NextResponse.json({ error: 'Failed to fetch schedule' }, { status: 500 })

@@ -5,7 +5,7 @@ import { format, addDays, startOfDay } from 'date-fns'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
-import { ScheduleGrid, type TruckInfo, type ScheduleBlock, type HoldBlock } from '@/components/ScheduleGrid'
+import { ScheduleGrid, type TruckInfo, type ScheduleBlock, type HoldBlock, type HoldRequestBlock } from '@/components/ScheduleGrid'
 import { FilterBar } from '@/components/FilterBar'
 import { ScheduleSkeleton } from '@/components/LoadingSkeleton'
 
@@ -18,13 +18,14 @@ type Filters = {
 }
 
 const today = startOfDay(new Date())
+const DEFAULT_RANGE_DAYS = 63 // 9 weeks
 
 const defaultFilters: Filters = {
   state: '',
   market: '',
   statusFilters: new Set(),
-  dateFrom: format(addDays(today, -7), 'yyyy-MM-dd'),
-  dateTo: format(addDays(today, 90), 'yyyy-MM-dd'),
+  dateFrom: format(today, 'yyyy-MM-dd'),
+  dateTo: format(addDays(today, DEFAULT_RANGE_DAYS), 'yyyy-MM-dd'),
 }
 
 export default function DashboardPage() {
@@ -37,9 +38,10 @@ export default function DashboardPage() {
     }
   }, [router])
 
-  const [trucks,    setTrucks]    = useState<TruckInfo[]>([])
-  const [schedules, setSchedules] = useState<ScheduleBlock[]>([])
-  const [holdBlocks, setHoldBlocks] = useState<HoldBlock[]>([])
+  const [trucks,       setTrucks]       = useState<TruckInfo[]>([])
+  const [schedules,    setSchedules]    = useState<ScheduleBlock[]>([])
+  const [holdBlocks,   setHoldBlocks]   = useState<HoldBlock[]>([])
+  const [holdRequests, setHoldRequests] = useState<HoldRequestBlock[]>([])
   const [markets, setMarkets] = useState<string[]>([])
   const [states,  setStates]  = useState<string[]>([])
   const [filters, setFilters] = useState<Filters>(defaultFilters)
@@ -53,9 +55,10 @@ export default function DashboardPage() {
       const res = await fetch(force ? '/api/schedule?force=1' : '/api/schedule')
       if (!res.ok) throw new Error('Failed to fetch schedule')
       const data = await res.json()
-      setTrucks(data.trucks       || [])
-      setSchedules(data.schedules || [])
-      setHoldBlocks(data.holds    || [])
+      setTrucks(data.trucks             || [])
+      setSchedules(data.schedules       || [])
+      setHoldBlocks(data.holds          || [])
+      setHoldRequests(data.holdRequests || [])
     } catch (err) {
       setError('Failed to load schedule data. Check your database connection.')
       console.error(err)
@@ -80,12 +83,12 @@ export default function DashboardPage() {
   useEffect(() => {
     const init = async () => {
       await Promise.all([fetchSchedule(), fetchMarkets()])
-      // Auto-create ATT soft holds for next month; refresh grid if any were created
+      // Auto-create/release ATT soft holds for next month; refresh grid if anything changed
       try {
         const r = await fetch('/api/holds/att-sync', { method: 'POST' })
         if (r.ok) {
           const data = await r.json()
-          if (data.created > 0) fetchSchedule()
+          if (data.created > 0 || data.released > 0) fetchSchedule()
         }
       } catch {
         // Non-critical — grid still works without ATT sync
@@ -121,8 +124,8 @@ export default function DashboardPage() {
           <FilterBar
             filters={filters}
             onChange={setFilters}
-            states={states}
             markets={markets}
+            rangeDays={DEFAULT_RANGE_DAYS}
           />
 
 
@@ -146,6 +149,7 @@ export default function DashboardPage() {
                   trucks={trucks}
                   schedules={schedules}
                   holds={holdBlocks}
+                  holdRequests={holdRequests}
                   filters={filters}
                   onHoldCreated={fetchSchedule}
                   markets={markets}

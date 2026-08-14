@@ -2,7 +2,6 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import Link from 'next/link'
-import { ClientAISidebar, type ClientConvSummary } from '@/components/ClientAISidebar'
 import { useClientAuth } from '@/lib/useClientAuth'
 
 type Message = { role: 'user' | 'assistant'; content: string; isAction?: boolean; actionOk?: boolean }
@@ -15,10 +14,6 @@ const SUGGESTED = [
 export default function ClientAiPage() {
   const { clientUser, authChecked } = useClientAuth()
 
-  const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [conversations,        setConversations]        = useState<ClientConvSummary[]>([])
-  const [convsLoading,         setConvsLoading]         = useState(true)
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [input,    setInput]    = useState('')
   const [loading,  setLoading]  = useState(false)
@@ -29,81 +24,6 @@ export default function ClientAiPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
-
-  // Open sidebar by default on desktop
-  useEffect(() => {
-    if (window.innerWidth >= 768) setSidebarOpen(true)
-  }, [])
-
-  const closeSidebarOnMobile = useCallback(() => {
-    if (typeof window !== 'undefined' && window.innerWidth < 768) setSidebarOpen(false)
-  }, [])
-
-  const fetchConversations = useCallback(async (): Promise<ClientConvSummary[]> => {
-    try {
-      const res = await fetch('/api/client/chat/conversations')
-      if (res.ok) {
-        const data = await res.json()
-        const convs: ClientConvSummary[] = data.conversations ?? []
-        setConversations(convs)
-        return convs
-      }
-    } catch (err) {
-      console.error('Failed to fetch conversations:', err)
-    }
-    return []
-  }, [])
-
-  const loadConversation = useCallback(async (id: string) => {
-    try {
-      const res = await fetch(`/api/client/chat/conversations/${id}`)
-      if (res.ok) {
-        const data = await res.json()
-        const msgs: Message[] = (data.messages ?? []).map((m: { role: string; content: string }) => ({
-          role:    m.role as 'user' | 'assistant',
-          content: m.content,
-        }))
-        setMessages(msgs)
-        setActiveConversationId(id)
-        closeSidebarOnMobile()
-      }
-    } catch (err) {
-      console.error('Failed to load conversation:', err)
-    }
-  }, [closeSidebarOnMobile])
-
-  // On mount (once logged in): fetch conversations, auto-load the most recent
-  useEffect(() => {
-    if (!authChecked || !clientUser) { setConvsLoading(false); return }
-    ;(async () => {
-      setConvsLoading(true)
-      const convs = await fetchConversations()
-      if (convs.length > 0) await loadConversation(convs[0].id)
-      setConvsLoading(false)
-    })()
-  }, [authChecked, clientUser, fetchConversations, loadConversation])
-
-  const startNewChat = useCallback(() => {
-    setActiveConversationId(null)
-    setMessages([])
-    setInput('')
-    inputRef.current?.focus()
-  }, [])
-
-  const deleteConversation = useCallback(async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!confirm('Delete this conversation?')) return
-    try {
-      await fetch(`/api/client/chat/conversations/${id}`, { method: 'DELETE' })
-      const updated = await fetchConversations()
-      if (id === activeConversationId) {
-        if (updated.length > 0) await loadConversation(updated[0].id)
-        else startNewChat()
-      }
-    } catch (err) {
-      console.error('Failed to delete conversation:', err)
-    }
-  }, [activeConversationId, fetchConversations, loadConversation, startNewChat])
 
   const sendMessage = useCallback(async (text?: string) => {
     const content = (text ?? input).trim()
@@ -122,7 +42,6 @@ export default function ClientAiPage() {
         body: JSON.stringify({
           message: content,
           history: nextMessages.slice(-10),
-          conversation_id: activeConversationId,
         }),
       })
       const data = await res.json()
@@ -138,8 +57,6 @@ export default function ClientAiPage() {
           })
         }
         setMessages(msgs)
-        if (data.conversation_id) setActiveConversationId(data.conversation_id)
-        fetchConversations()
       } else {
         setMessages([...nextMessages, { role: 'assistant', content: 'Sorry, I encountered an error. Please try again.' }])
       }
@@ -148,7 +65,7 @@ export default function ClientAiPage() {
     } finally {
       setLoading(false)
     }
-  }, [input, loading, messages, activeConversationId, fetchConversations])
+  }, [input, loading, messages])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -171,42 +88,12 @@ export default function ClientAiPage() {
     )
   }
 
-  const isBlank = activeConversationId === null && messages.length === 0
+  const isBlank = messages.length === 0
 
   return (
     <div className="flex h-dvh bg-gray-50 overflow-hidden">
-      {sidebarOpen && (
-        <div className="fixed inset-0 z-40 bg-black/40 md:hidden" onClick={() => setSidebarOpen(false)} />
-      )}
-
-      <div
-        className={`fixed inset-y-0 left-0 z-50 transition-transform duration-200
-          md:relative md:inset-auto md:z-auto md:translate-x-0 md:flex-shrink-0
-          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
-      >
-        <ClientAISidebar
-          sidebarOpen={sidebarOpen}
-          conversations={conversations}
-          convsLoading={convsLoading}
-          activeConversationId={activeConversationId}
-          onNewChat={() => { startNewChat(); closeSidebarOnMobile() }}
-          onSelectConversation={loadConversation}
-          onDeleteConversation={deleteConversation}
-          companyName={clientUser.companyName}
-        />
-      </div>
-
       <div className="flex-1 flex flex-col min-w-0">
         <div className="flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-200 flex-shrink-0">
-          <button
-            onClick={() => setSidebarOpen((o) => !o)}
-            className="p-1.5 rounded hover:bg-gray-100 transition-colors text-gray-500"
-            title={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
-          </button>
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 bg-[#94ce3a] rounded-full animate-pulse" />
             <h1 className="font-semibold text-gray-900">Assistant</h1>

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from '@/lib/prisma'
-import { query } from '@/lib/mssql'
 import { getClientSession, type ClientSession } from '@/lib/clientAuth'
 import { buildClientChatContext } from '@/lib/clientChatContext'
 import { createHoldRequestForClient, type CreateHoldRequestParams } from '@/lib/holdRequestService'
@@ -225,48 +224,10 @@ export async function POST(req: NextRequest) {
   const session = getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { message, history = [], conversation_id: incomingConvId } = await req.json()
+  const { message, history = [] } = await req.json()
   if (!message) return NextResponse.json({ error: 'Message required' }, { status: 400 })
 
-  // ── Resolve or create conversation ─────────────────────────────────────────
-  // Same pattern as the internal assistant's persistence in app/api/chat/route.ts, scoped to
-  // client_user_id instead of the staff user_id — separate tables entirely (see
-  // lib/clientChatContext.ts comment / conversation with the user for why).
-  let convId: string | null = incomingConvId ?? null
-
-  try {
-    if (!convId) {
-      const title = String(message).slice(0, 60)
-      const [newConv] = await query<Record<string, unknown>[]>(
-        `INSERT INTO dbo.client_chat_conversations (id, title, client_user_id, created_at, updated_at)
-         OUTPUT INSERTED.id
-         VALUES (NEWID(), @title, @clientId, SYSUTCDATETIME(), SYSUTCDATETIME())`,
-        { title, clientId: session.id }
-      )
-      convId = String(newConv.id)
-    } else {
-      const [conv] = await query<Record<string, unknown>[]>(
-        `SELECT id FROM dbo.client_chat_conversations WHERE id = @convId AND client_user_id = @clientId`,
-        { convId, clientId: session.id }
-      )
-      if (!conv) convId = null // stale/foreign id — fall through without persistence rather than error
-    }
-
-    if (convId) {
-      await query(
-        `INSERT INTO dbo.client_chat_messages (id, conversation_id, role, content, created_at)
-         VALUES (NEWID(), @convId, 'user', @content, SYSUTCDATETIME())`,
-        { convId, content: message }
-      )
-    }
-  } catch (err) {
-    console.error('[client/chat] failed to persist user message:', err)
-    convId = null
-  }
-
-  // Flat, client-wise log of every question asked — separate from the conversation-threaded
-  // persistence above (dbo.client_chat_conversations / dbo.client_chat_messages), which already
-  // stores this too. This is for simple cross-client reporting without needing that join.
+  // Flat, client-wise log of every question asked, for simple cross-client reporting.
   // Non-fatal: a logging failure must never block the actual chat response.
   prisma.clientAiQuestion.create({
     data: { client_user_id: session.id, question: message },
@@ -323,31 +284,5 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ── Persist assistant reply (+ action result, if any) ────────────────────────
-  // Store the scrubbed reply — never the raw pre-scrub text — so a blocked reply never lands
-  // in chat history either.
-  if (convId) {
-    try {
-      await query(
-        `INSERT INTO dbo.client_chat_messages (id, conversation_id, role, content, created_at)
-         VALUES (NEWID(), @convId, 'assistant', @content, SYSUTCDATETIME())`,
-        { convId, content: reply }
-      )
-      if (actionResult) {
-        await query(
-          `INSERT INTO dbo.client_chat_messages (id, conversation_id, role, content, created_at)
-           VALUES (NEWID(), @convId, 'assistant', @content, SYSUTCDATETIME())`,
-          { convId, content: actionResult.message }
-        )
-      }
-      await query(
-        `UPDATE dbo.client_chat_conversations SET updated_at = SYSUTCDATETIME() WHERE id = @convId`,
-        { convId }
-      )
-    } catch (err) {
-      console.error('[client/chat] failed to persist assistant reply:', err)
-    }
-  }
-
-  return NextResponse.json({ reply, actionResult, conversation_id: convId })
+  return NextResponse.json({ reply, actionResult })
 }

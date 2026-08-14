@@ -230,7 +230,7 @@ export async function POST(req: NextRequest) {
   // Flat, client-wise log of every question asked, for simple cross-client reporting.
   // Non-fatal: a logging failure must never block the actual chat response.
   prisma.clientAiQuestion.create({
-    data: { client_user_id: session.id, question: message },
+    data: { client_user_id: session.id, company_name: session.companyName, question: message },
   }).catch((err) => console.error('[client/chat] failed to log question:', err))
 
   let context: string

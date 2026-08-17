@@ -117,7 +117,8 @@ function parseHoldRequestLines(body: string): CreateHoldRequestParams[] {
 
 async function executePlaceHoldRequests(
   actionBody: string,
-  session: ClientSession
+  session: ClientSession,
+  knownLocationTrucks: Set<string>
 ): Promise<{ success: boolean; message: string }> {
   const items = parseHoldRequestLines(actionBody)
   if (items.length === 0) {
@@ -130,6 +131,15 @@ async function executePlaceHoldRequests(
   const created: string[] = []
   const failed:  string[] = []
   for (const item of items) {
+    // Hard backstop, independent of the model's own judgment: never submit a hold for a truck we
+    // have zero location data for (no live GPS, no schedule-derived market). Real incident this
+    // caught — the model picked such a truck as a cross-market "filler" and submitted a hold for
+    // it with no idea where it actually is.
+    if (!knownLocationTrucks.has(item.truck_number)) {
+      console.error('[client/chat] rejected hold request for truck with no known location:', item.truck_number)
+      failed.push(item.truck_number)
+      continue
+    }
     try {
       await createHoldRequestForClient(session, item)
       created.push(item.truck_number)
@@ -233,8 +243,11 @@ export async function POST(req: NextRequest) {
   if (!message) return NextResponse.json({ error: 'Message required' }, { status: 400 })
 
   let context: string
+  let knownLocationTrucks: Set<string> = new Set()
   try {
-    context = await buildClientChatContext(session)
+    const built = await buildClientChatContext(session)
+    context = built.prompt
+    knownLocationTrucks = built.knownLocationTrucks
   } catch (err) {
     console.error('[client/chat] context build failed:', err)
     context = 'Account data temporarily unavailable.'
@@ -276,7 +289,7 @@ export async function POST(req: NextRequest) {
     try {
       actionResult = actionType === 'REQUEST_ASSISTANCE'
         ? await executeRequestAssistance(actionBody, session)
-        : await executePlaceHoldRequests(actionBody, session)
+        : await executePlaceHoldRequests(actionBody, session, knownLocationTrucks)
     } catch (err) {
       console.error('[client/chat] action execution failed:', err)
       actionResult = { success: false, message: 'Failed to submit your request due to a server error.' }

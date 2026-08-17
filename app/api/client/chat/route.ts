@@ -283,11 +283,18 @@ export async function POST(req: NextRequest) {
 
   // Flat, client-wise log of both sides of the exchange, for simple cross-client reporting.
   // Written here (not at question time) so question and answer land in the same row.
-  // Non-fatal: a logging failure must never block the actual chat response.
+  // Awaited (not fire-and-forget) — this is a serverless function, and an unawaited write
+  // issued right before returning can get its execution environment torn down before the
+  // request to the DB ever completes, silently dropping the row with no error logged. A
+  // logging failure still must never surface to the client, so it's caught, not re-thrown.
   const answer = actionResult ? `${reply}\n\n${actionResult.message}` : reply
-  prisma.clientAiQuestion.create({
-    data: { client_user_id: session.id, company_name: session.companyName, question: message, answer },
-  }).catch((err) => console.error('[client/chat] failed to log question/answer:', err))
+  try {
+    await prisma.clientAiQuestion.create({
+      data: { client_user_id: session.id, company_name: session.companyName, question: message, answer },
+    })
+  } catch (err) {
+    console.error('[client/chat] failed to log question/answer:', err)
+  }
 
   return NextResponse.json({ reply, actionResult })
 }

@@ -105,21 +105,23 @@ export async function buildClientChatContext(session: ClientSession): Promise<st
     byTruck.set(r.truck_number, blocks)
   }
 
-  // Last-known market per truck (from CHAT_CONTEXT_QUERY) — the truck's own most recent
-  // program's market, no client attribution involved. Attached to EVERY truck below, not just
-  // idle ones: once a truck's listed booked ranges run out (or it has none), this is the best
-  // signal for where it's likely to be for any later date, including dates with no schedule
-  // entered yet at all — an unbuilt schedule means the truck is open, not "unknown."
+  // Last-known market per truck. Live GPS wins when available — it's the only signal that can
+  // never go stale — with the CHAT_CONTEXT_QUERY schedule-derived market as a fallback for
+  // trucks Samsara has no current fix on. Same priority the internal staff assistant already
+  // uses (app/api/chat/route.ts: "live Samsara GPS first, then last_known_market from DB").
+  // Getting this backwards is a real bug we hit: a truck's most recent LED program can be from
+  // weeks ago in one market while the truck has since been relocated across the country — the
+  // schedule-derived value doesn't know that, but live GPS always reflects where it is right now.
   const lastKnownMarketByTruck = new Map<string, string>()
   for (const row of contextRows) {
     const truckNumber = String(row.truck_number ?? '')
     if (HIDDEN_TRUCKS.has(truckNumber)) continue
-    const market = normalizeMarket(row.last_known_market)
-    if (market) {
-      lastKnownMarketByTruck.set(truckNumber, market)
+    const gpsData = gpsMap.get(truckNumber)
+    if (gpsData?.city) {
+      lastKnownMarketByTruck.set(truckNumber, [gpsData.city, gpsData.state].filter(Boolean).join(', '))
     } else {
-      const gpsData = gpsMap.get(truckNumber)
-      if (gpsData?.city) lastKnownMarketByTruck.set(truckNumber, [gpsData.city, gpsData.state].filter(Boolean).join(', '))
+      const market = normalizeMarket(row.last_known_market)
+      if (market) lastKnownMarketByTruck.set(truckNumber, market)
     }
   }
 
@@ -155,7 +157,7 @@ export async function buildClientChatContext(session: ClientSession): Promise<st
 
   return `Today's date: ${today}.
 
-AVAILABILITY RULE: a truck is available for a requested date whenever no booked range listed below covers that date — this holds for near-term dates and far-future dates alike. An unbuilt/not-yet-entered LED schedule for a future date means the truck is genuinely open then, not unknown, so never refuse to confirm availability just because a date is far out. Each truck's "last known market" is its most recent program's market/state — use it as your best signal for WHERE an available truck is likely to be, especially once its listed booked ranges run out.
+AVAILABILITY RULE: a truck is available for a requested date whenever no booked range listed below covers that date — this holds for near-term dates and far-future dates alike. An unbuilt/not-yet-entered LED schedule for a future date means the truck is genuinely open then, not unknown, so never refuse to confirm availability just because a date is far out. Each truck's "last known market" is its live current GPS location when available (otherwise its most recent program's market) — use it as your best signal for WHERE an available truck actually is right now, especially once its listed booked ranges run out. Never assume a truck is near a requested city just because it was scheduled there in the past — check this field.
 
 TRUCK AVAILABILITY:
 ${truckLines.join('\n') || 'No bookings on file.'}

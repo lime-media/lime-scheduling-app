@@ -27,6 +27,7 @@ interface ClientPortalUser {
   id:           string
   username:     string
   company_name: string
+  partner_id:   string | null
   created_at:   string
 }
 
@@ -34,9 +35,10 @@ interface ClientForm {
   username:     string
   company_name: string
   password:     string
+  partner_id:   string
 }
 
-const EMPTY_CLIENT_FORM: ClientForm = { username: '', company_name: '', password: '' }
+const EMPTY_CLIENT_FORM: ClientForm = { username: '', company_name: '', password: '', partner_id: '' }
 
 export default function UsersPage() {
   const { data: session, status } = useSession()
@@ -175,7 +177,7 @@ export default function UsersPage() {
   }
 
   function openClientEdit(user: ClientPortalUser) {
-    setClientForm({ username: user.username, company_name: user.company_name, password: '' })
+    setClientForm({ username: user.username, company_name: user.company_name, password: '', partner_id: user.partner_id ?? '' })
     setClientShowPw(false)
     setClientEditTarget(user)
     setClientModalMode('edit')
@@ -207,6 +209,7 @@ export default function UsersPage() {
       const body: Record<string, string> = {
         username:     clientForm.username.trim(),
         company_name: clientForm.company_name.trim(),
+        partner_id:   clientForm.partner_id.trim(),
       }
       if (clientForm.password) body.password = clientForm.password
 
@@ -461,7 +464,7 @@ export default function UsersPage() {
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 border-b border-gray-200">
                     <tr>
-                      {['Company', 'Username', 'Created', 'Actions'].map((h) => (
+                      {['Company', 'Username', 'Rate Agreement', 'Created', 'Actions'].map((h) => (
                         <th key={h} className="text-left px-4 py-3 font-medium text-gray-600 text-xs uppercase tracking-wide">{h}</th>
                       ))}
                     </tr>
@@ -471,6 +474,11 @@ export default function UsersPage() {
                       <tr key={cu.id} className="hover:bg-gray-50">
                         <td className="px-4 py-3 font-medium text-gray-900">{cu.company_name}</td>
                         <td className="px-4 py-3 text-gray-600">{cu.username}</td>
+                        <td className="px-4 py-3 text-gray-500">
+                          {cu.partner_id
+                            ? <span className="font-mono text-xs bg-gray-100 rounded px-1.5 py-0.5">{cu.partner_id}</span>
+                            : <span className="text-gray-300">Standard</span>}
+                        </td>
                         <td className="px-4 py-3 text-gray-500">
                           {new Date(cu.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                         </td>
@@ -697,6 +705,21 @@ export default function UsersPage() {
                     )}
                   </button>
                 </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Rate Agreement Partner ID <span className="text-gray-400 font-normal ml-1">(optional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={clientForm.partner_id}
+                  onChange={(e) => setClientForm({ ...clientForm, partner_id: e.target.value })}
+                  placeholder="Leave blank for standard rate card"
+                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Matches an app_rate_agreements.partner_id — the client-portal AI quote engine uses this to apply a negotiated rate instead of the standard rate card.
+                </p>
               </div>
               <div className="flex justify-end gap-3 pt-2">
                 <button

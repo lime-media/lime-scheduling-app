@@ -5,6 +5,7 @@ import { getClientSession, type ClientSession } from '@/lib/clientAuth'
 import { buildClientChatContext } from '@/lib/clientChatContext'
 import { createHoldRequestForClient, type CreateHoldRequestParams } from '@/lib/holdRequestService'
 import { sendAssistanceRequestEmail } from '@/lib/email'
+import { computeQuote, VALID_STUDIES, type RateOverrides, type StudyType, type QuoteResult } from '@/lib/pricing'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -58,6 +59,23 @@ truck: <truck_number> | market: <City, ST> | state: <2-letter state> | start: <Y
   - Only include the trucks the client actually confirmed — never pad the list.
   - No markdown inside the block. Plain text only.
 
+TAKING ACTION — generating a price quote:
+- ${companyName} can ask for pricing at any time ("how much", "quote", "cost", "price") — you have a real, code-computed quote engine behind you. NEVER estimate, guess, or state a dollar figure yourself; every number in your reply must come from the computed result the system appends after you request it. If you don't have enough information yet, ask for it — don't guess and don't apologize for "not having pricing information," you do, you just need the details first.
+- To request a quote you need: number of trucks, and the exact start/end dates of the campaign (resolve relative dates like "Thursday" against today's date, same as everywhere else in this prompt). Optionally, only if the client actually mentions them: the Smart Directional add-on, the Device ID Passback add-on, and/or which lift study types (web_lift, foot_traffic, sales_lift, brand_lift).
+- No confirmation step needed first — a quote is informational, not a booking or commitment.
+- Once you have truck count and dates, append this block at the very end of your reply (leave any dollar figures out of your own text — the system fills those in and appends them):
+[ACTION: GET_QUOTE]
+truck_count: <int>
+start: <YYYY-MM-DD>
+end: <YYYY-MM-DD>
+smart_directional: <yes/no — omit this line entirely if not mentioned>
+device_id: <yes/no — omit this line entirely if not mentioned>
+studies: <comma-separated from web_lift, foot_traffic, sales_lift, brand_lift — omit this line entirely if none mentioned>
+[/ACTION]
+  - Only include the optional lines the client actually gave you an answer for — never guess yes/no or invent a study they didn't ask about.
+  - No markdown inside the block. Plain text only.
+- The system's response is a directional estimate off the standard rate card, not a final bill — it already says so; don't repeat or contradict that framing.
+
 TAKING ACTION — requesting team assistance:
 - This is your general "get a human involved" tool — use it any time the client wants to reach Lime Media or ask them something you can't handle yourself. Common cases: a question outside what you can answer from the data, or the client directly asking how to contact/reach the team. Do NOT use this for a cross-market multi-truck request (see the rule above) — that's a normal fulfillable answer, not something to escalate.
 - This is informational only — it does not create a hold or any commitment, it just emails the team with the client's question or need. Make that distinction clear when relevant (e.g. alongside a hold request for whatever IS available).
@@ -83,7 +101,7 @@ details: <the client's question or need, in plain language>
 // (a confirmed Hold) or RELEASE_HOLD here — clients never get that capability, staff-only review
 // still gates every request.
 
-const ACTION_RE = /\[ACTION:\s*(PLACE_HOLD_REQUESTS|REQUEST_ASSISTANCE)\]([\s\S]*?)\[\/ACTION\]/
+const ACTION_RE = /\[ACTION:\s*(PLACE_HOLD_REQUESTS|REQUEST_ASSISTANCE|GET_QUOTE)\]([\s\S]*?)\[\/ACTION\]/
 const MAX_HOLD_REQUESTS_PER_TURN = 20
 
 function stripActionBlock(text: string): string {
@@ -160,7 +178,10 @@ async function executePlaceHoldRequests(
   return { success: true, message }
 }
 
-function parseAssistanceRequestFields(body: string): Record<string, string> {
+// Shared "key: value" per-line parser — used by both REQUEST_ASSISTANCE and GET_QUOTE, whose
+// action bodies are both flat field lists (unlike PLACE_HOLD_REQUESTS, which is one truck per
+// pipe-delimited line).
+function parseKeyValueLines(body: string): Record<string, string> {
   const fields: Record<string, string> = {}
   for (const line of body.trim().split('\n')) {
     const colon = line.indexOf(':')
@@ -176,7 +197,7 @@ async function executeRequestAssistance(
   actionBody: string,
   session: ClientSession
 ): Promise<{ success: boolean; message: string }> {
-  const fields = parseAssistanceRequestFields(actionBody)
+  const fields = parseKeyValueLines(actionBody)
   if (!fields.details) {
     return { success: false, message: "Sorry, I couldn't send that request — no question or need was included." }
   }
@@ -196,6 +217,123 @@ async function executeRequestAssistance(
   }
 
   return { success: true, message: "I've sent this to the Lime Media team — you'll hear back by email within 12-24 hours." }
+}
+
+// ── Quote generation ─────────────────────────────────────────────────────────
+// Wires the client chat up to the same self-service quoting engine (lib/pricing) that powers
+// POST /api/v1/internal/quote — but calls computeQuote() directly rather than round-tripping
+// through that HTTP endpoint, since this is already server-side code in the same app. All dollar
+// figures are computed here in code and appended to the reply verbatim; the model never states
+// its own numbers (see the system prompt's GET_QUOTE section) — pricing is exactly the kind of
+// thing that must never be left to the model to "remember" or estimate.
+//
+// Deliberately NOT wired here: transport/logistics pricing (priceTransport in lib/pricing) — that
+// requires resolving the campaign city to a lat/lng and finding the nearest AcceptedMarket, and
+// there's no geocoding integration in this codebase yet. The reply below says so plainly rather
+// than silently omitting it.
+
+function fmtMoney(n: number): string {
+  return '$' + Math.round(n).toLocaleString('en-US')
+}
+
+function formatQuoteMessage(quote: QuoteResult): string {
+  const { truckCount, days, truckDays } = quote.input
+  const lines: string[] = []
+
+  lines.push(
+    `Here's a directional quote for ${truckCount} truck${truckCount === 1 ? '' : 's'} over ` +
+    `${days} day${days === 1 ? '' : 's'} (${truckDays} truck-day${truckDays === 1 ? '' : 's'}):`
+  )
+  lines.push('')
+  lines.push(`Good — ${fmtMoney(quote.good.total)}: base media only.`)
+
+  const betterAddOns = [
+    'shadow fencing',
+    quote.better.smartDirectionalIncluded ? 'Smart Directional' : null,
+    quote.better.deviceIdIncluded ? 'Device ID Passback' : null,
+  ].filter(Boolean).join(', ')
+  lines.push(`Better — ${fmtMoney(quote.better.total)}: adds ${betterAddOns}.`)
+
+  if (quote.best.studies.length > 0) {
+    const studyWord = quote.best.studies.length === 1 ? 'study' : 'studies'
+    lines.push(`Best — ${fmtMoney(quote.best.total)}: adds a ${quote.best.studies.join(', ')} lift ${studyWord}.`)
+  } else if (!quote.best.reachOk) {
+    lines.push(`Best tier isn't available for this campaign's size — projected reach doesn't meet the lift-study minimum.`)
+  }
+
+  lines.push('')
+  const basisNote = quote.pricingBasis.startsWith('agreement') ? ' — using your negotiated rate' : ''
+  lines.push(
+    `This is a directional estimate off the standard rate card${basisNote}. Final pricing can vary based on ` +
+    `exact routing/transport logistics and truck availability, which the Lime Media team will confirm.`
+  )
+
+  return lines.join('\n')
+}
+
+async function executeGetQuote(
+  actionBody: string,
+  session: ClientSession
+): Promise<{ success: boolean; message: string }> {
+  const fields = parseKeyValueLines(actionBody)
+
+  const truckCount = parseInt(fields.truck_count ?? '', 10)
+  const { start, end } = fields
+  if (!truckCount || truckCount < 1 || !start || !end) {
+    return { success: false, message: "Sorry, I didn't have enough information to generate a quote — I need a truck count and campaign dates." }
+  }
+
+  const startDate = new Date(start + 'T00:00:00Z')
+  const endDate   = new Date(end + 'T00:00:00Z')
+  const days = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1
+  if (!Number.isFinite(days) || days < 1) {
+    return { success: false, message: "Sorry, those dates didn't work out to a valid campaign length — please try again." }
+  }
+
+  const includeSmartDirectional = (fields.smart_directional ?? '').toLowerCase().startsWith('y')
+  const includeDeviceId         = (fields.device_id ?? '').toLowerCase().startsWith('y')
+  const studies = (fields.studies ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter((s): s is StudyType => (VALID_STUDIES as readonly string[]).includes(s))
+
+  // Standard rate card unless this client has an active negotiated RateAgreement — same lookup
+  // POST /api/v1/internal/quote does, keyed off the client_user's optional partner_id link.
+  let rateOverrides: RateOverrides | null = null
+  if (session.partnerId) {
+    try {
+      const now = new Date()
+      const agreement = await prisma.rateAgreement.findFirst({
+        where: {
+          partner_id:      session.partnerId,
+          effective_date:  { lte: now },
+          expiration_date: { gte: now },
+        },
+        orderBy: { created_at: 'desc' },
+      })
+      if (agreement) rateOverrides = JSON.parse(agreement.rate_overrides) as RateOverrides
+    } catch (err) {
+      // Falls back to standard pricing — a rate-agreement lookup failure must never block a quote.
+      console.error('[client/chat] rate agreement lookup failed, using standard rate card:', err)
+    }
+  }
+
+  let quote: QuoteResult
+  try {
+    quote = computeQuote({
+      truckCount,
+      days,
+      includeSmartDirectional,
+      includeDeviceId,
+      studies,
+      rateOverrides,
+    })
+  } catch (err) {
+    console.error('[client/chat] quote computation failed:', err)
+    return { success: false, message: "Sorry, I couldn't generate a quote for that — please try again or ask the team directly." }
+  }
+
+  return { success: true, message: formatQuoteMessage(quote) }
 }
 
 // ── Output guardrail ─────────────────────────────────────────────────────────
@@ -287,9 +425,10 @@ export async function POST(req: NextRequest) {
   if (actionMatch) {
     const [, actionType, actionBody] = actionMatch
     try {
-      actionResult = actionType === 'REQUEST_ASSISTANCE'
-        ? await executeRequestAssistance(actionBody, session)
-        : await executePlaceHoldRequests(actionBody, session, knownLocationTrucks)
+      actionResult =
+        actionType === 'REQUEST_ASSISTANCE' ? await executeRequestAssistance(actionBody, session) :
+        actionType === 'GET_QUOTE'          ? await executeGetQuote(actionBody, session) :
+        await executePlaceHoldRequests(actionBody, session, knownLocationTrucks)
     } catch (err) {
       console.error('[client/chat] action execution failed:', err)
       actionResult = { success: false, message: 'Failed to submit your request due to a server error.' }

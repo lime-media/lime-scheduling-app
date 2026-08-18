@@ -75,6 +75,10 @@ model ClientUser {
   username      String             @unique
   password_hash String
   company_name  String
+  // Optional link to a RateAgreement.partner_id — lets the client-portal AI quote engine apply
+  // this client's negotiated rate instead of the standard rate card. Null means standard pricing.
+  // Set by ops via the admin client-users screen; not self-serve.
+  partner_id    String?
   created_at    DateTime           @default(now())
   hold_requests HoldRequest[]
   ai_questions  ClientAiQuestion[]

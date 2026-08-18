@@ -10,6 +10,11 @@ export interface ClientSession {
   id:          string
   username:    string
   companyName: string
+  // Optional link to a RateAgreement.partner_id (app_client_users.partner_id) — lets the
+  // client-portal AI quote engine apply this client's negotiated rate. Undefined for a session
+  // signed before this field existed, or for a client with no agreement — both mean "standard
+  // rate card," never an error.
+  partnerId?:  string
 }
 
 function sign(payload: ClientSession): string {

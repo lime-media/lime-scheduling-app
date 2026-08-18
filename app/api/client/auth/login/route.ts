@@ -25,7 +25,12 @@ export async function POST(req: NextRequest) {
       username:    user.username,
       companyName: user.company_name,
     })
-    setClientSession(res, { id: user.id, username: user.username, companyName: user.company_name })
+    setClientSession(res, {
+      id:          user.id,
+      username:    user.username,
+      companyName: user.company_name,
+      partnerId:   user.partner_id ?? undefined,
+    })
     return res
   } catch (e) {
     console.error('[client/auth/login]', e)

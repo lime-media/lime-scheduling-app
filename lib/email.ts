@@ -75,7 +75,7 @@ export async function sendAssistanceRequestEmail(data: AssistanceRequestEmailDat
   const text = [
     `${data.companyName} asked the client portal assistant to relay a question/need to the Lime Media team.`,
     ``,
-    data.market              ? `Market:  ${data.market}${data.state ? ', ' + data.state : ''}` : null,
+    data.market                    ? `Market:  ${data.market}${data.state ? ', ' + data.state : ''}` : null,
     data.startDate && data.endDate ? `Dates:   ${data.startDate} → ${data.endDate}` : null,
     `Details: ${data.details}`,
     ``,
@@ -84,8 +84,7 @@ export async function sendAssistanceRequestEmail(data: AssistanceRequestEmailDat
 
   await transporter.sendMail({
     from:    SMTP_FROM ?? SMTP_USER,
-    // to:      'andrew@lime-media.com, bbenekos@lime-media.com',
-    to:      'schaudhari@lime-media.com',
+    to:      'andrew@lime-media.com, bbenekos@lime-media.com',
     subject,
     text,
   })

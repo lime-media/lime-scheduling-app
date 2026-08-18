@@ -42,11 +42,16 @@ const defaultFilters: Filters = {
 export default function ClientPage() {
   const { clientUser, authChecked } = useClientAuth()
 
+  // Staged rollout — the redesigned header/nav and cross-client hold-request visibility are
+  // limited to the testclient account in production until validated more broadly. Everyone
+  // else keeps the current portal experience unchanged. See app/api/client/chat/route.ts.
+  const isTestClient = clientUser?.username === 'testclient'
+
   const [trucks,        setTrucks]        = useState<TruckInfo[]>([])
   const [schedules,     setSchedules]     = useState<ScheduleBlock[]>([])
   const [holdBlocks,    setHoldBlocks]    = useState<HoldBlock[]>([])
   const [holdRequests,       setHoldRequests]       = useState<HoldRequestBlock[]>([])  // this client's own requests, full detail
-  const [otherHoldRequests,  setOtherHoldRequests]  = useState<HoldRequestBlock[]>([])  // other clients' pending requests, redacted
+  const [otherHoldRequests,  setOtherHoldRequests]  = useState<HoldRequestBlock[]>([])  // other clients' pending requests, redacted — testclient rollout only, see isTestClient below
   const [markets,       setMarkets]       = useState<string[]>([])
   const [states,        setStates]        = useState<string[]>([])
   const [filters,       setFilters]       = useState<Filters>(defaultFilters)
@@ -186,7 +191,7 @@ export default function ClientPage() {
                 trucks={trucks}
                 schedules={schedules}
                 holds={holdBlocks}
-                holdRequests={[...holdRequests, ...otherHoldRequests]}
+                holdRequests={isTestClient ? [...holdRequests, ...otherHoldRequests] : holdRequests}
                 filters={filters}
                 onHoldCreated={() => {}}
                 onCellRangeSelected={clientUser ? handleCellRangeSelected : undefined}

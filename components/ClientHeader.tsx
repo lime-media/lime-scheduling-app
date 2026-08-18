@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter, usePathname } from 'next/navigation'
-import { hasAiAssistantAccess, type ClientUser } from '@/lib/useClientAuth'
+import { hasAiAssistantAccess, hasHoldRequestsAccess, type ClientUser } from '@/lib/useClientAuth'
 
 const BASE_NAV_LINKS = [
   { href: '/client',     label: 'Schedule' },
@@ -40,7 +40,7 @@ export function ClientHeader({ clientUser, authChecked }: { clientUser: ClientUs
   const navLinks = clientUser
     ? [
         ...BASE_NAV_LINKS,
-        { href: '/client/hold-requests', label: 'My Requests' },
+        ...(hasHoldRequestsAccess(clientUser) ? [{ href: '/client/hold-requests', label: 'My Requests' }] : []),
         ...(hasAiAssistantAccess(clientUser) ? [{ href: '/client/ai', label: 'Assistant' }] : []),
       ]
     : BASE_NAV_LINKS

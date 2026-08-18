@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { ClientHeader } from '@/components/ClientHeader'
-import { useClientAuth } from '@/lib/useClientAuth'
+import { useClientAuth, hasAiAssistantAccess } from '@/lib/useClientAuth'
 
 type Message = { role: 'user' | 'assistant'; content: string; isAction?: boolean; actionOk?: boolean }
 
@@ -85,6 +85,24 @@ export default function ClientAiPage() {
         <Link href="/client/login" className="mt-4 bg-[#1a3028] text-white px-4 py-2 rounded-lg text-sm hover:bg-[#1a3028]/90">
           Log in
         </Link>
+      </div>
+    )
+  }
+
+  // Staged rollout — mirrors the server-side gate in app/api/client/chat/route.ts. The API would
+  // 403 anyway, but this keeps a client who navigates here directly (bookmark, old link) from
+  // seeing a broken chat UI instead of a plain "not yet" message.
+  if (!hasAiAssistantAccess(clientUser)) {
+    return (
+      <div className="flex flex-col h-dvh bg-gray-50 overflow-hidden">
+        <ClientHeader clientUser={clientUser} authChecked={authChecked} />
+        <div className="flex-1 flex flex-col items-center justify-center text-center p-4">
+          <div className="text-5xl mb-4">🚧</div>
+          <p className="text-gray-600 font-medium">The assistant isn&apos;t available on your account yet.</p>
+          <Link href="/client" className="mt-4 bg-[#1a3028] text-white px-4 py-2 rounded-lg text-sm hover:bg-[#1a3028]/90">
+            Back to Schedule
+          </Link>
+        </div>
       </div>
     )
   }

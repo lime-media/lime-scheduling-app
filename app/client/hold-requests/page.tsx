@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { format } from 'date-fns'
 import { ClientHeader } from '@/components/ClientHeader'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
-import { useClientAuth } from '@/lib/useClientAuth'
+import { useClientAuth, hasHoldRequestsAccess } from '@/lib/useClientAuth'
 import { parseDateOnly } from '@/lib/dateOnly'
 
 type HoldRequest = {
@@ -50,7 +50,7 @@ export default function ClientHoldRequestsPage() {
   }, [])
 
   useEffect(() => {
-    if (authChecked && clientUser) fetchRequests()
+    if (authChecked && clientUser && hasHoldRequestsAccess(clientUser)) fetchRequests()
     else if (authChecked) setLoading(false)
   }, [authChecked, clientUser, fetchRequests])
 
@@ -69,6 +69,17 @@ export default function ClientHoldRequestsPage() {
             <p className="text-gray-600 font-medium">Log in to view your hold requests</p>
             <Link href="/client/login" className="mt-4 bg-[#1a3028] text-white px-4 py-2 rounded-lg text-sm hover:bg-[#1a3028]/90">
               Log in
+            </Link>
+          </div>
+        ) : !hasHoldRequestsAccess(clientUser) ? (
+          // Staged rollout — see lib/useClientAuth.ts hasHoldRequestsAccess. This is a UI-only
+          // gate: GET/POST /api/client/hold-requests stay open for everyone (the Schedule Grid's
+          // drag-to-request flow depends on them), only this dedicated status/filter view is held back.
+          <div className="flex flex-col items-center justify-center h-64 text-center">
+            <div className="text-5xl mb-4">🚧</div>
+            <p className="text-gray-600 font-medium">This page isn&apos;t available on your account yet.</p>
+            <Link href="/client" className="mt-4 bg-[#1a3028] text-white px-4 py-2 rounded-lg text-sm hover:bg-[#1a3028]/90">
+              Back to Schedule
             </Link>
           </div>
         ) : (

@@ -376,6 +376,9 @@ async function scrubOtherClientNames(reply: string, ownClientId: string): Promis
 export async function POST(req: NextRequest) {
   const session = getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // Staged rollout — the client AI assistant is limited to the testclient account in
+  // production until it's validated more broadly. Remove this gate to open it up.
+  if (session.username !== 'testclient') return NextResponse.json({ error: 'Not available yet' }, { status: 403 })
 
   const { message, history = [] } = await req.json()
   if (!message) return NextResponse.json({ error: 'Message required' }, { status: 400 })

@@ -369,6 +369,10 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
 
   // MARKET FILTER:
   //   Uses the same market priority as the display grouping (today's shift → next future shift → GPS).
+  //   Only real LED-schedule shifts count toward today's/future market — holds (confirmed or
+  //   requested) are reservations, not bookings, and must never change what the filter returns
+  //   or which market a truck is grouped under. That's why this reads schedShiftsByStart, not the
+  //   combined shiftsByStart (see the schedShiftsByStart definition above for the same rationale).
   //   Proximity (250 miles): city-name table lookup first; if city unknown, fall back to actual GPS
   //   coordinates so small/suburb cities (e.g. Rockwall, TX) work without being hardcoded.
   //   Schedule blocks with the exact selected market also match (trucks heading there).
@@ -383,7 +387,7 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
     for (const t of trucks) {
       const meta       = truckMeta.get(t.truck_number)
       const todayMkt   = meta?._todayShiftStart ? meta.last_known_market : null
-      const futureMkt  = meta?.shiftsByStart.find(s => s.shift_start > _todayStr)?.market ?? null
+      const futureMkt  = meta?.schedShiftsByStart.find(s => s.shift_start > _todayStr)?.market ?? null
       const gpsMkt     = t.last_gps_city ? [t.last_gps_city, t.last_gps_state].filter(Boolean).join(', ') : null
       const displayMkt = (todayMkt || futureMkt || gpsMkt || '').toLowerCase().trim()
 
@@ -477,11 +481,14 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
   }
 
   // ── Market grouping ───────────────────────────────────────────────────────
+  // Same rule as the market filter above: only real LED-schedule shifts (schedShiftsByStart)
+  // determine which market a truck is grouped under — a hold/hold-request must never move a
+  // truck's row into the hold's market. GPS is the correct fallback for a truck with no booked shift.
   const todayStr = format(today, 'yyyy-MM-dd')
   const truckMarketLookup = new Map(trucks.map((t) => {
     const meta         = truckMeta.get(t.truck_number)
     const todayMarket  = meta?._todayShiftStart ? meta.last_known_market : null
-    const nextShift    = meta?.shiftsByStart.find(s => s.shift_start > todayStr)
+    const nextShift    = meta?.schedShiftsByStart.find(s => s.shift_start > todayStr)
     const nextMkt      = nextShift?.market ?? null
     const gpsMarket    = t.last_gps_city ? [t.last_gps_city, t.last_gps_state].filter(Boolean).join(', ') : null
     // TODO: re-enable 7-day GPS threshold when ready:

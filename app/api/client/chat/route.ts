@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from '@/lib/prisma'
-import { query } from '@/lib/mssql'
 import { getClientSession, type ClientSession } from '@/lib/clientAuth'
 import { buildClientChatContext } from '@/lib/clientChatContext'
 import { createHoldRequestForClient, type CreateHoldRequestParams } from '@/lib/holdRequestService'
 import { sendAssistanceRequestEmail } from '@/lib/email'
+import { computeQuote, VALID_STUDIES, type RateOverrides, type StudyType, type QuoteResult } from '@/lib/pricing'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -27,13 +27,19 @@ CRITICAL — DATA ISOLATION. Read this before anything else:
 
 AVAILABILITY RULE: a truck is available for a requested date whenever none of its booked ranges in the data below cover that date — this is true for near-term dates and far-future dates alike. A date with no LED schedule entered yet means the truck is genuinely open then, not unknown — never refuse to confirm availability, or hedge with "I don't have visibility that far out," just because a requested date is far in the future. Each truck's "last known market" (when listed) is your best signal for where an available truck is likely to be once its listed booked ranges run out — use it to judge whether a truck fits a requested city/market.
 
+RIGOR REQUIREMENT — read before stating any count: even though you never display truck numbers to the client, you must still work out the real, specific trucks internally before saying a number out loud. Go through the truck list below, check each one's booked ranges against the exact requested dates and its last known market against the requested city, and only count a truck if it concretely passes both checks. Never state a count you haven't actually derived this way — no rounding up, no "should be a few," no optimistic guesses to sound helpful. Do this full check before your FIRST answer on a given request, not only once you reach the point of actually submitting a hold — if you say a number and then have to walk it back once you look closer, that's the bug: the first answer was wrong because the check was skipped, and telling the client one thing and then correcting yourself is confusing and erodes trust. Get it right once, up front.
+
 WHAT YOU CAN HELP WITH:
 - "Tell me about the holds we've placed" / "my hold requests" → list every one of ${companyName}'s own hold requests from the data below: truck number, market/state, dates, status (PENDING/APPROVED/REJECTED), and notes if present.
-- Availability questions ("is truck X free on Y", "can I get N trucks in city Z from A to B") → check each truck's booked ranges ONLY against the exact requested start/end date, per the availability rule above, then answer in exactly two short lists, nothing else:
-  1. "Available for your full date range:" — every truck with ZERO booked ranges overlapping the requested window, even partially. A booking anywhere else on the calendar — before it, after it, a week away, a day away — is irrelevant and must NEVER be mentioned, hinted at, or added as a caveat/aside/"heads up" for a truck in this list. If there's no overlap, that truck belongs here with nothing else said about it. Just the truck numbers, one line, no more.
-     Example: requested window is Sep 1–5. A truck's nearest booking is Sep 21–27. That truck is fully available for Sep 1–5 — it goes in list 1, full stop. Do not mention the Sep 21–27 booking anywhere in the answer.
-  2. "A few other options near your dates:" — only trucks whose booked range ACTUALLY OVERLAPS part of the requested window (available for the remainder of it), each as one short line naming just the open sub-range (e.g. "Truck 0783 — available from Aug 15"). Only include this list if list 1 is thin or empty.
+- Availability questions ("is truck X free on Y", "can I get N trucks in city Z from A to B") → check each truck's booked ranges ONLY against the exact requested start/end date, per the availability rule above. Never mention truck numbers in the reply — the client needs counts and dates, not which specific truck; answer in exactly two short parts, nothing else:
+  1. How many trucks have ZERO booked ranges overlapping the requested window, even partially — state the count plainly (e.g. "8 trucks are available for your full date range"). A booking anywhere else on the calendar — before it, after it, a week away, a day away — is irrelevant and must NEVER be mentioned, hinted at, or added as a caveat/aside/"heads up".
+     Example: requested window is Sep 1–5. A truck's nearest booking is Sep 21–27. That truck counts as fully available for Sep 1–5, full stop. Do not mention the Sep 21–27 booking anywhere in the answer.
+  2. Only if part 1's count is thin or zero, also mention how many trucks are available for PART of the window (booked range overlaps only partially) and when the earliest of those opens up (e.g. "a couple more open up starting Aug 15").
   Do NOT explain a truck's full booking history, when its last booking ended, what other cities it's booked in, or walk through your reasoning for each truck — the client only needs to know what's open, not the calendar detail behind it. If NOTHING is available at all, say so plainly and stop; don't pad the answer with unavailable trucks and their booking details.
+- Multi-truck requests for a specific market ("can I get 3 trucks in Houston", "I need 5 trucks in Dallas from A to B") → first identify every truck available for the requested dates (per the availability rule above) whose last known market is that city. If that count meets or exceeds what was asked for, answer normally per the rule above (counts only, no truck numbers).
+  If FEWER trucks are available in that exact market than requested, this is still a yes — never treat it as something you can't fulfill or as a reason to involve the team. State how many are available right in that market (a count only, never truck numbers — the client doesn't need those), then note that the rest will come from a nearby market, or possibly out-of-state, so pricing will vary accordingly for those. For example: "Yes, sure — we have 3 trucks available in Dallas for your dates. The remaining 2 you need will be driven in from another nearby market, and possibly out-of-state, so pricing will vary accordingly for those." One short paragraph.
+  For the remaining trucks (the ones NOT in the requested market), do not elaborate — no "there are plenty of trucks available in X and surrounding states," no naming specific trucks or their markets, no quantities. A brief "yes, there are trucks available for those" is enough.
+  Hold requests can still be submitted for all of them, in-market and the rest, the normal way once confirmed (see TAKING ACTION — submitting hold requests below) — truck numbers are picked internally when submitting, never something you need to show the client first.
 - Ground every answer in the data provided below. If something isn't in the data, say you don't have that information rather than guessing.
 - If asked how to contact/reach Lime Media, or to ask the team something you can't answer yourself from the data — never send them off to go find contact info on their own (no "check your portal," no "contact your account rep"). Tell them to just say what they need and you'll pass it straight to the team, and they'll hear back by email within 12-24 hours. See TAKING ACTION — requesting team assistance below for the mechanics.
 - Keep every answer short and scannable. No walls of text, no restating the same fact multiple ways.
@@ -43,7 +49,7 @@ TAKING ACTION — submitting hold requests:
 - You can submit hold requests on ${companyName}'s behalf when asked and confirmed. You can only ever create a REQUEST (status PENDING) — never a confirmed booking. Every request still goes through the same Lime Media team review as one submitted by dragging on the Schedule Grid; nothing you submit is ever auto-approved.
 - Only offer to submit for trucks you've already shown as available in THIS conversation, for the exact dates being discussed. Never invent availability or submit for a truck you haven't verified against the data.
 - Workflow:
-  1. When the client asks to hold/book/reserve trucks, first answer with availability (per the rules above) if you haven't already, then state exactly what you're about to submit — truck numbers, market/state, start and end dates — and ask them to confirm.
+  1. When the client asks to hold/book/reserve trucks, first answer with availability (per the rules above) if you haven't already, then state exactly what you're about to submit — how many trucks, market/state, start and end dates — and ask them to confirm. Never name truck numbers here either; the client confirms a quantity and dates, not which specific truck.
   2. Only submit after a clear confirmation in this message or the immediately prior one ("yes", "go ahead", "submit those", "do it"). A vague or unrelated reply is not confirmation — ask again rather than guess.
   3. Once confirmed, append this block at the very end of your reply, one line per truck, using the exact dates just confirmed:
 [ACTION: PLACE_HOLD_REQUESTS]
@@ -53,8 +59,25 @@ truck: <truck_number> | market: <City, ST> | state: <2-letter state> | start: <Y
   - Only include the trucks the client actually confirmed — never pad the list.
   - No markdown inside the block. Plain text only.
 
+TAKING ACTION — generating a price quote:
+- ${companyName} can ask for pricing at any time ("how much", "quote", "cost", "price") — you have a real, code-computed quote engine behind you. NEVER estimate, guess, or state a dollar figure yourself; every number in your reply must come from the computed result the system appends after you request it. If you don't have enough information yet, ask for it — don't guess and don't apologize for "not having pricing information," you do, you just need the details first.
+- To request a quote you need: number of trucks, and the exact start/end dates of the campaign (resolve relative dates like "Thursday" against today's date, same as everywhere else in this prompt). Optionally, only if the client actually mentions them: the Smart Directional add-on, the Device ID Passback add-on, and/or which lift study types (web_lift, foot_traffic, sales_lift, brand_lift).
+- No confirmation step needed first — a quote is informational, not a booking or commitment.
+- Once you have truck count and dates, append this block at the very end of your reply (leave any dollar figures out of your own text — the system fills those in and appends them):
+[ACTION: GET_QUOTE]
+truck_count: <int>
+start: <YYYY-MM-DD>
+end: <YYYY-MM-DD>
+smart_directional: <yes/no — omit this line entirely if not mentioned>
+device_id: <yes/no — omit this line entirely if not mentioned>
+studies: <comma-separated from web_lift, foot_traffic, sales_lift, brand_lift — omit this line entirely if none mentioned>
+[/ACTION]
+  - Only include the optional lines the client actually gave you an answer for — never guess yes/no or invent a study they didn't ask about.
+  - No markdown inside the block. Plain text only.
+- The system's response is a directional estimate off the standard rate card, not a final bill — it already says so; don't repeat or contradict that framing.
+
 TAKING ACTION — requesting team assistance:
-- This is your general "get a human involved" tool — use it any time the client wants to reach Lime Media or ask them something, not just inventory shortfalls. Common cases: not enough trucks available for a request (repositioning help), a question outside what you can answer from the data, or the client directly asking how to contact/reach the team.
+- This is your general "get a human involved" tool — use it any time the client wants to reach Lime Media or ask them something you can't handle yourself. Common cases: a question outside what you can answer from the data, or the client directly asking how to contact/reach the team. Do NOT use this for a cross-market multi-truck request (see the rule above) — that's a normal fulfillable answer, not something to escalate.
 - This is informational only — it does not create a hold or any commitment, it just emails the team with the client's question or need. Make that distinction clear when relevant (e.g. alongside a hold request for whatever IS available).
 - No separate yes/no confirmation step is needed here (unlike hold requests) — once the client has stated an actual question or need, that alone is enough to send it. If they've only asked "how do I contact you" without yet saying what they need, ask what they'd like relayed first, then send it as soon as they answer.
 - Once you have an actual question/need to relay, append this block at the very end of your reply:
@@ -78,7 +101,7 @@ details: <the client's question or need, in plain language>
 // (a confirmed Hold) or RELEASE_HOLD here — clients never get that capability, staff-only review
 // still gates every request.
 
-const ACTION_RE = /\[ACTION:\s*(PLACE_HOLD_REQUESTS|REQUEST_ASSISTANCE)\]([\s\S]*?)\[\/ACTION\]/
+const ACTION_RE = /\[ACTION:\s*(PLACE_HOLD_REQUESTS|REQUEST_ASSISTANCE|GET_QUOTE)\]([\s\S]*?)\[\/ACTION\]/
 const MAX_HOLD_REQUESTS_PER_TURN = 20
 
 function stripActionBlock(text: string): string {
@@ -112,7 +135,8 @@ function parseHoldRequestLines(body: string): CreateHoldRequestParams[] {
 
 async function executePlaceHoldRequests(
   actionBody: string,
-  session: ClientSession
+  session: ClientSession,
+  knownLocationTrucks: Set<string>
 ): Promise<{ success: boolean; message: string }> {
   const items = parseHoldRequestLines(actionBody)
   if (items.length === 0) {
@@ -125,6 +149,15 @@ async function executePlaceHoldRequests(
   const created: string[] = []
   const failed:  string[] = []
   for (const item of items) {
+    // Hard backstop, independent of the model's own judgment: never submit a hold for a truck we
+    // have zero location data for (no live GPS, no schedule-derived market). Real incident this
+    // caught — the model picked such a truck as a cross-market "filler" and submitted a hold for
+    // it with no idea where it actually is.
+    if (!knownLocationTrucks.has(item.truck_number)) {
+      console.error('[client/chat] rejected hold request for truck with no known location:', item.truck_number)
+      failed.push(item.truck_number)
+      continue
+    }
     try {
       await createHoldRequestForClient(session, item)
       created.push(item.truck_number)
@@ -138,15 +171,17 @@ async function executePlaceHoldRequests(
     return { success: false, message: "Sorry, I couldn't submit that — please try again or use the Schedule Grid directly." }
   }
 
-  const truckList = created.map((t) => `#${t}`).join(', ')
-  let message = `Submitted ${created.length} hold request${created.length > 1 ? 's' : ''} for review: ${truckList}. The Lime Media team will review ${created.length > 1 ? 'them' : 'it'} from here.`
+  let message = `Submitted ${created.length} hold request${created.length > 1 ? 's' : ''} for review. The Lime Media team will review ${created.length > 1 ? 'them' : 'it'} from here.`
   if (failed.length > 0) {
-    message += ` (Couldn't submit for ${failed.map((t) => `#${t}`).join(', ')} — please try those again.)`
+    message += ` (${failed.length} couldn't be submitted — please try again.)`
   }
   return { success: true, message }
 }
 
-function parseAssistanceRequestFields(body: string): Record<string, string> {
+// Shared "key: value" per-line parser — used by both REQUEST_ASSISTANCE and GET_QUOTE, whose
+// action bodies are both flat field lists (unlike PLACE_HOLD_REQUESTS, which is one truck per
+// pipe-delimited line).
+function parseKeyValueLines(body: string): Record<string, string> {
   const fields: Record<string, string> = {}
   for (const line of body.trim().split('\n')) {
     const colon = line.indexOf(':')
@@ -162,7 +197,7 @@ async function executeRequestAssistance(
   actionBody: string,
   session: ClientSession
 ): Promise<{ success: boolean; message: string }> {
-  const fields = parseAssistanceRequestFields(actionBody)
+  const fields = parseKeyValueLines(actionBody)
   if (!fields.details) {
     return { success: false, message: "Sorry, I couldn't send that request — no question or need was included." }
   }
@@ -182,6 +217,123 @@ async function executeRequestAssistance(
   }
 
   return { success: true, message: "I've sent this to the Lime Media team — you'll hear back by email within 12-24 hours." }
+}
+
+// ── Quote generation ─────────────────────────────────────────────────────────
+// Wires the client chat up to the same self-service quoting engine (lib/pricing) that powers
+// POST /api/v1/internal/quote — but calls computeQuote() directly rather than round-tripping
+// through that HTTP endpoint, since this is already server-side code in the same app. All dollar
+// figures are computed here in code and appended to the reply verbatim; the model never states
+// its own numbers (see the system prompt's GET_QUOTE section) — pricing is exactly the kind of
+// thing that must never be left to the model to "remember" or estimate.
+//
+// Deliberately NOT wired here: transport/logistics pricing (priceTransport in lib/pricing) — that
+// requires resolving the campaign city to a lat/lng and finding the nearest AcceptedMarket, and
+// there's no geocoding integration in this codebase yet. The reply below says so plainly rather
+// than silently omitting it.
+
+function fmtMoney(n: number): string {
+  return '$' + Math.round(n).toLocaleString('en-US')
+}
+
+function formatQuoteMessage(quote: QuoteResult): string {
+  const { truckCount, days, truckDays } = quote.input
+  const lines: string[] = []
+
+  lines.push(
+    `Here's a directional quote for ${truckCount} truck${truckCount === 1 ? '' : 's'} over ` +
+    `${days} day${days === 1 ? '' : 's'} (${truckDays} truck-day${truckDays === 1 ? '' : 's'}):`
+  )
+  lines.push('')
+  lines.push(`Good — ${fmtMoney(quote.good.total)}: base media only.`)
+
+  const betterAddOns = [
+    'shadow fencing',
+    quote.better.smartDirectionalIncluded ? 'Smart Directional' : null,
+    quote.better.deviceIdIncluded ? 'Device ID Passback' : null,
+  ].filter(Boolean).join(', ')
+  lines.push(`Better — ${fmtMoney(quote.better.total)}: adds ${betterAddOns}.`)
+
+  if (quote.best.studies.length > 0) {
+    const studyWord = quote.best.studies.length === 1 ? 'study' : 'studies'
+    lines.push(`Best — ${fmtMoney(quote.best.total)}: adds a ${quote.best.studies.join(', ')} lift ${studyWord}.`)
+  } else if (!quote.best.reachOk) {
+    lines.push(`Best tier isn't available for this campaign's size — projected reach doesn't meet the lift-study minimum.`)
+  }
+
+  lines.push('')
+  const basisNote = quote.pricingBasis.startsWith('agreement') ? ' — using your negotiated rate' : ''
+  lines.push(
+    `This is a directional estimate off the standard rate card${basisNote}. Final pricing can vary based on ` +
+    `exact routing/transport logistics and truck availability, which the Lime Media team will confirm.`
+  )
+
+  return lines.join('\n')
+}
+
+async function executeGetQuote(
+  actionBody: string,
+  session: ClientSession
+): Promise<{ success: boolean; message: string }> {
+  const fields = parseKeyValueLines(actionBody)
+
+  const truckCount = parseInt(fields.truck_count ?? '', 10)
+  const { start, end } = fields
+  if (!truckCount || truckCount < 1 || !start || !end) {
+    return { success: false, message: "Sorry, I didn't have enough information to generate a quote — I need a truck count and campaign dates." }
+  }
+
+  const startDate = new Date(start + 'T00:00:00Z')
+  const endDate   = new Date(end + 'T00:00:00Z')
+  const days = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1
+  if (!Number.isFinite(days) || days < 1) {
+    return { success: false, message: "Sorry, those dates didn't work out to a valid campaign length — please try again." }
+  }
+
+  const includeSmartDirectional = (fields.smart_directional ?? '').toLowerCase().startsWith('y')
+  const includeDeviceId         = (fields.device_id ?? '').toLowerCase().startsWith('y')
+  const studies = (fields.studies ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter((s): s is StudyType => (VALID_STUDIES as readonly string[]).includes(s))
+
+  // Standard rate card unless this client has an active negotiated RateAgreement — same lookup
+  // POST /api/v1/internal/quote does, keyed off the client_user's optional partner_id link.
+  let rateOverrides: RateOverrides | null = null
+  if (session.partnerId) {
+    try {
+      const now = new Date()
+      const agreement = await prisma.rateAgreement.findFirst({
+        where: {
+          partner_id:      session.partnerId,
+          effective_date:  { lte: now },
+          expiration_date: { gte: now },
+        },
+        orderBy: { created_at: 'desc' },
+      })
+      if (agreement) rateOverrides = JSON.parse(agreement.rate_overrides) as RateOverrides
+    } catch (err) {
+      // Falls back to standard pricing — a rate-agreement lookup failure must never block a quote.
+      console.error('[client/chat] rate agreement lookup failed, using standard rate card:', err)
+    }
+  }
+
+  let quote: QuoteResult
+  try {
+    quote = computeQuote({
+      truckCount,
+      days,
+      includeSmartDirectional,
+      includeDeviceId,
+      studies,
+      rateOverrides,
+    })
+  } catch (err) {
+    console.error('[client/chat] quote computation failed:', err)
+    return { success: false, message: "Sorry, I couldn't generate a quote for that — please try again or ask the team directly." }
+  }
+
+  return { success: true, message: formatQuoteMessage(quote) }
 }
 
 // ── Output guardrail ─────────────────────────────────────────────────────────
@@ -228,48 +380,15 @@ export async function POST(req: NextRequest) {
   // production until it's validated more broadly. Remove this gate to open it up.
   if (session.username !== 'testclient') return NextResponse.json({ error: 'Not available yet' }, { status: 403 })
 
-  const { message, history = [], conversation_id: incomingConvId } = await req.json()
+  const { message, history = [] } = await req.json()
   if (!message) return NextResponse.json({ error: 'Message required' }, { status: 400 })
 
-  // ── Resolve or create conversation ─────────────────────────────────────────
-  // Same pattern as the internal assistant's persistence in app/api/chat/route.ts, scoped to
-  // client_user_id instead of the staff user_id — separate tables entirely (see
-  // lib/clientChatContext.ts comment / conversation with the user for why).
-  let convId: string | null = incomingConvId ?? null
-
-  try {
-    if (!convId) {
-      const title = String(message).slice(0, 60)
-      const [newConv] = await query<Record<string, unknown>[]>(
-        `INSERT INTO dbo.client_chat_conversations (id, title, client_user_id, created_at, updated_at)
-         OUTPUT INSERTED.id
-         VALUES (NEWID(), @title, @clientId, SYSUTCDATETIME(), SYSUTCDATETIME())`,
-        { title, clientId: session.id }
-      )
-      convId = String(newConv.id)
-    } else {
-      const [conv] = await query<Record<string, unknown>[]>(
-        `SELECT id FROM dbo.client_chat_conversations WHERE id = @convId AND client_user_id = @clientId`,
-        { convId, clientId: session.id }
-      )
-      if (!conv) convId = null // stale/foreign id — fall through without persistence rather than error
-    }
-
-    if (convId) {
-      await query(
-        `INSERT INTO dbo.client_chat_messages (id, conversation_id, role, content, created_at)
-         VALUES (NEWID(), @convId, 'user', @content, SYSUTCDATETIME())`,
-        { convId, content: message }
-      )
-    }
-  } catch (err) {
-    console.error('[client/chat] failed to persist user message:', err)
-    convId = null
-  }
-
   let context: string
+  let knownLocationTrucks: Set<string> = new Set()
   try {
-    context = await buildClientChatContext(session)
+    const built = await buildClientChatContext(session)
+    context = built.prompt
+    knownLocationTrucks = built.knownLocationTrucks
   } catch (err) {
     console.error('[client/chat] context build failed:', err)
     context = 'Account data temporarily unavailable.'
@@ -309,40 +428,30 @@ export async function POST(req: NextRequest) {
   if (actionMatch) {
     const [, actionType, actionBody] = actionMatch
     try {
-      actionResult = actionType === 'REQUEST_ASSISTANCE'
-        ? await executeRequestAssistance(actionBody, session)
-        : await executePlaceHoldRequests(actionBody, session)
+      actionResult =
+        actionType === 'REQUEST_ASSISTANCE' ? await executeRequestAssistance(actionBody, session) :
+        actionType === 'GET_QUOTE'          ? await executeGetQuote(actionBody, session) :
+        await executePlaceHoldRequests(actionBody, session, knownLocationTrucks)
     } catch (err) {
       console.error('[client/chat] action execution failed:', err)
       actionResult = { success: false, message: 'Failed to submit your request due to a server error.' }
     }
   }
 
-  // ── Persist assistant reply (+ action result, if any) ────────────────────────
-  // Store the scrubbed reply — never the raw pre-scrub text — so a blocked reply never lands
-  // in chat history either.
-  if (convId) {
-    try {
-      await query(
-        `INSERT INTO dbo.client_chat_messages (id, conversation_id, role, content, created_at)
-         VALUES (NEWID(), @convId, 'assistant', @content, SYSUTCDATETIME())`,
-        { convId, content: reply }
-      )
-      if (actionResult) {
-        await query(
-          `INSERT INTO dbo.client_chat_messages (id, conversation_id, role, content, created_at)
-           VALUES (NEWID(), @convId, 'assistant', @content, SYSUTCDATETIME())`,
-          { convId, content: actionResult.message }
-        )
-      }
-      await query(
-        `UPDATE dbo.client_chat_conversations SET updated_at = SYSUTCDATETIME() WHERE id = @convId`,
-        { convId }
-      )
-    } catch (err) {
-      console.error('[client/chat] failed to persist assistant reply:', err)
-    }
+  // Flat, client-wise log of both sides of the exchange, for simple cross-client reporting.
+  // Written here (not at question time) so question and answer land in the same row.
+  // Awaited (not fire-and-forget) — this is a serverless function, and an unawaited write
+  // issued right before returning can get its execution environment torn down before the
+  // request to the DB ever completes, silently dropping the row with no error logged. A
+  // logging failure still must never surface to the client, so it's caught, not re-thrown.
+  const answer = actionResult ? `${reply}\n\n${actionResult.message}` : reply
+  try {
+    await prisma.clientAiQuestion.create({
+      data: { client_user_id: session.id, company_name: session.companyName, question: message, answer },
+    })
+  } catch (err) {
+    console.error('[client/chat] failed to log question/answer:', err)
   }
 
-  return NextResponse.json({ reply, actionResult, conversation_id: convId })
+  return NextResponse.json({ reply, actionResult })
 }

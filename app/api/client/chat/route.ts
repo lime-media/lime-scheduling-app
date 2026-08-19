@@ -5,7 +5,7 @@ import { getClientSession, type ClientSession } from '@/lib/clientAuth'
 import { buildClientChatContext } from '@/lib/clientChatContext'
 import { createHoldRequestForClient, type CreateHoldRequestParams } from '@/lib/holdRequestService'
 import { sendAssistanceRequestEmail } from '@/lib/email'
-import { computeQuote, VALID_STUDIES, type RateOverrides, type StudyType, type QuoteResult } from '@/lib/pricing'
+import { computeQuote, VALID_STUDIES, marketSizeTierFromDmaCode, type RateOverrides, type StudyType, type QuoteResult } from '@/lib/pricing'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -53,10 +53,11 @@ TAKING ACTION — submitting hold requests:
   2. Only submit after a clear confirmation in this message or the immediately prior one ("yes", "go ahead", "submit those", "do it"). A vague or unrelated reply is not confirmation — ask again rather than guess.
   3. Once confirmed, append this block at the very end of your reply, one line per truck, using the exact dates just confirmed:
 [ACTION: PLACE_HOLD_REQUESTS]
-truck: <truck_number> | market: <City, ST> | state: <2-letter state> | start: <YYYY-MM-DD> | end: <YYYY-MM-DD>
+truck: <truck_number> | market: <City, ST> | state: <2-letter state> | start: <YYYY-MM-DD> | end: <YYYY-MM-DD> | notes: <optional — include pricing tier preference if the client expressed one, e.g. "Good tier preferred" or "Interested in Better tier">
 [/ACTION]
   - Never emit this block without an explicit confirmation first.
   - Only include the trucks the client actually confirmed — never pad the list.
+  - The notes field is optional — only include it when the client has stated a pricing tier preference or other relevant context. Never invent a preference they didn't express.
   - No markdown inside the block. Plain text only.
 
 TAKING ACTION — generating a price quote:
@@ -66,15 +67,20 @@ TAKING ACTION — generating a price quote:
 - Once you have truck count and dates, append this block at the very end of your reply (leave any dollar figures out of your own text — the system fills those in and appends them):
 [ACTION: GET_QUOTE]
 truck_count: <int>
+market: <City, ST — the campaign market being quoted>
 start: <YYYY-MM-DD>
 end: <YYYY-MM-DD>
 smart_directional: <yes/no — omit this line entirely if not mentioned>
 device_id: <yes/no — omit this line entirely if not mentioned>
 studies: <comma-separated from web_lift, foot_traffic, sales_lift, brand_lift — omit this line entirely if none mentioned>
 [/ACTION]
+  - Always include the market line — the system uses it to determine the correct impression tier for the campaign market.
   - Only include the optional lines the client actually gave you an answer for — never guess yes/no or invent a study they didn't ask about.
   - No markdown inside the block. Plain text only.
-- The system's response is a directional estimate off the standard rate card, not a final bill — it already says so; don't repeat or contradict that framing.
+- The system's quote is computed by the pricing engine — present it as-is without adding disclaimers or caveats of your own. Transport logistics may affect final pricing for out-of-market campaigns; the quote notes this when relevant.
+
+STRUCTURED REQUESTS:
+- The client's message may include a [STRUCTURED REQUEST] block with pre-parsed fields (market, start_date, end_date, truck_count, tier_preference). When present, use these values exactly as given — they were entered via form fields and are authoritative. Do not reinterpret, round, or adjust them. If the intent is "quote", proceed directly to generating a GET_QUOTE action block using these values. If the intent is "hold", use them for PLACE_HOLD_REQUESTS (include tier_preference in the notes field if provided).
 
 TAKING ACTION — requesting team assistance:
 - This is your general "get a human involved" tool — use it any time the client wants to reach Lime Media or ask them something you can't handle yourself. Common cases: a question outside what you can answer from the data, or the client directly asking how to contact/reach the team. Do NOT use this for a cross-market multi-truck request (see the rule above) — that's a normal fulfillable answer, not something to escalate.
@@ -128,6 +134,7 @@ function parseHoldRequestLines(body: string): CreateHoldRequestParams[] {
         state:        fields.state  ?? '',
         start_date:   fields.start  ?? '',
         end_date:     fields.end    ?? '',
+        notes:        fields.notes  ?? undefined,
       }
     })
     .filter((p) => p.truck_number && p.start_date && p.end_date)
@@ -171,7 +178,15 @@ async function executePlaceHoldRequests(
     return { success: false, message: "Sorry, I couldn't submit that — please try again or use the Schedule Grid directly." }
   }
 
+  // Include details of what was submitted so the conversation history retains an explicit record.
+  // This ensures the AI can answer "what did we just submit?" without needing to re-query.
+  const submittedDetails = items
+    .filter((item) => created.includes(item.truck_number))
+    .map((item) => `Truck ${item.truck_number} in ${[item.market, item.state].filter(Boolean).join(', ')} (${item.start_date} → ${item.end_date})${item.notes ? ' — ' + item.notes : ''}`)
+    .join('; ')
+
   let message = `Submitted ${created.length} hold request${created.length > 1 ? 's' : ''} for review. The Lime Media team will review ${created.length > 1 ? 'them' : 'it'} from here.`
+  if (submittedDetails) message += ` Details: ${submittedDetails}.`
   if (failed.length > 0) {
     message += ` (${failed.length} couldn't be submitted — please try again.)`
   }
@@ -236,12 +251,63 @@ function fmtMoney(n: number): string {
   return '$' + Math.round(n).toLocaleString('en-US')
 }
 
+/** Structured quote data for rendering as pricing cards on the frontend. */
+type QuoteCardData = {
+  truckCount: number
+  days: number
+  truckDays: number
+  dailyRate: number
+  marketSizeTier: { id: number; label: string }
+  good:   { total: number; description: string }
+  better: { total: number; description: string; includes: string[] }
+  best:   { total: number; description: string; includes: string[]; available: boolean; reason?: string }
+  pricingBasis: string
+}
+
+function buildQuoteCardData(quote: QuoteResult): QuoteCardData {
+  const betterIncludes = [
+    'Shadow fencing',
+    quote.better.smartDirectionalIncluded ? 'Smart Directional' : null,
+    quote.better.deviceIdIncluded ? 'Device ID Passback' : null,
+  ].filter(Boolean) as string[]
+
+  const bestIncludes = [...betterIncludes]
+  if (quote.best.studies.length > 0) {
+    bestIncludes.push(...quote.best.studies.map(s => s.replace(/_/g, ' ') + ' study'))
+  }
+
+  return {
+    truckCount:     quote.input.truckCount,
+    days:           quote.input.days,
+    truckDays:      quote.input.truckDays,
+    dailyRate:      quote.dailyRate,
+    marketSizeTier: { id: quote.input.marketSizeTier.id, label: quote.input.marketSizeTier.label },
+    good: {
+      total:       quote.good.total,
+      description: 'Base media only',
+    },
+    better: {
+      total:       quote.better.total,
+      description: 'Base media + digital amplification',
+      includes:    betterIncludes,
+    },
+    best: {
+      total:       quote.best.total,
+      description: 'Full measurement suite',
+      includes:    bestIncludes,
+      available:   quote.best.reachOk,
+      reason:      !quote.best.reachOk ? `Projected reach (${Math.round(quote.best.estimatedImpressions).toLocaleString('en-US')} impressions) is below the ${(1_200_000).toLocaleString('en-US')} minimum for lift studies.` : undefined,
+    },
+    pricingBasis: quote.pricingBasis,
+  }
+}
+
 function formatQuoteMessage(quote: QuoteResult): string {
   const { truckCount, days, truckDays } = quote.input
   const lines: string[] = []
 
   lines.push(
-    `Here's a directional quote for ${truckCount} truck${truckCount === 1 ? '' : 's'} over ` +
+    `Quote for ${truckCount} truck${truckCount === 1 ? '' : 's'} over ` +
     `${days} day${days === 1 ? '' : 's'} (${truckDays} truck-day${truckDays === 1 ? '' : 's'}):`
   )
   lines.push('')
@@ -258,15 +324,13 @@ function formatQuoteMessage(quote: QuoteResult): string {
     const studyWord = quote.best.studies.length === 1 ? 'study' : 'studies'
     lines.push(`Best — ${fmtMoney(quote.best.total)}: adds a ${quote.best.studies.join(', ')} lift ${studyWord}.`)
   } else if (!quote.best.reachOk) {
-    lines.push(`Best tier isn't available for this campaign's size — projected reach doesn't meet the lift-study minimum.`)
+    lines.push(`Best tier — not available for this campaign size (projected reach below lift-study minimum).`)
   }
 
-  lines.push('')
-  const basisNote = quote.pricingBasis.startsWith('agreement') ? ' — using your negotiated rate' : ''
-  lines.push(
-    `This is a directional estimate off the standard rate card${basisNote}. Final pricing can vary based on ` +
-    `exact routing/transport logistics and truck availability, which the Lime Media team will confirm.`
-  )
+  if (quote.pricingBasis.startsWith('agreement')) {
+    lines.push('')
+    lines.push('Pricing uses your negotiated rate.')
+  }
 
   return lines.join('\n')
 }
@@ -274,7 +338,7 @@ function formatQuoteMessage(quote: QuoteResult): string {
 async function executeGetQuote(
   actionBody: string,
   session: ClientSession
-): Promise<{ success: boolean; message: string }> {
+): Promise<{ success: boolean; message: string; quoteCard?: QuoteCardData }> {
   const fields = parseKeyValueLines(actionBody)
 
   const truckCount = parseInt(fields.truck_count ?? '', 10)
@@ -299,6 +363,32 @@ async function executeGetQuote(
 
   // Standard rate card unless this client has an active negotiated RateAgreement — same lookup
   // POST /api/v1/internal/quote does, keyed off the client_user's optional partner_id link.
+  // Derive market size tier from the campaign market by matching against accepted markets.
+  // Falls back to tier 3 (mid/large) if no match found — safe default that doesn't over-promise
+  // on lift-study eligibility.
+  let marketSizeTierId = 3
+  const campaignMarket = fields.market ?? ''
+  if (campaignMarket) {
+    try {
+      const acceptedMarkets = await prisma.acceptedMarket.findMany({
+        where: { is_active: true },
+        select: { dma_code: true, dma_name: true },
+      })
+      const marketLower = campaignMarket.toLowerCase()
+      // Match on city name — the DMA name is "City, ST" format, same as the market field
+      const matched = acceptedMarkets.find((am) => {
+        const dmaCity = am.dma_name.split(',')[0].trim().toLowerCase()
+        const reqCity = marketLower.split(',')[0].trim()
+        return dmaCity === reqCity || marketLower.includes(dmaCity) || dmaCity.includes(reqCity)
+      })
+      if (matched) {
+        marketSizeTierId = marketSizeTierFromDmaCode(matched.dma_code)
+      }
+    } catch (err) {
+      console.error('[client/chat] market size tier lookup failed, using default tier 3:', err)
+    }
+  }
+
   let rateOverrides: RateOverrides | null = null
   if (session.partnerId) {
     try {
@@ -323,6 +413,7 @@ async function executeGetQuote(
     quote = computeQuote({
       truckCount,
       days,
+      marketSizeTierId,
       includeSmartDirectional,
       includeDeviceId,
       studies,
@@ -333,7 +424,7 @@ async function executeGetQuote(
     return { success: false, message: "Sorry, I couldn't generate a quote for that — please try again or ask the team directly." }
   }
 
-  return { success: true, message: formatQuoteMessage(quote) }
+  return { success: true, message: formatQuoteMessage(quote), quoteCard: buildQuoteCardData(quote) }
 }
 
 // ── Output guardrail ─────────────────────────────────────────────────────────
@@ -361,9 +452,13 @@ async function scrubOtherClientNames(reply: string, ownClientId: string): Promis
     ...others.map((c) => c.company_name),
   ].filter((s) => s && s.trim().length >= 4 && !STOPWORDS.has(s.trim().toLowerCase()))
 
-  const lowerReply = reply.toLowerCase()
   for (const needle of needles) {
-    if (lowerReply.includes(needle.toLowerCase())) {
+    // Word-boundary match to avoid false positives from company names that are common English
+    // substrings (e.g. a company named "Quest" matching "hold requests"). The \b anchors
+    // prevent partial-word collisions while still catching the name used standalone.
+    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const re = new RegExp(`\\b${escaped}\\b`, 'i')
+    if (re.test(reply)) {
       console.warn('[client/chat] blocked reply — matched another client identifier:', needle)
       return "Sorry, I can't share that — I can only give you information about your own account. Ask me about your hold requests or truck availability."
     }
@@ -380,7 +475,7 @@ export async function POST(req: NextRequest) {
   // production until it's validated more broadly. Remove this gate to open it up.
   if (session.username !== 'testclient') return NextResponse.json({ error: 'Not available yet' }, { status: 403 })
 
-  const { message, history = [] } = await req.json()
+  const { message, history = [], structured } = await req.json()
   if (!message) return NextResponse.json({ error: 'Message required' }, { status: 400 })
 
   let context: string
@@ -394,12 +489,28 @@ export async function POST(req: NextRequest) {
     context = 'Account data temporarily unavailable.'
   }
 
+  // When the frontend sends structured parameters (from Quote/Hold mode), inject them as a
+  // clear instruction block so the AI uses the pre-parsed values directly instead of extracting
+  // them from the free-text message. This eliminates count/date hallucination.
+  let structuredBlock = ''
+  if (structured && (structured.market || structured.start_date || structured.truck_count)) {
+    const parts: string[] = [`[STRUCTURED REQUEST — use these values exactly]`]
+    parts.push(`intent: ${structured.intent ?? 'ask'}`)
+    if (structured.market)          parts.push(`market: ${structured.market}`)
+    if (structured.start_date)      parts.push(`start_date: ${structured.start_date}`)
+    if (structured.end_date)        parts.push(`end_date: ${structured.end_date}`)
+    if (structured.truck_count)     parts.push(`truck_count: ${structured.truck_count}`)
+    if (structured.tier_preference) parts.push(`tier_preference: ${structured.tier_preference}`)
+    parts.push(`[/STRUCTURED REQUEST]`)
+    structuredBlock = '\n\n' + parts.join('\n')
+  }
+
   const messages: Anthropic.MessageParam[] = [
     ...history.slice(-10).map((m: { role: string; content: string }) => ({
       role:    m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
       content: m.content,
     })),
-    { role: 'user', content: `${message}\n\n[ACCOUNT DATA]\n${context}` },
+    { role: 'user', content: `${message}${structuredBlock}\n\n[ACCOUNT DATA]\n${context}` },
   ]
 
   let reply: string
@@ -424,7 +535,7 @@ export async function POST(req: NextRequest) {
   reply = actionMatch ? stripActionBlock(reply) : reply
   reply = await scrubOtherClientNames(reply, session.id)
 
-  let actionResult: { success: boolean; message: string } | null = null
+  let actionResult: { success: boolean; message: string; quoteCard?: QuoteCardData } | null = null
   if (actionMatch) {
     const [, actionType, actionBody] = actionMatch
     try {

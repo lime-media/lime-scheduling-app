@@ -229,12 +229,14 @@ export default function HoldsPage() {
                             Commit
                           </button>
                         )}
-                        <button
-                          onClick={() => handleRelease(hold)}
-                          className="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors"
-                        >
-                          Release
-                        </button>
+                        {hold.status !== 'EXPIRED' && (
+                          <button
+                            onClick={() => handleRelease(hold)}
+                            className="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded-lg transition-colors"
+                          >
+                            Release
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -295,7 +297,9 @@ export default function HoldsPage() {
                                 {hold.status === 'HOLD' && (
                                   <button onClick={() => handleUpgrade(hold)} className="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-2 py-1 rounded transition-colors">Commit</button>
                                 )}
-                                <button onClick={() => handleRelease(hold)} className="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-2 py-1 rounded transition-colors">Release</button>
+                                {hold.status !== 'EXPIRED' && (
+                                  <button onClick={() => handleRelease(hold)} className="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-2 py-1 rounded transition-colors">Release</button>
+                                )}
                               </>
                             )}
                           </div>

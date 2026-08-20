@@ -61,7 +61,8 @@ export async function buildClientChatContext(session: ClientSession): Promise<Cl
   const [scheduleRows, contextRows, holds, otherRequests, myRequests, gpsMap] = await Promise.all([
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
-    prisma.hold.findMany({ orderBy: { start_date: 'asc' } }),
+    // EXPIRED holds are released — don't tell clients a truck is unavailable because of one
+    prisma.hold.findMany({ where: { status: { not: 'EXPIRED' } }, orderBy: { start_date: 'asc' } }),
     // Other clients' non-rejected requests occupy a truck/day too, even before staff approval —
     // treated the same as a confirmed Hold for availability purposes, just as anonymous (see
     // safety note above). The requester's OWN requests are excluded here and handled separately

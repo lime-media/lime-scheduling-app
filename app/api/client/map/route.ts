@@ -24,7 +24,13 @@ export async function GET() {
       getLiveVehicleLocations().catch(() => new Map()),
       query<Record<string, unknown>[]>(SCHEDULED_QUERY).catch(() => []),
       prisma.hold.findMany({
-        where: { start_date: { lte: now }, end_date: { gte: now } },
+        where: {
+          start_date: { lte: now },
+          end_date:   { gte: now },
+          // ATT_SOFT is a soft placeholder and EXPIRED is released — neither
+          // should make a truck read as booked on the client map
+          status:     { notIn: ['ATT_SOFT', 'EXPIRED'] },
+        },
         orderBy: { created_at: 'desc' },
       }),
     ])

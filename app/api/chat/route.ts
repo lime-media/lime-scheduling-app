@@ -130,10 +130,11 @@ async function executePlaceHold(
     return { success: false, message: 'Action failed: missing required fields in action block.' }
   }
 
-  // Conflict check
+  // Conflict check — EXPIRED holds are released, so they shouldn't block a new hold
   const conflicts = await prisma.hold.findMany({
     where: {
       truck_number: truck,
+      status: { not: 'EXPIRED' },
       OR: [{ start_date: { lte: new Date(end_date) }, end_date: { gte: new Date(start_date) } }],
     },
   })
@@ -218,7 +219,9 @@ async function buildScheduleContext(): Promise<string> {
   const [truckRows, windowRows, holds, gpsMap] = await Promise.all([
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
     query<Record<string, unknown>[]>(CHAT_SCHEDULE_WINDOW_QUERY),
+    // EXPIRED holds are released — don't tell the assistant a truck is held by one
     prisma.hold.findMany({
+      where: { status: { not: 'EXPIRED' } },
       include: { user: { select: { name: true } } },
       orderBy: { start_date: 'asc' },
     }),

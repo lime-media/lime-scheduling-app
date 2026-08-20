@@ -34,6 +34,8 @@ export async function GET(request: Request) {
 
   try {
     const holdsPromise = prisma.hold.findMany({
+      // EXPIRED holds are released — they shouldn't occupy the grid
+      where: { status: { not: 'EXPIRED' } },
       include: { user: { select: { name: true } } },
       orderBy: { start_date: 'asc' },
     })

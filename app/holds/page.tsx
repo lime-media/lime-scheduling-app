@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { format } from 'date-fns'
 import { useSession } from 'next-auth/react'
 import toast from 'react-hot-toast'
@@ -36,11 +36,43 @@ const ORIGINATION_BADGE: Record<string, string> = {
   mcp: 'bg-purple-100 text-purple-800 border border-purple-200',
 }
 
+type SortKey = 'truck_number' | 'client_name' | 'market' | 'state' | 'start_date' | 'end_date' | 'status' | 'origination' | 'created_at'
+
+// Column headers for the desktop table. `key` drives sorting when present;
+// Expired/Actions are derived/interactive, not sortable.
+const COLUMNS: { label: string; key?: SortKey }[] = [
+  { label: 'Truck', key: 'truck_number' },
+  { label: 'Client', key: 'client_name' },
+  { label: 'Market', key: 'market' },
+  { label: 'State', key: 'state' },
+  { label: 'Start Date', key: 'start_date' },
+  { label: 'End Date', key: 'end_date' },
+  { label: 'Status', key: 'status' },
+  { label: 'Expired' },
+  { label: 'Source', key: 'origination' },
+  { label: 'Created By', key: 'created_at' },
+  { label: 'Actions' },
+]
+
+function sortValue(hold: Hold, key: SortKey): string | number {
+  switch (key) {
+    case 'created_at':
+      return new Date(hold.created_at).getTime()
+    case 'start_date':
+    case 'end_date':
+      return hold[key] // ISO strings sort correctly as-is
+    default:
+      return (hold[key] ?? '').toString().toLowerCase()
+  }
+}
+
 export default function HoldsPage() {
   const { data: session } = useSession()
   const [holds, setHolds] = useState<Hold[]>([])
   const [loading, setLoading] = useState(true)
   const [filterStatus, setFilterStatus] = useState<string>('')
+  const [search, setSearch] = useState('')
+  const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'created_at', dir: 'desc' })
   const [editingHold, setEditingHold] = useState<Hold | null>(null)
   const [editForm, setEditForm] = useState<Partial<Hold>>({})
 
@@ -127,9 +159,33 @@ export default function HoldsPage() {
     return hold.created_by === session.user.id
   }
 
-  const filtered = filterStatus
-    ? holds.filter((h) => h.status === filterStatus)
-    : holds
+  const toggleSort = (key: SortKey) => {
+    setSort((prev) =>
+      prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }
+    )
+  }
+
+  const filtered = useMemo(() => {
+    let result = filterStatus ? holds.filter((h) => h.status === filterStatus) : holds
+
+    const q = search.trim().toLowerCase()
+    if (q) {
+      result = result.filter((h) =>
+        [h.truck_number, h.client_name, h.market, h.state, h.user?.name, h.notes]
+          .filter(Boolean)
+          .some((field) => field!.toLowerCase().includes(q))
+      )
+    }
+
+    const dirMultiplier = sort.dir === 'asc' ? 1 : -1
+    return [...result].sort((a, b) => {
+      const av = sortValue(a, sort.key)
+      const bv = sortValue(b, sort.key)
+      if (av < bv) return -1 * dirMultiplier
+      if (av > bv) return 1 * dirMultiplier
+      return 0
+    })
+  }, [holds, filterStatus, search, sort])
 
   return (
     <div className="flex flex-col min-h-dvh">
@@ -137,7 +193,7 @@ export default function HoldsPage() {
 
       <div className="flex-1 p-4 sm:p-6 max-w-7xl mx-auto w-full">
         {/* Header */}
-        <div className="flex items-start sm:items-center justify-between mb-4 sm:mb-6 gap-3">
+        <div className="flex items-start sm:items-center justify-between mb-4 gap-3">
           <div>
             <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Holds & Commitments</h1>
             <p className="text-sm text-gray-500 mt-0.5">Manage all truck holds and committed bookings</p>
@@ -159,13 +215,43 @@ export default function HoldsPage() {
           </div>
         </div>
 
+        {/* Search */}
+        <div className="relative mb-4 sm:mb-6 max-w-md">
+          <svg
+            className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+            fill="none" viewBox="0 0 24 24" stroke="currentColor"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35m0 0A7.5 7.5 0 104.35 4.35a7.5 7.5 0 0012.3 12.3z" />
+          </svg>
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by truck, client, market, state, notes, or created by…"
+            className="w-full border border-gray-300 rounded-lg pl-9 pr-8 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              aria-label="Clear search"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+
         {loading ? (
           <TableSkeleton />
         ) : filtered.length === 0 ? (
           <div className="text-center py-20 text-gray-400">
             <div className="text-5xl mb-3">📋</div>
             <p className="font-medium">No holds found</p>
-            <p className="text-sm mt-1">Place holds from the Schedule Grid on the dashboard</p>
+            <p className="text-sm mt-1">
+              {search || filterStatus
+                ? 'Try a different search term or filter'
+                : 'Place holds from the Schedule Grid on the dashboard'}
+            </p>
           </div>
         ) : (
           <>
@@ -250,9 +336,22 @@ export default function HoldsPage() {
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 border-b border-gray-200">
                     <tr>
-                      {['Truck', 'Client', 'Market', 'State', 'Start Date', 'End Date', 'Status', 'Expired', 'Source', 'Created By', 'Actions'].map((col) => (
-                        <th key={col} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                          {col}
+                      {COLUMNS.map(({ label, key }) => (
+                        <th
+                          key={label}
+                          onClick={key ? () => toggleSort(key) : undefined}
+                          className={`px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide ${
+                            key ? 'cursor-pointer select-none hover:text-gray-700' : ''
+                          }`}
+                        >
+                          <span className="inline-flex items-center gap-1">
+                            {label}
+                            {key && (
+                              <span className={`text-[10px] ${sort.key === key ? 'text-gray-700' : 'text-gray-300'}`}>
+                                {sort.key === key ? (sort.dir === 'asc' ? '▲' : '▼') : '▲'}
+                              </span>
+                            )}
+                          </span>
                         </th>
                       ))}
                     </tr>

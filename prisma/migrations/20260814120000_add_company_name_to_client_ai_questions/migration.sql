@@ -9,6 +9,14 @@
 -- Run against Azure SQL using the same process as the other prisma/*.sql
 -- scripts (see SETUP.md). Do NOT run via `prisma db push` / `prisma migrate
 -- deploy`.
+--
+-- CORRECTION (2026-08-18): the backfill UPDATE below is wrapped in EXEC() dynamic SQL.
+-- SQL Server compiles this whole batch before executing any of it, so a plain UPDATE
+-- referencing company_name here would fail to compile with "Invalid column name
+-- 'company_name'" (Msg 207) — the ALTER TABLE above hasn't actually run yet at compile
+-- time. GO would normally separate these into two batches, but GO can't appear inside a
+-- BEGIN...END block, so dynamic SQL is used instead to defer parsing until runtime,
+-- after the ALTER TABLE has already committed.
 -- ============================================================
 
 IF COL_LENGTH('dbo.app_client_ai_questions', 'company_name') IS NULL
@@ -17,10 +25,12 @@ BEGIN
         ADD company_name NVARCHAR(1000) NOT NULL
             CONSTRAINT DF_app_client_ai_questions_company_name DEFAULT '';
 
-    UPDATE q
-    SET q.company_name = u.company_name
-    FROM dbo.app_client_ai_questions q
-    JOIN dbo.app_client_users u ON u.id = q.client_user_id;
+    EXEC(N'
+        UPDATE q
+        SET q.company_name = u.company_name
+        FROM dbo.app_client_ai_questions q
+        JOIN dbo.app_client_users u ON u.id = q.client_user_id;
+    ');
 
     PRINT 'Added column: app_client_ai_questions.company_name (backfilled from app_client_users)';
 END

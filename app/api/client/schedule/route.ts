@@ -26,7 +26,11 @@ export async function GET(req: NextRequest) {
   try {
     const session = getClientSession(req)
 
-    const holdsPromise = prisma.hold.findMany({ orderBy: { start_date: 'asc' } })
+    // EXPIRED holds are released — they shouldn't occupy the grid
+    const holdsPromise = prisma.hold.findMany({
+      where: { status: { not: 'EXPIRED' } },
+      orderBy: { start_date: 'asc' },
+    })
     // Other clients' non-rejected hold requests also occupy a truck/day, even before staff
     // approval — a pending request should read as "booked" to everyone else, same as a
     // confirmed Hold, just without exposing who requested it (see holdRequestBlocks below).

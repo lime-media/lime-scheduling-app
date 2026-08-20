@@ -29,7 +29,8 @@ export async function GET(request: Request) {
     const [trucksRaw, schedulesRaw, holds] = await Promise.all([
       query<Record<string, unknown>[]>(ALL_TRUCKS_QUERY),
       query<Record<string, unknown>[]>(SCHEDULED_QUERY),
-      prisma.hold.findMany({ orderBy: { start_date: 'asc' } }),
+      // EXPIRED holds are released — exclude them so projected_market isn't stale
+      prisma.hold.findMany({ where: { status: { not: 'EXPIRED' } }, orderBy: { start_date: 'asc' } }),
     ])
 
     let gpsMap = new Map<string, { city: string; state: string }>()

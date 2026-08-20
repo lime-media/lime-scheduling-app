@@ -76,9 +76,17 @@ export async function POST(req: NextRequest) {
     })
 
     if (existing) {
+      // A hold auto-expired by lib/scheduleCache.ts's expireSfdcHolds() means the deal
+      // was stale as of its old sfdc_hold_exp — a fresh push means Salesforce still
+      // considers it active, so un-expire it. A COMMITTED hold is left alone; that's a
+      // real booking, not something this webhook should revert.
+      const reactivated = existing.status === 'EXPIRED'
       const updated = await prisma.hold.update({
         where: { id: existing.id },
-        data: { market, state, client_name: accountName, start_date, end_date, sfdc_hold_exp },
+        data: {
+          market, state, client_name: accountName, start_date, end_date, sfdc_hold_exp,
+          ...(reactivated && { status: 'HOLD' }),
+        },
       })
       results.push({ truck_number, hold_id: updated.id, action: 'updated' })
       await prisma.auditLog.create({
@@ -87,7 +95,7 @@ export async function POST(req: NextRequest) {
           truck_number,
           user_id:      serviceUser.id,
           hold_id:      updated.id,
-          details:      JSON.stringify({ source: 'salesforce', opportunityId, accountName, start_date, end_date }),
+          details:      JSON.stringify({ source: 'salesforce', opportunityId, accountName, start_date, end_date, ...(reactivated && { reactivated_from_expired: true }) }),
         },
       })
     } else {

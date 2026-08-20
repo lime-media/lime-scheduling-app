@@ -16,17 +16,19 @@ type Hold = {
   state: string
   start_date: string
   end_date: string
-  status: 'HOLD' | 'COMMITTED'
+  status: 'HOLD' | 'COMMITTED' | 'EXPIRED'
   origination: string
   notes: string | null
   created_at: string
   created_by: string
+  sfdc_hold_exp: string | null
   user: { name: string; email: string }
 }
 
 const STATUS_BADGE: Record<string, string> = {
   HOLD: 'bg-yellow-100 text-yellow-800 border border-yellow-200',
   COMMITTED: 'bg-red-100 text-red-800 border border-red-200',
+  EXPIRED: 'bg-gray-100 text-gray-500 border border-gray-200',
 }
 
 const ORIGINATION_BADGE: Record<string, string> = {
@@ -141,7 +143,7 @@ export default function HoldsPage() {
             <p className="text-sm text-gray-500 mt-0.5">Manage all truck holds and committed bookings</p>
           </div>
           <div className="flex gap-2 flex-shrink-0">
-            {(['', 'HOLD', 'COMMITTED'] as const).map((s) => (
+            {(['', 'HOLD', 'COMMITTED', 'EXPIRED'] as const).map((s) => (
               <button
                 key={s}
                 onClick={() => setFilterStatus(s)}
@@ -183,6 +185,11 @@ export default function HoldsPage() {
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[hold.status]}`}>
                         {hold.status}
                       </span>
+                      {hold.status === 'EXPIRED' && hold.sfdc_hold_exp && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-500 border border-gray-200">
+                          Expired {format(parseDateOnly(hold.sfdc_hold_exp), 'MMM d')}
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -241,7 +248,7 @@ export default function HoldsPage() {
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 border-b border-gray-200">
                     <tr>
-                      {['Truck', 'Client', 'Market', 'State', 'Start Date', 'End Date', 'Status', 'Source', 'Created By', 'Actions'].map((col) => (
+                      {['Truck', 'Client', 'Market', 'State', 'Start Date', 'End Date', 'Status', 'Expired', 'Source', 'Created By', 'Actions'].map((col) => (
                         <th key={col} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
                           {col}
                         </th>
@@ -261,6 +268,15 @@ export default function HoldsPage() {
                           <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[hold.status]}`}>
                             {hold.status}
                           </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          {hold.status === 'EXPIRED' ? (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-500 border border-gray-200">
+                              Expired{hold.sfdc_hold_exp ? ` ${format(parseDateOnly(hold.sfdc_hold_exp), 'MMM d')}` : ''}
+                            </span>
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
                         </td>
                         <td className="px-4 py-3">
                           <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${ORIGINATION_BADGE[hold.origination] || ORIGINATION_BADGE.frontend}`}>

@@ -84,6 +84,8 @@ export async function GET(request: Request) {
         where: {
           start_date: { lte: new Date(endDate + 'T23:59:59Z') },
           end_date: { gte: new Date(startDate + 'T00:00:00Z') },
+          // EXPIRED holds are released — don't report the truck as unavailable to partners
+          status: { not: 'EXPIRED' },
         },
         orderBy: { start_date: 'asc' },
       }),

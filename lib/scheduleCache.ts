@@ -33,11 +33,16 @@ export async function refreshCache(): Promise<void> {
     console.error('[scheduleCache] ATT_SOFT release check failed:', err)
   )
 
+  await expireSfdcHolds().catch((err) =>
+    console.error('[scheduleCache] SFDC hold expiry check failed:', err)
+  )
+
   const [schedulesRaw, holdsRaw] = await Promise.all([
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),
-    // ATT_SOFT holds are soft placeholders — exclude them from conflict detection
+    // ATT_SOFT holds are soft placeholders and EXPIRED holds are released —
+    // exclude both from conflict detection
     prisma.hold.findMany({
-      where:   { status: { not: 'ATT_SOFT' } },
+      where:   { status: { notIn: ['ATT_SOFT', 'EXPIRED'] } },
       orderBy: { start_date: 'asc' },
     }),
   ])
@@ -155,6 +160,58 @@ export async function releaseAttSoftHolds(): Promise<number> {
   }
 
   return released
+}
+
+// ── SFDC hold expiry ────────────────────────────────────────────────────────────
+
+/**
+ * Releases (from scheduling purposes) any Salesforce-sourced hold whose
+ * `sfdc_hold_exp` date has passed — the day AFTER that date, the hold no
+ * longer reserves the truck anywhere in the app (grid, map, AI context,
+ * partner API), but unlike a manual Release the row is kept, just flipped to
+ * status EXPIRED, so it stays visible on the Holds page for ops to review.
+ *
+ * Only status HOLD is eligible — a hold someone has already upgraded to
+ * COMMITTED represents a real deal, not a stale tentative one, so it's left
+ * alone even past its original hold-expiration date.
+ *
+ * If Salesforce later re-pushes the same Opportunity with a later hold-exp
+ * date, the webhook resets status back to HOLD (see
+ * app/api/integrations/salesforce/hold/route.ts) — this isn't a dead end.
+ */
+export async function expireSfdcHolds(): Promise<number> {
+  // Date-only comparison, local midnight — matches how holdStart/holdStop/holdExp
+  // arrive from Salesforce as bare "yyyy-MM-dd" dates with no time component.
+  const startOfToday = new Date()
+  startOfToday.setHours(0, 0, 0, 0)
+
+  const stale = await prisma.hold.findMany({
+    where: {
+      status:        'HOLD',
+      sfdc_hold_exp: { lt: startOfToday },
+    },
+  })
+  if (stale.length === 0) return 0
+
+  for (const hold of stale) {
+    await prisma.auditLog.create({
+      data: {
+        action:       'EXPIRE_HOLD',
+        truck_number: hold.truck_number,
+        user_id:      hold.created_by,
+        hold_id:      hold.id,
+        details:      JSON.stringify({
+          reason:              'sfdc_hold_exp_passed',
+          sfdc_opportunity_id: hold.sfdc_opportunity_id,
+          sfdc_hold_exp:       hold.sfdc_hold_exp,
+        }),
+      },
+    })
+    await prisma.hold.update({ where: { id: hold.id }, data: { status: 'EXPIRED' } })
+    console.log(`[hold-expiry] expired hold: truck ${hold.truck_number} | "${hold.client_name}" — sfdc_hold_exp passed`)
+  }
+
+  return stale.length
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────

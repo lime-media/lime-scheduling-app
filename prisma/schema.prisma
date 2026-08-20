@@ -23,7 +23,7 @@ model User {
   @@map("app_users")
 }
 
-// status: HOLD | COMMITTED
+// status: HOLD | COMMITTED | ATT_SOFT | EXPIRED
 // source: INTERNAL | SALESFORCE | CLIENT
 // origination: frontend | mcp
 model Hold {

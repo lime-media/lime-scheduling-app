@@ -51,22 +51,34 @@ model Hold {
   @@map("app_holds")
 }
 
-// status: PENDING | APPROVED | REJECTED
+// status: PENDING | APPROVED | REJECTED | EXPIRED | EXTENSION_REQUESTED
 // source: INTERNAL | SALESFORCE | CLIENT
+// pricing_tier: Good | Better | Best
 model HoldRequest {
-  id             String     @id @default(cuid())
-  client_user_id String
-  truck_number   String
-  market         String
-  state          String?
-  start_date     DateTime
-  end_date       DateTime
-  notes          String?    @db.NVarChar(Max)
-  status         String     @default("PENDING")
-  source         String     @default("CLIENT")
-  created_at     DateTime   @default(now())
-  client_user    ClientUser @relation(fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  id                  String     @id @default(cuid())
+  client_user_id      String
+  truck_number        String
+  market              String
+  state               String?
+  start_date          DateTime
+  end_date            DateTime
+  notes               String?    @db.NVarChar(Max)
+  status              String     @default("PENDING")
+  source              String     @default("CLIENT")
+  // Pricing snapshot — locked at hold creation from the quote engine
+  pricing_tier        String?                        // Good | Better | Best
+  quoted_total        Float?                         // total price at the selected tier (campaign-level)
+  daily_rate          Float?                         // per-truck per-day rate
+  features            String?    @db.NVarChar(Max)   // JSON: { smartDirectional, deviceId, studies, shadowFencing }
+  truck_count         Int?                           // total trucks in the campaign group
+  campaign_group_id   String?                        // groups multi-truck holds into one campaign
+  // Expiration — 72h default from creation. Internal only (not shown to client).
+  expires_at          DateTime?
+  extension_reason    String?    @db.NVarChar(Max)   // client's reason when requesting extension
+  created_at          DateTime   @default(now())
+  client_user         ClientUser @relation(fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
+  @@index([campaign_group_id])
   @@map("app_hold_requests")
 }
 

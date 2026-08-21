@@ -239,6 +239,9 @@ export default function ClientAiPage() {
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef  = useRef<HTMLTextAreaElement>(null)
 
+  // Track whether a quote exists in the conversation — Hold mode requires it
+  const hasQuote = messages.some((m) => m.quoteCard != null)
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
@@ -248,9 +251,10 @@ export default function ClientAiPage() {
   }, [])
 
   const switchMode = useCallback((newMode: InputMode) => {
+    if (newMode === 'hold' && !hasQuote) return // can't enter Hold mode without a quote
     setMode(newMode)
     setStructured((prev) => ({ ...prev, intent: newMode }))
-  }, [])
+  }, [hasQuote])
 
   const sendMessage = useCallback(async (text?: string) => {
     const content = (text ?? input).trim()
@@ -449,18 +453,22 @@ export default function ClientAiPage() {
 
           <div className="flex-shrink-0 bg-white border-t border-gray-200 px-4 py-3">
             <div className="max-w-2xl mx-auto">
-              {/* Mode pills */}
-              <div className="flex gap-1.5 mb-2">
+              {/* Mode pills — Hold requires a quote first */}
+              <div className="flex gap-1.5 mb-2 items-center">
                 {([
-                  { key: 'ask',   label: 'Ask' },
-                  { key: 'quote', label: 'Quote' },
-                  { key: 'hold',  label: 'Hold' },
-                ] as const).map(({ key, label }) => (
+                  { key: 'ask',   label: 'Ask',   locked: false },
+                  { key: 'quote', label: 'Quote', locked: false },
+                  { key: 'hold',  label: 'Hold',  locked: !hasQuote },
+                ] as const).map(({ key, label, locked }) => (
                   <button
                     key={key}
                     onClick={() => switchMode(key)}
+                    disabled={locked}
+                    title={locked ? 'Get a quote first' : undefined}
                     className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
-                      mode === key
+                      locked
+                        ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
+                        : mode === key
                         ? 'bg-[#1a3028] text-white shadow-sm'
                         : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                     }`}
@@ -468,6 +476,9 @@ export default function ClientAiPage() {
                     {label}
                   </button>
                 ))}
+                {!hasQuote && (
+                  <span className="text-[10px] text-gray-400 ml-1">Check availability &amp; quote before holding</span>
+                )}
               </div>
 
               {/* Structured input fields for quote/hold modes */}

@@ -14,15 +14,22 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     holdRequests: requests.map((r) => ({
-      id:           r.id,
-      truck_number: r.truck_number,
-      market:       r.market,
-      state:        r.state ?? '',
-      start_date:   r.start_date.toISOString().split('T')[0],
-      end_date:     r.end_date.toISOString().split('T')[0],
-      notes:        r.notes ?? '',
-      status:       r.status,
-      company_name: session.companyName,
+      id:                r.id,
+      truck_number:      r.truck_number,
+      market:            r.market,
+      state:             r.state ?? '',
+      start_date:        r.start_date.toISOString().split('T')[0],
+      end_date:          r.end_date.toISOString().split('T')[0],
+      notes:             r.notes ?? '',
+      status:            r.status,
+      company_name:      session.companyName,
+      pricing_tier:      r.pricing_tier ?? null,
+      quoted_total:      r.quoted_total ?? null,
+      daily_rate:        r.daily_rate ?? null,
+      features:          r.features ?? null,
+      truck_count:       r.truck_count ?? null,
+      campaign_group_id: r.campaign_group_id ?? null,
+      expires_at:        r.expires_at?.toISOString() ?? null,
     })),
   })
 }

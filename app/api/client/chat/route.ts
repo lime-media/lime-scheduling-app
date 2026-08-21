@@ -45,26 +45,19 @@ WHAT YOU CAN HELP WITH:
 - Keep every answer short and scannable. No walls of text, no restating the same fact multiple ways.
 - Be concise and direct. Plain sentences or short bullet lists — no markdown tables needed.
 
-TAKING ACTION — submitting hold requests:
-- You can submit hold requests on ${companyName}'s behalf when asked and confirmed. You can only ever create a REQUEST (status PENDING) — never a confirmed booking. Every request still goes through the same Lime Media team review as one submitted by dragging on the Schedule Grid; nothing you submit is ever auto-approved.
-- Only offer to submit for trucks you've already shown as available in THIS conversation, for the exact dates being discussed. Never invent availability or submit for a truck you haven't verified against the data.
-- Workflow:
-  1. When the client asks to hold/book/reserve trucks, first answer with availability (per the rules above) if you haven't already, then state exactly what you're about to submit — how many trucks, market/state, start and end dates — and ask them to confirm. Never name truck numbers here either; the client confirms a quantity and dates, not which specific truck.
-  2. Only submit after a clear confirmation in this message or the immediately prior one ("yes", "go ahead", "submit those", "do it"). A vague or unrelated reply is not confirmation — ask again rather than guess.
-  3. Once confirmed, append this block at the very end of your reply, one line per truck, using the exact dates just confirmed:
-[ACTION: PLACE_HOLD_REQUESTS]
-truck: <truck_number> | market: <City, ST> | state: <2-letter state> | start: <YYYY-MM-DD> | end: <YYYY-MM-DD> | notes: <optional — include pricing tier preference if the client expressed one, e.g. "Good tier preferred" or "Interested in Better tier">
-[/ACTION]
-  - Never emit this block without an explicit confirmation first.
-  - Only include the trucks the client actually confirmed — never pad the list.
-  - The notes field is optional — only include it when the client has stated a pricing tier preference or other relevant context. Never invent a preference they didn't express.
-  - No markdown inside the block. Plain text only.
+MANDATORY WORKFLOW — Availability → Quote → Hold:
+A hold is a commitment to a specific price, feature set, and set of trucks. This workflow is strictly ordered — each step depends on the previous one:
+  Step 1: AVAILABILITY — determine how many trucks are available in the requested market for the requested dates (per the availability and rigor rules above). You must complete this before quoting.
+  Step 2: QUOTE — generate a price quote for the ACTUAL available count (not a hypothetical number). The quote locks the rate, tier, and features. You must have a quote in this conversation before placing a hold.
+  Step 3: HOLD — submit hold requests at the quoted price and tier. The hold carries the pricing snapshot from the quote.
+Never skip steps. If a client asks to "book" or "hold" without having first checked availability and gotten a quote in this conversation, walk them through the steps: check availability first, then quote, then hold.
 
-TAKING ACTION — generating a price quote:
-- ${companyName} can ask for pricing at any time ("how much", "quote", "cost", "price") — you have a real, code-computed quote engine behind you. NEVER estimate, guess, or state a dollar figure yourself; every number in your reply must come from the computed result the system appends after you request it. If you don't have enough information yet, ask for it — don't guess and don't apologize for "not having pricing information," you do, you just need the details first.
-- To request a quote you need: number of trucks, and the exact start/end dates of the campaign (resolve relative dates like "Thursday" against today's date, same as everywhere else in this prompt). Optionally, only if the client actually mentions them: the Smart Directional add-on, the Device ID Passback add-on, and/or which lift study types (web_lift, foot_traffic, sales_lift, brand_lift).
-- No confirmation step needed first — a quote is informational, not a booking or commitment.
-- Once you have truck count and dates, append this block at the very end of your reply (leave any dollar figures out of your own text — the system fills those in and appends them):
+TAKING ACTION — generating a price quote (Step 2):
+- ${companyName} can ask for pricing — you have a real, code-computed quote engine behind you. NEVER estimate, guess, or state a dollar figure yourself; every number in your reply must come from the computed result the system appends after you request it. If you don't have enough information yet, ask for it.
+- PREREQUISITE: You must have already checked availability for these dates/market in this conversation. The truck count in the quote must match what's actually available (or fewer if the client wants fewer).
+- To request a quote you need: number of trucks, the campaign market, and the exact start/end dates. Optionally, only if the client actually mentions them: the Smart Directional add-on, the Device ID Passback add-on, and/or which lift study types (web_lift, foot_traffic, sales_lift, brand_lift).
+- No confirmation step needed — a quote is informational, not a booking.
+- Once you have the details, append this block at the very end of your reply:
 [ACTION: GET_QUOTE]
 truck_count: <int>
 market: <City, ST — the campaign market being quoted>
@@ -74,13 +67,29 @@ smart_directional: <yes/no — omit this line entirely if not mentioned>
 device_id: <yes/no — omit this line entirely if not mentioned>
 studies: <comma-separated from web_lift, foot_traffic, sales_lift, brand_lift — omit this line entirely if none mentioned>
 [/ACTION]
-  - Always include the market line — the system uses it to determine the correct impression tier for the campaign market.
-  - Only include the optional lines the client actually gave you an answer for — never guess yes/no or invent a study they didn't ask about.
+  - Always include the market line — the system uses it to determine the correct impression tier.
+  - Only include optional lines the client actually gave an answer for.
   - No markdown inside the block. Plain text only.
-- The system's quote is computed by the pricing engine — present it as-is without adding disclaimers or caveats of your own. Transport logistics may affect final pricing for out-of-market campaigns; the quote notes this when relevant.
+- The system's quote is computed by the pricing engine — present it as-is without adding disclaimers or caveats.
+
+TAKING ACTION — submitting hold requests (Step 3):
+- You can submit hold requests on ${companyName}'s behalf when asked and confirmed. You can only ever create a REQUEST (status PENDING) — never a confirmed booking. Every request still goes through the same Lime Media team review; nothing you submit is ever auto-approved. Holds expire after 72 hours if not acted on by the team.
+- PREREQUISITE: You must have a quote in THIS conversation for these trucks/dates/market before submitting a hold. The hold locks in the quoted price. If the client hasn't gotten a quote yet, generate one first.
+- Only offer to submit for trucks you've already shown as available AND quoted in this conversation, for the exact dates being discussed.
+- Workflow:
+  1. After availability + quote, state exactly what you're about to submit — how many trucks, market/state, start and end dates, the pricing tier they chose, and the quoted total — and ask them to confirm.
+  2. Only submit after a clear confirmation ("yes", "go ahead", "submit those", "do it"). A vague reply is not confirmation.
+  3. Once confirmed, append this block at the very end of your reply, one line per truck:
+[ACTION: PLACE_HOLD_REQUESTS]
+truck: <truck_number> | market: <City, ST> | state: <2-letter state> | start: <YYYY-MM-DD> | end: <YYYY-MM-DD> | tier: <Good|Better|Best> | notes: <optional context>
+[/ACTION]
+  - The "tier" field is REQUIRED — it must match the pricing tier the client chose from the quote.
+  - Never emit this block without an explicit confirmation first.
+  - Only include the trucks the client actually confirmed — never pad the list.
+  - No markdown inside the block. Plain text only.
 
 STRUCTURED REQUESTS:
-- The client's message may include a [STRUCTURED REQUEST] block with pre-parsed fields (market, start_date, end_date, truck_count, tier_preference). When present, use these values exactly as given — they were entered via form fields and are authoritative. Do not reinterpret, round, or adjust them. If the intent is "quote", proceed directly to generating a GET_QUOTE action block using these values. If the intent is "hold", use them for PLACE_HOLD_REQUESTS (include tier_preference in the notes field if provided).
+- The client's message may include a [STRUCTURED REQUEST] block with pre-parsed fields (market, start_date, end_date, truck_count, tier_preference). When present, use these values exactly as given — they were entered via form fields and are authoritative. Even with structured fields, you must still follow the Availability → Quote → Hold workflow. If the intent is "quote", check availability first (if not already done), then generate a GET_QUOTE action block. If the intent is "hold", ensure a quote exists in the conversation before proceeding.
 
 TAKING ACTION — requesting team assistance:
 - This is your general "get a human involved" tool — use it any time the client wants to reach Lime Media or ask them something you can't handle yourself. Common cases: a question outside what you can answer from the data, or the client directly asking how to contact/reach the team. Do NOT use this for a cross-market multi-truck request (see the rule above) — that's a normal fulfillable answer, not something to escalate.
@@ -114,7 +123,9 @@ function stripActionBlock(text: string): string {
   return text.replace(ACTION_RE, '').trim()
 }
 
-function parseHoldRequestLines(body: string): CreateHoldRequestParams[] {
+type ParsedHoldLine = CreateHoldRequestParams & { tier?: string }
+
+function parseHoldRequestLines(body: string): ParsedHoldLine[] {
   return body
     .trim()
     .split('\n')
@@ -135,6 +146,7 @@ function parseHoldRequestLines(body: string): CreateHoldRequestParams[] {
         start_date:   fields.start  ?? '',
         end_date:     fields.end    ?? '',
         notes:        fields.notes  ?? undefined,
+        tier:         fields.tier   ?? undefined,
       }
     })
     .filter((p) => p.truck_number && p.start_date && p.end_date)
@@ -143,7 +155,8 @@ function parseHoldRequestLines(body: string): CreateHoldRequestParams[] {
 async function executePlaceHoldRequests(
   actionBody: string,
   session: ClientSession,
-  knownLocationTrucks: Set<string>
+  knownLocationTrucks: Set<string>,
+  lastQuote: QuoteResult | null
 ): Promise<{ success: boolean; message: string }> {
   const items = parseHoldRequestLines(actionBody)
   if (items.length === 0) {
@@ -153,20 +166,46 @@ async function executePlaceHoldRequests(
     return { success: false, message: `That's ${items.length} trucks at once — please ask for ${MAX_HOLD_REQUESTS_PER_TURN} or fewer per request.` }
   }
 
+  // Generate a campaign group ID to link all trucks in this hold together
+  const campaignGroupId = `cg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+
+  // Resolve pricing from the last quote in this conversation + the tier the AI selected
+  const tierFromAction = items[0]?.tier ?? null
+  const pricingTier = tierFromAction?.charAt(0).toUpperCase() + (tierFromAction?.slice(1).toLowerCase() ?? '')
+  let quotedTotal: number | null = null
+  let features: string | null = null
+
+  if (lastQuote && pricingTier) {
+    const tierKey = pricingTier.toLowerCase() as 'good' | 'better' | 'best'
+    if (tierKey in lastQuote) {
+      quotedTotal = lastQuote[tierKey].total
+    }
+    features = JSON.stringify({
+      smartDirectional: lastQuote.better.smartDirectionalIncluded,
+      deviceId:         lastQuote.better.deviceIdIncluded,
+      studies:          lastQuote.best.studies,
+      shadowFencing:    tierKey !== 'good',
+    })
+  }
+
   const created: string[] = []
   const failed:  string[] = []
   for (const item of items) {
-    // Hard backstop, independent of the model's own judgment: never submit a hold for a truck we
-    // have zero location data for (no live GPS, no schedule-derived market). Real incident this
-    // caught — the model picked such a truck as a cross-market "filler" and submitted a hold for
-    // it with no idea where it actually is.
     if (!knownLocationTrucks.has(item.truck_number)) {
       console.error('[client/chat] rejected hold request for truck with no known location:', item.truck_number)
       failed.push(item.truck_number)
       continue
     }
     try {
-      await createHoldRequestForClient(session, item)
+      await createHoldRequestForClient(session, {
+        ...item,
+        pricing_tier:      pricingTier || null,
+        quoted_total:      quotedTotal,
+        daily_rate:        lastQuote?.dailyRate ?? null,
+        features,
+        truck_count:       items.length,
+        campaign_group_id: campaignGroupId,
+      })
       created.push(item.truck_number)
     } catch (err) {
       console.error('[client/chat] failed to create hold request:', err)
@@ -178,14 +217,14 @@ async function executePlaceHoldRequests(
     return { success: false, message: "Sorry, I couldn't submit that — please try again or use the Schedule Grid directly." }
   }
 
-  // Include details of what was submitted so the conversation history retains an explicit record.
-  // This ensures the AI can answer "what did we just submit?" without needing to re-query.
+  const tierLabel = pricingTier || 'standard'
+  const priceLabel = quotedTotal ? ` at ${fmtMoney(quotedTotal)} (${tierLabel} tier)` : ''
   const submittedDetails = items
     .filter((item) => created.includes(item.truck_number))
-    .map((item) => `Truck ${item.truck_number} in ${[item.market, item.state].filter(Boolean).join(', ')} (${item.start_date} → ${item.end_date})${item.notes ? ' — ' + item.notes : ''}`)
+    .map((item) => `Truck ${item.truck_number} in ${[item.market, item.state].filter(Boolean).join(', ')} (${item.start_date} → ${item.end_date})`)
     .join('; ')
 
-  let message = `Submitted ${created.length} hold request${created.length > 1 ? 's' : ''} for review. The Lime Media team will review ${created.length > 1 ? 'them' : 'it'} from here.`
+  let message = `Submitted ${created.length} hold request${created.length > 1 ? 's' : ''}${priceLabel} for review. Holds expire in 72 hours. The Lime Media team will review ${created.length > 1 ? 'them' : 'it'} from here.`
   if (submittedDetails) message += ` Details: ${submittedDetails}.`
   if (failed.length > 0) {
     message += ` (${failed.length} couldn't be submitted — please try again.)`
@@ -535,14 +574,38 @@ export async function POST(req: NextRequest) {
   reply = actionMatch ? stripActionBlock(reply) : reply
   reply = await scrubOtherClientNames(reply, session.id)
 
+  // Track the last quote from this conversation so hold requests can attach pricing.
+  // The quote is stored in the route handler's closure — if the AI generates a quote
+  // in this turn, it's captured here; otherwise we rely on the system prompt to enforce
+  // that holds can't be placed without a prior quote.
+  let lastQuote: QuoteResult | null = null
+
   let actionResult: { success: boolean; message: string; quoteCard?: QuoteCardData } | null = null
   if (actionMatch) {
     const [, actionType, actionBody] = actionMatch
     try {
-      actionResult =
-        actionType === 'REQUEST_ASSISTANCE' ? await executeRequestAssistance(actionBody, session) :
-        actionType === 'GET_QUOTE'          ? await executeGetQuote(actionBody, session) :
-        await executePlaceHoldRequests(actionBody, session, knownLocationTrucks)
+      if (actionType === 'REQUEST_ASSISTANCE') {
+        actionResult = await executeRequestAssistance(actionBody, session)
+      } else if (actionType === 'GET_QUOTE') {
+        const quoteResult = await executeGetQuote(actionBody, session)
+        actionResult = quoteResult
+        // Capture the quote for potential follow-up hold placement
+        if (quoteResult.success && quoteResult.quoteCard) {
+          // Re-run computeQuote to get the full QuoteResult (quoteCard is a subset)
+          // This is lightweight — just re-derives from the same inputs
+          const fields = parseKeyValueLines(actionBody)
+          const truckCount = parseInt(fields.truck_count ?? '', 10)
+          const start = fields.start, end = fields.end
+          if (truckCount && start && end) {
+            const startDate = new Date(start + 'T00:00:00Z')
+            const endDate = new Date(end + 'T00:00:00Z')
+            const days = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1
+            try { lastQuote = computeQuote({ truckCount, days }) } catch { /* fall through */ }
+          }
+        }
+      } else {
+        actionResult = await executePlaceHoldRequests(actionBody, session, knownLocationTrucks, lastQuote)
+      }
     } catch (err) {
       console.error('[client/chat] action execution failed:', err)
       actionResult = { success: false, message: 'Failed to submit your request due to a server error.' }

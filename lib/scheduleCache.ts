@@ -37,6 +37,10 @@ export async function refreshCache(): Promise<void> {
     console.error('[scheduleCache] SFDC hold expiry check failed:', err)
   )
 
+  await expireHoldRequests().catch((err) =>
+    console.error('[scheduleCache] client hold-request expiry check failed:', err)
+  )
+
   const [schedulesRaw, holdsRaw] = await Promise.all([
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),
     // ATT_SOFT holds are soft placeholders and EXPIRED holds are released —
@@ -209,6 +213,37 @@ export async function expireSfdcHolds(): Promise<number> {
     })
     await prisma.hold.update({ where: { id: hold.id }, data: { status: 'EXPIRED' } })
     console.log(`[hold-expiry] expired hold: truck ${hold.truck_number} | "${hold.client_name}" — sfdc_hold_exp passed`)
+  }
+
+  return stale.length
+}
+
+// ── Client hold-request expiry ────────────────────────────────────────────────
+
+/**
+ * Expires any client hold request whose `expires_at` has passed.
+ * Only PENDING and APPROVED requests are eligible — REJECTED and already-EXPIRED
+ * ones are left alone. EXTENSION_REQUESTED holds are also expired if past their
+ * deadline (the extension was not granted in time).
+ *
+ * Mirrors the SFDC hold expiry pattern above: status flips to EXPIRED, the row
+ * stays for visibility. Unlike SFDC holds there's no audit log entry — hold
+ * requests are client-facing and don't feed into the staff audit trail.
+ */
+export async function expireHoldRequests(): Promise<number> {
+  const now = new Date()
+
+  const stale = await prisma.holdRequest.findMany({
+    where: {
+      status:     { in: ['PENDING', 'APPROVED', 'EXTENSION_REQUESTED'] },
+      expires_at: { lt: now },
+    },
+  })
+  if (stale.length === 0) return 0
+
+  for (const req of stale) {
+    await prisma.holdRequest.update({ where: { id: req.id }, data: { status: 'EXPIRED' } })
+    console.log(`[hold-request-expiry] expired hold request: truck ${req.truck_number} | client ${req.client_user_id} — expires_at passed`)
   }
 
   return stale.length

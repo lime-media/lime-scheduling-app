@@ -76,6 +76,31 @@ export const MARKET_SIZE_TIERS: MarketSizeTier[] = [
 ]
 
 // ---------------------------------------------------------------------------
+// DMA rank → market size tier mapping
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps a DMA code to a market size tier ID based on Nielsen rank.
+ * Rank 1-2 → Tier 1 (mega-DMA), 3-10 → Tier 2 (major-metro),
+ * 11-50 → Tier 3 (mid/large), everything else → Tier 4 (small metro).
+ *
+ * DMA codes are ordered by rank in the accepted markets seed — the rank
+ * is implicit in the DMA code list order. This lookup uses the DMA code
+ * directly since rank isn't stored in the database.
+ */
+const MEGA_DMA_CODES = new Set(['DMA-501', 'DMA-803'])                          // NY, LA
+const MAJOR_METRO_DMA_CODES = new Set([
+  'DMA-602', 'DMA-623', 'DMA-504', 'DMA-618', 'DMA-524', 'DMA-511',            // Chicago, Dallas, Philly, Houston, Atlanta, DC
+  'DMA-807', 'DMA-506',                                                          // SF, Boston
+])
+
+export function marketSizeTierFromDmaCode(dmaCode: string): number {
+  if (MEGA_DMA_CODES.has(dmaCode)) return 1
+  if (MAJOR_METRO_DMA_CODES.has(dmaCode)) return 2
+  return 3  // all other top-50 DMAs
+}
+
+// ---------------------------------------------------------------------------
 // Service area & transport pricing (from transport spec v1, 30 July 2026)
 // ---------------------------------------------------------------------------
 

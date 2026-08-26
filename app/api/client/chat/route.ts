@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from '@/lib/prisma'
 import { getClientSession, type ClientSession } from '@/lib/clientAuth'
-import { buildClientChatContext } from '@/lib/clientChatContext'
+import { buildClientChatContext, normalizeTruckNumber } from '@/lib/clientChatContext'
 import { createHoldRequestForClient, type CreateHoldRequestParams } from '@/lib/holdRequestService'
 import { sendAssistanceRequestEmail } from '@/lib/email'
 import { computeQuote, VALID_STUDIES, marketSizeTierFromDmaCode, type RateOverrides, type StudyType, type QuoteResult } from '@/lib/pricing'
@@ -85,6 +85,7 @@ TAKING ACTION — submitting hold requests (Step 3):
 truck: <truck_number> | market: <City, ST> | state: <2-letter state> | start: <YYYY-MM-DD> | end: <YYYY-MM-DD> | tier: <Good|Better|Best> | notes: <optional context>
 [/ACTION]
   - The "tier" field is REQUIRED — it must match the pricing tier the client chose from the quote.
+  - The "truck_number" MUST be copied character-for-character from the TRUCK AVAILABILITY list below, including any leading zeros (e.g. "0044", not "44"). Never reformat, shorten, or reinterpret it as a plain number — a changed truck number silently fails the submission.
   - Never emit this block without confirmation via one of the two paths above.
   - Only include the trucks the client actually confirmed — never pad the list.
   - No markdown inside the block. Plain text only.
@@ -156,7 +157,7 @@ function parseHoldRequestLines(body: string): ParsedHoldLine[] {
 async function executePlaceHoldRequests(
   actionBody: string,
   session: ClientSession,
-  knownLocationTrucks: Set<string>,
+  knownLocationTrucks: Map<string, string>,
   lastQuote: QuoteResult | null
 ): Promise<{ success: boolean; message: string }> {
   const items = parseHoldRequestLines(actionBody)
@@ -192,7 +193,13 @@ async function executePlaceHoldRequests(
   const created: string[] = []
   const failed:  string[] = []
   for (const item of items) {
-    if (!knownLocationTrucks.has(item.truck_number)) {
+    // Match on the raw truck number as written, falling back to a zero-stripped comparison —
+    // the model sometimes drops leading zeros ("44" instead of "0044") when copying a truck
+    // number into the compact action-block format. Either way, resolve to the CANONICAL
+    // (DB-format) truck number so what actually gets persisted is never malformed.
+    const canonicalTruckNumber =
+      knownLocationTrucks.get(item.truck_number) ?? knownLocationTrucks.get(normalizeTruckNumber(item.truck_number))
+    if (!canonicalTruckNumber) {
       console.error('[client/chat] rejected hold request for truck with no known location:', item.truck_number)
       failed.push(item.truck_number)
       continue
@@ -200,6 +207,7 @@ async function executePlaceHoldRequests(
     try {
       await createHoldRequestForClient(session, {
         ...item,
+        truck_number:      canonicalTruckNumber,
         pricing_tier:      pricingTier || null,
         quoted_total:      quotedTotal,
         daily_rate:        lastQuote?.dailyRate ?? null,
@@ -220,9 +228,13 @@ async function executePlaceHoldRequests(
 
   const tierLabel = pricingTier || 'standard'
   const priceLabel = quotedTotal ? ` at ${fmtMoney(quotedTotal)} (${tierLabel} tier)` : ''
+  // Market/dates only — never the truck number itself. This message is shown directly to the
+  // client (see actionResult in the frontend), and truck numbers are internal-only everywhere
+  // else in this codebase (the system prompt's rigor requirement, the availability-answer rule,
+  // etc.) — this "submitted" summary was the one place that policy wasn't enforced in code.
   const submittedDetails = items
     .filter((item) => created.includes(item.truck_number))
-    .map((item) => `Truck ${item.truck_number} in ${[item.market, item.state].filter(Boolean).join(', ')} (${item.start_date} → ${item.end_date})`)
+    .map((item) => `${[item.market, item.state].filter(Boolean).join(', ')} (${item.start_date} → ${item.end_date})`)
     .join('; ')
 
   let message = `Submitted ${created.length} hold request${created.length > 1 ? 's' : ''}${priceLabel} for review. Holds expire in 72 hours. The Lime Media team will review ${created.length > 1 ? 'them' : 'it'} from here.`
@@ -522,7 +534,7 @@ export async function POST(req: NextRequest) {
   if (!message && !hasStructured) return NextResponse.json({ error: 'Message required' }, { status: 400 })
 
   let context: string
-  let knownLocationTrucks: Set<string> = new Set()
+  let knownLocationTrucks: Map<string, string> = new Map()
   try {
     const built = await buildClientChatContext(session)
     context = built.prompt

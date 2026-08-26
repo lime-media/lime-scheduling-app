@@ -44,6 +44,7 @@ WHAT YOU CAN HELP WITH:
 - If asked how to contact/reach Lime Media, or to ask the team something you can't answer yourself from the data — never send them off to go find contact info on their own (no "check your portal," no "contact your account rep"). Tell them to just say what they need and you'll pass it straight to the team, and they'll hear back by email within 12-24 hours. See TAKING ACTION — requesting team assistance below for the mechanics.
 - Keep every answer short and scannable. No walls of text, no restating the same fact multiple ways.
 - Be concise and direct. Plain sentences or short bullet lists — no markdown tables needed.
+- Never narrate your own message-parsing to the client (e.g. "I see both a free-text request and a structured request," "let me work through this once," "I notice you've included..."). None of that is useful to them — just work out what they're asking for internally and answer it. If a message genuinely looks contradictory or ambiguous after you've actually read it, ask a short, plain clarifying question about the substance (e.g. "Did you mean 2 trucks or 3?") — never describe the format their message arrived in.
 
 MANDATORY WORKFLOW — Availability → Quote → Hold:
 A hold is a commitment to a specific price, feature set, and set of trucks. This workflow is strictly ordered — each step depends on the previous one:
@@ -515,7 +516,10 @@ export async function POST(req: NextRequest) {
   if (session.username !== 'testclient') return NextResponse.json({ error: 'Not available yet' }, { status: 403 })
 
   const { message, history = [], structured } = await req.json()
-  if (!message) return NextResponse.json({ error: 'Message required' }, { status: 400 })
+  // A structured Quote/Hold submission (fields filled, nothing typed) sends an empty message —
+  // that's fine as long as the structured block below carries the actual request.
+  const hasStructured = Boolean(structured && (structured.market || structured.start_date || structured.truck_count))
+  if (!message && !hasStructured) return NextResponse.json({ error: 'Message required' }, { status: 400 })
 
   let context: string
   let knownLocationTrucks: Set<string> = new Set()
@@ -530,10 +534,13 @@ export async function POST(req: NextRequest) {
 
   // When the frontend sends structured parameters (from Quote/Hold mode), inject them as a
   // clear instruction block so the AI uses the pre-parsed values directly instead of extracting
-  // them from the free-text message. This eliminates count/date hallucination.
+  // them from the free-text message. This eliminates count/date hallucination. When there's no
+  // typed message alongside it (the common case — fields filled, nothing typed), this block is
+  // the ENTIRE request; don't pair it with a synthetic sentence like "Please quote this
+  // request," which reads to the model as a second, separate free-text ask for the same thing.
   let structuredBlock = ''
-  if (structured && (structured.market || structured.start_date || structured.truck_count)) {
-    const parts: string[] = [`[STRUCTURED REQUEST — use these values exactly]`]
+  if (hasStructured) {
+    const parts: string[] = [`[STRUCTURED REQUEST — use these values exactly. This is the client's actual request, submitted via form fields, not a second request alongside any text above.]`]
     parts.push(`intent: ${structured.intent ?? 'ask'}`)
     if (structured.market)          parts.push(`market: ${structured.market}`)
     if (structured.start_date)      parts.push(`start_date: ${structured.start_date}`)
@@ -541,15 +548,19 @@ export async function POST(req: NextRequest) {
     if (structured.truck_count)     parts.push(`truck_count: ${structured.truck_count}`)
     if (structured.tier_preference) parts.push(`tier_preference: ${structured.tier_preference}`)
     parts.push(`[/STRUCTURED REQUEST]`)
-    structuredBlock = '\n\n' + parts.join('\n')
+    structuredBlock = parts.join('\n')
   }
+
+  const userTurn = [message || null, structuredBlock || null, `[ACCOUNT DATA]\n${context}`]
+    .filter(Boolean)
+    .join('\n\n')
 
   const messages: Anthropic.MessageParam[] = [
     ...history.slice(-10).map((m: { role: string; content: string }) => ({
       role:    m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
       content: m.content,
     })),
-    { role: 'user', content: `${message}${structuredBlock}\n\n[ACCOUNT DATA]\n${context}` },
+    { role: 'user', content: userTurn },
   ]
 
   let reply: string

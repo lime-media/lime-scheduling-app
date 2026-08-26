@@ -345,6 +345,9 @@ export default function ClientAiPage() {
     } else if (!typed) {
       return
     }
+    // Used for the chat bubble only — the API gets the raw `typed` text (possibly empty) so the
+    // model never sees a synthetic sentence sitting alongside the structured block and mistakes
+    // it for a second, separate free-text request duplicating the same info.
     const content = typed || (mode === 'quote' ? 'Please quote this request.' : mode === 'hold' ? 'Please place this hold.' : '')
 
     // Build the structured payload if in quote/hold mode with filled fields
@@ -374,7 +377,7 @@ export default function ClientAiPage() {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: content,
+          message: typed,
           history: nextMessages.slice(-10),
           structured: structuredPayload,
         }),

@@ -153,10 +153,12 @@ function StructuredInputPanel({
   mode,
   params,
   onChange,
+  bestTierAvailable,
 }: {
   mode: InputMode
   params: StructuredParams
   onChange: (p: Partial<StructuredParams>) => void
+  bestTierAvailable: boolean
 }) {
   if (mode === 'ask') return null
 
@@ -181,9 +183,18 @@ function StructuredInputPanel({
               className={inputClass}
             >
               {TIER_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                <option
+                  key={opt.value}
+                  value={opt.value}
+                  disabled={opt.value === 'Best' && !bestTierAvailable}
+                >
+                  {opt.value === 'Best' && !bestTierAvailable ? `${opt.label} — not available` : opt.label}
+                </option>
               ))}
             </select>
+            {!bestTierAvailable && (
+              <p className="text-[10px] text-gray-400 mt-1">Best tier isn&apos;t available for this campaign size.</p>
+            )}
           </div>
         </div>
       </div>
@@ -270,6 +281,11 @@ export default function ClientAiPage() {
   // Track whether a quote exists in the conversation — Hold mode requires it
   const hasQuote = messages.some((m) => m.quoteCard != null)
 
+  // Whether the Best tier is actually offered for the most recent quote — drives whether it's
+  // selectable in the Hold tier-preference dropdown at all.
+  const lastQuoteCard = [...messages].reverse().find((m) => m.quoteCard != null)?.quoteCard
+  const bestTierAvailable = lastQuoteCard ? lastQuoteCard.best.available : true
+
   // Quote mode is field-driven — market, both dates, and a truck count are all required,
   // and the client shouldn't have to type anything into the free-text box to submit.
   const quoteFieldsComplete = Boolean(
@@ -300,13 +316,14 @@ export default function ClientAiPage() {
   const switchMode = useCallback((newMode: InputMode) => {
     if (newMode === 'hold' && !hasQuote) return // can't enter Hold mode without a quote
     setMode(newMode)
-    setStructured((prev) =>
-      newMode === 'hold' && lastQuoteFields
-        // Carry over market/dates/trucks from the last Quote request instead of asking again.
-        ? { intent: 'hold', ...lastQuoteFields, tier_preference: prev.tier_preference }
-        : { ...prev, intent: newMode }
-    )
-  }, [hasQuote, lastQuoteFields])
+    setStructured((prev) => {
+      if (newMode !== 'hold' || !lastQuoteFields) return { ...prev, intent: newMode }
+      // Carry over market/dates/trucks from the last Quote request instead of asking again —
+      // but drop a stale "Best" preference if this quote doesn't actually offer it.
+      const carriedTier = prev.tier_preference === 'Best' && !bestTierAvailable ? undefined : prev.tier_preference
+      return { intent: 'hold', ...lastQuoteFields, tier_preference: carriedTier }
+    })
+  }, [hasQuote, lastQuoteFields, bestTierAvailable])
 
   const sendMessage = useCallback(async (text?: string) => {
     if (loading) return
@@ -557,7 +574,7 @@ export default function ClientAiPage() {
               </div>
 
               {/* Structured input fields for quote/hold modes */}
-              <StructuredInputPanel mode={mode} params={structured} onChange={updateStructured} />
+              <StructuredInputPanel mode={mode} params={structured} onChange={updateStructured} bestTierAvailable={bestTierAvailable} />
 
               {/* Text input + send */}
               <div className="flex gap-2 items-end">

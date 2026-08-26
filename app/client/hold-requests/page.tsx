@@ -105,14 +105,19 @@ export default function ClientHoldRequestsPage() {
     else if (authChecked) setLoading(false)
   }, [authChecked, clientUser, fetchRequests])
 
-  const requestExtension = useCallback(async (id: string) => {
+  // Takes every hold-request ID in the campaign — a multi-truck campaign must extend as one
+  // unit, not just the first truck in the group (which silently left the rest to expire on
+  // their own while the group badge misleadingly showed "Extension Requested" for all of them).
+  const requestExtension = useCallback(async (ids: string[]) => {
     try {
-      const res = await fetch(`/api/client/hold-requests/${id}/extend`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ reason: extendReason }),
-      })
-      if (res.ok) {
+      const results = await Promise.all(ids.map((id) =>
+        fetch(`/api/client/hold-requests/${id}/extend`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ reason: extendReason }),
+        })
+      ))
+      if (results.every((r) => r.ok)) {
         setExtending(null)
         setExtendReason('')
         fetchRequests()
@@ -246,7 +251,7 @@ export default function ClientHoldRequestsPage() {
                                 className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                               />
                               <button
-                                onClick={() => requestExtension(first.id)}
+                                onClick={() => requestExtension(groupItems.map((g) => g.id))}
                                 className="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded-lg text-sm font-medium"
                               >
                                 Submit
@@ -339,7 +344,7 @@ export default function ClientHoldRequestsPage() {
                   />
                   <div className="flex gap-2 justify-end">
                     <button onClick={() => { setExtending(null); setExtendReason('') }} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
-                    <button onClick={() => requestExtension(extending)} className="bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-lg text-sm font-medium">Submit Request</button>
+                    <button onClick={() => requestExtension([extending])} className="bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-lg text-sm font-medium">Submit Request</button>
                   </div>
                 </div>
               </div>

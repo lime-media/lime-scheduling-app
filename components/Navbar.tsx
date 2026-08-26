@@ -98,13 +98,14 @@ export function Navbar() {
   const isOps = session?.user?.role === 'OPERATIONS'
 
   const navLinks = [
-    { href: '/',          label: 'Schedule' },
-    { href: '/map',       label: 'Map' },
-    { href: '/ai',        label: 'AI Assistant' },
-    { href: '/holds',     label: 'Holds' },
-    { href: '/conflicts', label: 'Conflicts', badge: conflictCount > 0 ? conflictCount : null, pulse: hasRecentConflict },
-    { href: '/quote',     label: 'LED Quote' },
-    { href: '/saturation-calculator', label: 'Saturation Calculator' },
+    { href: '/',                       label: 'Schedule' },
+    { href: '/map',                    label: 'Map' },
+    { href: '/ai',                     label: 'AI Assistant' },
+    { href: '/holds',                  label: 'Holds' },
+    { href: '/hold-requests',          label: 'Hold Requests' },
+    { href: '/conflicts',              label: 'Conflicts', badge: conflictCount > 0 ? conflictCount : null, pulse: hasRecentConflict },
+    { href: '/quote',                  label: 'LED Quote' },
+    { href: '/saturation-calculator',  label: 'Saturation Calculator' },
     ...(isOps ? [{ href: '/users', label: 'Users', badge: null, pulse: false }] : []),
   ]
 

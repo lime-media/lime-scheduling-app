@@ -17,8 +17,12 @@ const MIN_PROCESSING_DAYS_BEFORE_START = 3
  * runway left before the trucks need to move, so the hold is already due, not "72 hours away."
  * If that start-date deadline has already passed by the time the hold is created, the hold is
  * due immediately (now), never backdated into the past.
+ *
+ * Exported so the staff-side "approve extension" action (app/api/hold-requests/[id]/route.ts)
+ * can grant an extension using the exact same rule — a fresh 72h SLA from the moment of
+ * approval, still capped by the campaign's start date.
  */
-function computeHoldExpiresAt(startDate: string): Date {
+export function computeHoldExpiresAt(startDate: string): Date {
   const now = new Date()
 
   const standardExpiry = new Date(now)

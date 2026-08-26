@@ -60,11 +60,6 @@ type QuoteForm = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const SUGGESTED = [
-  'Tell me about the holds we have placed',
-  'Is a truck available in Dallas this month?',
-]
-
 function fmtMoney(n: number): string {
   return '$' + Math.round(n).toLocaleString('en-US')
 }
@@ -433,8 +428,6 @@ export default function ClientAiPage() {
     )
   }
 
-  const isBlank = messages.length === 0
-
   return (
     <div className="flex flex-col h-dvh bg-gray-50 overflow-hidden">
       <ClientHeader clientUser={clientUser} authChecked={authChecked} />
@@ -445,32 +438,6 @@ export default function ClientAiPage() {
 
           <div className="flex-1 overflow-y-auto">
             <div className="max-w-2xl mx-auto px-4 py-6 space-y-4">
-              {isBlank && (
-                <>
-                  <div className="flex justify-start">
-                    <div className="w-7 h-7 rounded-full bg-[#1a3028] flex items-center justify-center text-white text-xs font-bold mr-2 flex-shrink-0 mt-0.5">
-                      AI
-                    </div>
-                    <div className="max-w-[90%] sm:max-w-[80%] rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm whitespace-pre-wrap leading-relaxed bg-white border border-gray-200 text-gray-800 shadow-sm">
-                      {`Hi, I'm the Lime Media assistant for ${clientUser.companyName}. Fill in the quote box above for pricing and availability, or ask me anything about your hold requests below — I can only see your own account, never any other client's.`}
-                    </div>
-                  </div>
-                  <div className="pt-2 pb-4">
-                    <div className="grid grid-cols-1 gap-2">
-                      {SUGGESTED.map((q) => (
-                        <button
-                          key={q}
-                          onClick={() => sendAsk(q)}
-                          className="text-left px-4 py-3 rounded-xl border border-gray-200 bg-white hover:border-[#94ce3a] hover:bg-[#94ce3a]/10 text-sm text-gray-700 transition-colors shadow-sm"
-                        >
-                          {q}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
-
               {messages.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   {msg.role === 'assistant' && !msg.isAction && (

@@ -190,8 +190,14 @@ export default function HoldRequestsPage() {
       )
     }
     if (status === 'EXTENSION_REQUESTED') {
+      // Three distinct outcomes here, not two — a request sitting in EXTENSION_REQUESTED can
+      // still be rejected outright (the client asked for more time, but the answer might be "no,
+      // and not later either"), which is different from just denying the extension itself (the
+      // request stays EXPIRED, open to another extension ask). Without an explicit Reject here,
+      // "Deny" was the only negative-sounding button and got clicked to mean "reject this whole
+      // request" — it doesn't; it only denies the extension. See commit fixing this.
       return (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             disabled={busy}
             onClick={() => runAction(ids, 'approve_extension', groupKey)}
@@ -204,7 +210,14 @@ export default function HoldRequestsPage() {
             onClick={() => runAction(ids, 'deny_extension', groupKey)}
             className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-50"
           >
-            Deny
+            Deny Extension
+          </button>
+          <button
+            disabled={busy}
+            onClick={() => runAction(ids, 'reject', groupKey)}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50"
+          >
+            Reject Request
           </button>
         </div>
       )

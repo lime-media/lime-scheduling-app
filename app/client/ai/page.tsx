@@ -40,6 +40,10 @@ type StructuredParams = {
   tier_preference?: string
 }
 
+// Market/dates/trucks carried over from the last Quote request — Hold mode reuses these
+// instead of asking the client to re-enter them.
+type QuoteFields = Pick<StructuredParams, 'market' | 'start_date' | 'end_date' | 'truck_count'>
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -158,60 +162,17 @@ function StructuredInputPanel({
 
   const inputClass = 'border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent w-full'
   const labelClass = 'text-xs font-medium text-gray-500 mb-0.5'
-  // In Quote mode these four fields are the entire submission — mark them required.
-  const required = mode === 'quote'
-  const requiredMark = required ? <span className="text-red-500">&nbsp;*</span> : null
 
-  return (
-    <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 mb-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        <div className={mode === 'hold' ? 'col-span-2 sm:col-span-1' : 'col-span-2 sm:col-span-1'}>
-          <label className={labelClass}>Market{requiredMark}</label>
-          <input
-            type="text"
-            placeholder="e.g. Dallas, TX"
-            value={params.market ?? ''}
-            onChange={(e) => onChange({ market: e.target.value })}
-            required={required}
-            className={inputClass}
-          />
+  // Hold mode reuses the market/dates/trucks from the Quote request that unlocked it — the
+  // client already entered those once, right above. All Hold needs here is tier preference.
+  if (mode === 'hold') {
+    const truckLabel = params.truck_count ? `${params.truck_count} truck${params.truck_count === 1 ? '' : 's'}` : '—'
+    return (
+      <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 mb-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
+        <div className="text-xs text-gray-500 mb-2">
+          Holding {truckLabel} in {params.market || '—'} &middot; {params.start_date || '—'} to {params.end_date || '—'}
         </div>
-        <div>
-          <label className={labelClass}>Start date{requiredMark}</label>
-          <input
-            type="date"
-            value={params.start_date ?? ''}
-            min={todayStr()}
-            onChange={(e) => onChange({ start_date: e.target.value })}
-            required={required}
-            className={inputClass}
-          />
-        </div>
-        <div>
-          <label className={labelClass}>End date{requiredMark}</label>
-          <input
-            type="date"
-            value={params.end_date ?? ''}
-            min={params.start_date || todayStr()}
-            onChange={(e) => onChange({ end_date: e.target.value })}
-            required={required}
-            className={inputClass}
-          />
-        </div>
-        <div>
-          <label className={labelClass}>Trucks{requiredMark}</label>
-          <input
-            type="number"
-            min={1}
-            max={50}
-            placeholder="1"
-            value={params.truck_count ?? ''}
-            onChange={(e) => onChange({ truck_count: e.target.value ? parseInt(e.target.value, 10) : undefined })}
-            required={required}
-            className={inputClass}
-          />
-        </div>
-        {mode === 'hold' && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <div className="col-span-2 sm:col-span-1">
             <label className={labelClass}>Tier preference</label>
             <select
@@ -224,7 +185,64 @@ function StructuredInputPanel({
               ))}
             </select>
           </div>
-        )}
+        </div>
+      </div>
+    )
+  }
+
+  // Quote mode — market, both dates, and truck count are the entire submission, so mark
+  // them required.
+  const requiredMark = <span className="text-red-500">&nbsp;*</span>
+
+  return (
+    <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 mb-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="col-span-2 sm:col-span-1">
+          <label className={labelClass}>Market{requiredMark}</label>
+          <input
+            type="text"
+            placeholder="e.g. Dallas, TX"
+            value={params.market ?? ''}
+            onChange={(e) => onChange({ market: e.target.value })}
+            required
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <label className={labelClass}>Start date{requiredMark}</label>
+          <input
+            type="date"
+            value={params.start_date ?? ''}
+            min={todayStr()}
+            onChange={(e) => onChange({ start_date: e.target.value })}
+            required
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <label className={labelClass}>End date{requiredMark}</label>
+          <input
+            type="date"
+            value={params.end_date ?? ''}
+            min={params.start_date || todayStr()}
+            onChange={(e) => onChange({ end_date: e.target.value })}
+            required
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <label className={labelClass}>Trucks{requiredMark}</label>
+          <input
+            type="number"
+            min={1}
+            max={50}
+            placeholder="1"
+            value={params.truck_count ?? ''}
+            onChange={(e) => onChange({ truck_count: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+            required
+            className={inputClass}
+          />
+        </div>
       </div>
     </div>
   )
@@ -242,6 +260,9 @@ export default function ClientAiPage() {
   const [loading,  setLoading]  = useState(false)
   const [mode,     setMode]     = useState<InputMode>('ask')
   const [structured, setStructured] = useState<StructuredParams>({ intent: 'ask' })
+  // Market/dates/trucks from the last Quote request — reused when switching into Hold mode
+  // so the client doesn't have to re-enter them.
+  const [lastQuoteFields, setLastQuoteFields] = useState<QuoteFields | null>(null)
 
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef  = useRef<HTMLTextAreaElement>(null)
@@ -269,8 +290,13 @@ export default function ClientAiPage() {
   const switchMode = useCallback((newMode: InputMode) => {
     if (newMode === 'hold' && !hasQuote) return // can't enter Hold mode without a quote
     setMode(newMode)
-    setStructured((prev) => ({ ...prev, intent: newMode }))
-  }, [hasQuote])
+    setStructured((prev) =>
+      newMode === 'hold' && lastQuoteFields
+        // Carry over market/dates/trucks from the last Quote request instead of asking again.
+        ? { intent: 'hold', ...lastQuoteFields, tier_preference: prev.tier_preference }
+        : { ...prev, intent: newMode }
+    )
+  }, [hasQuote, lastQuoteFields])
 
   const sendMessage = useCallback(async (text?: string) => {
     if (loading) return
@@ -281,6 +307,13 @@ export default function ClientAiPage() {
     const typed = (text ?? input).trim()
     if (mode === 'quote') {
       if (!quoteFieldsComplete) return
+      // Remember these fields so Hold mode can reuse them without asking again.
+      setLastQuoteFields({
+        market:      structured.market,
+        start_date:  structured.start_date,
+        end_date:    structured.end_date,
+        truck_count: structured.truck_count,
+      })
     } else if (!typed) {
       return
     }
@@ -339,10 +372,15 @@ export default function ClientAiPage() {
       setMessages([...nextMessages, { role: 'assistant', content: 'Network error. Please check your connection.' }])
     } finally {
       setLoading(false)
-      // Reset structured fields after send, keep mode
-      setStructured({ intent: mode })
+      // Reset structured fields after send, keep mode — but Hold mode keeps its carried-over
+      // market/dates/trucks from the last quote, only the tier preference clears.
+      setStructured(
+        mode === 'hold' && lastQuoteFields
+          ? { intent: 'hold', ...lastQuoteFields }
+          : { intent: mode }
+      )
     }
-  }, [input, loading, messages, mode, structured, quoteFieldsComplete])
+  }, [input, loading, messages, mode, structured, quoteFieldsComplete, lastQuoteFields])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {

@@ -279,6 +279,16 @@ export default function ClientAiPage() {
     structured.truck_count && structured.truck_count > 0
   )
 
+  // Hold mode is likewise field-driven — market/dates/trucks are carried over from the last
+  // quote (see switchMode/lastQuoteFields) and tier preference defaults to "No preference",
+  // so notes are optional and Send shouldn't require typing anything either.
+  const holdFieldsComplete = Boolean(
+    structured.market?.trim() &&
+    structured.start_date &&
+    structured.end_date &&
+    structured.truck_count && structured.truck_count > 0
+  )
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
@@ -301,9 +311,8 @@ export default function ClientAiPage() {
   const sendMessage = useCallback(async (text?: string) => {
     if (loading) return
 
-    // Quote mode is field-driven — the client can hit Send with the fields above filled in
-    // and nothing typed, so long as market/dates/trucks are all present. Every other mode
-    // still needs typed text.
+    // Quote and Hold modes are field-driven — the client can hit Send with the fields above
+    // filled in and nothing typed. Ask mode still needs typed text.
     const typed = (text ?? input).trim()
     if (mode === 'quote') {
       if (!quoteFieldsComplete) return
@@ -314,10 +323,12 @@ export default function ClientAiPage() {
         end_date:    structured.end_date,
         truck_count: structured.truck_count,
       })
+    } else if (mode === 'hold') {
+      if (!holdFieldsComplete) return
     } else if (!typed) {
       return
     }
-    const content = typed || 'Please quote this request.'
+    const content = typed || (mode === 'quote' ? 'Please quote this request.' : mode === 'hold' ? 'Please place this hold.' : '')
 
     // Build the structured payload if in quote/hold mode with filled fields
     const hasStructuredFields = mode !== 'ask' && (structured.market || structured.start_date || structured.truck_count)
@@ -380,7 +391,7 @@ export default function ClientAiPage() {
           : { intent: mode }
       )
     }
-  }, [input, loading, messages, mode, structured, quoteFieldsComplete, lastQuoteFields])
+  }, [input, loading, messages, mode, structured, quoteFieldsComplete, holdFieldsComplete, lastQuoteFields])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -557,7 +568,7 @@ export default function ClientAiPage() {
                   onKeyDown={handleKeyDown}
                   placeholder={
                     mode === 'quote' ? 'Add context or just hit Send with the fields above…'
-                    : mode === 'hold' ? 'Any notes for the hold request…'
+                    : mode === 'hold' ? 'Optional notes for the hold request…'
                     : 'Ask about your hold requests or truck availability…'
                   }
                   rows={2}
@@ -565,8 +576,17 @@ export default function ClientAiPage() {
                 />
                 <button
                   onClick={() => sendMessage()}
-                  disabled={loading || (mode === 'quote' ? !quoteFieldsComplete : !input.trim())}
-                  title={mode === 'quote' && !quoteFieldsComplete ? 'Fill in market, start date, end date, and trucks to continue' : undefined}
+                  disabled={
+                    loading ||
+                    (mode === 'quote' ? !quoteFieldsComplete
+                    : mode === 'hold'  ? !holdFieldsComplete
+                    : !input.trim())
+                  }
+                  title={
+                    mode === 'quote' && !quoteFieldsComplete ? 'Fill in market, start date, end date, and trucks to continue'
+                    : mode === 'hold' && !holdFieldsComplete ? 'Get a quote first — market, dates, and trucks are missing'
+                    : undefined
+                  }
                   className="bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white rounded-xl px-4 py-2.5 text-sm font-medium transition-colors flex-shrink-0 h-[46px]"
                 >
                   Send

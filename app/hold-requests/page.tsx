@@ -1,12 +1,13 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 import toast from 'react-hot-toast'
 import { Navbar } from '@/components/Navbar'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
 import { parseDateOnly } from '@/lib/dateOnly'
 import { formatMarketState } from '@/lib/format'
+import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 
 type HoldRequest = {
   id: string
@@ -21,6 +22,7 @@ type HoldRequest = {
   pricing_tier: string | null
   quoted_total: number | null
   daily_rate: number | null
+  features: string | null
   truck_count: number | null
   campaign_group_id: string | null
   expires_at: string | null
@@ -307,6 +309,15 @@ export default function HoldRequestsPage() {
                       </span>
                     </div>
                   </div>
+                  {(() => {
+                    const parsedFeatures = parseQuoteFeatures(first.features)
+                    return parsedFeatures ? (
+                      <div className="px-4 py-3 bg-white border-b border-gray-100">
+                        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Quote breakdown</div>
+                        <QuoteBreakdown features={parsedFeatures} />
+                      </div>
+                    ) : null
+                  })()}
                   <div className="divide-y divide-gray-100">
                     {groupItems.map((r) => (
                       <div key={r.id} className="px-4 py-2.5 flex items-center justify-between text-sm">
@@ -344,30 +355,43 @@ export default function HoldRequestsPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {ungrouped.map((r) => (
-                        <tr key={r.id} className="hover:bg-gray-50 transition-colors">
-                          <td className="px-4 py-3 font-semibold text-gray-900">{r.truck_number}</td>
-                          <td className="px-4 py-3 text-gray-600">{r.company_name}</td>
-                          <td className="px-4 py-3 text-gray-600">{formatMarketState(r.market, r.state)}</td>
-                          <td className="px-4 py-3 text-gray-600">
-                            {format(parseDateOnly(r.start_date), 'MMM d')} &ndash; {format(parseDateOnly(r.end_date), 'MMM d')}
-                          </td>
-                          <td className="px-4 py-3">
-                            <PricingBadge tier={r.pricing_tier} total={r.quoted_total} />
-                          </td>
-                          <td className="px-4 py-3">
-                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[r.status] ?? STATUS_BADGE.PENDING}`}>
-                              {STATUS_LABEL[r.status] ?? r.status}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3">
-                            <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
-                          </td>
-                          <td className="px-4 py-3">
-                            <Actions ids={[r.id]} status={r.status} groupKey={r.id} />
-                          </td>
-                        </tr>
-                      ))}
+                      {ungrouped.map((r) => {
+                        const parsedFeatures = parseQuoteFeatures(r.features)
+                        return (
+                          <Fragment key={r.id}>
+                            <tr className="hover:bg-gray-50 transition-colors">
+                              <td className="px-4 py-3 font-semibold text-gray-900">{r.truck_number}</td>
+                              <td className="px-4 py-3 text-gray-600">{r.company_name}</td>
+                              <td className="px-4 py-3 text-gray-600">{formatMarketState(r.market, r.state)}</td>
+                              <td className="px-4 py-3 text-gray-600">
+                                {format(parseDateOnly(r.start_date), 'MMM d')} &ndash; {format(parseDateOnly(r.end_date), 'MMM d')}
+                              </td>
+                              <td className="px-4 py-3">
+                                <PricingBadge tier={r.pricing_tier} total={r.quoted_total} />
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[r.status] ?? STATUS_BADGE.PENDING}`}>
+                                  {STATUS_LABEL[r.status] ?? r.status}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3">
+                                <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
+                              </td>
+                              <td className="px-4 py-3">
+                                <Actions ids={[r.id]} status={r.status} groupKey={r.id} />
+                              </td>
+                            </tr>
+                            {parsedFeatures && (
+                              <tr className="bg-gray-50/50">
+                                <td colSpan={8} className="px-4 pb-3 pt-0">
+                                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Quote breakdown</div>
+                                  <QuoteBreakdown features={parsedFeatures} />
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { Fragment, useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 import { ClientHeader } from '@/components/ClientHeader'
@@ -8,6 +8,7 @@ import { TableSkeleton } from '@/components/LoadingSkeleton'
 import { useClientAuth, hasHoldRequestsAccess } from '@/lib/useClientAuth'
 import { parseDateOnly } from '@/lib/dateOnly'
 import { formatMarketState } from '@/lib/format'
+import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 
 type HoldRequest = {
   id: string
@@ -229,6 +230,16 @@ export default function ClientHoldRequestsPage() {
                           </span>
                         </div>
                       </div>
+                      {/* Quote breakdown — what's actually being paid for, not just a tier name */}
+                      {(() => {
+                        const parsedFeatures = parseQuoteFeatures(first.features)
+                        return parsedFeatures ? (
+                          <div className="px-4 py-3 bg-white border-b border-gray-100">
+                            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Quote breakdown</div>
+                            <QuoteBreakdown features={parsedFeatures} />
+                          </div>
+                        ) : null
+                      })()}
                       {/* Truck rows */}
                       <div className="divide-y divide-gray-100">
                         {groupItems.map((r) => (
@@ -292,36 +303,49 @@ export default function ClientHoldRequestsPage() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100">
-                          {ungrouped.map((r) => (
-                            <tr key={r.id} className="hover:bg-gray-50 transition-colors">
-                              <td className="px-4 py-3 font-semibold text-gray-900">{r.truck_number}</td>
-                              <td className="px-4 py-3 text-gray-600">{formatMarketState(r.market, r.state)}</td>
-                              <td className="px-4 py-3 text-gray-600">
-                                {format(parseDateOnly(r.start_date), 'MMM d')} &ndash; {format(parseDateOnly(r.end_date), 'MMM d')}
-                              </td>
-                              <td className="px-4 py-3">
-                                <PricingBadge tier={r.pricing_tier} total={r.quoted_total} />
-                              </td>
-                              <td className="px-4 py-3">
-                                <div className="flex items-center gap-2">
-                                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[r.status] ?? STATUS_BADGE.PENDING}`}>
-                                    {r.status === 'EXTENSION_REQUESTED' ? 'Ext. Req.' : r.status}
-                                  </span>
-                                  <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
-                                </div>
-                              </td>
-                              <td className="px-4 py-3">
-                                {canExtend(r) && (
-                                  <button
-                                    onClick={() => setExtending(r.id)}
-                                    className="text-amber-700 hover:text-amber-800 text-xs font-medium"
-                                  >
-                                    Extend
-                                  </button>
+                          {ungrouped.map((r) => {
+                            const parsedFeatures = parseQuoteFeatures(r.features)
+                            return (
+                              <Fragment key={r.id}>
+                                <tr className="hover:bg-gray-50 transition-colors">
+                                  <td className="px-4 py-3 font-semibold text-gray-900">{r.truck_number}</td>
+                                  <td className="px-4 py-3 text-gray-600">{formatMarketState(r.market, r.state)}</td>
+                                  <td className="px-4 py-3 text-gray-600">
+                                    {format(parseDateOnly(r.start_date), 'MMM d')} &ndash; {format(parseDateOnly(r.end_date), 'MMM d')}
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <PricingBadge tier={r.pricing_tier} total={r.quoted_total} />
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <div className="flex items-center gap-2">
+                                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[r.status] ?? STATUS_BADGE.PENDING}`}>
+                                        {r.status === 'EXTENSION_REQUESTED' ? 'Ext. Req.' : r.status}
+                                      </span>
+                                      <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
+                                    </div>
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    {canExtend(r) && (
+                                      <button
+                                        onClick={() => setExtending(r.id)}
+                                        className="text-amber-700 hover:text-amber-800 text-xs font-medium"
+                                      >
+                                        Extend
+                                      </button>
+                                    )}
+                                  </td>
+                                </tr>
+                                {parsedFeatures && (
+                                  <tr className="bg-gray-50/50">
+                                    <td colSpan={6} className="px-4 pb-3 pt-0">
+                                      <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Quote breakdown</div>
+                                      <QuoteBreakdown features={parsedFeatures} />
+                                    </td>
+                                  </tr>
                                 )}
-                              </td>
-                            </tr>
-                          ))}
+                              </Fragment>
+                            )
+                          })}
                         </tbody>
                       </table>
                     </div>

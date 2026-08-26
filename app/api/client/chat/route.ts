@@ -185,11 +185,26 @@ async function executePlaceHoldRequests(
     if (tierKey in lastQuote) {
       quotedTotal = lastQuote[tierKey].total
     }
+    // Full dollar-line breakdown for the chosen tier, not just which add-ons were included —
+    // this is what actually lets a client (and staff, on the internal review page) see how the
+    // total was derived: base media, shadow fencing, smart directional, device ID, lift studies,
+    // each as an actual amount rather than a boolean. Shadow fencing/smart directional/device ID
+    // all live on the `better` tier object regardless of which tier was chosen, since Better and
+    // Best both build on top of it (Best = betterTotal + studies).
     features = JSON.stringify({
-      smartDirectional: lastQuote.better.smartDirectionalIncluded,
-      deviceId:         lastQuote.better.deviceIdIncluded,
-      studies:          lastQuote.best.studies,
-      shadowFencing:    tierKey !== 'good',
+      dailyRate:          lastQuote.dailyRate,
+      hourSurcharge:       lastQuote.hourSurcharge,
+      truckDays:          lastQuote.input.truckDays,
+      baseMedia:          lastQuote.good.baseMedia,
+      shadowFencing:          tierKey !== 'good' ? lastQuote.better.shadowFencing : 0,
+      shadowFencingFloored:   tierKey !== 'good' ? lastQuote.better.shadowFencingFloored : false,
+      smartDirectionalIncluded: tierKey !== 'good' && lastQuote.better.smartDirectionalIncluded,
+      smartDirectional:      tierKey !== 'good' ? lastQuote.better.smartDirectional : 0,
+      deviceIdIncluded:      tierKey !== 'good' && lastQuote.better.deviceIdIncluded,
+      deviceId:              tierKey !== 'good' ? lastQuote.better.deviceId : 0,
+      studies:               tierKey === 'best' ? lastQuote.best.studies : [],
+      studyCost:             lastQuote.best.studyCost,
+      studiesTotal:          tierKey === 'best' ? lastQuote.best.studiesTotal : 0,
     })
   }
 

@@ -34,6 +34,7 @@ export async function GET() {
       pricing_tier:      r.pricing_tier ?? null,
       quoted_total:      r.quoted_total ?? null,
       daily_rate:        r.daily_rate ?? null,
+      features:          r.features ?? null,
       truck_count:       r.truck_count ?? null,
       campaign_group_id: r.campaign_group_id ?? null,
       expires_at:        r.expires_at?.toISOString() ?? null,

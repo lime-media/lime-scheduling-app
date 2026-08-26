@@ -158,42 +158,48 @@ function StructuredInputPanel({
 
   const inputClass = 'border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent w-full'
   const labelClass = 'text-xs font-medium text-gray-500 mb-0.5'
+  // In Quote mode these four fields are the entire submission — mark them required.
+  const required = mode === 'quote'
+  const requiredMark = required ? <span className="text-red-500">&nbsp;*</span> : null
 
   return (
     <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 mb-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         <div className={mode === 'hold' ? 'col-span-2 sm:col-span-1' : 'col-span-2 sm:col-span-1'}>
-          <label className={labelClass}>Market</label>
+          <label className={labelClass}>Market{requiredMark}</label>
           <input
             type="text"
             placeholder="e.g. Dallas, TX"
             value={params.market ?? ''}
             onChange={(e) => onChange({ market: e.target.value })}
+            required={required}
             className={inputClass}
           />
         </div>
         <div>
-          <label className={labelClass}>Start date</label>
+          <label className={labelClass}>Start date{requiredMark}</label>
           <input
             type="date"
             value={params.start_date ?? ''}
             min={todayStr()}
             onChange={(e) => onChange({ start_date: e.target.value })}
+            required={required}
             className={inputClass}
           />
         </div>
         <div>
-          <label className={labelClass}>End date</label>
+          <label className={labelClass}>End date{requiredMark}</label>
           <input
             type="date"
             value={params.end_date ?? ''}
             min={params.start_date || todayStr()}
             onChange={(e) => onChange({ end_date: e.target.value })}
+            required={required}
             className={inputClass}
           />
         </div>
         <div>
-          <label className={labelClass}>Trucks</label>
+          <label className={labelClass}>Trucks{requiredMark}</label>
           <input
             type="number"
             min={1}
@@ -201,6 +207,7 @@ function StructuredInputPanel({
             placeholder="1"
             value={params.truck_count ?? ''}
             onChange={(e) => onChange({ truck_count: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+            required={required}
             className={inputClass}
           />
         </div>
@@ -242,6 +249,15 @@ export default function ClientAiPage() {
   // Track whether a quote exists in the conversation — Hold mode requires it
   const hasQuote = messages.some((m) => m.quoteCard != null)
 
+  // Quote mode is field-driven — market, both dates, and a truck count are all required,
+  // and the client shouldn't have to type anything into the free-text box to submit.
+  const quoteFieldsComplete = Boolean(
+    structured.market?.trim() &&
+    structured.start_date &&
+    structured.end_date &&
+    structured.truck_count && structured.truck_count > 0
+  )
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
@@ -257,8 +273,18 @@ export default function ClientAiPage() {
   }, [hasQuote])
 
   const sendMessage = useCallback(async (text?: string) => {
-    const content = (text ?? input).trim()
-    if (!content || loading) return
+    if (loading) return
+
+    // Quote mode is field-driven — the client can hit Send with the fields above filled in
+    // and nothing typed, so long as market/dates/trucks are all present. Every other mode
+    // still needs typed text.
+    const typed = (text ?? input).trim()
+    if (mode === 'quote') {
+      if (!quoteFieldsComplete) return
+    } else if (!typed) {
+      return
+    }
+    const content = typed || 'Please quote this request.'
 
     // Build the structured payload if in quote/hold mode with filled fields
     const hasStructuredFields = mode !== 'ask' && (structured.market || structured.start_date || structured.truck_count)
@@ -316,7 +342,7 @@ export default function ClientAiPage() {
       // Reset structured fields after send, keep mode
       setStructured({ intent: mode })
     }
-  }, [input, loading, messages, mode, structured])
+  }, [input, loading, messages, mode, structured, quoteFieldsComplete])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -501,14 +527,15 @@ export default function ClientAiPage() {
                 />
                 <button
                   onClick={() => sendMessage()}
-                  disabled={loading || !input.trim()}
+                  disabled={loading || (mode === 'quote' ? !quoteFieldsComplete : !input.trim())}
+                  title={mode === 'quote' && !quoteFieldsComplete ? 'Fill in market, start date, end date, and trucks to continue' : undefined}
                   className="bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white rounded-xl px-4 py-2.5 text-sm font-medium transition-colors flex-shrink-0 h-[46px]"
                 >
                   Send
                 </button>
               </div>
               <p className="text-xs text-gray-400 mt-1.5 hidden sm:block">
-                Press Enter to send · Shift+Enter for new line
+                {mode === 'quote' ? 'Market, start date, end date, and trucks are required' : 'Press Enter to send · Shift+Enter for new line'}
               </p>
             </div>
           </div>

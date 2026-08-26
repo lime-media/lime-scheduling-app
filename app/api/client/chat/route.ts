@@ -6,6 +6,7 @@ import { buildClientChatContext, normalizeTruckNumber } from '@/lib/clientChatCo
 import { createHoldRequestForClient, type CreateHoldRequestParams } from '@/lib/holdRequestService'
 import { sendAssistanceRequestEmail } from '@/lib/email'
 import { computeQuote, VALID_STUDIES, marketSizeTierFromDmaCode, type RateOverrides, type StudyType, type QuoteResult } from '@/lib/pricing'
+import { formatMarketState } from '@/lib/format'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -236,7 +237,7 @@ async function executePlaceHoldRequests(
   // etc.) — this "submitted" summary was the one place that policy wasn't enforced in code.
   const submittedDetails = items
     .filter((item) => created.includes(item.truck_number))
-    .map((item) => `${[item.market, item.state].filter(Boolean).join(', ')} (${item.start_date} → ${item.end_date})`)
+    .map((item) => `${formatMarketState(item.market, item.state)} (${item.start_date} → ${item.end_date})`)
     .join('; ')
 
   let message = `Submitted ${created.length} hold request${created.length > 1 ? 's' : ''}${priceLabel} for review. Holds expire in 72 hours. The Lime Media team will review ${created.length > 1 ? 'them' : 'it'} from here.`

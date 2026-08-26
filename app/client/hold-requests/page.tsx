@@ -7,6 +7,7 @@ import { ClientHeader } from '@/components/ClientHeader'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
 import { useClientAuth, hasHoldRequestsAccess } from '@/lib/useClientAuth'
 import { parseDateOnly } from '@/lib/dateOnly'
+import { formatMarketState } from '@/lib/format'
 
 type HoldRequest = {
   id: string
@@ -228,7 +229,7 @@ export default function ClientHoldRequestsPage() {
                         {groupItems.map((r) => (
                           <div key={r.id} className="px-4 py-2.5 flex items-center justify-between text-sm">
                             <span className="font-medium text-gray-900">Truck {r.truck_number}</span>
-                            <span className="text-gray-500">{[r.market, r.state].filter(Boolean).join(', ')}</span>
+                            <span className="text-gray-500">{formatMarketState(r.market, r.state)}</span>
                           </div>
                         ))}
                       </div>
@@ -289,7 +290,7 @@ export default function ClientHoldRequestsPage() {
                           {ungrouped.map((r) => (
                             <tr key={r.id} className="hover:bg-gray-50 transition-colors">
                               <td className="px-4 py-3 font-semibold text-gray-900">{r.truck_number}</td>
-                              <td className="px-4 py-3 text-gray-600">{[r.market, r.state].filter(Boolean).join(', ')}</td>
+                              <td className="px-4 py-3 text-gray-600">{formatMarketState(r.market, r.state)}</td>
                               <td className="px-4 py-3 text-gray-600">
                                 {format(parseDateOnly(r.start_date), 'MMM d')} &ndash; {format(parseDateOnly(r.end_date), 'MMM d')}
                               </td>

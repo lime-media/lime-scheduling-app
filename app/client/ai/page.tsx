@@ -269,8 +269,8 @@ export default function ClientAiPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input,    setInput]    = useState('')
   const [loading,  setLoading]  = useState(false)
-  const [mode,     setMode]     = useState<InputMode>('ask')
-  const [structured, setStructured] = useState<StructuredParams>({ intent: 'ask' })
+  const [mode,     setMode]     = useState<InputMode>('quote')
+  const [structured, setStructured] = useState<StructuredParams>({ intent: 'quote' })
   // Market/dates/trucks from the last Quote request — reused when switching into Hold mode
   // so the client doesn't have to re-enter them.
   const [lastQuoteFields, setLastQuoteFields] = useState<QuoteFields | null>(null)

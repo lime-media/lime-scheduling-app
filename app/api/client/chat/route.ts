@@ -161,7 +161,6 @@ async function executePlaceHoldRequests(
   actionBody: string,
   session: ClientSession,
   knownLocationTrucks: Map<string, string>,
-  lastQuote: QuoteResult | null
 ): Promise<{ success: boolean; message: string }> {
   const items = parseHoldRequestLines(actionBody)
   if (items.length === 0) {
@@ -174,11 +173,40 @@ async function executePlaceHoldRequests(
   // Generate a campaign group ID to link all trucks in this hold together
   const campaignGroupId = `cg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 
-  // Resolve pricing from the last quote in this conversation + the tier the AI selected
+  // Resolve pricing for the tier the AI selected. This RECOMPUTES the quote from this action's
+  // own market/dates/truck-count rather than reusing a "last quote" captured earlier in the same
+  // request — GET_QUOTE and PLACE_HOLD_REQUESTS are never the same turn in practice (Quote and
+  // Hold are always separate steps for the client), so a same-turn-only "last quote" is never
+  // actually populated when a hold is placed. This was a real bug: quoted_total/daily_rate/
+  // features were silently null on every AI-placed hold ever created, regardless of how today's
+  // various frontend/prompt fixes changed the surrounding flow — nothing before this recomputed
+  // pricing at hold time at all. Recomputing is deterministic (same market/dates/truck count
+  // always reproduces the exact numbers the client already saw) and needs no cross-turn state.
+  // Known gap: this doesn't know about Smart Directional/Device ID/lift-study add-ons a client
+  // asked for via free text during the original Quote step (today's structured Quote box has no
+  // such fields, so this only affects the older typed-Ask-mode quote path) — those would be
+  // included in the total the client originally saw but not in this recomputed snapshot.
   const tierFromAction = items[0]?.tier ?? null
   const pricingTier = tierFromAction?.charAt(0).toUpperCase() + (tierFromAction?.slice(1).toLowerCase() ?? '')
   let quotedTotal: number | null = null
   let features: string | null = null
+
+  let lastQuote: QuoteResult | null = null
+  const first = items[0]
+  if (first?.market && first.start_date && first.end_date) {
+    const startDate = new Date(first.start_date + 'T00:00:00Z')
+    const endDate   = new Date(first.end_date + 'T00:00:00Z')
+    const days = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1
+    if (Number.isFinite(days) && days >= 1) {
+      try {
+        const marketSizeTierId = await resolveMarketSizeTierId(first.market)
+        const rateOverrides = await resolveRateOverrides(session)
+        lastQuote = computeQuote({ truckCount: items.length, days, marketSizeTierId, rateOverrides })
+      } catch (err) {
+        console.error('[client/chat] failed to recompute quote for hold pricing snapshot:', err)
+      }
+    }
+  }
 
   if (lastQuote && pricingTier) {
     const tierKey = pricingTier.toLowerCase() as 'good' | 'better' | 'best'
@@ -405,6 +433,54 @@ function formatQuoteMessage(quote: QuoteResult): string {
   return lines.join('\n')
 }
 
+// Derive market size tier from a campaign market string by matching against accepted markets.
+// Falls back to tier 3 (mid/large) if no match found — safe default that doesn't over-promise
+// on lift-study eligibility. Shared by executeGetQuote and executePlaceHoldRequests (the latter
+// recomputes a quote from scratch since it can't rely on one already existing this turn — see
+// the comment there).
+async function resolveMarketSizeTierId(market: string): Promise<number> {
+  if (!market) return 3
+  try {
+    const acceptedMarkets = await prisma.acceptedMarket.findMany({
+      where: { is_active: true },
+      select: { dma_code: true, dma_name: true },
+    })
+    const marketLower = market.toLowerCase()
+    // Match on city name — the DMA name is "City, ST" format, same as the market field
+    const matched = acceptedMarkets.find((am) => {
+      const dmaCity = am.dma_name.split(',')[0].trim().toLowerCase()
+      const reqCity = marketLower.split(',')[0].trim()
+      return dmaCity === reqCity || marketLower.includes(dmaCity) || dmaCity.includes(reqCity)
+    })
+    return matched ? marketSizeTierFromDmaCode(matched.dma_code) : 3
+  } catch (err) {
+    console.error('[client/chat] market size tier lookup failed, using default tier 3:', err)
+    return 3
+  }
+}
+
+// Standard rate card unless this client has an active negotiated RateAgreement — same lookup
+// POST /api/v1/internal/quote does, keyed off the client_user's optional partner_id link.
+async function resolveRateOverrides(session: ClientSession): Promise<RateOverrides | null> {
+  if (!session.partnerId) return null
+  try {
+    const now = new Date()
+    const agreement = await prisma.rateAgreement.findFirst({
+      where: {
+        partner_id:      session.partnerId,
+        effective_date:  { lte: now },
+        expiration_date: { gte: now },
+      },
+      orderBy: { created_at: 'desc' },
+    })
+    return agreement ? (JSON.parse(agreement.rate_overrides) as RateOverrides) : null
+  } catch (err) {
+    // Falls back to standard pricing — a rate-agreement lookup failure must never block a quote.
+    console.error('[client/chat] rate agreement lookup failed, using standard rate card:', err)
+    return null
+  }
+}
+
 async function executeGetQuote(
   actionBody: string,
   session: ClientSession
@@ -431,52 +507,8 @@ async function executeGetQuote(
     .map((s) => s.trim().toLowerCase())
     .filter((s): s is StudyType => (VALID_STUDIES as readonly string[]).includes(s))
 
-  // Standard rate card unless this client has an active negotiated RateAgreement — same lookup
-  // POST /api/v1/internal/quote does, keyed off the client_user's optional partner_id link.
-  // Derive market size tier from the campaign market by matching against accepted markets.
-  // Falls back to tier 3 (mid/large) if no match found — safe default that doesn't over-promise
-  // on lift-study eligibility.
-  let marketSizeTierId = 3
-  const campaignMarket = fields.market ?? ''
-  if (campaignMarket) {
-    try {
-      const acceptedMarkets = await prisma.acceptedMarket.findMany({
-        where: { is_active: true },
-        select: { dma_code: true, dma_name: true },
-      })
-      const marketLower = campaignMarket.toLowerCase()
-      // Match on city name — the DMA name is "City, ST" format, same as the market field
-      const matched = acceptedMarkets.find((am) => {
-        const dmaCity = am.dma_name.split(',')[0].trim().toLowerCase()
-        const reqCity = marketLower.split(',')[0].trim()
-        return dmaCity === reqCity || marketLower.includes(dmaCity) || dmaCity.includes(reqCity)
-      })
-      if (matched) {
-        marketSizeTierId = marketSizeTierFromDmaCode(matched.dma_code)
-      }
-    } catch (err) {
-      console.error('[client/chat] market size tier lookup failed, using default tier 3:', err)
-    }
-  }
-
-  let rateOverrides: RateOverrides | null = null
-  if (session.partnerId) {
-    try {
-      const now = new Date()
-      const agreement = await prisma.rateAgreement.findFirst({
-        where: {
-          partner_id:      session.partnerId,
-          effective_date:  { lte: now },
-          expiration_date: { gte: now },
-        },
-        orderBy: { created_at: 'desc' },
-      })
-      if (agreement) rateOverrides = JSON.parse(agreement.rate_overrides) as RateOverrides
-    } catch (err) {
-      // Falls back to standard pricing — a rate-agreement lookup failure must never block a quote.
-      console.error('[client/chat] rate agreement lookup failed, using standard rate card:', err)
-    }
-  }
+  const marketSizeTierId = await resolveMarketSizeTierId(fields.market ?? '')
+  const rateOverrides = await resolveRateOverrides(session)
 
   let quote: QuoteResult
   try {
@@ -615,12 +647,6 @@ export async function POST(req: NextRequest) {
   reply = actionMatch ? stripActionBlock(reply) : reply
   reply = await scrubOtherClientNames(reply, session.id)
 
-  // Track the last quote from this conversation so hold requests can attach pricing.
-  // The quote is stored in the route handler's closure — if the AI generates a quote
-  // in this turn, it's captured here; otherwise we rely on the system prompt to enforce
-  // that holds can't be placed without a prior quote.
-  let lastQuote: QuoteResult | null = null
-
   let actionResult: { success: boolean; message: string; quoteCard?: QuoteCardData } | null = null
   if (actionMatch) {
     const [, actionType, actionBody] = actionMatch
@@ -628,24 +654,12 @@ export async function POST(req: NextRequest) {
       if (actionType === 'REQUEST_ASSISTANCE') {
         actionResult = await executeRequestAssistance(actionBody, session)
       } else if (actionType === 'GET_QUOTE') {
-        const quoteResult = await executeGetQuote(actionBody, session)
-        actionResult = quoteResult
-        // Capture the quote for potential follow-up hold placement
-        if (quoteResult.success && quoteResult.quoteCard) {
-          // Re-run computeQuote to get the full QuoteResult (quoteCard is a subset)
-          // This is lightweight — just re-derives from the same inputs
-          const fields = parseKeyValueLines(actionBody)
-          const truckCount = parseInt(fields.truck_count ?? '', 10)
-          const start = fields.start, end = fields.end
-          if (truckCount && start && end) {
-            const startDate = new Date(start + 'T00:00:00Z')
-            const endDate = new Date(end + 'T00:00:00Z')
-            const days = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1
-            try { lastQuote = computeQuote({ truckCount, days }) } catch { /* fall through */ }
-          }
-        }
+        actionResult = await executeGetQuote(actionBody, session)
       } else {
-        actionResult = await executePlaceHoldRequests(actionBody, session, knownLocationTrucks, lastQuote)
+        // PLACE_HOLD_REQUESTS recomputes its own pricing snapshot from this action's fields —
+        // see the comment in executePlaceHoldRequests for why it can't rely on a quote captured
+        // earlier in this same request.
+        actionResult = await executePlaceHoldRequests(actionBody, session, knownLocationTrucks)
       }
     } catch (err) {
       console.error('[client/chat] action execution failed:', err)

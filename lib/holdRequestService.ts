@@ -3,7 +3,33 @@ import { sendHoldRequestEmail } from '@/lib/email'
 import { appendHoldRequestToSheet } from '@/lib/googleSheets'
 import type { ClientSession } from '@/lib/clientAuth'
 
+// Standard review SLA — 72 hours (3 days) from submission.
 const HOLD_EXPIRATION_HOURS = 72
+// The team needs this many full days of runway before a campaign starts to actually process an
+// approved hold (route the truck, confirm logistics, etc.) — the same 3-day figure as the
+// standard SLA above, but anchored to the campaign's start date instead of the submission time.
+const MIN_PROCESSING_DAYS_BEFORE_START = 3
+
+/**
+ * A hold's expiration is the EARLIER of the standard 72h review SLA and the latest moment that
+ * still leaves MIN_PROCESSING_DAYS_BEFORE_START full days before the campaign starts. A flat
+ * 72-hour countdown makes no sense for a campaign starting in a day or two — there isn't enough
+ * runway left before the trucks need to move, so the hold is already due, not "72 hours away."
+ * If that start-date deadline has already passed by the time the hold is created, the hold is
+ * due immediately (now), never backdated into the past.
+ */
+function computeHoldExpiresAt(startDate: string): Date {
+  const now = new Date()
+
+  const standardExpiry = new Date(now)
+  standardExpiry.setHours(standardExpiry.getHours() + HOLD_EXPIRATION_HOURS)
+
+  const latestByStart = new Date(startDate + 'T00:00:00Z')
+  latestByStart.setUTCDate(latestByStart.getUTCDate() - MIN_PROCESSING_DAYS_BEFORE_START)
+  const cappedByStart = latestByStart < now ? now : latestByStart
+
+  return standardExpiry < cappedByStart ? standardExpiry : cappedByStart
+}
 
 export interface CreateHoldRequestParams {
   truck_number: string
@@ -38,8 +64,7 @@ export async function createHoldRequestForClient(
     truck_count, campaign_group_id,
   } = params
 
-  const expiresAt = new Date()
-  expiresAt.setHours(expiresAt.getHours() + HOLD_EXPIRATION_HOURS)
+  const expiresAt = computeHoldExpiresAt(start_date)
 
   const holdRequest = await prisma.holdRequest.create({
     data: {

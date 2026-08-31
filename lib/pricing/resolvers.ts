@@ -169,17 +169,25 @@ export async function resolveNearestAcceptedMarket(
 
 /**
  * Count weekdays (Mon-Fri) between two dates, exclusive of both endpoints.
- * Used for the transport RUSH trigger (< 10 business days lead time).
+ * Used for the transport absorption threshold (10+ business days lead time).
+ *
+ * Both dates are normalized to UTC midnight to avoid timezone drift —
+ * new Date() in US timezones is behind UTC, which could add a phantom
+ * business day when compared against a UTC midnight campaign start date.
  */
 export function businessDaysBetween(from: Date, to: Date): number {
-  let count = 0
-  const current = new Date(from)
-  current.setDate(current.getDate() + 1) // start from day after 'from'
+  // Normalize both to UTC date-only (strip time component)
+  const fromUTC = new Date(Date.UTC(from.getFullYear(), from.getMonth(), from.getDate()))
+  const toUTC = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate()))
 
-  while (current < to) {
-    const day = current.getDay()
+  let count = 0
+  const current = new Date(fromUTC)
+  current.setUTCDate(current.getUTCDate() + 1) // start from day after 'from'
+
+  while (current < toUTC) {
+    const day = current.getUTCDay()
     if (day !== 0 && day !== 6) count++
-    current.setDate(current.getDate() + 1)
+    current.setUTCDate(current.getUTCDate() + 1)
   }
   return count
 }

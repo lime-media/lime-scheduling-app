@@ -13,6 +13,7 @@ import { selectTrucksForHold } from '@/lib/availabilityEngine'
 import { computeHoldExpiresAt } from '@/lib/holdRequestService'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
+import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
 export async function POST(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
@@ -50,11 +51,17 @@ export async function POST(req: NextRequest) {
   const expiresAt = computeHoldExpiresAt(start_date)
 
   // Find a ClientUser linked to this SFDC Account if one exists.
-  // Internal holds don't require a ClientUser — client_user_id is nullable.
   const linkedClient = await prisma.clientUser.findFirst({
     where: { sfdc_account_id: sfdc_account_id },
     select: { id: true },
   })
+
+  // Resolve the service user for Hold.created_by (FK to app_users)
+  const serviceUser = await prisma.user.findFirst({
+    where: { email: SFDC_SERVICE_USER_EMAIL },
+    select: { id: true },
+  })
+  const createdBy = (token.id as string) || serviceUser?.id || 'system'
 
   // Create hold requests
   const created: string[] = []
@@ -94,7 +101,7 @@ export async function POST(req: NextRequest) {
           source: 'INTERNAL',
           origination: 'frontend',
           notes: `Internal quote for ${sfdc_account_name || 'Unknown'}`,
-          created_by: (token.id as string) || 'system',
+          created_by: createdBy,
         },
       })
 

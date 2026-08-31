@@ -2,6 +2,7 @@ import { prisma } from '@/lib/prisma'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { appendHoldRequestToSheet } from '@/lib/googleSheets'
 import type { ClientSession } from '@/lib/clientAuth'
+import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
 // Standard review SLA — 72 hours (3 days) from submission.
 const HOLD_EXPIRATION_HOURS = 72
@@ -92,22 +93,30 @@ export async function createHoldRequestForClient(
 
   // Auto-approve: immediately create the schedule-blocking Hold record.
   // The availability engine already verified this truck is free.
+  // Hold.created_by is a FK to app_users — use the SFDC service user since
+  // client users don't exist in that table.
   try {
-    await prisma.hold.create({
-      data: {
-        truck_number,
-        client_name:  session.companyName,
-        market:       market ?? '',
-        state:        state ?? '',
-        start_date:   new Date(start_date),
-        end_date:     new Date(end_date),
-        status:       'HOLD',
-        source:       'CLIENT',
-        origination:  'client-portal',
-        notes:        notes ?? null,
-        created_by:   session.id,
-      },
+    const serviceUser = await prisma.user.findFirst({
+      where: { email: SFDC_SERVICE_USER_EMAIL },
+      select: { id: true },
     })
+    if (serviceUser) {
+      await prisma.hold.create({
+        data: {
+          truck_number,
+          client_name:  session.companyName,
+          market:       market ?? '',
+          state:        state ?? '',
+          start_date:   new Date(start_date),
+          end_date:     new Date(end_date),
+          status:       'HOLD',
+          source:       'CLIENT',
+          origination:  'client-portal',
+          notes:        notes ?? null,
+          created_by:   serviceUser.id,
+        },
+      })
+    }
   } catch (err) {
     console.error('[holdRequestService] auto-approve Hold creation failed:', err)
   }

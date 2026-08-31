@@ -48,13 +48,34 @@ export async function POST(req: NextRequest) {
   const resolvedState = state || market.split(',')[1]?.trim() || null
   const expiresAt = computeHoldExpiresAt(start_date)
 
-  // Create hold requests (internal source, not client)
+  // Find a ClientUser linked to this SFDC Account, or fall back to testclient.
+  // The HoldRequest FK requires a valid client_user_id.
+  let clientUserId: string
+  const linkedClient = await prisma.clientUser.findFirst({
+    where: { sfdc_account_id: sfdc_account_id },
+    select: { id: true },
+  })
+  if (linkedClient) {
+    clientUserId = linkedClient.id
+  } else {
+    const fallback = await prisma.clientUser.findFirst({
+      where: { username: 'testclient' },
+      select: { id: true },
+    })
+    clientUserId = fallback?.id ?? ''
+  }
+
+  if (!clientUserId) {
+    return NextResponse.json({ error: 'No client user found for this account' }, { status: 400 })
+  }
+
+  // Create hold requests
   const created: string[] = []
   for (const truck of selectedTrucks) {
     try {
       await prisma.holdRequest.create({
         data: {
-          client_user_id: 'internal', // no client user — internal hold
+          client_user_id: clientUserId,
           truck_number: truck.truckNumber,
           market,
           state: resolvedState,

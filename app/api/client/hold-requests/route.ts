@@ -4,7 +4,7 @@ import { getClientSession } from '@/lib/clientAuth'
 import { createHoldRequestForClient } from '@/lib/holdRequestService'
 import { selectTrucksForHold } from '@/lib/availabilityEngine'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
-import { parseQuoteFeatures, buildActivationNotes } from '@/components/QuoteBreakdown'
+import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 
 export async function GET(req: NextRequest) {
   const session = getClientSession(req)

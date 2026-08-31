@@ -12,7 +12,7 @@ import { prisma } from '@/lib/prisma'
 import { selectTrucksForHold } from '@/lib/availabilityEngine'
 import { computeHoldExpiresAt } from '@/lib/holdRequestService'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
-import { parseQuoteFeatures, buildActivationNotes } from '@/components/QuoteBreakdown'
+import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 
 export async function POST(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })

@@ -1,44 +1,14 @@
 'use client'
 
 // Line-item breakdown of how a hold's quoted_total was derived — shown on both the client's
-// My Requests page and the internal staff Hold Requests review page, so both sides see exactly
-// what's being paid for (base media, shadow fencing, add-ons, lift studies) instead of just a
-// tier name and a total. Sourced from HoldRequest.features, a JSON snapshot of the quote tier
-// that was chosen, captured at hold-creation time (see app/api/client/chat/route.ts).
+// My Requests page and the internal staff Hold Requests review page.
 
-export type QuoteFeatures = {
-  dailyRate?: number
-  hourSurcharge?: number
-  truckDays?: number
-  truckCount?: number
-  activationDays?: number
-  calendarDays?: number
-  daysPerWeek?: number
-  operatingHours?: number
-  baseMedia?: number
-  shadowFencing?: number
-  shadowFencingFloored?: boolean
-  smartDirectionalIncluded?: boolean
-  smartDirectional?: number
-  deviceIdIncluded?: boolean
-  deviceId?: number
-  studies?: string[]
-  studyCost?: number
-  studiesTotal?: number
-  transportCharge?: number
-}
+import type { QuoteFeatures } from '@/lib/quoteFeatures'
+export { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
+export type { QuoteFeatures } from '@/lib/quoteFeatures'
 
 function fmtMoney(n: number): string {
   return '$' + Math.round(n).toLocaleString('en-US')
-}
-
-export function parseQuoteFeatures(features: string | null | undefined): QuoteFeatures | null {
-  if (!features) return null
-  try {
-    return JSON.parse(features) as QuoteFeatures
-  } catch {
-    return null
-  }
 }
 
 export function QuoteBreakdown({ features }: { features: QuoteFeatures }) {
@@ -109,48 +79,3 @@ export function QuoteBreakdown({ features }: { features: QuoteFeatures }) {
   )
 }
 
-/**
- * Build a plain-text activation notes string from quote features.
- * Used for Salesforce Opportunity.Activation_Notes__c.
- */
-export function buildActivationNotes(features: QuoteFeatures, tier?: string | null): string {
-  const parts: string[] = []
-
-  if (tier) parts.push(`Tier: ${tier}`)
-
-  if (features.truckCount) parts.push(`${features.truckCount} truck${features.truckCount === 1 ? '' : 's'}`)
-
-  if (features.activationDays && features.calendarDays && features.activationDays !== features.calendarDays) {
-    const sched = features.daysPerWeek === 5 ? 'Mon-Fri' : features.daysPerWeek === 6 ? 'Mon-Sat' : '7 days/week'
-    parts.push(`${features.activationDays} activation days (${features.calendarDays} calendar days, ${sched})`)
-  } else if (features.activationDays) {
-    parts.push(`${features.activationDays} days`)
-  }
-
-  if (features.operatingHours && features.operatingHours > 8) {
-    parts.push(`${features.operatingHours}-hour days`)
-  }
-
-  if (features.dailyRate) parts.push(`Rate: $${features.dailyRate}/truck-day`)
-  if (features.truckDays) parts.push(`${features.truckDays} truck-days`)
-
-  const featureList: string[] = []
-  if (features.shadowFencing) featureList.push('Shadow Fencing')
-  if (features.smartDirectionalIncluded) featureList.push('Smart Directional')
-  if (features.deviceIdIncluded) featureList.push('Device ID Passback')
-  if (features.studies && features.studies.length > 0) {
-    featureList.push(`Lift Studies (${features.studies.map(s => s.replace(/_/g, ' ')).join(', ')})`)
-  }
-  if (featureList.length > 0) parts.push(`Features: ${featureList.join(', ')}`)
-
-  if (features.transportCharge && features.transportCharge > 0) {
-    parts.push(`Transport: $${Math.round(features.transportCharge).toLocaleString()}`)
-  }
-
-  if (features.baseMedia) {
-    const total = (features.baseMedia || 0) + (features.shadowFencing || 0) + (features.smartDirectional || 0) + (features.deviceId || 0) + (features.studiesTotal || 0) + (features.transportCharge || 0)
-    parts.push(`Total: $${Math.round(total).toLocaleString()}`)
-  }
-
-  return parts.join(' | ')
-}

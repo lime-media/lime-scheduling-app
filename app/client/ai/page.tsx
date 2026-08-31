@@ -123,11 +123,6 @@ function getTierLabel(toggles: FeatureToggles, studiesAvailable: boolean): strin
 function AvailabilitySummary({ data }: { data: QuoteResponse }) {
   const { availability, transport } = data
 
-  const triggerLabels: Record<string, string> = {
-    SHORT_FLIGHT: 'short campaign',
-    RUSH: 'rush lead time',
-  }
-
   return (
     <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 mb-4">
       <div className="flex items-center gap-2 mb-1">
@@ -708,43 +703,6 @@ export default function ClientAiPage() {
     if (!market || !start_date || !end_date || !truck_count) return
 
     setHoldLoading(true)
-
-    // Compute current total for pricing snapshot
-    const { pricing, features } = quoteResult
-    let mediaTotal = pricing.baseMedia
-    if (featureToggles.shadowFencing) mediaTotal += features.shadowFencing.cost
-    if (featureToggles.smartDirectional) mediaTotal += features.smartDirectional.cost
-    if (featureToggles.deviceId) mediaTotal += features.deviceId.cost
-    if (features.studies.available && featureToggles.studies.length > 0) {
-      mediaTotal += featureToggles.studies.length * features.studies.costPerStudy
-    }
-    const transportCharge = quoteResult.transportCharge
-    const grandTotal = mediaTotal + transportCharge
-
-    const tierLabel = getTierLabel(featureToggles, features.studies.available)
-
-    // Build features JSON snapshot
-    const featuresJson = JSON.stringify({
-      dailyRate: pricing.dailyRate,
-      hourSurcharge: pricing.hourSurcharge,
-      truckDays: pricing.truckDays,
-      truckCount: pricing.truckCount,
-      activationDays: pricing.days,
-      calendarDays: pricing.calendarDays,
-      daysPerWeek: pricing.schedule.daysPerWeek,
-      operatingHours: pricing.schedule.operatingHours,
-      baseMedia: pricing.baseMedia,
-      shadowFencing: featureToggles.shadowFencing ? features.shadowFencing.cost : 0,
-      shadowFencingFloored: features.shadowFencing.floored,
-      smartDirectionalIncluded: featureToggles.smartDirectional,
-      smartDirectional: featureToggles.smartDirectional ? features.smartDirectional.cost : 0,
-      deviceIdIncluded: featureToggles.deviceId,
-      deviceId: featureToggles.deviceId ? features.deviceId.cost : 0,
-      studies: featureToggles.studies,
-      studyCost: features.studies.costPerStudy,
-      studiesTotal: features.studies.available ? featureToggles.studies.length * features.studies.costPerStudy : 0,
-      transportCharge,
-    })
 
     try {
       const res = await fetch('/api/client/hold-requests', {

@@ -12,7 +12,6 @@ import { checkAvailability } from '@/lib/availabilityEngine'
 import {
   computeQuote,
   VALID_STUDIES,
-  TRANSPORT_CONFIG,
   type StudyType,
 } from '@/lib/pricing'
 import {

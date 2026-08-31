@@ -56,7 +56,7 @@ model Hold {
 // pricing_tier: Good | Better | Best
 model HoldRequest {
   id                  String     @id @default(cuid())
-  client_user_id      String
+  client_user_id      String?
   truck_number        String
   market              String
   state               String?
@@ -78,7 +78,7 @@ model HoldRequest {
   extension_reason    String?    @db.NVarChar(Max)   // client's reason when requesting extension
   extension_until     DateTime?                       // requested extension date (client picks)
   created_at          DateTime   @default(now())
-  client_user         ClientUser @relation(fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  client_user         ClientUser? @relation(fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([campaign_group_id])
   @@map("app_hold_requests")

@@ -82,7 +82,7 @@ export async function PATCH(
     const hold = await prisma.hold.create({
       data: {
         truck_number: holdRequest.truck_number,
-        client_name:  holdRequest.client_user.company_name,
+        client_name:  holdRequest.client_user?.company_name ?? 'Unknown',
         market:       holdRequest.market,
         state:        holdRequest.state ?? '',
         start_date:   holdRequest.start_date,
@@ -105,7 +105,7 @@ export async function PATCH(
         hold_id:      hold.id,
         details:      JSON.stringify({
           hold_request_id: holdRequest.id,
-          company_name:    holdRequest.client_user.company_name,
+          company_name:    holdRequest.client_user?.company_name ?? 'Unknown',
           pricing_tier:    holdRequest.pricing_tier,
           quoted_total:    holdRequest.quoted_total,
         }),
@@ -122,7 +122,7 @@ export async function PATCH(
         action:       'REJECT_HOLD_REQUEST',
         truck_number: holdRequest.truck_number,
         user_id:      session.user.id,
-        details:      JSON.stringify({ hold_request_id: holdRequest.id, company_name: holdRequest.client_user.company_name }),
+        details:      JSON.stringify({ hold_request_id: holdRequest.id, company_name: holdRequest.client_user?.company_name ?? 'Unknown' }),
       },
     })
     return NextResponse.json({ ok: true, status: 'REJECTED' })

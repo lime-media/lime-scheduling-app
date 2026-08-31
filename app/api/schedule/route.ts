@@ -172,7 +172,7 @@ export async function GET(request: Request) {
         end_date:          r.end_date.toISOString().split('T')[0],
         notes:             r.notes ?? '',
         status:            r.status,
-        company_name:      r.client_user.company_name,
+        company_name:      r.client_user?.company_name ?? 'Unknown',
         pricing_tier:      r.pricing_tier ?? null,
         quoted_total:      r.quoted_total ?? null,
         daily_rate:        r.daily_rate ?? null,

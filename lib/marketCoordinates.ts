@@ -299,6 +299,70 @@ export function getMarketCoords(market: string): { lat: number; lng: number } | 
   return COORDS[normalizeMarketKey(market)] ?? null
 }
 
+export type MarketMatch = {
+  key: string           // normalized key (e.g. "portland, or")
+  formal: string        // properly cased (e.g. "Portland, OR")
+  lat: number
+  lng: number
+}
+
+/**
+ * Formalize a market key ("portland, or") to proper case ("Portland, OR").
+ */
+function formalizeKey(key: string): string {
+  const parts = key.split(',').map(p => p.trim())
+  const city = parts[0].replace(/\b\w/g, c => c.toUpperCase())
+  const state = parts[1]?.toUpperCase() ?? ''
+  return state ? `${city}, ${state}` : city
+}
+
+/**
+ * Resolve a market input to one or more matches.
+ *
+ * Match priority:
+ * 1. Exact key match (e.g. "Dallas, TX")
+ * 2. Exact city match across states (e.g. "Portland" → Portland OR + Portland ME)
+ * 3. Partial/prefix city match (e.g. "San Fran" → San Francisco, CA)
+ *
+ * Always returns the formalized name (proper case + state abbreviation).
+ */
+export function resolveMarketInput(input: string): MarketMatch[] {
+  const normalized = normalizeMarketKey(input)
+
+  // 1. Exact key match
+  const exact = COORDS[normalized]
+  if (exact) {
+    return [{ key: normalized, formal: formalizeKey(normalized), ...exact }]
+  }
+
+  const inputCity = normalized.split(',')[0].trim()
+  const inputState = normalized.split(',')[1]?.trim()
+  if (!inputCity) return []
+
+  // 2. Exact city match (with optional state filter)
+  const exactCityMatches: MarketMatch[] = []
+  for (const [key, coords] of Object.entries(COORDS)) {
+    const keyCity = key.split(',')[0].trim()
+    const keyState = key.split(',')[1]?.trim()
+    if (keyCity === inputCity && (!inputState || keyState === inputState)) {
+      exactCityMatches.push({ key, formal: formalizeKey(key), ...coords })
+    }
+  }
+  if (exactCityMatches.length > 0) return exactCityMatches
+
+  // 3. Partial/prefix match — "san fran" matches "san francisco"
+  const partialMatches: MarketMatch[] = []
+  for (const [key, coords] of Object.entries(COORDS)) {
+    const keyCity = key.split(',')[0].trim()
+    const keyState = key.split(',')[1]?.trim()
+    if (keyCity.startsWith(inputCity) && (!inputState || keyState === inputState)) {
+      partialMatches.push({ key, formal: formalizeKey(key), ...coords })
+    }
+  }
+
+  return partialMatches
+}
+
 export function getNearbyMarkets(
   selectedMarket: string,
   allMarkets: string[],

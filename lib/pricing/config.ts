@@ -104,9 +104,12 @@ export function marketSizeTierFromDmaCode(dmaCode: string): number {
 // Service area & transport pricing (from transport spec v1, 30 July 2026)
 // ---------------------------------------------------------------------------
 
-// Inclusion zone: campaign city must be within this distance of any accepted market.
-// Also equals one transport day — aligns service area with transport-included threshold.
-export const SERVICE_AREA_RADIUS_MILES = 450
+// Inclusion zone: per-truck repositioning is absorbed within this radius.
+// Beyond this distance, the truck incurs a billed transport charge.
+export const SERVICE_AREA_RADIUS_MILES = 250
+
+// Swarm threshold: campaigns requesting more than this many trucks trigger manual quote.
+export const SWARM_TRUCK_LIMIT = 3
 
 export const TRANSPORT_CONFIG = {
   // ---- revenue (reference only for margin check)

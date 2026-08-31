@@ -129,10 +129,14 @@ export async function PATCH(
   }
 
   if (action === 'approve_extension') {
-    const newExpiresAt = computeHoldExpiresAt(holdRequest.start_date.toISOString().split('T')[0])
+    // Use the client's requested extension date if provided, otherwise fall back
+    // to the standard 72h SLA recalculation.
+    const newExpiresAt = holdRequest.extension_until
+      ? holdRequest.extension_until
+      : computeHoldExpiresAt(holdRequest.start_date.toISOString().split('T')[0])
     await prisma.holdRequest.update({
       where: { id: holdRequest.id },
-      data:  { status: 'PENDING', expires_at: newExpiresAt },
+      data:  { status: 'PENDING', expires_at: newExpiresAt, extension_until: null, extension_reason: null },
     })
     await prisma.auditLog.create({
       data: {

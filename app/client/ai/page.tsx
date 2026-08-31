@@ -756,11 +756,13 @@ export default function ClientAiPage() {
           start_date,
           end_date,
           truck_count,
-          pricing_tier: tierLabel,
-          quoted_total: grandTotal,
-          daily_rate: pricing.dailyRate,
-          features: featuresJson,
-          transport_charge: transportCharge,
+          // Feature selections — server recomputes all pricing from these
+          shadow_fencing: featureToggles.shadowFencing,
+          smart_directional: featureToggles.smartDirectional,
+          device_id: featureToggles.deviceId,
+          studies: featureToggles.studies,
+          days_per_week: quoteResult.pricing.schedule.daysPerWeek,
+          operating_hours: quoteResult.pricing.schedule.operatingHours,
         }),
       })
       const data = await res.json()

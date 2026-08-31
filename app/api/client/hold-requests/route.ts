@@ -5,6 +5,8 @@ import { createHoldRequestForClient } from '@/lib/holdRequestService'
 import { selectTrucksForHold } from '@/lib/availabilityEngine'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
+import { computeQuote, VALID_STUDIES, type StudyType } from '@/lib/pricing'
+import { resolveMarketSizeTierId, resolveRateOverrides } from '@/lib/pricing/resolvers'
 
 export async function GET(req: NextRequest) {
   const session = getClientSession(req)
@@ -72,7 +74,10 @@ export async function POST(req: NextRequest) {
 
 /**
  * Auto-select trucks and create hold requests for a campaign.
- * Used by the interactive quote card — the client never picks truck numbers.
+ *
+ * IMPORTANT: All pricing is recomputed server-side from market/dates/truck_count
+ * and the client's feature selections. Client-sent quoted_total/daily_rate values
+ * are ignored — the trust boundary is the HTTP request, not the UI.
  */
 async function handleAutoSelectHold(
   _req: NextRequest,
@@ -84,16 +89,17 @@ async function handleAutoSelectHold(
     end_date: string
     truck_count: number
     notes?: string
-    pricing_tier?: string
-    quoted_total?: number
-    daily_rate?: number
-    features?: string
-    transport_charge?: number
+    // Feature selections — these drive the server-side recomputation
+    shadow_fencing?: boolean
+    smart_directional?: boolean
+    device_id?: boolean
+    studies?: string[]
+    days_per_week?: number
+    operating_hours?: number
   },
 ) {
   const {
     market, state, start_date, end_date, truck_count, notes,
-    pricing_tier, quoted_total, daily_rate, features, transport_charge,
   } = body
 
   if (truck_count < 1 || truck_count > 20) {
@@ -114,10 +120,104 @@ async function handleAutoSelectHold(
     }, { status: 409 })
   }
 
-  // Generate campaign group ID to link all trucks in this hold
-  const campaignGroupId = `cg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  // ── Server-side price recomputation ──────────────────────────────────────
+  // Never trust client-sent pricing. Recompute from the canonical inputs.
+  const startDate = new Date(start_date + 'T00:00:00Z')
+  const endDate = new Date(end_date + 'T00:00:00Z')
+  const calendarDays = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1
+  const defaultDaysPerWeek = calendarDays <= 6 ? 7 : 5
+  const daysPerWeek = body.days_per_week ?? defaultDaysPerWeek
+  const operatingHours = body.operating_hours ?? 8
 
-  // Extract state from market if not provided (e.g. "Dallas, TX" → "TX")
+  // Count activation days
+  let activationDays = calendarDays
+  if (daysPerWeek < 7) {
+    activationDays = 0
+    const c = new Date(start_date + 'T00:00:00Z')
+    const e = new Date(end_date + 'T00:00:00Z')
+    while (c <= e) {
+      const dow = c.getUTCDay()
+      if (daysPerWeek === 5 && dow >= 1 && dow <= 5) activationDays++
+      else if (daysPerWeek === 6 && dow >= 1 && dow <= 6) activationDays++
+      c.setUTCDate(c.getUTCDate() + 1)
+    }
+  }
+
+  const includeShadowFencing = body.shadow_fencing !== false
+  const includeSmartDirectional = body.smart_directional ?? false
+  const includeDeviceId = body.device_id ?? false
+  const studies = (body.studies ?? [])
+    .map(s => s.trim().toLowerCase())
+    .filter((s): s is StudyType => (VALID_STUDIES as readonly string[]).includes(s))
+
+  const [marketSizeTierId, rateOverrides] = await Promise.all([
+    resolveMarketSizeTierId(market),
+    resolveRateOverrides(session),
+  ])
+
+  const quote = computeQuote({
+    truckCount: truck_count,
+    days: activationDays,
+    operatingHours,
+    marketSizeTierId,
+    includeSmartDirectional,
+    includeDeviceId,
+    studies,
+    rateOverrides,
+  })
+
+  // Compute media total from server-side quote
+  let mediaTotal = quote.good.baseMedia
+  if (includeShadowFencing) mediaTotal += quote.better.shadowFencing
+  if (includeSmartDirectional) mediaTotal += quote.better.smartDirectional
+  if (includeDeviceId) mediaTotal += quote.better.deviceId
+  if (quote.best.reachOk && studies.length > 0) {
+    mediaTotal += studies.length * quote.best.studyCost
+  }
+
+  // Per-truck transport
+  const repoTrucks = selectedTrucks.filter(t => t.transport.needed)
+  const MIN_DAYS_TO_ABSORB = 10
+  const MIN_LEAD_DAYS_TO_ABSORB = 10
+  const leadBusinessDays = availability.campaignFlags.leadBusinessDays
+  const transportAbsorbed = activationDays >= MIN_DAYS_TO_ABSORB && leadBusinessDays >= MIN_LEAD_DAYS_TO_ABSORB
+  const transportCharge = transportAbsorbed
+    ? 0
+    : repoTrucks.reduce((sum, t) => sum + t.transport.chargePerTruck, 0)
+
+  const serverTotal = mediaTotal + transportCharge
+
+  // Determine tier label
+  let pricingTier = 'Custom'
+  if (!includeShadowFencing && !includeSmartDirectional && !includeDeviceId && studies.length === 0) pricingTier = 'Good'
+  else if (includeShadowFencing && !includeSmartDirectional && !includeDeviceId && studies.length === 0) pricingTier = 'Better'
+  else if (includeShadowFencing && studies.length > 0 && quote.best.reachOk) pricingTier = 'Best'
+
+  // Build features snapshot
+  const featuresJson = JSON.stringify({
+    dailyRate: quote.dailyRate,
+    hourSurcharge: quote.hourSurcharge,
+    truckDays: quote.input.truckDays,
+    truckCount: truck_count,
+    activationDays,
+    calendarDays,
+    daysPerWeek,
+    operatingHours,
+    baseMedia: quote.good.baseMedia,
+    shadowFencing: includeShadowFencing ? quote.better.shadowFencing : 0,
+    shadowFencingFloored: quote.better.shadowFencingFloored,
+    smartDirectionalIncluded: includeSmartDirectional,
+    smartDirectional: includeSmartDirectional ? quote.better.smartDirectional : 0,
+    deviceIdIncluded: includeDeviceId,
+    deviceId: includeDeviceId ? quote.better.deviceId : 0,
+    studies,
+    studyCost: quote.best.studyCost,
+    studiesTotal: quote.best.reachOk ? studies.length * quote.best.studyCost : 0,
+    transportCharge,
+  })
+
+  // ── Create hold requests ─────────────────────────────────────────────────
+  const campaignGroupId = `cg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const resolvedState = state || market.split(',')[1]?.trim() || null
 
   const created: string[] = []
@@ -132,10 +232,10 @@ async function handleAutoSelectHold(
         start_date,
         end_date,
         notes: notes ?? null,
-        pricing_tier: pricing_tier ?? null,
-        quoted_total: quoted_total ?? null,
-        daily_rate: daily_rate ?? null,
-        features: features ?? null,
+        pricing_tier: pricingTier,
+        quoted_total: serverTotal,
+        daily_rate: quote.dailyRate,
+        features: featuresJson,
         truck_count: selectedTrucks.length,
         campaign_group_id: campaignGroupId,
       })
@@ -160,10 +260,10 @@ async function handleAutoSelectHold(
         select: { expires_at: true },
       })
 
-      // Build activation notes from the features snapshot
-      const parsedFeatures = parseQuoteFeatures(features)
+      // Build activation notes from server-computed features
+      const parsedFeatures = parseQuoteFeatures(featuresJson)
       const activationNotes = parsedFeatures
-        ? buildActivationNotes(parsedFeatures, pricing_tier)
+        ? buildActivationNotes(parsedFeatures, pricingTier)
         : undefined
 
       const result = await createOpportunity({
@@ -171,7 +271,7 @@ async function handleAutoSelectHold(
         name: oppName,
         stageName: 'WARM',
         closeDate: start_date,
-        amount: quoted_total ?? undefined,
+        amount: serverTotal,
         market,
         holdStart: start_date,
         holdStop: end_date,

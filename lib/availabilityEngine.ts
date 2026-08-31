@@ -170,7 +170,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
   // location when exact coords aren't available, so truck distances can still
   // be computed (relative to the nearest DMA — a reasonable approximation).
   let nearestAcceptedMarket = resolvedNearestMarket
-  let effectiveCampaignCoords = campaignCoords
+  const effectiveCampaignCoords = campaignCoords
   if (!nearestAcceptedMarket) {
     const fallbackMarket = await prisma.acceptedMarket.findFirst({ where: { is_active: true } })
     if (fallbackMarket) {

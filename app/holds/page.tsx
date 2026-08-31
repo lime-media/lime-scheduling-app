@@ -7,6 +7,7 @@ import toast from 'react-hot-toast'
 import { Navbar } from '@/components/Navbar'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
 import { parseDateOnly } from '@/lib/dateOnly'
+import { formatMarketState } from '@/lib/format'
 
 type Hold = {
   id: string
@@ -330,7 +331,7 @@ export default function HoldsPage() {
 
                   {/* Market + State */}
                   <div className="text-sm text-gray-500 mb-2">
-                    {[hold.market, hold.state].filter(Boolean).join(', ')}
+                    {formatMarketState(hold.market, hold.state)}
                   </div>
 
                   {/* Dates */}

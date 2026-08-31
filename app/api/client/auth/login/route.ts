@@ -26,10 +26,11 @@ export async function POST(req: NextRequest) {
       companyName: user.company_name,
     })
     setClientSession(res, {
-      id:          user.id,
-      username:    user.username,
-      companyName: user.company_name,
-      partnerId:   user.partner_id ?? undefined,
+      id:             user.id,
+      username:       user.username,
+      companyName:    user.company_name,
+      partnerId:      user.partner_id ?? undefined,
+      sfdcAccountId:  user.sfdc_account_id ?? undefined,
     })
     return res
   } catch (e) {

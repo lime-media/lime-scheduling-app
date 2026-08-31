@@ -44,6 +44,17 @@ type Block = { start: string; end: string; market: string; state: string }
  * If this function is ever extended, run every new field through: "could this name, or let
  * someone infer, another client?" before adding it.
  */
+// Truck numbers are zero-padded strings in the DB ("0044", "0751") — but when the model copies
+// one into a compact `truck: <truck_number>` action-block field, it sometimes "cleans up" the
+// leading zeros (writing "44" instead of "0044"), since a bare few-digit code reads like a
+// number rather than a fixed-width string. An exact-string match against that would reject a
+// perfectly valid truck and silently fail the whole hold submission — this was a real incident
+// (see buildClientChatContext below). Normalizing away leading zeros on both sides of the
+// lookup makes the match immune to that formatting drift.
+export function normalizeTruckNumber(truckNumber: string): string {
+  return truckNumber.trim().replace(/^0+(?=\d)/, '')
+}
+
 export interface ClientChatContext {
   prompt: string
   // Truck numbers with ANY known location signal (live GPS or schedule-derived market) — used
@@ -52,7 +63,11 @@ export interface ClientChatContext {
   // this only blocks the narrower case of a truck we have literally zero location data for.
   // Real incident this caught: the model picked such a truck as an out-of-market "filler" and
   // submitted a hold for it with no idea where it actually is.
-  knownLocationTrucks: Set<string>
+  //
+  // Keyed by BOTH the raw truck number and its zero-stripped form (see normalizeTruckNumber),
+  // each mapping to the canonical (DB-format) truck number — so a lookup succeeds and resolves
+  // to the right string to persist, regardless of which form the model wrote in its reply.
+  knownLocationTrucks: Map<string, string>
 }
 
 export async function buildClientChatContext(session: ClientSession): Promise<ClientChatContext> {
@@ -177,5 +192,11 @@ ${truckLines.join('\n') || 'No bookings on file.'}
 ${session.companyName.toUpperCase()}'S OWN HOLD REQUESTS (${myRequests.length} total) — the only client whose hold-request details you may ever discuss:
 ${myRequestLines.join('\n') || 'No hold requests on file.'}`
 
-  return { prompt, knownLocationTrucks: new Set(lastKnownMarketByTruck.keys()) }
+  const knownLocationTrucks = new Map<string, string>()
+  for (const truckNumber of lastKnownMarketByTruck.keys()) {
+    knownLocationTrucks.set(truckNumber, truckNumber)
+    knownLocationTrucks.set(normalizeTruckNumber(truckNumber), truckNumber)
+  }
+
+  return { prompt, knownLocationTrucks }
 }

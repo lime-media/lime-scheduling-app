@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
           state: resolvedState,
           start_date: new Date(start_date),
           end_date: new Date(end_date),
-          status: 'PENDING',
+          status: 'APPROVED',
           source: 'INTERNAL',
           pricing_tier: pricing_tier ?? null,
           quoted_total: quoted_total ?? null,
@@ -80,6 +80,24 @@ export async function POST(req: NextRequest) {
           notes: `Internal quote for ${sfdc_account_name || 'Unknown'}`,
         },
       })
+
+      // Auto-approve: create the schedule-blocking Hold record
+      await prisma.hold.create({
+        data: {
+          truck_number: truck.truckNumber,
+          client_name: sfdc_account_name || 'Unknown',
+          market,
+          state: resolvedState ?? '',
+          start_date: new Date(start_date),
+          end_date: new Date(end_date),
+          status: 'HOLD',
+          source: 'INTERNAL',
+          origination: 'frontend',
+          notes: `Internal quote for ${sfdc_account_name || 'Unknown'}`,
+          created_by: (token.id as string) || 'system',
+        },
+      })
+
       created.push(truck.truckNumber)
     } catch (err) {
       console.error('[quote/hold] failed to create hold for truck:', truck.truckNumber, err)

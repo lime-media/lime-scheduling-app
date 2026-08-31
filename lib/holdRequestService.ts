@@ -79,7 +79,7 @@ export async function createHoldRequestForClient(
       start_date:        new Date(start_date),
       end_date:          new Date(end_date),
       notes:             notes  ?? null,
-      status:            'PENDING',
+      status:            'APPROVED',
       pricing_tier:      pricing_tier ?? null,
       quoted_total:      quoted_total ?? null,
       daily_rate:        daily_rate   ?? null,
@@ -89,6 +89,28 @@ export async function createHoldRequestForClient(
       expires_at:        expiresAt,
     },
   })
+
+  // Auto-approve: immediately create the schedule-blocking Hold record.
+  // The availability engine already verified this truck is free.
+  try {
+    await prisma.hold.create({
+      data: {
+        truck_number,
+        client_name:  session.companyName,
+        market:       market ?? '',
+        state:        state ?? '',
+        start_date:   new Date(start_date),
+        end_date:     new Date(end_date),
+        status:       'HOLD',
+        source:       'CLIENT',
+        origination:  'client-portal',
+        notes:        notes ?? null,
+        created_by:   session.id,
+      },
+    })
+  } catch (err) {
+    console.error('[holdRequestService] auto-approve Hold creation failed:', err)
+  }
 
   // Append to Google Sheet — Firefly only (no-op if env vars not set)
   if (session.companyName === 'Firefly' && session.username === 'firefly') {

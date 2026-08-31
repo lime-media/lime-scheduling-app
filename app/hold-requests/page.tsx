@@ -39,7 +39,9 @@ const STATUS_BADGE: Record<string, string> = {
 }
 
 const STATUS_LABEL: Record<string, string> = {
+  APPROVED: 'Active',
   EXTENSION_REQUESTED: 'Extension Requested',
+  REJECTED: 'Canceled',
 }
 
 function fmtMoney(n: number): string {
@@ -171,33 +173,7 @@ export default function HoldRequestsPage() {
 
   function Actions({ ids, status, groupKey }: { ids: string[]; status: string; groupKey: string }) {
     const busy = acting === groupKey
-    if (status === 'PENDING') {
-      return (
-        <div className="flex items-center gap-2">
-          <button
-            disabled={busy}
-            onClick={() => runAction(ids, 'approve', groupKey)}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-green-700 hover:bg-green-800 text-white disabled:opacity-50"
-          >
-            Approve
-          </button>
-          <button
-            disabled={busy}
-            onClick={() => runAction(ids, 'reject', groupKey)}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50"
-          >
-            Reject
-          </button>
-        </div>
-      )
-    }
     if (status === 'EXTENSION_REQUESTED') {
-      // Three distinct outcomes here, not two — a request sitting in EXTENSION_REQUESTED can
-      // still be rejected outright (the client asked for more time, but the answer might be "no,
-      // and not later either"), which is different from just denying the extension itself (the
-      // request stays EXPIRED, open to another extension ask). Without an explicit Reject here,
-      // "Deny" was the only negative-sounding button and got clicked to mean "reject this whole
-      // request" — it doesn't; it only denies the extension. See commit fixing this.
       return (
         <div className="flex items-center gap-2 flex-wrap">
           <button
@@ -214,12 +190,18 @@ export default function HoldRequestsPage() {
           >
             Deny Extension
           </button>
+        </div>
+      )
+    }
+    if (['APPROVED', 'PENDING'].includes(status)) {
+      return (
+        <div className="flex items-center gap-2">
           <button
             disabled={busy}
             onClick={() => runAction(ids, 'reject', groupKey)}
             className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50"
           >
-            Reject Request
+            Cancel
           </button>
         </div>
       )
@@ -235,11 +217,11 @@ export default function HoldRequestsPage() {
         {/* Header */}
         <div className="flex items-start sm:items-center justify-between mb-4 gap-3 flex-wrap">
           <div>
-            <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Hold Requests</h1>
-            <p className="text-sm text-gray-500 mt-0.5">Review client-submitted hold requests — approve, reject, or resolve extension requests</p>
+            <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Reservations</h1>
+            <p className="text-sm text-gray-500 mt-0.5">All hold requests and reservations — edit, cancel, or manage extensions</p>
           </div>
           <div className="flex gap-2 flex-shrink-0 flex-wrap">
-            {(['', 'PENDING', 'EXTENSION_REQUESTED', 'APPROVED', 'EXPIRED', 'REJECTED'] as const).map((s) => (
+            {(['', 'APPROVED', 'EXTENSION_REQUESTED', 'EXPIRED', 'REJECTED'] as const).map((s) => (
               <button
                 key={s}
                 onClick={() => setFilterStatus(s)}

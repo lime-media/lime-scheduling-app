@@ -10,6 +10,11 @@ export type QuoteFeatures = {
   dailyRate?: number
   hourSurcharge?: number
   truckDays?: number
+  truckCount?: number
+  activationDays?: number
+  calendarDays?: number
+  daysPerWeek?: number
+  operatingHours?: number
   baseMedia?: number
   shadowFencing?: number
   shadowFencingFloored?: boolean
@@ -20,6 +25,7 @@ export type QuoteFeatures = {
   studies?: string[]
   studyCost?: number
   studiesTotal?: number
+  transportCharge?: number
 }
 
 function fmtMoney(n: number): string {
@@ -37,6 +43,16 @@ export function parseQuoteFeatures(features: string | null | undefined): QuoteFe
 
 export function QuoteBreakdown({ features }: { features: QuoteFeatures }) {
   const lines: { label: string; amount: number }[] = []
+
+  // Schedule summary
+  const scheduleLabel = features.activationDays && features.calendarDays && features.activationDays !== features.calendarDays
+    ? `${features.activationDays} activation days (${features.calendarDays} calendar days, ${features.daysPerWeek === 5 ? 'Mon-Fri' : features.daysPerWeek === 6 ? 'Mon-Sat' : '7 days'})`
+    : features.activationDays
+      ? `${features.activationDays} day${features.activationDays === 1 ? '' : 's'}`
+      : null
+  const hoursLabel = features.operatingHours && features.operatingHours > 8
+    ? ` · ${features.operatingHours}hr days`
+    : ''
 
   if (features.baseMedia) {
     const perDay = features.dailyRate ? fmtMoney(features.dailyRate) : null
@@ -64,6 +80,9 @@ export function QuoteBreakdown({ features }: { features: QuoteFeatures }) {
       amount: features.studiesTotal,
     })
   }
+  if (features.transportCharge && features.transportCharge > 0) {
+    lines.push({ label: 'Transport', amount: features.transportCharge })
+  }
 
   if (lines.length === 0) return null
 
@@ -71,6 +90,11 @@ export function QuoteBreakdown({ features }: { features: QuoteFeatures }) {
 
   return (
     <div className="text-xs text-gray-600 space-y-1">
+      {scheduleLabel && (
+        <div className="text-gray-500 mb-1.5">
+          {scheduleLabel}{hoursLabel}
+        </div>
+      )}
       {lines.map((l) => (
         <div key={l.label} className="flex justify-between gap-3">
           <span>{l.label}</span>
@@ -83,4 +107,50 @@ export function QuoteBreakdown({ features }: { features: QuoteFeatures }) {
       </div>
     </div>
   )
+}
+
+/**
+ * Build a plain-text activation notes string from quote features.
+ * Used for Salesforce Opportunity.Activation_Notes__c.
+ */
+export function buildActivationNotes(features: QuoteFeatures, tier?: string | null): string {
+  const parts: string[] = []
+
+  if (tier) parts.push(`Tier: ${tier}`)
+
+  if (features.truckCount) parts.push(`${features.truckCount} truck${features.truckCount === 1 ? '' : 's'}`)
+
+  if (features.activationDays && features.calendarDays && features.activationDays !== features.calendarDays) {
+    const sched = features.daysPerWeek === 5 ? 'Mon-Fri' : features.daysPerWeek === 6 ? 'Mon-Sat' : '7 days/week'
+    parts.push(`${features.activationDays} activation days (${features.calendarDays} calendar days, ${sched})`)
+  } else if (features.activationDays) {
+    parts.push(`${features.activationDays} days`)
+  }
+
+  if (features.operatingHours && features.operatingHours > 8) {
+    parts.push(`${features.operatingHours}-hour days`)
+  }
+
+  if (features.dailyRate) parts.push(`Rate: $${features.dailyRate}/truck-day`)
+  if (features.truckDays) parts.push(`${features.truckDays} truck-days`)
+
+  const featureList: string[] = []
+  if (features.shadowFencing) featureList.push('Shadow Fencing')
+  if (features.smartDirectionalIncluded) featureList.push('Smart Directional')
+  if (features.deviceIdIncluded) featureList.push('Device ID Passback')
+  if (features.studies && features.studies.length > 0) {
+    featureList.push(`Lift Studies (${features.studies.map(s => s.replace(/_/g, ' ')).join(', ')})`)
+  }
+  if (featureList.length > 0) parts.push(`Features: ${featureList.join(', ')}`)
+
+  if (features.transportCharge && features.transportCharge > 0) {
+    parts.push(`Transport: $${Math.round(features.transportCharge).toLocaleString()}`)
+  }
+
+  if (features.baseMedia) {
+    const total = (features.baseMedia || 0) + (features.shadowFencing || 0) + (features.smartDirectional || 0) + (features.deviceId || 0) + (features.studiesTotal || 0) + (features.transportCharge || 0)
+    parts.push(`Total: $${Math.round(total).toLocaleString()}`)
+  }
+
+  return parts.join(' | ')
 }

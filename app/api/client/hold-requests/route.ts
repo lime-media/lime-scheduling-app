@@ -4,6 +4,7 @@ import { getClientSession } from '@/lib/clientAuth'
 import { createHoldRequestForClient } from '@/lib/holdRequestService'
 import { selectTrucksForHold } from '@/lib/availabilityEngine'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
+import { parseQuoteFeatures, buildActivationNotes } from '@/components/QuoteBreakdown'
 
 export async function GET(req: NextRequest) {
   const session = getClientSession(req)
@@ -159,6 +160,12 @@ async function handleAutoSelectHold(
         select: { expires_at: true },
       })
 
+      // Build activation notes from the features snapshot
+      const parsedFeatures = parseQuoteFeatures(features)
+      const activationNotes = parsedFeatures
+        ? buildActivationNotes(parsedFeatures, pricing_tier)
+        : undefined
+
       const result = await createOpportunity({
         accountId: session.sfdcAccountId,
         name: oppName,
@@ -170,7 +177,7 @@ async function handleAutoSelectHold(
         holdStop: end_date,
         holdExp: expiresAt?.expires_at?.toISOString().split('T')[0],
         truckNumbers: created,
-        ledRevenue: quoted_total ?? undefined,
+        activationNotes,
       })
 
       if (result.success && result.id) {

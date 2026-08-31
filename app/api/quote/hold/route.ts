@@ -12,6 +12,7 @@ import { prisma } from '@/lib/prisma'
 import { selectTrucksForHold } from '@/lib/availabilityEngine'
 import { computeHoldExpiresAt } from '@/lib/holdRequestService'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
+import { parseQuoteFeatures, buildActivationNotes } from '@/components/QuoteBreakdown'
 
 export async function POST(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
@@ -93,6 +94,11 @@ export async function POST(req: NextRequest) {
   let sfdcOpportunityId: string | null = null
   if (isSfdcConfigured()) {
     try {
+      const parsedFeatures = parseQuoteFeatures(features)
+      const activationNotes = parsedFeatures
+        ? buildActivationNotes(parsedFeatures, pricing_tier)
+        : undefined
+
       const result = await createOpportunity({
         accountId: sfdc_account_id,
         name: `${sfdc_account_name || 'Client'} - ${market} - ${start_date} to ${end_date}`,
@@ -104,6 +110,7 @@ export async function POST(req: NextRequest) {
         holdStop: end_date,
         holdExp: expiresAt.toISOString().split('T')[0],
         truckNumbers: created,
+        activationNotes,
       })
 
       if (result.success && result.id) {

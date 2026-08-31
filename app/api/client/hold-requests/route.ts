@@ -251,7 +251,6 @@ async function handleAutoSelectHold(
   }
 
   // Create Salesforce Opportunity if the client has an SFDC Account ID
-  let sfdcOpportunityId: string | null = null
   if (session.sfdcAccountId && isSfdcConfigured() && created.length > 0) {
     try {
       const oppName = `${session.companyName} - ${market} - ${start_date} to ${end_date}`
@@ -281,7 +280,7 @@ async function handleAutoSelectHold(
       })
 
       if (result.success && result.id) {
-        sfdcOpportunityId = result.id
+        // sfdcOpportunityId stored on hold requests below
         // Link the opportunity back to all hold requests in this campaign group
         await prisma.holdRequest.updateMany({
           where: { campaign_group_id: campaignGroupId },

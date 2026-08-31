@@ -118,6 +118,9 @@ export default function InternalQuotePage() {
     if (status === 'unauthenticated') router.replace('/login')
   }, [status, router])
 
+  // Tab state
+  const [activeTab, setActiveTab] = useState<'builder' | 'classic'>('builder')
+
   // SFDC Account
   const [account, setAccount] = useState<SfdcAccount | null>(null)
 
@@ -230,8 +233,35 @@ export default function InternalQuotePage() {
       <Navbar />
 
       <div className="flex-1 max-w-4xl mx-auto w-full px-4 py-6 sm:px-6">
-        <h1 className="text-2xl font-bold text-gray-900 mb-1">LED Quote Builder</h1>
-        <p className="text-sm text-gray-500 mb-6">Build a quote, select a client, and place a hold — all in one place.</p>
+        <h1 className="text-2xl font-bold text-gray-900 mb-1">LED Quote</h1>
+
+        {/* Tabs */}
+        <div className="flex gap-1 mb-6 border-b border-gray-200">
+          <button
+            onClick={() => setActiveTab('builder')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'builder' ? 'border-green-700 text-green-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+          >
+            Quote Builder
+          </button>
+          <button
+            onClick={() => setActiveTab('classic')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'classic' ? 'border-green-700 text-green-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+          >
+            Classic Quote Tool
+          </button>
+        </div>
+
+        {activeTab === 'classic' ? (
+          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden" style={{ minHeight: 'calc(100vh - 200px)' }}>
+            <iframe
+              src="/led-quote-generator.html"
+              className="w-full border-0"
+              style={{ minHeight: 'calc(100vh - 200px)' }}
+              title="LED Quote Generator"
+            />
+          </div>
+        ) : (
+        <>
 
         {/* Step 1: Client selection */}
         <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
@@ -452,6 +482,9 @@ export default function InternalQuotePage() {
               )
             })()}
           </div>
+        )}
+
+        </>
         )}
       </div>
     </div>

@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { PasswordInput } from '@/components/PasswordInput'
 
 export default function ClientLoginPage() {
   const router = useRouter()
@@ -65,8 +66,7 @@ export default function ClientLoginPage() {
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">Password</label>
-              <input
-                type="password"
+              <PasswordInput
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="current-password"

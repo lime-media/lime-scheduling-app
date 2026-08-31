@@ -6,6 +6,7 @@ import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { CHAT_CONTEXT_QUERY, CHAT_SCHEDULE_WINDOW_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
+import { formatMarketState } from '@/lib/format'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -298,7 +299,7 @@ async function buildScheduleContext(): Promise<string> {
       const blockList = blocks
         .map((b) => {
           const range = b.start === b.end ? b.start : `${b.start} → ${b.end}`
-          const where = [b.market, b.state].filter(Boolean).join(', ')
+          const where = formatMarketState(b.market, b.state)
           return `${range}${where ? ` in ${where}` : ''}${b.program ? ` (${b.program})` : ''}`
         })
         .join('; ')

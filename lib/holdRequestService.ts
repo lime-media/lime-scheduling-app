@@ -2,8 +2,39 @@ import { prisma } from '@/lib/prisma'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { appendHoldRequestToSheet } from '@/lib/googleSheets'
 import type { ClientSession } from '@/lib/clientAuth'
+import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
+// Standard review SLA — 72 hours (3 days) from submission.
 const HOLD_EXPIRATION_HOURS = 72
+// The team needs this many full days of runway before a campaign starts to actually process an
+// approved hold (route the truck, confirm logistics, etc.) — the same 3-day figure as the
+// standard SLA above, but anchored to the campaign's start date instead of the submission time.
+const MIN_PROCESSING_DAYS_BEFORE_START = 3
+
+/**
+ * A hold's expiration is the EARLIER of the standard 72h review SLA and the latest moment that
+ * still leaves MIN_PROCESSING_DAYS_BEFORE_START full days before the campaign starts. A flat
+ * 72-hour countdown makes no sense for a campaign starting in a day or two — there isn't enough
+ * runway left before the trucks need to move, so the hold is already due, not "72 hours away."
+ * If that start-date deadline has already passed by the time the hold is created, the hold is
+ * due immediately (now), never backdated into the past.
+ *
+ * Exported so the staff-side "approve extension" action (app/api/hold-requests/[id]/route.ts)
+ * can grant an extension using the exact same rule — a fresh 72h SLA from the moment of
+ * approval, still capped by the campaign's start date.
+ */
+export function computeHoldExpiresAt(startDate: string): Date {
+  const now = new Date()
+
+  const standardExpiry = new Date(now)
+  standardExpiry.setHours(standardExpiry.getHours() + HOLD_EXPIRATION_HOURS)
+
+  const latestByStart = new Date(startDate + 'T00:00:00Z')
+  latestByStart.setUTCDate(latestByStart.getUTCDate() - MIN_PROCESSING_DAYS_BEFORE_START)
+  const cappedByStart = latestByStart < now ? now : latestByStart
+
+  return standardExpiry < cappedByStart ? standardExpiry : cappedByStart
+}
 
 export interface CreateHoldRequestParams {
   truck_number: string
@@ -38,8 +69,7 @@ export async function createHoldRequestForClient(
     truck_count, campaign_group_id,
   } = params
 
-  const expiresAt = new Date()
-  expiresAt.setHours(expiresAt.getHours() + HOLD_EXPIRATION_HOURS)
+  const expiresAt = computeHoldExpiresAt(start_date)
 
   const holdRequest = await prisma.holdRequest.create({
     data: {
@@ -50,7 +80,7 @@ export async function createHoldRequestForClient(
       start_date:        new Date(start_date),
       end_date:          new Date(end_date),
       notes:             notes  ?? null,
-      status:            'PENDING',
+      status:            'APPROVED',
       pricing_tier:      pricing_tier ?? null,
       quoted_total:      quoted_total ?? null,
       daily_rate:        daily_rate   ?? null,
@@ -60,6 +90,36 @@ export async function createHoldRequestForClient(
       expires_at:        expiresAt,
     },
   })
+
+  // Auto-approve: immediately create the schedule-blocking Hold record.
+  // The availability engine already verified this truck is free.
+  // Hold.created_by is a FK to app_users — use the SFDC service user since
+  // client users don't exist in that table.
+  try {
+    const serviceUser = await prisma.user.findFirst({
+      where: { email: SFDC_SERVICE_USER_EMAIL },
+      select: { id: true },
+    })
+    if (serviceUser) {
+      await prisma.hold.create({
+        data: {
+          truck_number,
+          client_name:  session.companyName,
+          market:       market ?? '',
+          state:        state ?? '',
+          start_date:   new Date(start_date),
+          end_date:     new Date(end_date),
+          status:       'HOLD',
+          source:       'CLIENT',
+          origination:  'client-portal',
+          notes:        notes ?? null,
+          created_by:   serviceUser.id,
+        },
+      })
+    }
+  } catch (err) {
+    console.error('[holdRequestService] auto-approve Hold creation failed:', err)
+  }
 
   // Append to Google Sheet — Firefly only (no-op if env vars not set)
   if (session.companyName === 'Firefly' && session.username === 'firefly') {

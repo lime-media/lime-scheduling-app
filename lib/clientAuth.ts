@@ -14,7 +14,8 @@ export interface ClientSession {
   // client-portal AI quote engine apply this client's negotiated rate. Undefined for a session
   // signed before this field existed, or for a client with no agreement — both mean "standard
   // rate card," never an error.
-  partnerId?:  string
+  partnerId?:       string
+  sfdcAccountId?:   string
 }
 
 function sign(payload: ClientSession): string {

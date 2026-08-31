@@ -6,12 +6,9 @@ import { sendAssistanceRequestEmail } from '@/lib/email'
 /**
  * POST /api/client/hold-requests/[id]/extend
  *
- * Client requests an extension on a hold request. The hold's status flips to
- * EXTENSION_REQUESTED and a notification email goes to the team. Staff can then
- * approve by updating expires_at and resetting status back to APPROVED/PENDING.
- *
- * Allowed on PENDING, APPROVED, and EXPIRED holds — a client can request
- * extension even after expiry (the team decides whether to grant it).
+ * Client requests an extension on a hold request with a specific date.
+ * The hold's status flips to EXTENSION_REQUESTED, the requested date and
+ * reason are stored, and a notification email goes to the team.
  */
 export async function POST(
   req: NextRequest,
@@ -21,7 +18,21 @@ export async function POST(
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const { id } = await params
-  const { reason } = await req.json().catch(() => ({ reason: '' }))
+  const { reason, extend_until } = await req.json().catch(() => ({ reason: '', extend_until: '' }))
+
+  if (!extend_until) {
+    return NextResponse.json({ error: 'extend_until date is required' }, { status: 400 })
+  }
+
+  const extendDate = new Date(extend_until + 'T23:59:59Z')
+  if (isNaN(extendDate.getTime())) {
+    return NextResponse.json({ error: 'Invalid extend_until date' }, { status: 400 })
+  }
+
+  // Must be in the future
+  if (extendDate <= new Date()) {
+    return NextResponse.json({ error: 'Extension date must be in the future' }, { status: 400 })
+  }
 
   const holdRequest = await prisma.holdRequest.findUnique({ where: { id } })
   if (!holdRequest || holdRequest.client_user_id !== session.id) {
@@ -41,8 +52,11 @@ export async function POST(
     data: {
       status: 'EXTENSION_REQUESTED',
       extension_reason: reason || null,
+      extension_until: extendDate,
     },
   })
+
+  const formattedDate = extendDate.toISOString().split('T')[0]
 
   // Notify the team
   await sendAssistanceRequestEmail({
@@ -51,7 +65,7 @@ export async function POST(
     state:       holdRequest.state ?? undefined,
     startDate:   holdRequest.start_date.toISOString().split('T')[0],
     endDate:     holdRequest.end_date.toISOString().split('T')[0],
-    details:     `Hold extension requested for Truck ${holdRequest.truck_number}. ${reason ? `Reason: ${reason}` : 'No reason provided.'}`,
+    details:     `Hold extension requested for Truck ${holdRequest.truck_number}. Extend until: ${formattedDate}.${reason ? ` Reason: ${reason}` : ''}`,
   }).catch((e) => console.error('[hold-extend] email failed:', e))
 
   return NextResponse.json({ ok: true })

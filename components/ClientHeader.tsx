@@ -5,6 +5,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter, usePathname } from 'next/navigation'
 import { hasAiAssistantAccess, hasHoldRequestsAccess, type ClientUser } from '@/lib/useClientAuth'
+import { PasswordInput } from '@/components/PasswordInput'
 
 const BASE_NAV_LINKS = [
   { href: '/client',     label: 'Schedule' },
@@ -222,8 +223,7 @@ export function ClientHeader({ clientUser, authChecked }: { clientUser: ClientUs
               ].map(({ label, value, set, auto }) => (
                 <div key={label}>
                   <label className="block text-xs font-medium text-gray-600 mb-1">{label}</label>
-                  <input
-                    type="password"
+                  <PasswordInput
                     value={value}
                     onChange={(e) => set(e.target.value)}
                     autoComplete={auto}

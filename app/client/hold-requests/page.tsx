@@ -1,12 +1,14 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { Fragment, useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 import { ClientHeader } from '@/components/ClientHeader'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
 import { useClientAuth, hasHoldRequestsAccess } from '@/lib/useClientAuth'
 import { parseDateOnly } from '@/lib/dateOnly'
+import { formatMarketState } from '@/lib/format'
+import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 
 type HoldRequest = {
   id: string
@@ -25,6 +27,8 @@ type HoldRequest = {
   truck_count: number | null
   campaign_group_id: string | null
   expires_at: string | null
+  extension_until: string | null
+  extension_reason: string | null
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -44,18 +48,29 @@ function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; stat
   const expDate = new Date(expiresAt)
 
   if (status === 'EXPIRED') {
-    return <span className="text-xs text-gray-400">Expired</span>
+    return (
+      <span className="text-xs text-gray-400" title={format(expDate, 'MMM d, yyyy h:mm a')}>
+        Expired {format(expDate, 'MMM d')}
+      </span>
+    )
   }
 
   if (isPast(expDate)) {
-    return <span className="text-xs text-red-500 font-medium">Expiring...</span>
+    return (
+      <span className="text-xs text-red-500 font-medium" title={format(expDate, 'MMM d, yyyy h:mm a')}>
+        Expired {format(expDate, 'MMM d, h:mm a')}
+      </span>
+    )
   }
 
   const remaining = formatDistanceToNow(expDate, { addSuffix: false })
-  const isUrgent = expDate.getTime() - Date.now() < 12 * 60 * 60 * 1000 // < 12h
+  const isUrgent = expDate.getTime() - Date.now() < 12 * 60 * 60 * 1000
   return (
-    <span className={`text-xs ${isUrgent ? 'text-amber-600 font-medium' : 'text-gray-400'}`}>
-      {remaining} left
+    <span
+      className={`text-xs ${isUrgent ? 'text-amber-600 font-medium' : 'text-gray-500'}`}
+      title={format(expDate, 'MMM d, yyyy h:mm a')}
+    >
+      Expires {format(expDate, 'MMM d, h:mm a')} ({remaining} left)
     </span>
   )
 }
@@ -81,8 +96,9 @@ export default function ClientHoldRequestsPage() {
   const [loading,      setLoading]      = useState(true)
   const [error,        setError]        = useState('')
   const [filterStatus, setFilterStatus] = useState<string>('')
-  const [extending,    setExtending]    = useState<string | null>(null) // hold request ID being extended
-  const [extendReason, setExtendReason] = useState('')
+  const [extending,     setExtending]     = useState<string | null>(null)
+  const [extendReason,  setExtendReason]  = useState('')
+  const [extendUntil,   setExtendUntil]   = useState('')
 
   const fetchRequests = useCallback(async () => {
     setLoading(true)
@@ -104,20 +120,27 @@ export default function ClientHoldRequestsPage() {
     else if (authChecked) setLoading(false)
   }, [authChecked, clientUser, fetchRequests])
 
-  const requestExtension = useCallback(async (id: string) => {
+  // Takes every hold-request ID in the campaign — a multi-truck campaign must extend as one
+  // unit, not just the first truck in the group (which silently left the rest to expire on
+  // their own while the group badge misleadingly showed "Extension Requested" for all of them).
+  const requestExtension = useCallback(async (ids: string[]) => {
+    if (!extendUntil) return
     try {
-      const res = await fetch(`/api/client/hold-requests/${id}/extend`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ reason: extendReason }),
-      })
-      if (res.ok) {
+      const results = await Promise.all(ids.map((id) =>
+        fetch(`/api/client/hold-requests/${id}/extend`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ reason: extendReason, extend_until: extendUntil }),
+        })
+      ))
+      if (results.every((r) => r.ok)) {
         setExtending(null)
         setExtendReason('')
+        setExtendUntil('')
         fetchRequests()
       }
     } catch { /* handled by UI */ }
-  }, [extendReason, fetchRequests])
+  }, [extendReason, extendUntil, fetchRequests])
 
   const filtered = filterStatus ? requests.filter((r) => r.status === filterStatus) : requests
 
@@ -223,50 +246,85 @@ export default function ClientHoldRequestsPage() {
                           </span>
                         </div>
                       </div>
+                      {/* Quote breakdown — what's actually being paid for, not just a tier name */}
+                      {(() => {
+                        const parsedFeatures = parseQuoteFeatures(first.features)
+                        return parsedFeatures ? (
+                          <div className="px-4 py-3 bg-white border-b border-gray-100">
+                            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Quote breakdown</div>
+                            <QuoteBreakdown features={parsedFeatures} />
+                          </div>
+                        ) : null
+                      })()}
                       {/* Truck rows */}
                       <div className="divide-y divide-gray-100">
                         {groupItems.map((r) => (
                           <div key={r.id} className="px-4 py-2.5 flex items-center justify-between text-sm">
                             <span className="font-medium text-gray-900">Truck {r.truck_number}</span>
-                            <span className="text-gray-500">{[r.market, r.state].filter(Boolean).join(', ')}</span>
+                            <span className="text-gray-500">{formatMarketState(r.market, r.state)}</span>
                           </div>
                         ))}
                       </div>
                       {/* Extension action */}
-                      {canExtend(first) && (
-                        <div className="px-4 py-2.5 border-t border-gray-100 bg-gray-50">
-                          {extending === first.id ? (
-                            <div className="flex gap-2 items-end">
-                              <input
-                                type="text"
-                                placeholder="Reason for extension (optional)"
-                                value={extendReason}
-                                onChange={(e) => setExtendReason(e.target.value)}
-                                className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                              />
+                      {canExtend(first) && (() => {
+                        // Min date: the later of today and the current expiration
+                        const today = new Date().toISOString().split('T')[0]
+                        const expiresDate = first.expires_at ? first.expires_at.split('T')[0] : today
+                        const minDate = expiresDate > today ? expiresDate : today
+                        // Max date: day before campaign start
+                        const startDate = new Date(first.start_date + 'T00:00:00Z')
+                        startDate.setUTCDate(startDate.getUTCDate() - 1)
+                        const maxDate = startDate.toISOString().split('T')[0]
+
+                        return (
+                          <div className="px-4 py-2.5 border-t border-gray-100 bg-gray-50">
+                            {extending === first.id ? (
+                              <div className="space-y-2">
+                                <div className="flex gap-2 items-end">
+                                  <div>
+                                    <label className="text-xs font-medium text-gray-600 mb-0.5 block">Extend until <span className="text-red-500">*</span></label>
+                                    <input
+                                      type="date"
+                                      value={extendUntil}
+                                      min={minDate}
+                                      max={maxDate}
+                                      onChange={(e) => setExtendUntil(e.target.value)}
+                                      className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                                    />
+                                  </div>
+                                  <input
+                                    type="text"
+                                    placeholder="Reason (optional)"
+                                    value={extendReason}
+                                    onChange={(e) => setExtendReason(e.target.value)}
+                                    className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                                  />
+                                  <button
+                                    onClick={() => requestExtension(groupItems.map((g) => g.id))}
+                                    disabled={!extendUntil}
+                                    className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg text-sm font-medium"
+                                  >
+                                    Submit
+                                  </button>
+                                  <button
+                                    onClick={() => { setExtending(null); setExtendReason(''); setExtendUntil('') }}
+                                    className="text-gray-500 hover:text-gray-700 px-2 py-1.5 text-sm"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
                               <button
-                                onClick={() => requestExtension(first.id)}
-                                className="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded-lg text-sm font-medium"
+                                onClick={() => setExtending(first.id)}
+                                className="text-amber-700 hover:text-amber-800 text-xs font-medium"
                               >
-                                Submit
+                                Request Hold Extension
                               </button>
-                              <button
-                                onClick={() => { setExtending(null); setExtendReason('') }}
-                                className="text-gray-500 hover:text-gray-700 px-2 py-1.5 text-sm"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              onClick={() => setExtending(first.id)}
-                              className="text-amber-700 hover:text-amber-800 text-xs font-medium"
-                            >
-                              Request Extension
-                            </button>
-                          )}
-                        </div>
-                      )}
+                            )}
+                          </div>
+                        )
+                      })()}
                     </div>
                   )
                 })}
@@ -286,36 +344,49 @@ export default function ClientHoldRequestsPage() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100">
-                          {ungrouped.map((r) => (
-                            <tr key={r.id} className="hover:bg-gray-50 transition-colors">
-                              <td className="px-4 py-3 font-semibold text-gray-900">{r.truck_number}</td>
-                              <td className="px-4 py-3 text-gray-600">{[r.market, r.state].filter(Boolean).join(', ')}</td>
-                              <td className="px-4 py-3 text-gray-600">
-                                {format(parseDateOnly(r.start_date), 'MMM d')} &ndash; {format(parseDateOnly(r.end_date), 'MMM d')}
-                              </td>
-                              <td className="px-4 py-3">
-                                <PricingBadge tier={r.pricing_tier} total={r.quoted_total} />
-                              </td>
-                              <td className="px-4 py-3">
-                                <div className="flex items-center gap-2">
-                                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[r.status] ?? STATUS_BADGE.PENDING}`}>
-                                    {r.status === 'EXTENSION_REQUESTED' ? 'Ext. Req.' : r.status}
-                                  </span>
-                                  <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
-                                </div>
-                              </td>
-                              <td className="px-4 py-3">
-                                {canExtend(r) && (
-                                  <button
-                                    onClick={() => setExtending(r.id)}
-                                    className="text-amber-700 hover:text-amber-800 text-xs font-medium"
-                                  >
-                                    Extend
-                                  </button>
+                          {ungrouped.map((r) => {
+                            const parsedFeatures = parseQuoteFeatures(r.features)
+                            return (
+                              <Fragment key={r.id}>
+                                <tr className="hover:bg-gray-50 transition-colors">
+                                  <td className="px-4 py-3 font-semibold text-gray-900">{r.truck_number}</td>
+                                  <td className="px-4 py-3 text-gray-600">{formatMarketState(r.market, r.state)}</td>
+                                  <td className="px-4 py-3 text-gray-600">
+                                    {format(parseDateOnly(r.start_date), 'MMM d')} &ndash; {format(parseDateOnly(r.end_date), 'MMM d')}
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <PricingBadge tier={r.pricing_tier} total={r.quoted_total} />
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <div className="flex items-center gap-2">
+                                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[r.status] ?? STATUS_BADGE.PENDING}`}>
+                                        {r.status === 'EXTENSION_REQUESTED' ? 'Ext. Req.' : r.status}
+                                      </span>
+                                      <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
+                                    </div>
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    {canExtend(r) && (
+                                      <button
+                                        onClick={() => setExtending(r.id)}
+                                        className="text-amber-700 hover:text-amber-800 text-xs font-medium"
+                                      >
+                                        Request Hold Extension
+                                      </button>
+                                    )}
+                                  </td>
+                                </tr>
+                                {parsedFeatures && (
+                                  <tr className="bg-gray-50/50">
+                                    <td colSpan={6} className="px-4 pb-3 pt-0">
+                                      <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Quote breakdown</div>
+                                      <QuoteBreakdown features={parsedFeatures} />
+                                    </td>
+                                  </tr>
                                 )}
-                              </td>
-                            </tr>
-                          ))}
+                              </Fragment>
+                            )
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -325,24 +396,52 @@ export default function ClientHoldRequestsPage() {
             )}
 
             {/* Extension modal for ungrouped holds */}
-            {extending && !Array.from(grouped.values()).flat().some(r => r.id === extending) && (
-              <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => { setExtending(null); setExtendReason('') }}>
-                <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6" onClick={(e) => e.stopPropagation()}>
-                  <h3 className="font-semibold text-gray-900 mb-3">Request Extension</h3>
-                  <textarea
-                    placeholder="Reason for extension (optional)"
-                    value={extendReason}
-                    onChange={(e) => setExtendReason(e.target.value)}
-                    rows={3}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none mb-4"
-                  />
-                  <div className="flex gap-2 justify-end">
-                    <button onClick={() => { setExtending(null); setExtendReason('') }} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
-                    <button onClick={() => requestExtension(extending)} className="bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-lg text-sm font-medium">Submit Request</button>
+            {extending && !Array.from(grouped.values()).flat().some(r => r.id === extending) && (() => {
+              const holdReq = ungrouped.find(r => r.id === extending)
+              if (!holdReq) return null
+              const today = new Date().toISOString().split('T')[0]
+              const expiresDate = holdReq.expires_at ? holdReq.expires_at.split('T')[0] : today
+              const minDate = expiresDate > today ? expiresDate : today
+              const startDate = new Date(holdReq.start_date + 'T00:00:00Z')
+              startDate.setUTCDate(startDate.getUTCDate() - 1)
+              const maxDate = startDate.toISOString().split('T')[0]
+
+              return (
+                <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => { setExtending(null); setExtendReason(''); setExtendUntil('') }}>
+                  <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6" onClick={(e) => e.stopPropagation()}>
+                    <h3 className="font-semibold text-gray-900 mb-3">Request Hold Extension</h3>
+                    <div className="mb-3">
+                      <label className="text-xs font-medium text-gray-600 mb-1 block">Extend until <span className="text-red-500">*</span></label>
+                      <input
+                        type="date"
+                        value={extendUntil}
+                        min={minDate}
+                        max={maxDate}
+                        onChange={(e) => setExtendUntil(e.target.value)}
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                      />
+                    </div>
+                    <textarea
+                      placeholder="Reason (optional)"
+                      value={extendReason}
+                      onChange={(e) => setExtendReason(e.target.value)}
+                      rows={2}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none mb-4"
+                    />
+                    <div className="flex gap-2 justify-end">
+                      <button onClick={() => { setExtending(null); setExtendReason(''); setExtendUntil('') }} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
+                      <button
+                        onClick={() => requestExtension([extending])}
+                        disabled={!extendUntil}
+                        className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-medium"
+                      >
+                        Submit Request
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )
+            })()}
           </>
         )}
       </div>

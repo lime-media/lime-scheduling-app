@@ -50,12 +50,17 @@ export async function resolveMarketSizeTierId(market: string): Promise<number> {
  * pricing — never blocks a quote.
  */
 export async function resolveRateOverrides(session: ClientSession): Promise<RateOverrides | null> {
-  if (!session.partnerId) return null
+  // Try sfdc_account_id first (canonical), fall back to partner_id (legacy)
+  const sfdcAccountId = session.sfdcAccountId
+  const partnerId = session.partnerId
+  if (!sfdcAccountId && !partnerId) return null
   try {
     const now = new Date()
     const agreement = await prisma.rateAgreement.findFirst({
       where: {
-        partner_id:      session.partnerId,
+        ...(sfdcAccountId
+          ? { sfdc_account_id: sfdcAccountId }
+          : { partner_id: partnerId! }),
         effective_date:  { lte: now },
         expiration_date: { gte: now },
       },
@@ -65,6 +70,73 @@ export async function resolveRateOverrides(session: ClientSession): Promise<Rate
   } catch (err) {
     console.error('[resolvers] rate agreement lookup failed, using standard rate card:', err)
     return null
+  }
+}
+
+/**
+ * Look up rate overrides by Salesforce Account ID directly (for internal quote flows
+ * where there's no client session).
+ */
+export const DEFAULT_RATE_CARD_SFDC_ID = '__default__'
+
+/**
+ * Load the editable default rate card (sfdc_account_id = '__default__').
+ * Returns null if none exists — the hardcoded config.ts values apply.
+ */
+export async function resolveDefaultRateOverrides(): Promise<RateOverrides | null> {
+  try {
+    const now = new Date()
+    const agreement = await prisma.rateAgreement.findFirst({
+      where: {
+        sfdc_account_id: DEFAULT_RATE_CARD_SFDC_ID,
+        effective_date:  { lte: now },
+        expiration_date: { gte: now },
+      },
+      orderBy: { created_at: 'desc' },
+    })
+    return agreement ? (JSON.parse(agreement.rate_overrides) as RateOverrides) : null
+  } catch {
+    return null
+  }
+}
+
+export async function resolveRateOverridesBySfdcAccount(sfdcAccountId: string): Promise<{ overrides: RateOverrides | null; agreementName?: string }> {
+  try {
+    const now = new Date()
+    // Direct lookup by sfdc_account_id on the rate agreement
+    let agreement = await prisma.rateAgreement.findFirst({
+      where: {
+        sfdc_account_id: sfdcAccountId,
+        effective_date:  { lte: now },
+        expiration_date: { gte: now },
+      },
+      orderBy: { created_at: 'desc' },
+    })
+    // Legacy fallback: look up via ClientUser.partner_id
+    if (!agreement) {
+      const clientUser = await prisma.clientUser.findFirst({
+        where: { sfdc_account_id: sfdcAccountId },
+        select: { partner_id: true },
+      })
+      if (clientUser?.partner_id) {
+        agreement = await prisma.rateAgreement.findFirst({
+          where: {
+            partner_id: clientUser.partner_id,
+            effective_date: { lte: now },
+            expiration_date: { gte: now },
+          },
+          orderBy: { created_at: 'desc' },
+        })
+      }
+    }
+    if (!agreement) return { overrides: null }
+    return {
+      overrides: JSON.parse(agreement.rate_overrides) as RateOverrides,
+      agreementName: agreement.name,
+    }
+  } catch (err) {
+    console.error('[resolvers] rate agreement lookup by SFDC account failed:', err)
+    return { overrides: null }
   }
 }
 

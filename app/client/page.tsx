@@ -154,13 +154,13 @@ export default function ClientPage() {
   }
 
   return (
-    <div className="flex flex-col h-dvh overflow-hidden">
+    <div className="flex flex-col h-dvh overflow-hidden bg-gray-50">
       <ClientHeader clientUser={clientUser} authChecked={authChecked} />
 
       <div className="flex-1 flex flex-col overflow-hidden p-4 min-w-0">
         <div className="flex items-center justify-between mb-3">
           <div>
-            <h1 className="text-lg font-bold text-gray-900">Schedule Grid</h1>
+            <h1 className="text-2xl font-bold text-gray-900">Schedule Grid</h1>
             {authChecked && clientUser && (
               <p className="text-xs text-purple-600 mt-0.5">Drag on available cells to submit a hold request.</p>
             )}
@@ -179,9 +179,8 @@ export default function ClientPage() {
         <div className="flex-1 overflow-auto mt-3">
           {error ? (
             <div className="flex flex-col items-center justify-center h-64 text-center">
-              <div className="text-5xl mb-4">⚠️</div>
-              <p className="text-gray-600 font-medium">{error}</p>
-              <button onClick={fetchSchedule} className="mt-4 bg-green-700 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-800">Retry</button>
+              <p className="text-gray-500 font-medium">{error}</p>
+              <button onClick={fetchSchedule} className="mt-4 bg-green-600 hover:bg-green-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors">Retry</button>
             </div>
           ) : loading ? (
             <ScheduleSkeleton />
@@ -206,8 +205,8 @@ export default function ClientPage() {
 
       {/* Hold request modal */}
       {draft && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6">
             <h2 className="text-base font-bold text-gray-900 mb-1">Submit Hold Request</h2>
             <p className="text-sm text-gray-500 mb-4">Your request will be sent to the Lime Media team for review.</p>
 
@@ -223,14 +222,14 @@ export default function ClientPage() {
               onChange={(e) => setDraftNotes(e.target.value)}
               rows={3}
               placeholder="Any additional details…"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent resize-none"
             />
 
             {draftError && <p className="text-xs text-red-600 mt-2">{draftError}</p>}
 
             <div className="flex gap-2 mt-4">
-              <button onClick={() => setDraft(null)} className="flex-1 border border-gray-300 text-gray-600 py-2 rounded text-sm hover:bg-gray-50">Cancel</button>
-              <button onClick={handleDraftSubmit} disabled={draftLoading} className="flex-1 bg-purple-600 text-white py-2 rounded text-sm font-medium hover:bg-purple-700 disabled:opacity-50">
+              <button onClick={() => setDraft(null)} className="flex-1 border border-gray-200 text-gray-600 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
+              <button onClick={handleDraftSubmit} disabled={draftLoading} className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2.5 rounded-lg text-sm font-medium disabled:opacity-50 transition-colors">
                 {draftLoading ? 'Submitting…' : 'Submit Request'}
               </button>
             </div>

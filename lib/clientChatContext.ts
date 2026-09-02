@@ -73,26 +73,15 @@ export interface ClientChatContext {
 export async function buildClientChatContext(session: ClientSession): Promise<ClientChatContext> {
   const today = new Date().toISOString().split('T')[0]
 
-  const [scheduleRows, contextRows, holds, otherRequests, myRequests, gpsMap] = await Promise.all([
+  const [scheduleRows, contextRows, holds, gpsMap] = await Promise.all([
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
-    // EXPIRED holds are released — don't tell clients a truck is unavailable because of one
     prisma.hold.findMany({ where: { status: { not: 'EXPIRED' } }, orderBy: { start_date: 'asc' } }),
-    // Other clients' non-rejected requests occupy a truck/day too, even before staff approval —
-    // treated the same as a confirmed Hold for availability purposes, just as anonymous (see
-    // safety note above). The requester's OWN requests are excluded here and handled separately
-    // below (myRequests), since those are returned with full detail, not folded in anonymously.
-    prisma.holdRequest.findMany({
-      where: { status: { not: 'REJECTED' }, client_user_id: { not: session.id } },
-      orderBy: { created_at: 'asc' },
-    }),
-    prisma.holdRequest.findMany({ where: { client_user_id: session.id }, orderBy: { created_at: 'desc' } }),
-    // Live GPS — the internal assistant and both schedule APIs already fall back to this when a
-    // truck has no recent LED-schedule market; this context was the one place missing it, which
-    // meant a truck sitting in a market only via GPS (no recent program) had NO location at all
-    // here and could never be matched against a client's requested city.
     getLiveVehicleLocations().catch(() => new Map<string, { formatted_address: string; city: string; state: string }>()),
   ])
+
+  // This client's own holds — returned separately with full detail
+  const myRequests = holds.filter(h => h.client_user_id === session.id)
 
   // Merge consecutive same-market schedule days into ranges (same approach as the internal
   // assistant's context builder) — no client attribution exists in this query to begin with.
@@ -120,16 +109,6 @@ export async function buildClientChatContext(session: ClientSession): Promise<Cl
     const blocks = byTruck.get(h.truck_number) ?? []
     blocks.push({ start: toDateStr(h.start_date), end: toDateStr(h.end_date), market: h.market, state: h.state ?? '' })
     byTruck.set(h.truck_number, blocks)
-  }
-
-  // Fold other clients' pending/approved requests in the same way — a request already occupies
-  // the day even before staff review, so it must read as booked here too, not just once a Hold
-  // is confirmed. Client attribution is never read from `r` here either.
-  for (const r of otherRequests) {
-    if (HIDDEN_TRUCKS.has(r.truck_number)) continue
-    const blocks = byTruck.get(r.truck_number) ?? []
-    blocks.push({ start: toDateStr(r.start_date), end: toDateStr(r.end_date), market: r.market, state: r.state ?? '' })
-    byTruck.set(r.truck_number, blocks)
   }
 
   // Last-known market per truck. Live GPS wins when available — it's the only signal that can

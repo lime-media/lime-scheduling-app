@@ -6,40 +6,45 @@ import { prisma } from '@/lib/prisma'
 /**
  * GET /api/hold-requests
  *
- * Staff-facing list of every client's HoldRequest rows (across all clients — unlike
- * /api/client/hold-requests, which is scoped to one logged-in client). Backs the internal
- * review page at app/hold-requests/page.tsx: approve/reject/extension-decision actions live
- * in app/api/hold-requests/[id]/route.ts.
+ * Staff-facing unified list of ALL holds — Salesforce, Internal, Client, ATT.
+ * Backs the Reservations page at app/hold-requests/page.tsx.
  */
 export async function GET() {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const requests = await prisma.holdRequest.findMany({
+  const holds = await prisma.hold.findMany({
     orderBy:  { created_at: 'desc' },
-    include:  { client_user: { select: { company_name: true } } },
+    include:  {
+      client_user: { select: { company_name: true } },
+      user: { select: { name: true } },
+    },
   })
 
   return NextResponse.json({
-    holdRequests: requests.map((r) => ({
-      id:                r.id,
-      truck_number:      r.truck_number,
-      market:            r.market,
-      state:             r.state ?? '',
-      start_date:        r.start_date.toISOString().split('T')[0],
-      end_date:          r.end_date.toISOString().split('T')[0],
-      notes:             r.notes ?? '',
-      status:            r.status,
-      company_name:      r.client_user?.company_name ?? 'Unknown',
-      pricing_tier:      r.pricing_tier ?? null,
-      quoted_total:      r.quoted_total ?? null,
-      daily_rate:        r.daily_rate ?? null,
-      features:          r.features ?? null,
-      truck_count:       r.truck_count ?? null,
-      campaign_group_id: r.campaign_group_id ?? null,
-      expires_at:        r.expires_at?.toISOString() ?? null,
-      extension_reason:  r.extension_reason ?? null,
-      created_at:        r.created_at.toISOString(),
+    holdRequests: holds.map((h) => ({
+      id:                h.id,
+      truck_number:      h.truck_number,
+      market:            h.market,
+      state:             h.state ?? '',
+      start_date:        h.start_date.toISOString().split('T')[0],
+      end_date:          h.end_date.toISOString().split('T')[0],
+      notes:             h.notes ?? '',
+      status:            h.status,
+      source:            h.source,
+      origination:       h.origination,
+      company_name:      h.client_user?.company_name ?? h.client_name,
+      created_by_name:   h.user?.name ?? null,
+      pricing_tier:      h.pricing_tier ?? null,
+      quoted_total:      h.quoted_total ?? null,
+      daily_rate:        h.daily_rate ?? null,
+      features:          h.features ?? null,
+      truck_count:       h.truck_count ?? null,
+      campaign_group_id: h.campaign_group_id ?? null,
+      sfdc_opportunity_id: h.sfdc_opportunity_id ?? null,
+      expires_at:        h.expires_at?.toISOString() ?? null,
+      extension_reason:  h.extension_reason ?? null,
+      created_at:        h.created_at.toISOString(),
     })),
   })
 }

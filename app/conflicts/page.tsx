@@ -89,7 +89,7 @@ export default function ConflictsPage() {
           {/* Header */}
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-3">
-              <h1 className="text-xl font-bold text-gray-900">Schedule Conflicts</h1>
+              <h1 className="text-2xl font-bold text-gray-900">Schedule Conflicts</h1>
               {conflicts.length > 0 && (
                 <span className="bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
                   {conflicts.length} Active
@@ -98,7 +98,7 @@ export default function ConflictsPage() {
             </div>
             <button
               onClick={fetchConflicts}
-              className="text-xs text-green-700 hover:text-green-900 font-medium border border-green-300 px-2 py-1 rounded"
+              className="text-xs text-green-700 hover:text-green-900 font-medium border border-green-200 px-2 py-1 rounded-lg transition-colors"
             >
               Refresh
             </button>
@@ -111,22 +111,21 @@ export default function ConflictsPage() {
             </div>
           ) : conflicts.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-24 text-center">
-              <div className="text-5xl mb-4">✅</div>
               <p className="text-lg font-semibold text-gray-700">No active conflicts</p>
-              <p className="text-sm text-gray-400 mt-1">All holds and schedules are clear</p>
+              <p className="text-sm text-gray-500 mt-1">All holds and schedules are clear</p>
             </div>
           ) : (
             <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="bg-gray-50 border-b border-gray-200">
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Truck</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Hold Client</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Market</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">LED Program</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Conflict Dates</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Detected</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
+                  <tr className="bg-gray-50/80 border-b border-gray-200">
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Truck</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Hold Client</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Market</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">LED Program</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Conflict Dates</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Detected</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -137,7 +136,7 @@ export default function ConflictsPage() {
                       <td className="px-4 py-3 text-gray-600">{c.hold_market}</td>
                       <td className="px-4 py-3 text-gray-700">{c.scheduled_program}</td>
                       <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
-                        <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded text-xs font-medium">
+                        <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded-lg text-xs font-medium">
                           {c.conflict_start} → {c.conflict_end}
                         </span>
                       </td>
@@ -149,14 +148,14 @@ export default function ConflictsPage() {
                           <button
                             disabled={acting === c.id}
                             onClick={() => act(c.id, 'resolve')}
-                            className="text-xs px-2.5 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-100 disabled:opacity-40 transition-colors"
+                            className="text-xs px-2.5 py-1 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-100 disabled:opacity-40 transition-colors"
                           >
                             Resolve
                           </button>
                           <button
                             disabled={acting === c.id}
                             onClick={() => act(c.id, 'release-hold')}
-                            className="text-xs px-2.5 py-1 rounded border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-40 transition-colors"
+                            className="text-xs px-2.5 py-1 rounded-lg border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-40 transition-colors"
                           >
                             Release Hold
                           </button>

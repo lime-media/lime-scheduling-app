@@ -23,9 +23,9 @@ model User {
   @@map("app_users")
 }
 
-// status: HOLD | COMMITTED | ATT_SOFT | EXPIRED
+// status: HOLD | COMMITTED | ATT_SOFT | EXPIRED | EXTENSION_REQUESTED
 // source: INTERNAL | SALESFORCE | CLIENT
-// origination: frontend | mcp
+// origination: frontend | client-view | mcp
 model Hold {
   id                  String     @id @default(cuid())
   truck_number        String
@@ -41,19 +41,37 @@ model Hold {
   created_by          String
   created_at          DateTime   @default(now())
   updated_at          DateTime   @updatedAt
-  // Set only for holds pushed in from Salesforce — lets repeat pushes for the
-  // same Opportunity update the existing hold instead of creating duplicates.
+  // Salesforce link — lets repeat pushes for the same Opportunity update
+  // the existing hold instead of creating duplicates.
   sfdc_opportunity_id String?
-  sfdc_hold_exp       DateTime?
+  sfdc_hold_exp       DateTime?  // DEPRECATED — use expires_at instead
+  // Client user link (nullable — only set for CLIENT-sourced holds)
+  client_user_id      String?
+  // Pricing snapshot — locked at hold creation from the quote engine
+  pricing_tier        String?                        // Good | Better | Best
+  quoted_total        Float?                         // total price at the selected tier (campaign-level)
+  daily_rate          Float?                         // per-truck per-day rate
+  features            String?    @db.NVarChar(Max)   // JSON: feature breakdown
+  // Campaign grouping
+  truck_count         Int?                           // total trucks in the campaign
+  campaign_group_id   String?                        // groups multi-truck holds into one campaign
+  // Unified expiration — 72h for client holds, sfdc_hold_exp for Salesforce, null for no expiry
+  expires_at          DateTime?
+  extension_reason    String?    @db.NVarChar(Max)   // client's reason when requesting extension
+  extension_until     DateTime?                       // requested extension date (client picks)
+  // Relations
   user                User       @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  client_user         ClientUser? @relation(fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   audit_logs          AuditLog[]
 
+  @@index([campaign_group_id])
+  @@index([client_user_id])
   @@map("app_holds")
 }
 
-// status: PENDING | APPROVED | REJECTED | EXPIRED | EXTENSION_REQUESTED
-// source: INTERNAL | SALESFORCE | CLIENT
-// pricing_tier: Good | Better | Best
+// DEPRECATED — scheduled for removal after migration verification.
+// All new code writes to Hold directly. This model is retained only for
+// rollback safety and historical reads.
 model HoldRequest {
   id                  String     @id @default(cuid())
   client_user_id      String?
@@ -65,20 +83,18 @@ model HoldRequest {
   notes               String?    @db.NVarChar(Max)
   status              String     @default("PENDING")
   source              String     @default("CLIENT")
-  // Pricing snapshot — locked at hold creation from the quote engine
-  pricing_tier        String?                        // Good | Better | Best
-  quoted_total        Float?                         // total price at the selected tier (campaign-level)
-  daily_rate          Float?                         // per-truck per-day rate
-  features            String?    @db.NVarChar(Max)   // JSON: { smartDirectional, deviceId, studies, shadowFencing }
-  truck_count         Int?                           // total trucks in the campaign group
-  campaign_group_id   String?                        // groups multi-truck holds into one campaign
-  sfdc_opportunity_id String?                        // Salesforce Opportunity ID (outbound-created)
-  // Expiration — 72h default from creation, capped by campaign start date.
+  pricing_tier        String?
+  quoted_total        Float?
+  daily_rate          Float?
+  features            String?    @db.NVarChar(Max)
+  truck_count         Int?
+  campaign_group_id   String?
+  sfdc_opportunity_id String?
   expires_at          DateTime?
-  extension_reason    String?    @db.NVarChar(Max)   // client's reason when requesting extension
-  extension_until     DateTime?                       // requested extension date (client picks)
+  extension_reason    String?    @db.NVarChar(Max)
+  extension_until     DateTime?
   created_at          DateTime   @default(now())
-  client_user         ClientUser? @relation(fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  client_user         ClientUser? @relation("HoldRequestClientUser", fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([campaign_group_id])
   @@map("app_hold_requests")
@@ -89,6 +105,7 @@ model ClientUser {
   username      String             @unique
   password_hash String
   company_name  String
+  email         String?
   // Optional link to a RateAgreement.partner_id — lets the client-portal AI quote engine apply
   // this client's negotiated rate instead of the standard rate card. Null means standard pricing.
   // Set by ops via the admin client-users screen; not self-serve.
@@ -97,7 +114,8 @@ model ClientUser {
   // opportunities can be created under the correct account.
   sfdc_account_id  String?
   created_at    DateTime           @default(now())
-  hold_requests HoldRequest[]
+  holds         Hold[]
+  hold_requests HoldRequest[]     @relation("HoldRequestClientUser") // DEPRECATED
   ai_questions  ClientAiQuestion[]
 
   @@map("app_client_users")
@@ -196,7 +214,8 @@ model McpQueryLog {
 // agreement_type: standard | volume_discount | flat_rate | custom
 model RateAgreement {
   id              String   @id @default(cuid())
-  partner_id      String
+  partner_id      String   // DEPRECATED — use sfdc_account_id
+  sfdc_account_id String?  // Salesforce Account ID — the canonical link
   name            String
   agreement_type  String   @default("standard")
   effective_date  DateTime
@@ -207,6 +226,7 @@ model RateAgreement {
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
 
+  @@index([sfdc_account_id])
   @@map("app_rate_agreements")
 }
 

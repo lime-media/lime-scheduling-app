@@ -425,7 +425,7 @@ function InteractiveQuoteCard({
           <button
             onClick={onPlaceHold}
             disabled={holdLoading || holdResult?.ok === true}
-            className="mt-4 w-full bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white rounded-xl px-6 py-3 text-sm font-semibold transition-colors"
+            className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-xl px-6 py-3 text-sm font-semibold transition-colors"
           >
             {holdLoading ? 'Submitting...' : `Place Hold \u2014 ${fmtMoney(grandTotal)}`}
           </button>
@@ -500,7 +500,7 @@ function QuoteBox({
   disabled: boolean
 }) {
   const complete = Boolean(form.market.trim() && form.start_date && form.end_date && form.truck_count && form.truck_count > 0)
-  const inputClass = 'border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent w-full'
+  const inputClass = 'border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent w-full'
   const labelClass = 'text-xs font-medium text-gray-600 mb-1'
   const requiredMark = <span className="text-red-500">&nbsp;*</span>
 
@@ -561,7 +561,7 @@ function QuoteBox({
           if (calDays <= 6) return null
           const btnClass = (active: boolean) =>
             `px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-              active ? 'bg-green-700 text-white border-green-700' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+              active ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
             }`
           return (
             <div className="mt-3 flex flex-wrap items-center gap-4">
@@ -588,7 +588,7 @@ function QuoteBox({
           disabled={disabled || !complete}
           data-quote-submit
           title={!complete ? 'Fill in market, start date, end date, and trucks to continue' : undefined}
-          className="mt-4 w-full sm:w-auto bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white rounded-xl px-6 py-2.5 text-sm font-semibold transition-colors"
+          className="mt-4 w-full sm:w-auto bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-xl px-6 py-2.5 text-sm font-semibold transition-colors"
         >
           Get Quote
         </button>
@@ -643,10 +643,12 @@ export default function ClientAiPage() {
   }, [])
 
   // Direct quote API call
-  const submitQuote = useCallback(async () => {
-    const { market, start_date, end_date, truck_count } = quoteForm
+  const submitQuote = useCallback(async (marketOverride?: string) => {
+    const market = marketOverride || quoteForm.market
+    const { start_date, end_date, truck_count } = quoteForm
     if (quoteLoading || !market.trim() || !start_date || !end_date || !truck_count) return
 
+    if (marketOverride) setQuoteForm(prev => ({ ...prev, market: marketOverride }))
     setQuoteLoading(true)
     setQuoteError(null)
     setQuoteResult(null)
@@ -786,8 +788,7 @@ export default function ClientAiPage() {
   if (!clientUser) {
     return (
       <div className="flex flex-col items-center justify-center h-dvh text-center p-4">
-        <div className="text-5xl mb-4">&#128274;</div>
-        <p className="text-gray-600 font-medium">Log in to use the assistant</p>
+        <p className="text-gray-500 font-medium">Log in to use the assistant</p>
         <Link href="/client/login" className="mt-4 bg-[#1a3028] text-white px-4 py-2 rounded-lg text-sm hover:bg-[#1a3028]/90">
           Log in
         </Link>
@@ -800,8 +801,7 @@ export default function ClientAiPage() {
       <div className="flex flex-col h-dvh bg-gray-50 overflow-hidden">
         <ClientHeader clientUser={clientUser} authChecked={authChecked} />
         <div className="flex-1 flex flex-col items-center justify-center text-center p-4">
-          <div className="text-5xl mb-4">&#128679;</div>
-          <p className="text-gray-600 font-medium">The assistant isn&apos;t available on your account yet.</p>
+          <p className="text-gray-500 font-medium">The assistant isn&apos;t available on your account yet.</p>
           <Link href="/client" className="mt-4 bg-[#1a3028] text-white px-4 py-2 rounded-lg text-sm hover:bg-[#1a3028]/90">
             Back to Schedule
           </Link>
@@ -893,15 +893,7 @@ export default function ClientAiPage() {
                     <button
                       key={candidate}
                       type="button"
-                      onClick={() => {
-                        setQuoteForm((prev) => ({ ...prev, market: candidate }))
-                        setMarketCandidates(null)
-                        // Auto-submit with the selected market
-                        setTimeout(() => {
-                          const btn = document.querySelector('[data-quote-submit]') as HTMLButtonElement
-                          btn?.click()
-                        }, 50)
-                      }}
+                      onClick={() => submitQuote(candidate)}
                       className="px-4 py-2 bg-white border border-amber-300 rounded-lg text-sm font-medium text-amber-900 hover:bg-amber-100 transition-colors"
                     >
                       {candidate}
@@ -1004,12 +996,12 @@ export default function ClientAiPage() {
                   onKeyDown={handleChatKeyDown}
                   placeholder="Ask about availability, your holds, or anything else..."
                   rows={1}
-                  className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                 />
                 <button
                   onClick={() => sendChat()}
                   disabled={chatLoading || !chatInput.trim()}
-                  className="bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white rounded-lg px-3 py-2 text-sm font-medium transition-colors flex-shrink-0"
+                  className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-3 py-2 text-sm font-medium transition-colors flex-shrink-0"
                 >
                   Send
                 </button>

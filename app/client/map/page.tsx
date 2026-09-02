@@ -17,7 +17,7 @@ export default function ClientMapPage() {
   const { clientUser, authChecked } = useClientAuth()
 
   return (
-    <div className="flex flex-col h-dvh overflow-hidden">
+    <div className="flex flex-col h-dvh overflow-hidden bg-gray-50">
       <ClientHeader clientUser={clientUser} authChecked={authChecked} />
 
       <div className="flex-1 min-h-0 flex overflow-hidden">

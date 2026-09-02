@@ -72,7 +72,7 @@ function AccountSearch({ selected, onSelect }: { selected: SfdcAccount | null; o
           {selected.name}
           <span className="text-green-500 text-xs ml-2">{selected.id}</span>
         </div>
-        <button onClick={() => onSelect(null)} className="text-xs text-gray-500 hover:text-gray-700">Change</button>
+        <button onClick={() => onSelect(null)} className="text-xs text-gray-500 hover:text-gray-700 transition-colors">Change</button>
       </div>
     )
   }
@@ -85,7 +85,7 @@ function AccountSearch({ selected, onSelect }: { selected: SfdcAccount | null; o
         value={query}
         onChange={(e) => { setQuery(e.target.value); search(e.target.value); setOpen(true) }}
         onFocus={() => results.length > 0 && setOpen(true)}
-        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+        className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
       />
       {searching && <span className="absolute right-3 top-2.5 text-xs text-gray-400">Searching...</span>}
       {open && results.length > 0 && (
@@ -94,7 +94,7 @@ function AccountSearch({ selected, onSelect }: { selected: SfdcAccount | null; o
             <button
               key={a.id}
               onClick={() => { onSelect(a); setQuery(''); setOpen(false) }}
-              className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-b border-gray-100 last:border-0"
+              className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-b border-gray-100 last:border-0 transition-colors"
             >
               <span className="font-medium text-gray-900">{a.name}</span>
               <span className="text-gray-400 text-xs ml-2">{a.id}</span>
@@ -140,10 +140,12 @@ export default function InternalQuotePage() {
 
   const quoteRef = useRef<HTMLDivElement>(null)
 
-  const submitQuote = useCallback(async () => {
-    const { market, start_date, end_date, truck_count } = form
+  const submitQuote = useCallback(async (marketOverride?: string) => {
+    const market = marketOverride || form.market
+    const { start_date, end_date, truck_count } = form
     if (quoteLoading || !market.trim() || !start_date || !end_date || !truck_count) return
 
+    if (marketOverride) setForm(prev => ({ ...prev, market: marketOverride }))
     setQuoteLoading(true)
     setQuoteError(null)
     setQuoteResult(null)
@@ -154,7 +156,7 @@ export default function InternalQuotePage() {
       const res = await fetch('/api/quote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, truck_count }),
+        body: JSON.stringify({ ...form, market, truck_count, sfdc_account_id: account?.id }),
       })
       const data = await res.json()
 
@@ -181,19 +183,6 @@ export default function InternalQuotePage() {
     if (holdLoading || !quoteResult || !account) return
     setHoldLoading(true)
 
-    const { pricing, features } = quoteResult
-    let mediaTotal = pricing.baseMedia
-    if (toggles.shadowFencing) mediaTotal += features.shadowFencing.cost
-    if (toggles.smartDirectional) mediaTotal += features.smartDirectional.cost
-    if (toggles.deviceId) mediaTotal += features.deviceId.cost
-    if (features.studies.available && toggles.studies.length > 0) mediaTotal += toggles.studies.length * features.studies.costPerStudy
-    const transportCharge = quoteResult.transportCharge
-    const grandTotal = mediaTotal + transportCharge
-
-    const tierLabel = !toggles.shadowFencing && !toggles.smartDirectional && !toggles.deviceId && toggles.studies.length === 0 ? 'Good'
-      : toggles.shadowFencing && !toggles.smartDirectional && !toggles.deviceId && toggles.studies.length === 0 ? 'Better'
-      : toggles.shadowFencing && toggles.studies.length > 0 && features.studies.available ? 'Best' : 'Custom'
-
     try {
       const res = await fetch('/api/quote/hold', {
         method: 'POST',
@@ -206,11 +195,12 @@ export default function InternalQuotePage() {
           truck_count: form.truck_count,
           sfdc_account_id: account.id,
           sfdc_account_name: account.name,
-          pricing_tier: tierLabel,
-          quoted_total: grandTotal,
-          daily_rate: pricing.dailyRate,
-          features: JSON.stringify({ dailyRate: pricing.dailyRate, truckDays: pricing.truckDays, baseMedia: pricing.baseMedia, shadowFencing: toggles.shadowFencing ? features.shadowFencing.cost : 0, smartDirectional: toggles.smartDirectional ? features.smartDirectional.cost : 0, deviceId: toggles.deviceId ? features.deviceId.cost : 0, studies: toggles.studies, studyCost: features.studies.costPerStudy, transportCharge }),
-          transport_charge: transportCharge,
+          shadow_fencing: toggles.shadowFencing,
+          smart_directional: toggles.smartDirectional,
+          device_id: toggles.deviceId,
+          studies: toggles.studies,
+          days_per_week: form.days_per_week,
+          operating_hours: form.operating_hours,
         }),
       })
       const data = await res.json()
@@ -224,12 +214,12 @@ export default function InternalQuotePage() {
 
   if (status === 'loading' || !session) return null
 
-  const inputClass = 'border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent w-full'
-  const complete = Boolean(form.market.trim() && form.start_date && form.end_date && form.truck_count && form.truck_count > 0)
+  const inputClass = 'border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent w-full'
+  const complete = Boolean(account && form.market.trim() && form.start_date && form.end_date && form.truck_count && form.truck_count > 0)
   const calDays = form.start_date && form.end_date ? Math.round((new Date(form.end_date + 'T00:00:00Z').getTime() - new Date(form.start_date + 'T00:00:00Z').getTime()) / 86400000) + 1 : 0
 
   return (
-    <div className="flex flex-col min-h-screen bg-gray-50">
+    <div className="flex flex-col min-h-dvh bg-gray-50">
       <Navbar />
 
       <div className="flex-1 max-w-4xl mx-auto w-full px-4 py-6 sm:px-6">
@@ -239,20 +229,20 @@ export default function InternalQuotePage() {
         <div className="flex gap-1 mb-6 border-b border-gray-200">
           <button
             onClick={() => setActiveTab('builder')}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'builder' ? 'border-green-700 text-green-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'builder' ? 'border-green-600 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
           >
             Quote Builder
           </button>
           <button
             onClick={() => setActiveTab('classic')}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'classic' ? 'border-green-700 text-green-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'classic' ? 'border-green-600 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
           >
             Classic Quote Tool
           </button>
         </div>
 
         {activeTab === 'classic' ? (
-          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden" style={{ minHeight: 'calc(100vh - 200px)' }}>
+          <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden" style={{ minHeight: 'calc(100vh - 200px)' }}>
             <iframe
               src="/led-quote-generator.html"
               className="w-full border-0"
@@ -264,13 +254,13 @@ export default function InternalQuotePage() {
         <>
 
         {/* Step 1: Client selection */}
-        <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
+        <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 mb-4">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
-          <AccountSearch selected={account} onSelect={setAccount} />
+          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setQuoteResult(null); setHoldResult(null) }} />
         </div>
 
         {/* Step 2: Campaign details */}
-        <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
+        <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 mb-4">
           <h2 className="text-sm font-semibold text-gray-900 mb-3">2. Campaign Details</h2>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div className="col-span-2 sm:col-span-1">
@@ -298,7 +288,7 @@ export default function InternalQuotePage() {
                 <span className="text-xs font-medium text-gray-600">Schedule:</span>
                 {([5, 6, 7] as const).map(d => (
                   <button key={d} type="button" onClick={() => setForm(p => ({ ...p, days_per_week: d }))}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${form.days_per_week === d ? 'bg-green-700 text-white border-green-700' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}>
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${form.days_per_week === d ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}>
                     {d === 5 ? 'Mon-Fri' : d === 6 ? 'Mon-Sat' : '7 days'}
                   </button>
                 ))}
@@ -307,7 +297,7 @@ export default function InternalQuotePage() {
                 <span className="text-xs font-medium text-gray-600">Hours:</span>
                 {([8, 10, 12] as const).map(h => (
                   <button key={h} type="button" onClick={() => setForm(p => ({ ...p, operating_hours: h }))}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${form.operating_hours === h ? 'bg-green-700 text-white border-green-700' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}>
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${form.operating_hours === h ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}>
                     {h} hr
                   </button>
                 ))}
@@ -316,23 +306,23 @@ export default function InternalQuotePage() {
             </div>
           )}
 
-          <button onClick={submitQuote} disabled={quoteLoading || !complete}
-            className="mt-4 bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white rounded-xl px-6 py-2.5 text-sm font-semibold transition-colors">
+          <button onClick={() => submitQuote()} disabled={quoteLoading || !complete}
+            className="mt-4 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-2.5 text-sm font-medium transition-colors">
             {quoteLoading ? 'Checking availability...' : 'Get Quote'}
           </button>
         </div>
 
         {/* Error */}
-        {quoteError && <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-800 mb-4">{quoteError}</div>}
+        {quoteError && <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-800 mb-4">{quoteError}</div>}
 
         {/* Disambiguation */}
         {marketCandidates && (
-          <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-4 mb-4">
+          <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-4 mb-4">
             <p className="text-sm font-medium text-amber-900 mb-2">Which market did you mean?</p>
             <div className="flex flex-wrap gap-2">
               {marketCandidates.map(c => (
-                <button key={c} onClick={() => { setForm(p => ({ ...p, market: c })); setMarketCandidates(null); setTimeout(() => submitQuote(), 50) }}
-                  className="px-4 py-2 bg-white border border-amber-300 rounded-lg text-sm font-medium text-amber-900 hover:bg-amber-100">
+                <button key={c} onClick={() => submitQuote(c)}
+                  className="px-4 py-2 bg-white border border-amber-200 rounded-lg text-sm font-medium text-amber-900 hover:bg-amber-100 transition-colors">
                   {c}
                 </button>
               ))}
@@ -344,7 +334,7 @@ export default function InternalQuotePage() {
         {quoteResult && !quoteLoading && (
           <div ref={quoteRef}>
             {/* Availability */}
-            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 mb-4">
+            <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 mb-4">
               <div className="flex items-center gap-2 mb-1">
                 <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${quoteResult.availability.sufficient ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>
                   {quoteResult.availability.available} trucks available
@@ -403,7 +393,7 @@ export default function InternalQuotePage() {
             </div>
 
             {/* Feature toggles */}
-            <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3 mb-4">
+            <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 space-y-3 mb-4">
               <h3 className="text-sm font-semibold text-gray-900">Customize features</h3>
               {[
                 { key: 'shadowFencing' as const, label: 'Shadow Fencing', desc: 'Geo-targeted digital ads', cost: quoteResult.features.shadowFencing.cost },
@@ -453,7 +443,7 @@ export default function InternalQuotePage() {
               const total = mediaTotal + transport
 
               return (
-                <div className="bg-white border border-gray-200 rounded-xl p-4">
+                <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4">
                   <div className="space-y-1.5 text-sm">
                     <div className="flex justify-between text-gray-600"><span>Base media ({pricing.truckDays} truck-days)</span><span>{fmtMoney(pricing.baseMedia)}</span></div>
                     {toggles.shadowFencing && <div className="flex justify-between text-gray-600"><span>Shadow fencing</span><span>+ {fmtMoney(features.shadowFencing.cost)}</span></div>}
@@ -471,7 +461,7 @@ export default function InternalQuotePage() {
                     </div>
                   ) : (
                     <button onClick={placeHold} disabled={holdLoading || !account || holdResult?.ok === true}
-                      className="mt-4 w-full bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white rounded-xl px-6 py-3 text-sm font-semibold transition-colors">
+                      className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium transition-colors">
                       {!account ? 'Select a client above to place hold' : holdLoading ? 'Submitting...' : `Place Hold \u2014 ${fmtMoney(total)}`}
                     </button>
                   )}

@@ -74,6 +74,20 @@ export async function createClientHold(
     throw new Error('SFDC service user not found — cannot create client hold')
   }
 
+  // Conflict check — prevent double-booking
+  const conflicts = await prisma.hold.findMany({
+    where: {
+      truck_number,
+      status: { notIn: ['EXPIRED', 'ATT_SOFT'] },
+      start_date: { lte: new Date(end_date) },
+      end_date: { gte: new Date(start_date) },
+    },
+  })
+  if (conflicts.length > 0) {
+    const c = conflicts[0]
+    throw new Error(`Truck ${truck_number} already booked for "${c.client_name}" from ${c.start_date.toISOString().split('T')[0]} to ${c.end_date.toISOString().split('T')[0]}`)
+  }
+
   const hold = await prisma.hold.create({
     data: {
       truck_number,

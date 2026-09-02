@@ -86,6 +86,7 @@ export type AvailabilityInput = {
   startDate: string           // YYYY-MM-DD
   endDate: string             // YYYY-MM-DD
   truckCount: number          // requested number of trucks
+  serviceAreaMiles?: number   // override SERVICE_AREA_RADIUS_MILES (from rate card)
 }
 
 // ---------------------------------------------------------------------------
@@ -108,9 +109,10 @@ function rangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: strin
   return aStart <= bEnd && bStart <= aEnd
 }
 
-function classifyDistance(distanceMiles: number): ProximityBucket {
+function classifyDistance(distanceMiles: number, serviceAreaMiles?: number): ProximityBucket {
+  const radius = serviceAreaMiles ?? SERVICE_AREA_RADIUS_MILES
   if (distanceMiles <= 50) return 'LOCAL'
-  if (distanceMiles <= SERVICE_AREA_RADIUS_MILES) return 'NEARBY'
+  if (distanceMiles <= radius) return 'NEARBY'
   return 'REPOSITIONING'
 }
 
@@ -155,7 +157,7 @@ export function recomputeTransportCharge(
 // ---------------------------------------------------------------------------
 
 export async function checkAvailability(input: AvailabilityInput): Promise<AvailabilityResult> {
-  const { market, startDate, endDate, truckCount } = input
+  const { market, startDate, endDate, truckCount, serviceAreaMiles } = input
 
   // Resolve campaign market coordinates
   const campaignCoords = await resolveCampaignCoords(market)
@@ -279,7 +281,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     if (!Number.isFinite(distanceMiles)) continue
 
     distanceMiles = Math.round(distanceMiles * 10) / 10
-    const bucket = classifyDistance(distanceMiles)
+    const bucket = classifyDistance(distanceMiles, serviceAreaMiles)
 
     // Compute travel days needed for repositioning
     const travelDays = bucket === 'REPOSITIONING'

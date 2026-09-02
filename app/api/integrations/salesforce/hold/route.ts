@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
   // Reconcile: drop holds this Opportunity previously pushed for trucks that
   // are no longer in its current LED Trucks list (e.g. a truck got swapped out).
   const stale = await prisma.hold.findMany({
-    where: { sfdc_opportunity_id: opportunityId, truck_number: { notIn: truckNumbers } },
+    where: { sfdc_opportunity_id: opportunityId, source: 'SALESFORCE', truck_number: { notIn: truckNumbers } },
   })
   for (const hold of stale) {
     await prisma.auditLog.create({
@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
     const state  = gps?.state ?? ''
 
     const existing = await prisma.hold.findFirst({
-      where: { sfdc_opportunity_id: opportunityId, truck_number },
+      where: { sfdc_opportunity_id: opportunityId, source: 'SALESFORCE', truck_number },
     })
 
     if (existing) {

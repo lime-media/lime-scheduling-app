@@ -183,19 +183,6 @@ export default function InternalQuotePage() {
     if (holdLoading || !quoteResult || !account) return
     setHoldLoading(true)
 
-    const { pricing, features } = quoteResult
-    let mediaTotal = pricing.baseMedia
-    if (toggles.shadowFencing) mediaTotal += features.shadowFencing.cost
-    if (toggles.smartDirectional) mediaTotal += features.smartDirectional.cost
-    if (toggles.deviceId) mediaTotal += features.deviceId.cost
-    if (features.studies.available && toggles.studies.length > 0) mediaTotal += toggles.studies.length * features.studies.costPerStudy
-    const transportCharge = quoteResult.transportCharge
-    const grandTotal = mediaTotal + transportCharge
-
-    const tierLabel = !toggles.shadowFencing && !toggles.smartDirectional && !toggles.deviceId && toggles.studies.length === 0 ? 'Good'
-      : toggles.shadowFencing && !toggles.smartDirectional && !toggles.deviceId && toggles.studies.length === 0 ? 'Better'
-      : toggles.shadowFencing && toggles.studies.length > 0 && features.studies.available ? 'Best' : 'Custom'
-
     try {
       const res = await fetch('/api/quote/hold', {
         method: 'POST',
@@ -208,11 +195,12 @@ export default function InternalQuotePage() {
           truck_count: form.truck_count,
           sfdc_account_id: account.id,
           sfdc_account_name: account.name,
-          pricing_tier: tierLabel,
-          quoted_total: grandTotal,
-          daily_rate: pricing.dailyRate,
-          features: JSON.stringify({ dailyRate: pricing.dailyRate, truckDays: pricing.truckDays, baseMedia: pricing.baseMedia, shadowFencing: toggles.shadowFencing ? features.shadowFencing.cost : 0, smartDirectional: toggles.smartDirectional ? features.smartDirectional.cost : 0, deviceId: toggles.deviceId ? features.deviceId.cost : 0, studies: toggles.studies, studyCost: features.studies.costPerStudy, transportCharge }),
-          transport_charge: transportCharge,
+          shadow_fencing: toggles.shadowFencing,
+          smart_directional: toggles.smartDirectional,
+          device_id: toggles.deviceId,
+          studies: toggles.studies,
+          days_per_week: form.days_per_week,
+          operating_hours: form.operating_hours,
         }),
       })
       const data = await res.json()

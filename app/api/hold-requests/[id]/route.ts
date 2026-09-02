@@ -37,7 +37,7 @@ export async function PATCH(
 
   const hold = await prisma.hold.findUnique({
     where:   { id: params.id },
-    include: { client_user: { select: { username: true, company_name: true } } },
+    include: { client_user: { select: { username: true, email: true, company_name: true } } },
   })
   if (!hold) return NextResponse.json({ error: 'Hold not found' }, { status: 404 })
 
@@ -110,14 +110,16 @@ export async function PATCH(
 
     await prisma.hold.delete({ where: { id: hold.id } })
 
-    // Email the client if we have their info
+    // Email the client if we have their email
     let emailed = false
-    if (reason && hold.client_user) {
+    const clientEmail = hold.client_user?.email
+    if (reason && clientEmail) {
       const startDate = hold.start_date.toISOString().split('T')[0]
       const endDate = hold.end_date.toISOString().split('T')[0]
+      try {
       await sendCancellationEmail({
-        to:          hold.client_user.username,
-        companyName: hold.client_user.company_name,
+        to:          clientEmail,
+        companyName: hold.client_user!.company_name,
         truckNumber: hold.truck_number,
         market:      hold.market,
         startDate,
@@ -125,6 +127,9 @@ export async function PATCH(
         reason,
       })
       emailed = true
+      } catch (err) {
+        console.error('[cancel-notify] email send failed:', err)
+      }
     }
 
     return NextResponse.json({ ok: true, emailed })

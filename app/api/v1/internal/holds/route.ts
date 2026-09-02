@@ -45,6 +45,22 @@ export async function POST(req: NextRequest) {
 
     const expiresAt = computeHoldExpiresAt(start_date)
 
+    // Conflict check — same as the app_user path via createHold()
+    const conflicts = await prisma.hold.findMany({
+      where: {
+        truck_number,
+        status: { notIn: ['EXPIRED', 'ATT_SOFT'] },
+        start_date: { lte: new Date(end_date) },
+        end_date: { gte: new Date(start_date) },
+      },
+    })
+    if (conflicts.length > 0) {
+      const c = conflicts[0]
+      return NextResponse.json({
+        error: `Truck ${truck_number} already has a ${c.status} for "${c.client_name}" from ${c.start_date.toISOString().split('T')[0]} to ${c.end_date.toISOString().split('T')[0]}.`,
+      }, { status: 409 })
+    }
+
     const hold = await prisma.hold.create({
       data: {
         truck_number,

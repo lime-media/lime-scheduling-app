@@ -70,6 +70,7 @@ export async function refreshCache(): Promise<void> {
     truck_number:        h.truck_number,
     client_name:         h.client_name,
     market:              h.market,
+    source:              h.source,
     start_date:          h.start_date.toISOString().split('T')[0],
     end_date:            h.end_date.toISOString().split('T')[0],
     sfdc_opportunity_id: h.sfdc_opportunity_id,
@@ -229,6 +230,7 @@ export interface ConflictHold {
   truck_number:        string
   client_name:         string
   market:              string
+  source:              string
   start_date:          string  // YYYY-MM-DD
   end_date:            string  // YYYY-MM-DD
   sfdc_opportunity_id?: string | null
@@ -265,7 +267,7 @@ export async function detectConflicts(
         s.shift_end    >= hold.start_date
     )
 
-    if (hold.sfdc_opportunity_id && overlapping.length > 0) {
+    if (hold.source === 'SALESFORCE' && hold.sfdc_opportunity_id && overlapping.length > 0) {
       // A real LED shift now covers this Salesforce-sourced hold — the deal has
       // converted to a firm booking, so release the tentative hold instead of
       // flagging it as a conflict for manual review.

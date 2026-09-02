@@ -26,6 +26,7 @@ const EMPTY_FORM: UserForm = { name: '', email: '', password: '', role: 'SALES' 
 interface ClientPortalUser {
   id:              string
   username:        string
+  email:           string | null
   company_name:    string
   partner_id:      string | null
   sfdc_account_id: string | null
@@ -36,12 +37,13 @@ type SfdcAccount = { id: string; name: string }
 
 interface ClientForm {
   username:     string
+  email:        string
   company_name: string
   password:     string
   partner_id:   string
 }
 
-const EMPTY_CLIENT_FORM: ClientForm = { username: '', company_name: '', password: '', partner_id: '' }
+const EMPTY_CLIENT_FORM: ClientForm = { username: '', email: '', company_name: '', password: '', partner_id: '' }
 
 export default function UsersPage() {
   const { data: session, status } = useSession()
@@ -195,7 +197,7 @@ export default function UsersPage() {
   }
 
   function openClientEdit(user: ClientPortalUser) {
-    setClientForm({ username: user.username, company_name: user.company_name, password: '', partner_id: user.partner_id ?? '' })
+    setClientForm({ username: user.username, email: user.email ?? '', company_name: user.company_name, password: '', partner_id: user.partner_id ?? '' })
     setClientShowPw(false)
     setClientEditTarget(user)
     setClientSfdcAccount(user.sfdc_account_id ? { id: user.sfdc_account_id, name: user.company_name } : null)
@@ -228,6 +230,7 @@ export default function UsersPage() {
 
       const body: Record<string, string | null> = {
         username:        clientForm.username.trim(),
+        email:           clientForm.email.trim() || null,
         company_name:    clientForm.company_name.trim(),
         partner_id:      clientSfdcAccount?.id ?? clientForm.partner_id.trim() ?? '',
         sfdc_account_id: clientSfdcAccount?.id ?? null,
@@ -698,6 +701,18 @@ export default function UsersPage() {
                   required
                   value={clientForm.username}
                   onChange={(e) => setClientForm({ ...clientForm, username: e.target.value })}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Email <span className="text-gray-400 font-normal ml-1">(for notifications)</span>
+                </label>
+                <input
+                  type="email"
+                  value={clientForm.email}
+                  onChange={(e) => setClientForm({ ...clientForm, email: e.target.value })}
+                  placeholder="client@example.com"
                   className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                 />
               </div>

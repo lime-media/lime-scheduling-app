@@ -116,12 +116,28 @@ export async function POST(req: NextRequest) {
   const includeSmartDirectional = body.smart_directional ?? false
   const includeDeviceId = body.device_id ?? false
 
+  // Resolve rate overrides first — service_area_miles affects availability classification
+  const defaultOverrides = await resolveDefaultRateOverrides()
+  let rateOverrides: RateOverrides | undefined = defaultOverrides ?? undefined
+  let agreementName: string | undefined
+  if (body.sfdc_account_id) {
+    const result = await resolveRateOverridesBySfdcAccount(body.sfdc_account_id)
+    if (result.overrides) {
+      rateOverrides = { ...rateOverrides, ...result.overrides }
+      if (result.overrides.daily_rates) {
+        rateOverrides.daily_rates = { ...rateOverrides?.daily_rates, ...result.overrides.daily_rates }
+      }
+      agreementName = result.agreementName
+    }
+  }
+
   const [availability, marketSizeTierId] = await Promise.all([
     checkAvailability({
       market: formalMarket,
       startDate: start_date,
       endDate: end_date,
       truckCount: truck_count,
+      serviceAreaMiles: rateOverrides?.service_area_miles,
     }),
     resolveMarketSizeTierId(formalMarket),
   ])
@@ -142,22 +158,6 @@ export async function POST(req: NextRequest) {
   }
 
   const selectedTrucks = availability.trucks.slice(0, truck_count)
-
-  // Load the editable default rate card, then layer client-specific overrides on top
-  const defaultOverrides = await resolveDefaultRateOverrides()
-  let rateOverrides: RateOverrides | undefined = defaultOverrides ?? undefined
-  let agreementName: string | undefined
-  if (body.sfdc_account_id) {
-    const result = await resolveRateOverridesBySfdcAccount(body.sfdc_account_id)
-    if (result.overrides) {
-      // Client overrides merge on top of defaults
-      rateOverrides = { ...rateOverrides, ...result.overrides }
-      if (result.overrides.daily_rates) {
-        rateOverrides.daily_rates = { ...rateOverrides?.daily_rates, ...result.overrides.daily_rates }
-      }
-      agreementName = result.agreementName
-    }
-  }
 
   const quote = computeQuote({
     truckCount: truck_count,

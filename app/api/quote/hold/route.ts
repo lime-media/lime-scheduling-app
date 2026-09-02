@@ -9,13 +9,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
-import { selectTrucksForHold } from '@/lib/availabilityEngine'
+import { selectTrucksForHold, recomputeTransportCharge } from '@/lib/availabilityEngine'
 import { computeHoldExpiresAt } from '@/lib/holdRequestService'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { computeQuote, VALID_STUDIES, type StudyType } from '@/lib/pricing'
-import { resolveMarketSizeTierId } from '@/lib/pricing/resolvers'
+import { resolveMarketSizeTierId, resolveRateOverridesBySfdcAccount, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
+import type { RateOverrides } from '@/lib/pricing/config'
 
 export async function POST(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
@@ -80,10 +81,24 @@ export async function POST(req: NextRequest) {
     .map((s: string) => s.trim().toLowerCase())
     .filter((s: string): s is StudyType => (VALID_STUDIES as readonly string[]).includes(s))
 
+  // Resolve rate overrides — default base + client-specific on top
+  const defaultOverrides = await resolveDefaultRateOverrides()
+  let rateOverrides: RateOverrides | undefined = defaultOverrides ?? undefined
+  if (sfdc_account_id) {
+    const result = await resolveRateOverridesBySfdcAccount(sfdc_account_id)
+    if (result.overrides) {
+      rateOverrides = { ...rateOverrides, ...result.overrides }
+      if (result.overrides.daily_rates) {
+        rateOverrides.daily_rates = { ...rateOverrides?.daily_rates, ...result.overrides.daily_rates }
+      }
+    }
+  }
+
   const marketSizeTierId = await resolveMarketSizeTierId(market)
   const quote = computeQuote({
     truckCount: truck_count, days: activationDays, operatingHours: opHours,
     marketSizeTierId, includeSmartDirectional: includeSD, includeDeviceId: includeDID, studies,
+    rateOverrides,
   })
 
   let mediaTotal = quote.good.baseMedia
@@ -94,8 +109,10 @@ export async function POST(req: NextRequest) {
 
   const repoTrucks = selectedTrucks.filter(t => t.transport.needed)
   const { leadBusinessDays } = (await selectTrucksForHold({ market, startDate: start_date, endDate: end_date, truckCount: truck_count })).availability.campaignFlags
-  const transportAbsorbed = activationDays >= 10 && leadBusinessDays >= 10
-  const transportCharge = transportAbsorbed ? 0 : repoTrucks.reduce((sum, t) => sum + t.transport.chargePerTruck, 0)
+  const hasTransportOverrides = rateOverrides?.transport_day_rate != null || rateOverrides?.transport_airfare != null || rateOverrides?.transport_hotel_per_night != null
+  const transportOverrides = { dayRate: rateOverrides?.transport_day_rate, airfare: rateOverrides?.transport_airfare, hotelPerNight: rateOverrides?.transport_hotel_per_night }
+  const transportAbsorbed = rateOverrides?.transport_included || (activationDays >= 10 && leadBusinessDays >= 10)
+  const transportCharge = transportAbsorbed ? 0 : repoTrucks.reduce((sum, t) => sum + (hasTransportOverrides ? recomputeTransportCharge(t, transportOverrides) : t.transport.chargePerTruck), 0)
   const serverTotal = mediaTotal + transportCharge
 
   let pricingTier = 'Custom'

@@ -144,22 +144,24 @@ export async function POST(req: NextRequest) {
   const includeSmartDirectional = body.smart_directional ?? false
   const includeDeviceId = body.device_id ?? false
 
-  const [availability, marketSizeTierId, clientOverrides, defaultOverrides] = await Promise.all([
-    checkAvailability({
-      market: formalMarket,
-      startDate: start_date,
-      endDate: end_date,
-      truckCount: truck_count,
-    }),
-    resolveMarketSizeTierId(formalMarket),
+  // Resolve rate overrides first — service_area_miles affects availability classification
+  const [clientOverrides, defaultOverrides, marketSizeTierId] = await Promise.all([
     resolveRateOverrides(session),
     resolveDefaultRateOverrides(),
+    resolveMarketSizeTierId(formalMarket),
   ])
 
-  // Merge: default overrides as base, client-specific on top
   const rateOverrides = clientOverrides
     ? { ...defaultOverrides, ...clientOverrides, daily_rates: { ...defaultOverrides?.daily_rates, ...clientOverrides.daily_rates } }
     : defaultOverrides
+
+  const availability = await checkAvailability({
+    market: formalMarket,
+    startDate: start_date,
+    endDate: end_date,
+    truckCount: truck_count,
+    serviceAreaMiles: rateOverrides?.service_area_miles,
+  })
 
   // Not enough trucks to fill the request — don't offer a price, direct them
   // to submit a request for the team to handle manually.

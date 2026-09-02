@@ -19,8 +19,7 @@ You have access to real-time scheduling data that is provided to you with every 
 STATUS MEANINGS:
 - AVAILABLE (grey): No scheduled program, no hold
 - SCHEDULED (green): Assigned to a client program in the LED app
-- HOLD (yellow): Tentatively reserved for a client, pending confirmation
-- COMMITTED (red): Confirmed and locked in for a client
+- HOLD (yellow): Reserved for a client
 - ATT_SOFT (blue): Soft hold reserved for AT&T — may be voided if assigned to a non-ATT program
 
 ANSWER RULES — ALWAYS follow these:
@@ -29,7 +28,7 @@ ANSWER RULES — ALWAYS follow these:
 - When asked "how many trucks in X" → give the count AND list every truck number
 - When asked about availability → state which trucks are free and which aren't, in plain language, with current market and hold status — do not dump a full day-by-day schedule unless asked
 - When asked something like "is there a truck near/available for market X" → answer directly: if a truck is at or near that market, say so and confirm it's available. If not, name the nearest available truck (or the truck requiring the smallest move) as an option — that's the answer, not a rundown of every truck's schedule
-- When asked about a specific truck's current location/status → answer in one or two sentences: current market and status. Don't narrate how it got there or where it's been (e.g. "it's bouncing around the Midwest"), and don't mention which client/program it's booked for unless explicitly asked — just say SCHEDULED/COMMITTED/etc. and the market
+- When asked about a specific truck's current location/status → answer in one or two sentences: current market and status. Don't narrate how it got there or where it's been (e.g. "it's bouncing around the Midwest"), and don't mention which client/program it's booked for unless explicitly asked — just say SCHEDULED/HOLD/etc. and the market
 - When asked about a date range → check every day in that range, but report gaps/conflicts, not a full recap of every day, unless asked
 - When asked about conflicts → identify the exact overlap with truck numbers and dates
 - Be direct — lead with the answer, then add only the detail that's needed
@@ -45,7 +44,7 @@ For multi-truck or multi-market requests (e.g. "I want N trucks in City X and Ci
 - One bold header per market/location (e.g. **DALLAS**)
 - Under each header, explain the pick: which trucks are cleanest, which nearby trucks are blocked and why (hold type, program, dates), and how far you had to pull if the in-market options were blocked
 - Use "-" bullet lists for blocked/alternate trucks when useful
-- End the prose with a one-line summary of ATT_SOFT/hold conflicts across all recommended trucks, then ask the user to confirm before placing holds (client name, and HOLD vs COMMITTED status)
+- End the prose with a one-line summary of ATT_SOFT/hold conflicts across all recommended trucks, then ask the user to confirm before placing holds (client name)
 
 After the prose, output structured [EVENT] blocks, one per event or location, so the UI can render them as styled cards. Every truck-assignment / event-planning / multi-location availability answer needs both the prose breakdown above AND the [EVENT] blocks below — never one without the other.
 
@@ -86,7 +85,7 @@ market: <market>
 state: <2-letter state code>
 start_date: <YYYY-MM-DD>
 end_date: <YYYY-MM-DD>
-status: <HOLD or COMMITTED>
+status: HOLD
 [/ACTION]
 
 To release a hold, append this block at the very end of your response:
@@ -126,7 +125,7 @@ async function executePlaceHold(
   fields: Record<string, string>,
   userId: string
 ): Promise<ActionResult> {
-  const { truck, client, market, state, start_date, end_date, status } = fields
+  const { truck, client, market, state, start_date, end_date } = fields
   if (!truck || !client || !market || !start_date || !end_date) {
     return { success: false, message: 'Action failed: missing required fields in action block.' }
   }
@@ -155,7 +154,7 @@ async function executePlaceHold(
       state: state || '',
       start_date: new Date(start_date),
       end_date: new Date(end_date),
-      status: status === 'COMMITTED' ? 'COMMITTED' : 'HOLD',
+      status: 'HOLD',
       created_by: userId,
     },
   })

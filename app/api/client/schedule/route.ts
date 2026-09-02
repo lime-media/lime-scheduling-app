@@ -31,18 +31,6 @@ export async function GET(req: NextRequest) {
       where: { status: { not: 'EXPIRED' } },
       orderBy: { start_date: 'asc' },
     })
-    // Other clients' non-rejected hold requests also occupy a truck/day, even before staff
-    // approval — a pending request should read as "booked" to everyone else, same as a
-    // confirmed Hold, just without exposing who requested it (see holdRequestBlocks below).
-    // The requesting client's OWN pending requests are excluded here — those come back in
-    // full detail (with their own status/notes) from /api/client/hold-requests instead.
-    const holdRequestsPromise = prisma.holdRequest.findMany({
-      where: {
-        status: { not: 'REJECTED' },
-        ...(session ? { client_user_id: { not: session.id } } : {}),
-      },
-      orderBy: { created_at: 'asc' },
-    })
 
     let trucksRaw: Record<string, unknown>[]
     let schedulesRaw: Record<string, unknown>[]
@@ -58,7 +46,7 @@ export async function GET(req: NextRequest) {
       sqlCache = { trucks: trucksRaw, schedules: schedulesRaw, timestamp: Date.now() }
     }
 
-    const [holds, otherHoldRequests] = await Promise.all([holdsPromise, holdRequestsPromise])
+    const holds = await holdsPromise
 
     let gpsMap = new Map<string, { city: string; state: string; formatted_address: string; latitude: number; longitude: number }>()
     try {
@@ -150,9 +138,9 @@ export async function GET(req: NextRequest) {
         user_name:    null,
       }))
 
-    // Same redaction as holdBlocks above — no client attribution, just occupies the day
-    const holdRequestBlocks = otherHoldRequests
-      .filter((r) => !HIDDEN_TRUCKS.has(r.truck_number))
+    // CLIENT-sourced holds from OTHER clients — shown as redacted blocks on the grid
+    const holdRequestBlocks = holds
+      .filter((r) => r.source === 'CLIENT' && !HIDDEN_TRUCKS.has(r.truck_number) && (!session || r.client_user_id !== session.id))
       .map((r) => ({
         id:           r.id,
         truck_number: r.truck_number,
@@ -161,7 +149,7 @@ export async function GET(req: NextRequest) {
         notes:        '',
         start_date:   r.start_date.toISOString().split('T')[0],
         end_date:     r.end_date.toISOString().split('T')[0],
-        status:       r.status as 'PENDING' | 'APPROVED',
+        status:       r.status,
         company_name: '',
       }))
 

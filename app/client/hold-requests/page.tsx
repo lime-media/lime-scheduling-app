@@ -161,7 +161,7 @@ export default function ClientHoldRequestsPage() {
     ['PENDING', 'APPROVED', 'EXPIRED'].includes(r.status) && r.status !== 'EXTENSION_REQUESTED'
 
   return (
-    <div className="flex flex-col h-dvh overflow-hidden">
+    <div className="flex flex-col h-dvh overflow-hidden bg-gray-50">
       <ClientHeader clientUser={clientUser} authChecked={authChecked} />
 
       <div className="flex-1 overflow-auto p-4 sm:p-6 max-w-5xl mx-auto w-full">
@@ -169,16 +169,14 @@ export default function ClientHoldRequestsPage() {
           <TableSkeleton />
         ) : !clientUser ? (
           <div className="flex flex-col items-center justify-center h-64 text-center">
-            <div className="text-5xl mb-4">&#128274;</div>
-            <p className="text-gray-600 font-medium">Log in to view your hold requests</p>
+            <p className="text-gray-500 font-medium">Log in to view your hold requests</p>
             <Link href="/client/login" className="mt-4 bg-[#1a3028] text-white px-4 py-2 rounded-lg text-sm hover:bg-[#1a3028]/90">
               Log in
             </Link>
           </div>
         ) : !hasHoldRequestsAccess(clientUser) ? (
           <div className="flex flex-col items-center justify-center h-64 text-center">
-            <div className="text-5xl mb-4">&#128679;</div>
-            <p className="text-gray-600 font-medium">This page isn&apos;t available on your account yet.</p>
+            <p className="text-gray-500 font-medium">This page isn&apos;t available on your account yet.</p>
             <Link href="/client" className="mt-4 bg-[#1a3028] text-white px-4 py-2 rounded-lg text-sm hover:bg-[#1a3028]/90">
               Back to Schedule
             </Link>
@@ -187,7 +185,7 @@ export default function ClientHoldRequestsPage() {
           <>
             <div className="flex items-start sm:items-center justify-between mb-4 sm:mb-6 gap-3">
               <div>
-                <h1 className="text-xl sm:text-2xl font-bold text-gray-900">My Hold Requests</h1>
+                <h1 className="text-2xl font-bold text-gray-900">My Hold Requests</h1>
                 <p className="text-sm text-gray-500 mt-0.5">Requests you&apos;ve submitted, and their review status</p>
               </div>
               <div className="flex gap-2 flex-shrink-0 flex-wrap">
@@ -197,8 +195,8 @@ export default function ClientHoldRequestsPage() {
                     onClick={() => setFilterStatus(s)}
                     className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
                       filterStatus === s
-                        ? 'bg-green-700 text-white border-green-700'
-                        : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                        ? 'bg-green-600 text-white border-green-600'
+                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
                     }`}
                   >
                     {s || 'All'}
@@ -209,15 +207,13 @@ export default function ClientHoldRequestsPage() {
 
             {error ? (
               <div className="flex flex-col items-center justify-center h-64 text-center">
-                <div className="text-5xl mb-4">&#9888;&#65039;</div>
-                <p className="text-gray-600 font-medium">{error}</p>
-                <button onClick={fetchRequests} className="mt-4 bg-green-700 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-800">Retry</button>
+                <p className="text-gray-500 font-medium">{error}</p>
+                <button onClick={fetchRequests} className="mt-4 bg-green-600 hover:bg-green-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors">Retry</button>
               </div>
             ) : loading ? (
               <TableSkeleton />
             ) : filtered.length === 0 ? (
               <div className="text-center py-20 text-gray-400">
-                <div className="text-5xl mb-3">&#128203;</div>
                 <p className="font-medium">No hold requests found</p>
                 <p className="text-sm mt-1">Use the AI Assistant to check availability, get a quote, and place a hold</p>
               </div>
@@ -289,7 +285,7 @@ export default function ClientHoldRequestsPage() {
                                       min={minDate}
                                       max={maxDate}
                                       onChange={(e) => setExtendUntil(e.target.value)}
-                                      className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                                      className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                                     />
                                   </div>
                                   <input
@@ -297,18 +293,18 @@ export default function ClientHoldRequestsPage() {
                                     placeholder="Reason (optional)"
                                     value={extendReason}
                                     onChange={(e) => setExtendReason(e.target.value)}
-                                    className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                                    className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                                   />
                                   <button
                                     onClick={() => requestExtension(groupItems.map((g) => g.id))}
                                     disabled={!extendUntil}
-                                    className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg text-sm font-medium"
+                                    className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg text-sm font-medium transition-colors"
                                   >
                                     Submit
                                   </button>
                                   <button
                                     onClick={() => { setExtending(null); setExtendReason(''); setExtendUntil('') }}
-                                    className="text-gray-500 hover:text-gray-700 px-2 py-1.5 text-sm"
+                                    className="text-gray-500 hover:text-gray-700 px-2 py-1.5 text-sm transition-colors"
                                   >
                                     Cancel
                                   </button>
@@ -334,10 +330,10 @@ export default function ClientHoldRequestsPage() {
                   <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">
-                        <thead className="bg-gray-50 border-b border-gray-200">
+                        <thead className="bg-gray-50/80 border-b border-gray-200">
                           <tr>
                             {['Truck', 'Market', 'Dates', 'Pricing', 'Status', ''].map((col) => (
-                              <th key={col} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                              <th key={col} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
                                 {col}
                               </th>
                             ))}
@@ -407,8 +403,8 @@ export default function ClientHoldRequestsPage() {
               const maxDate = startDate.toISOString().split('T')[0]
 
               return (
-                <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => { setExtending(null); setExtendReason(''); setExtendUntil('') }}>
-                  <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6" onClick={(e) => e.stopPropagation()}>
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => { setExtending(null); setExtendReason(''); setExtendUntil('') }}>
+                  <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6" onClick={(e) => e.stopPropagation()}>
                     <h3 className="font-semibold text-gray-900 mb-3">Request Hold Extension</h3>
                     <div className="mb-3">
                       <label className="text-xs font-medium text-gray-600 mb-1 block">Extend until <span className="text-red-500">*</span></label>
@@ -418,7 +414,7 @@ export default function ClientHoldRequestsPage() {
                         min={minDate}
                         max={maxDate}
                         onChange={(e) => setExtendUntil(e.target.value)}
-                        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                       />
                     </div>
                     <textarea
@@ -426,14 +422,14 @@ export default function ClientHoldRequestsPage() {
                       value={extendReason}
                       onChange={(e) => setExtendReason(e.target.value)}
                       rows={2}
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none mb-4"
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent resize-none mb-4"
                     />
                     <div className="flex gap-2 justify-end">
-                      <button onClick={() => { setExtending(null); setExtendReason(''); setExtendUntil('') }} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
+                      <button onClick={() => { setExtending(null); setExtendReason(''); setExtendUntil('') }} className="px-4 py-2.5 text-sm text-gray-600 hover:text-gray-800 transition-colors">Cancel</button>
                       <button
                         onClick={() => requestExtension([extending])}
                         disabled={!extendUntil}
-                        className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-medium"
+                        className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors"
                       >
                         Submit Request
                       </button>

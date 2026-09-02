@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useSession } from 'next-auth/react'
 import { AISidebar, type ConvSummary } from '@/components/AISidebar'
+import { Navbar } from '@/components/Navbar'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -292,7 +293,9 @@ export default function AIPage() {
   const isBlank = activeConversationId === null && messages.length === 0
 
   return (
-    <div className="flex h-dvh bg-gray-50 overflow-hidden">
+    <div className="flex flex-col h-dvh bg-gray-50 overflow-hidden">
+      <Navbar />
+      <div className="flex flex-1 min-h-0 overflow-hidden">
 
       {/* Mobile backdrop — tap to close sidebar */}
       {sidebarOpen && (
@@ -454,6 +457,7 @@ export default function AIPage() {
             Press Enter to send · Shift+Enter for new line
           </p>
         </div>
+      </div>
       </div>
     </div>
   )

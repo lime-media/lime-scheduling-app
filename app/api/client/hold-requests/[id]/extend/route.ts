@@ -6,7 +6,7 @@ import { sendAssistanceRequestEmail } from '@/lib/email'
 /**
  * POST /api/client/hold-requests/[id]/extend
  *
- * Client requests an extension on a hold request with a specific date.
+ * Client requests an extension on a hold with a specific date.
  * The hold's status flips to EXTENSION_REQUESTED, the requested date and
  * reason are stored, and a notification email goes to the team.
  */
@@ -29,25 +29,24 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid extend_until date' }, { status: 400 })
   }
 
-  // Must be in the future
   if (extendDate <= new Date()) {
     return NextResponse.json({ error: 'Extension date must be in the future' }, { status: 400 })
   }
 
-  const holdRequest = await prisma.holdRequest.findUnique({ where: { id } })
-  if (!holdRequest || holdRequest.client_user_id !== session.id) {
+  const hold = await prisma.hold.findUnique({ where: { id } })
+  if (!hold || hold.client_user_id !== session.id) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
 
-  if (holdRequest.status === 'REJECTED') {
-    return NextResponse.json({ error: 'Cannot extend a rejected hold request' }, { status: 400 })
+  if (hold.status === 'EXPIRED') {
+    return NextResponse.json({ error: 'Cannot extend an expired hold' }, { status: 400 })
   }
 
-  if (holdRequest.status === 'EXTENSION_REQUESTED') {
+  if (hold.status === 'EXTENSION_REQUESTED') {
     return NextResponse.json({ error: 'Extension already requested' }, { status: 400 })
   }
 
-  await prisma.holdRequest.update({
+  await prisma.hold.update({
     where: { id },
     data: {
       status: 'EXTENSION_REQUESTED',
@@ -58,14 +57,13 @@ export async function POST(
 
   const formattedDate = extendDate.toISOString().split('T')[0]
 
-  // Notify the team
   await sendAssistanceRequestEmail({
     companyName: session.companyName,
-    market:      holdRequest.market,
-    state:       holdRequest.state ?? undefined,
-    startDate:   holdRequest.start_date.toISOString().split('T')[0],
-    endDate:     holdRequest.end_date.toISOString().split('T')[0],
-    details:     `Hold extension requested for Truck ${holdRequest.truck_number}. Extend until: ${formattedDate}.${reason ? ` Reason: ${reason}` : ''}`,
+    market:      hold.market,
+    state:       hold.state ?? undefined,
+    startDate:   hold.start_date.toISOString().split('T')[0],
+    endDate:     hold.end_date.toISOString().split('T')[0],
+    details:     `Hold extension requested for Truck ${hold.truck_number}. Extend until: ${formattedDate}.${reason ? ` Reason: ${reason}` : ''}`,
   }).catch((e) => console.error('[hold-extend] email failed:', e))
 
   return NextResponse.json({ ok: true })

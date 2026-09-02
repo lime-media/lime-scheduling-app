@@ -88,19 +88,19 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-green-900 to-green-700 px-4">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#1a3a1a] via-[#2d6b22] to-[#3d8b2e] px-4">
       <div className="w-full max-w-sm">
         {/* Logo / Brand */}
         <div className="text-center mb-8">
-          <div className="flex justify-center mb-3">
-            <img src="/logo.png" alt="Lime Media" className="h-16 w-auto" />
+          <div className="flex justify-center mb-4">
+            <img src="/logo.png" alt="Lime Media" className="h-14 w-auto" />
           </div>
-          <h1 className="text-3xl font-bold text-white">Lime Media</h1>
-          <p className="text-green-200 mt-1 text-sm">Scheduling Assistant</p>
+          <h1 className="text-2xl font-bold text-white tracking-tight">LED Scheduling</h1>
+          <p className="text-white/50 mt-1 text-sm">Sign in to manage your fleet</p>
         </div>
 
         {/* Card */}
-        <div className="bg-white rounded-2xl shadow-2xl px-8 py-8">
+        <div className="bg-white rounded-2xl shadow-2xl px-8 py-8 border border-white/10">
           <h2 className="text-xl font-bold text-gray-900 mb-6">
             {step === 'credentials' ? 'Sign in to your account' : 'Enter verification code'}
           </h2>
@@ -207,7 +207,7 @@ export default function LoginPage() {
           )}
         </div>
 
-        <p className="text-center text-green-300 text-xs mt-6">
+        <p className="text-center text-white/30 text-xs mt-6">
           Contact your administrator to create an account
         </p>
       </div>

@@ -36,12 +36,11 @@ export async function GET(request: Request) {
     const holdsPromise = prisma.hold.findMany({
       // EXPIRED holds are released — they shouldn't occupy the grid
       where: { status: { not: 'EXPIRED' } },
-      include: { user: { select: { name: true } } },
+      include: {
+        user: { select: { name: true } },
+        client_user: { select: { username: true, company_name: true } },
+      },
       orderBy: { start_date: 'asc' },
-    })
-    const holdRequestsPromise = prisma.holdRequest.findMany({
-      include: { client_user: { select: { username: true, company_name: true } } },
-      orderBy: { created_at: 'asc' },
     })
 
     let trucksRaw: Record<string, unknown>[]
@@ -58,7 +57,7 @@ export async function GET(request: Request) {
       sqlCache = { trucks: trucksRaw, schedules: schedulesRaw, timestamp: Date.now() }
     }
 
-    const [holds, holdRequestsRaw] = await Promise.all([holdsPromise, holdRequestsPromise])
+    const holds = await holdsPromise
 
     // GPS map: live from Samsara API — always fresh, not cached
     let gpsMap = new Map<string, { city: string; state: string; formatted_address: string; latitude: number; longitude: number }>()
@@ -161,8 +160,9 @@ export async function GET(request: Request) {
         origination:  h.origination ?? 'frontend',
       }))
 
-    const holdRequests = holdRequestsRaw
-      .filter((r) => !HIDDEN_TRUCKS.has(r.truck_number))
+    // Populate holdRequests from CLIENT-sourced holds for ScheduleGrid backward compat
+    const holdRequests = holds
+      .filter((r) => r.source === 'CLIENT' && !HIDDEN_TRUCKS.has(r.truck_number))
       .map((r) => ({
         id:                r.id,
         truck_number:      r.truck_number,
@@ -172,7 +172,7 @@ export async function GET(request: Request) {
         end_date:          r.end_date.toISOString().split('T')[0],
         notes:             r.notes ?? '',
         status:            r.status,
-        company_name:      r.client_user?.company_name ?? 'Unknown',
+        company_name:      r.client_user?.company_name ?? r.client_name,
         pricing_tier:      r.pricing_tier ?? null,
         quoted_total:      r.quoted_total ?? null,
         daily_rate:        r.daily_rate ?? null,

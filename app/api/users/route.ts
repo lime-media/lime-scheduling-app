@@ -11,7 +11,7 @@ function isOps(session: Session | null) {
 
 export async function GET() {
   const session = await getServerSession(authOptions)
-  if (!session || !isOps(session)) {
+  if (!session) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 

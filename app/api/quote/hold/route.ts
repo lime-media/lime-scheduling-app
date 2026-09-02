@@ -9,13 +9,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
-import { selectTrucksForHold } from '@/lib/availabilityEngine'
+import { selectTrucksForHold, recomputeTransportCharge } from '@/lib/availabilityEngine'
 import { computeHoldExpiresAt } from '@/lib/holdRequestService'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { computeQuote, VALID_STUDIES, type StudyType } from '@/lib/pricing'
-import { resolveMarketSizeTierId } from '@/lib/pricing/resolvers'
+import { resolveMarketSizeTierId, resolveRateOverridesBySfdcAccount, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
+import type { RateOverrides } from '@/lib/pricing/config'
 
 export async function POST(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
@@ -37,12 +38,26 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'A Salesforce Account must be selected' }, { status: 400 })
   }
 
-  // Select optimal trucks
-  const { selectedTrucks } = await selectTrucksForHold({
+  // Resolve rate overrides first — service_area_miles affects truck selection
+  const defaultOverrides = await resolveDefaultRateOverrides()
+  let rateOverrides: RateOverrides | undefined = defaultOverrides ?? undefined
+  if (sfdc_account_id) {
+    const result = await resolveRateOverridesBySfdcAccount(sfdc_account_id)
+    if (result.overrides) {
+      rateOverrides = { ...rateOverrides, ...result.overrides }
+      if (result.overrides.daily_rates) {
+        rateOverrides.daily_rates = { ...rateOverrides?.daily_rates, ...result.overrides.daily_rates }
+      }
+    }
+  }
+
+  // Select optimal trucks (with custom service area if set)
+  const { selectedTrucks, availability } = await selectTrucksForHold({
     market,
     startDate: start_date,
     endDate: end_date,
     truckCount: truck_count,
+    serviceAreaMiles: rateOverrides?.service_area_miles,
   })
 
   if (selectedTrucks.length === 0) {
@@ -84,6 +99,7 @@ export async function POST(req: NextRequest) {
   const quote = computeQuote({
     truckCount: truck_count, days: activationDays, operatingHours: opHours,
     marketSizeTierId, includeSmartDirectional: includeSD, includeDeviceId: includeDID, studies,
+    rateOverrides,
   })
 
   let mediaTotal = quote.good.baseMedia
@@ -93,9 +109,11 @@ export async function POST(req: NextRequest) {
   if (quote.best.reachOk && studies.length > 0) mediaTotal += studies.length * quote.best.studyCost
 
   const repoTrucks = selectedTrucks.filter(t => t.transport.needed)
-  const { leadBusinessDays } = (await selectTrucksForHold({ market, startDate: start_date, endDate: end_date, truckCount: truck_count })).availability.campaignFlags
-  const transportAbsorbed = activationDays >= 10 && leadBusinessDays >= 10
-  const transportCharge = transportAbsorbed ? 0 : repoTrucks.reduce((sum, t) => sum + t.transport.chargePerTruck, 0)
+  const { leadBusinessDays } = availability.campaignFlags
+  const hasTransportOverrides = rateOverrides?.transport_day_rate != null || rateOverrides?.transport_airfare != null || rateOverrides?.transport_hotel_per_night != null
+  const transportOverrides = { dayRate: rateOverrides?.transport_day_rate, airfare: rateOverrides?.transport_airfare, hotelPerNight: rateOverrides?.transport_hotel_per_night }
+  const transportAbsorbed = rateOverrides?.transport_included || (activationDays >= 10 && leadBusinessDays >= 10)
+  const transportCharge = transportAbsorbed ? 0 : repoTrucks.reduce((sum, t) => sum + (hasTransportOverrides ? recomputeTransportCharge(t, transportOverrides) : t.transport.chargePerTruck), 0)
   const serverTotal = mediaTotal + transportCharge
 
   let pricingTier = 'Custom'
@@ -130,48 +148,33 @@ export async function POST(req: NextRequest) {
   })
   const createdBy = (token.id as string) || serviceUser?.id || 'system'
 
-  // Create hold requests
+  // Create holds directly (unified — no more dual-write to HoldRequest)
   const created: string[] = []
   for (const truck of selectedTrucks) {
     try {
-      await prisma.holdRequest.create({
-        data: {
-          client_user_id: linkedClient?.id ?? null,
-          truck_number: truck.truckNumber,
-          market,
-          state: resolvedState,
-          start_date: new Date(start_date),
-          end_date: new Date(end_date),
-          status: 'APPROVED',
-          source: 'INTERNAL',
-          pricing_tier: pricingTier,
-          quoted_total: serverTotal,
-          daily_rate: quote.dailyRate,
-          features: featuresJson,
-          truck_count: selectedTrucks.length,
-          campaign_group_id: campaignGroupId,
-          expires_at: expiresAt,
-          notes: `Internal quote for ${sfdc_account_name || 'Unknown'}`,
-        },
-      })
-
-      // Auto-approve: create the schedule-blocking Hold record
       await prisma.hold.create({
         data: {
-          truck_number: truck.truckNumber,
-          client_name: sfdc_account_name || 'Unknown',
+          truck_number:      truck.truckNumber,
+          client_name:       sfdc_account_name || 'Unknown',
           market,
-          state: resolvedState ?? '',
-          start_date: new Date(start_date),
-          end_date: new Date(end_date),
-          status: 'HOLD',
-          source: 'INTERNAL',
-          origination: 'frontend',
-          notes: `Internal quote for ${sfdc_account_name || 'Unknown'}`,
-          created_by: createdBy,
+          state:             resolvedState ?? '',
+          start_date:        new Date(start_date),
+          end_date:          new Date(end_date),
+          status:            'HOLD',
+          source:            'INTERNAL',
+          origination:       'frontend',
+          notes:             `Internal quote for ${sfdc_account_name || 'Unknown'}`,
+          created_by:        createdBy,
+          client_user_id:    linkedClient?.id ?? null,
+          pricing_tier:      pricingTier,
+          quoted_total:      serverTotal,
+          daily_rate:        quote.dailyRate,
+          features:          featuresJson,
+          truck_count:       selectedTrucks.length,
+          campaign_group_id: campaignGroupId,
+          expires_at:        expiresAt,
         },
       })
-
       created.push(truck.truckNumber)
     } catch (err) {
       console.error('[quote/hold] failed to create hold for truck:', truck.truckNumber, err)
@@ -179,7 +182,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (created.length === 0) {
-    return NextResponse.json({ error: 'Failed to create hold requests' }, { status: 500 })
+    return NextResponse.json({ error: 'Failed to create holds' }, { status: 500 })
   }
 
   // Create Salesforce Opportunity
@@ -207,7 +210,7 @@ export async function POST(req: NextRequest) {
 
       if (result.success && result.id) {
         sfdcOpportunityId = result.id
-        await prisma.holdRequest.updateMany({
+        await prisma.hold.updateMany({
           where: { campaign_group_id: campaignGroupId },
           data: { sfdc_opportunity_id: result.id },
         })
@@ -224,6 +227,6 @@ export async function POST(req: NextRequest) {
     created: created.length,
     campaignGroupId,
     sfdcOpportunityId,
-    message: `Created ${created.length} hold request${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}. ${sfdcOpportunityId ? 'Salesforce opportunity created.' : ''}`,
+    message: `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}. ${sfdcOpportunityId ? 'Salesforce opportunity created.' : ''}`,
   })
 }

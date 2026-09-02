@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { format, addDays, startOfDay } from 'date-fns'
+import { format, startOfDay } from 'date-fns'
 import type { TruckLocation } from '@/app/api/trucks/locations/route'
 import { getMarketCoords } from '@/lib/marketCoordinates'
 import { US_STATE_NAMES, US_STATE_ABBREVIATIONS } from '@/lib/usStates'
@@ -222,7 +222,6 @@ function TruckMarkers({
 
 export default function MapView({ clientView = false }: { clientView?: boolean }) {
   const todayStr = format(startOfDay(new Date()), 'yyyy-MM-dd')
-  const maxDate  = format(addDays(startOfDay(new Date()), 14), 'yyyy-MM-dd')
 
   const [trucks,        setTrucks]        = useState<TruckLocation[]>([])
   const [loading,       setLoading]       = useState(true)
@@ -504,7 +503,6 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
               <input
                 type="date"
                 min={todayStr}
-                max={maxDate}
                 value={selectedDate}
                 onChange={(e) => setSelectedDate(e.target.value || todayStr)}
                 className="flex-1 text-sm border border-gray-300 rounded px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-green-500"

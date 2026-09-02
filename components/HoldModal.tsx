@@ -133,25 +133,7 @@ export function HoldModal({ truck, startDate, endDate, markets, onSubmit, onClos
             </div>
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-            <div className="flex gap-3">
-              {(['HOLD', 'COMMITTED'] as const).map((s) => (
-                <label key={s} className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="status"
-                    value={s}
-                    checked={form.status === s}
-                    onChange={() => setForm({ ...form, status: s })}
-                    className="text-green-600"
-                  />
-                  <span className={`text-sm font-medium ${s === 'HOLD' ? 'text-yellow-700' : 'text-red-700'}`}>
-                    {s === 'HOLD' ? 'On Hold' : 'Committed'}
-                  </span>
-                </label>
-              ))}
-            </div>
+          <div className="hidden">
           </div>
 
           <div>

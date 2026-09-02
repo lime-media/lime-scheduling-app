@@ -38,12 +38,26 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'A Salesforce Account must be selected' }, { status: 400 })
   }
 
-  // Select optimal trucks
-  const { selectedTrucks } = await selectTrucksForHold({
+  // Resolve rate overrides first — service_area_miles affects truck selection
+  const defaultOverrides = await resolveDefaultRateOverrides()
+  let rateOverrides: RateOverrides | undefined = defaultOverrides ?? undefined
+  if (sfdc_account_id) {
+    const result = await resolveRateOverridesBySfdcAccount(sfdc_account_id)
+    if (result.overrides) {
+      rateOverrides = { ...rateOverrides, ...result.overrides }
+      if (result.overrides.daily_rates) {
+        rateOverrides.daily_rates = { ...rateOverrides?.daily_rates, ...result.overrides.daily_rates }
+      }
+    }
+  }
+
+  // Select optimal trucks (with custom service area if set)
+  const { selectedTrucks, availability } = await selectTrucksForHold({
     market,
     startDate: start_date,
     endDate: end_date,
     truckCount: truck_count,
+    serviceAreaMiles: rateOverrides?.service_area_miles,
   })
 
   if (selectedTrucks.length === 0) {
@@ -81,19 +95,6 @@ export async function POST(req: NextRequest) {
     .map((s: string) => s.trim().toLowerCase())
     .filter((s: string): s is StudyType => (VALID_STUDIES as readonly string[]).includes(s))
 
-  // Resolve rate overrides — default base + client-specific on top
-  const defaultOverrides = await resolveDefaultRateOverrides()
-  let rateOverrides: RateOverrides | undefined = defaultOverrides ?? undefined
-  if (sfdc_account_id) {
-    const result = await resolveRateOverridesBySfdcAccount(sfdc_account_id)
-    if (result.overrides) {
-      rateOverrides = { ...rateOverrides, ...result.overrides }
-      if (result.overrides.daily_rates) {
-        rateOverrides.daily_rates = { ...rateOverrides?.daily_rates, ...result.overrides.daily_rates }
-      }
-    }
-  }
-
   const marketSizeTierId = await resolveMarketSizeTierId(market)
   const quote = computeQuote({
     truckCount: truck_count, days: activationDays, operatingHours: opHours,
@@ -108,7 +109,7 @@ export async function POST(req: NextRequest) {
   if (quote.best.reachOk && studies.length > 0) mediaTotal += studies.length * quote.best.studyCost
 
   const repoTrucks = selectedTrucks.filter(t => t.transport.needed)
-  const { leadBusinessDays } = (await selectTrucksForHold({ market, startDate: start_date, endDate: end_date, truckCount: truck_count })).availability.campaignFlags
+  const { leadBusinessDays } = availability.campaignFlags
   const hasTransportOverrides = rateOverrides?.transport_day_rate != null || rateOverrides?.transport_airfare != null || rateOverrides?.transport_hotel_per_night != null
   const transportOverrides = { dayRate: rateOverrides?.transport_day_rate, airfare: rateOverrides?.transport_airfare, hotelPerNight: rateOverrides?.transport_hotel_per_night }
   const transportAbsorbed = rateOverrides?.transport_included || (activationDays >= 10 && leadBusinessDays >= 10)

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useSession } from 'next-auth/react'
-import { useRouter } from 'next/navigation'
+// import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
 import toast from 'react-hot-toast'
 
@@ -24,12 +24,15 @@ interface UserForm {
 const EMPTY_FORM: UserForm = { name: '', email: '', password: '', role: 'SALES' }
 
 interface ClientPortalUser {
-  id:           string
-  username:     string
-  company_name: string
-  partner_id:   string | null
-  created_at:   string
+  id:              string
+  username:        string
+  company_name:    string
+  partner_id:      string | null
+  sfdc_account_id: string | null
+  created_at:      string
 }
+
+type SfdcAccount = { id: string; name: string }
 
 interface ClientForm {
   username:     string
@@ -42,7 +45,7 @@ const EMPTY_CLIENT_FORM: ClientForm = { username: '', company_name: '', password
 
 export default function UsersPage() {
   const { data: session, status } = useSession()
-  const router = useRouter()
+
 
   const [users,       setUsers]       = useState<AppUser[]>([])
   const [loading,     setLoading]     = useState(true)
@@ -62,12 +65,25 @@ export default function UsersPage() {
   const [clientShowPw,     setClientShowPw]     = useState(false)
   const [clientSaving,     setClientSaving]     = useState(false)
   const [clientDeleteId,   setClientDeleteId]   = useState<string | null>(null)
+  const [clientSfdcAccount, setClientSfdcAccount] = useState<SfdcAccount | null>(null)
+  const [sfdcQuery, setSfdcQuery] = useState('')
+  const [sfdcResults, setSfdcResults] = useState<SfdcAccount[]>([])
+  const [sfdcSearching, setSfdcSearching] = useState(false)
 
-  // Role guard
+  // SFDC account search for client user modal
   useEffect(() => {
-    if (status === 'loading') return
-    if (!session || session.user?.role !== 'OPERATIONS') router.replace('/')
-  }, [session, status, router])
+    if (sfdcQuery.length < 2) { setSfdcResults([]); return }
+    const t = setTimeout(async () => {
+      setSfdcSearching(true)
+      try {
+        const res = await fetch(`/api/sfdc/accounts?q=${encodeURIComponent(sfdcQuery)}`)
+        if (res.ok) { const data = await res.json(); setSfdcResults(data.accounts ?? []) }
+      } catch { /* ignore */ } finally { setSfdcSearching(false) }
+    }, 300)
+    return () => clearTimeout(t)
+  }, [sfdcQuery])
+
+  const isOps = session?.user?.role === 'OPERATIONS'
 
   async function fetchUsers() {
     setLoading(true)
@@ -173,6 +189,8 @@ export default function UsersPage() {
     setClientForm(EMPTY_CLIENT_FORM)
     setClientShowPw(false)
     setClientEditTarget(null)
+    setClientSfdcAccount(null)
+    setSfdcQuery('')
     setClientModalMode('add')
   }
 
@@ -180,6 +198,8 @@ export default function UsersPage() {
     setClientForm({ username: user.username, company_name: user.company_name, password: '', partner_id: user.partner_id ?? '' })
     setClientShowPw(false)
     setClientEditTarget(user)
+    setClientSfdcAccount(user.sfdc_account_id ? { id: user.sfdc_account_id, name: user.company_name } : null)
+    setSfdcQuery('')
     setClientModalMode('edit')
   }
 
@@ -206,10 +226,11 @@ export default function UsersPage() {
       const url    = isEdit ? `/api/admin/client-users/${clientEditTarget.id}` : '/api/admin/client-users'
       const method = isEdit ? 'PUT' : 'POST'
 
-      const body: Record<string, string> = {
-        username:     clientForm.username.trim(),
-        company_name: clientForm.company_name.trim(),
-        partner_id:   clientForm.partner_id.trim(),
+      const body: Record<string, string | null> = {
+        username:        clientForm.username.trim(),
+        company_name:    clientForm.company_name.trim(),
+        partner_id:      clientSfdcAccount?.id ?? clientForm.partner_id.trim() ?? '',
+        sfdc_account_id: clientSfdcAccount?.id ?? null,
       }
       if (clientForm.password) body.password = clientForm.password
 
@@ -250,7 +271,7 @@ export default function UsersPage() {
     return true
   }
 
-  if (status === 'loading' || (session?.user?.role !== 'OPERATIONS')) {
+  if (status === 'loading' || !session) {
     return null
   }
 
@@ -262,12 +283,14 @@ export default function UsersPage() {
         {/* Header */}
         <div className="flex items-center justify-between mb-5 sm:mb-6">
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900">User Management</h1>
-          <button
-            onClick={openAdd}
-            className="bg-green-700 hover:bg-green-600 text-white text-sm font-medium px-3 sm:px-4 py-2 rounded transition-colors"
-          >
-            + Add User
-          </button>
+          {isOps && (
+            <button
+              onClick={openAdd}
+              className="bg-green-600 hover:bg-green-700 text-white text-sm font-medium px-3 sm:px-4 py-2 rounded-lg transition-colors"
+            >
+              + Add User
+            </button>
+          )}
         </div>
 
         {loading ? (
@@ -275,9 +298,11 @@ export default function UsersPage() {
         ) : users.length === 0 ? (
           <div className="text-center py-16">
             <p className="text-gray-400 mb-4">No users yet</p>
-            <button onClick={openAdd} className="bg-green-700 hover:bg-green-600 text-white text-sm px-4 py-2 rounded">
-              + Add User
-            </button>
+            {isOps && (
+              <button onClick={openAdd} className="bg-green-600 hover:bg-green-700 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+                + Add User
+              </button>
+            )}
           </div>
         ) : (
           <>
@@ -303,45 +328,47 @@ export default function UsersPage() {
                         Added {new Date(user.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                       </div>
                     </div>
-                    <div className="flex items-center gap-1 flex-shrink-0">
-                      <button
-                        onClick={() => openEdit(user)}
-                        className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-                        title="Edit user"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                        </svg>
-                      </button>
-                      <button
-                        onClick={() => canDelete(user) && setDeleteId(user.id)}
-                        disabled={!canDelete(user)}
-                        className={`p-2 rounded-lg transition-colors ${
-                          canDelete(user)
-                            ? 'text-red-400 hover:text-red-600 hover:bg-red-50'
-                            : 'text-gray-200 cursor-not-allowed'
-                        }`}
-                        title={user.id === myId ? 'Cannot delete yourself' : !canDelete(user) ? 'Cannot delete last Operations admin' : 'Delete user'}
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                      </button>
-                    </div>
+                    {isOps && (
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        <button
+                          onClick={() => openEdit(user)}
+                          className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                          title="Edit user"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                          </svg>
+                        </button>
+                        <button
+                          onClick={() => canDelete(user) && setDeleteId(user.id)}
+                          disabled={!canDelete(user)}
+                          className={`p-2 rounded-lg transition-colors ${
+                            canDelete(user)
+                              ? 'text-red-400 hover:text-red-600 hover:bg-red-50'
+                              : 'text-gray-200 cursor-not-allowed'
+                          }`}
+                          title={user.id === myId ? 'Cannot delete yourself' : !canDelete(user) ? 'Cannot delete last Operations admin' : 'Delete user'}
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
             </div>
 
             {/* ── Desktop: table ────────────────────────────────────────────── */}
-            <div className="hidden sm:block bg-white rounded-lg shadow overflow-hidden">
+            <div className="hidden sm:block bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
               <table className="w-full text-sm">
-                <thead className="bg-gray-50 border-b border-gray-200">
+                <thead className="bg-gray-50/80 border-b border-gray-200">
                   <tr>
                     {['Name', 'Email', 'Role', 'Created', 'Actions'].map((h) => (
-                      <th key={h} className="text-left px-4 py-3 font-medium text-gray-600 text-xs uppercase tracking-wide">{h}</th>
+                      <th key={h} className="text-left px-4 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wider">{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -366,25 +393,29 @@ export default function UsersPage() {
                         {new Date(user.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <button onClick={() => openEdit(user)} title="Edit user" className="text-gray-400 hover:text-gray-700 transition-colors p-1">
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                            </svg>
-                          </button>
-                          <button
-                            onClick={() => canDelete(user) && setDeleteId(user.id)}
-                            title={user.id === myId ? 'Cannot delete yourself' : !canDelete(user) ? 'Cannot delete last Operations admin' : 'Delete user'}
-                            disabled={!canDelete(user)}
-                            className={`p-1 transition-colors ${canDelete(user) ? 'text-red-400 hover:text-red-600' : 'text-gray-200 cursor-not-allowed'}`}
-                          >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                            </svg>
-                          </button>
-                        </div>
+                        {isOps ? (
+                          <div className="flex items-center gap-2">
+                            <button onClick={() => openEdit(user)} title="Edit user" className="text-gray-400 hover:text-gray-700 transition-colors p-1">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              </svg>
+                            </button>
+                            <button
+                              onClick={() => canDelete(user) && setDeleteId(user.id)}
+                              title={user.id === myId ? 'Cannot delete yourself' : !canDelete(user) ? 'Cannot delete last Operations admin' : 'Delete user'}
+                              disabled={!canDelete(user)}
+                              className={`p-1 transition-colors ${canDelete(user) ? 'text-red-400 hover:text-red-600' : 'text-gray-200 cursor-not-allowed'}`}
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-gray-300">View only</span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -394,19 +425,19 @@ export default function UsersPage() {
           </>
         )}
 
-        {/* ── Client Portal Users ─────────────────────────────────────────────── */}
+        {/* ── Client View Users ──────────────────────────────────────────────── */}
         <div className="mt-10">
           <div className="flex items-center justify-between mb-5">
             <div>
-              <h2 className="text-lg sm:text-xl font-bold text-gray-900">Client Portal Users</h2>
-              <p className="text-xs text-gray-500 mt-0.5">Accounts that log in to the client-facing scheduling portal</p>
+              <h2 className="text-lg sm:text-xl font-bold text-gray-900">Client Users</h2>
+              <p className="text-xs text-gray-500 mt-0.5">Accounts that log in to the client-facing scheduling tool</p>
             </div>
-            <button
+            {isOps && <button
               onClick={openClientAdd}
-              className="bg-purple-700 hover:bg-purple-600 text-white text-sm font-medium px-3 sm:px-4 py-2 rounded transition-colors"
+              className="bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium px-3 sm:px-4 py-2 rounded-lg transition-colors"
             >
               + Add Client User
-            </button>
+            </button>}
           </div>
 
           {clientLoading ? (
@@ -414,7 +445,7 @@ export default function UsersPage() {
           ) : clientUsers.length === 0 ? (
             <div className="text-center py-10">
               <p className="text-gray-400 mb-4">No client portal users yet</p>
-              <button onClick={openClientAdd} className="bg-purple-700 hover:bg-purple-600 text-white text-sm px-4 py-2 rounded">
+              <button onClick={openClientAdd} className="bg-purple-600 hover:bg-purple-700 text-white text-sm px-4 py-2 rounded-lg transition-colors">
                 + Add Client User
               </button>
             </div>
@@ -432,40 +463,42 @@ export default function UsersPage() {
                           Added {new Date(cu.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                         </div>
                       </div>
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        <button
-                          onClick={() => openClientEdit(cu)}
-                          className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-                          title="Edit client user"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                          </svg>
-                        </button>
-                        <button
-                          onClick={() => setClientDeleteId(cu.id)}
-                          className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                          title="Delete client user"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                        </button>
-                      </div>
+                      {isOps && (
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <button
+                            onClick={() => openClientEdit(cu)}
+                            className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                            title="Edit client user"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => setClientDeleteId(cu.id)}
+                            className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                            title="Delete client user"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
               </div>
 
               {/* Desktop table */}
-              <div className="hidden sm:block bg-white rounded-lg shadow overflow-hidden">
+              <div className="hidden sm:block bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
                 <table className="w-full text-sm">
-                  <thead className="bg-gray-50 border-b border-gray-200">
+                  <thead className="bg-gray-50/80 border-b border-gray-200">
                     <tr>
-                      {['Company', 'Username', 'Rate Agreement', 'Created', 'Actions'].map((h) => (
-                        <th key={h} className="text-left px-4 py-3 font-medium text-gray-600 text-xs uppercase tracking-wide">{h}</th>
+                      {['Company', 'Username', 'SFDC Account', 'Created', 'Actions'].map((h) => (
+                        <th key={h} className="text-left px-4 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wider">{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -475,32 +508,36 @@ export default function UsersPage() {
                         <td className="px-4 py-3 font-medium text-gray-900">{cu.company_name}</td>
                         <td className="px-4 py-3 text-gray-600">{cu.username}</td>
                         <td className="px-4 py-3 text-gray-500">
-                          {cu.partner_id
-                            ? <span className="font-mono text-xs bg-gray-100 rounded px-1.5 py-0.5">{cu.partner_id}</span>
+                          {cu.sfdc_account_id
+                            ? <span className="font-mono text-xs bg-gray-100 rounded px-1.5 py-0.5">{cu.sfdc_account_id}</span>
                             : <span className="text-gray-300">Standard</span>}
                         </td>
                         <td className="px-4 py-3 text-gray-500">
                           {new Date(cu.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                         </td>
                         <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <button onClick={() => openClientEdit(cu)} title="Edit client user" className="text-gray-400 hover:text-gray-700 transition-colors p-1">
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                              </svg>
-                            </button>
-                            <button
-                              onClick={() => setClientDeleteId(cu.id)}
-                              title="Delete client user"
-                              className="p-1 text-red-400 hover:text-red-600 transition-colors"
-                            >
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                              </svg>
-                            </button>
-                          </div>
+                          {isOps ? (
+                            <div className="flex items-center gap-2">
+                              <button onClick={() => openClientEdit(cu)} title="Edit client user" className="text-gray-400 hover:text-gray-700 transition-colors p-1">
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                </svg>
+                              </button>
+                              <button
+                                onClick={() => setClientDeleteId(cu.id)}
+                                title="Delete client user"
+                                className="p-1 text-red-400 hover:text-red-600 transition-colors"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                </svg>
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-gray-300">View only</span>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -514,9 +551,9 @@ export default function UsersPage() {
 
       {/* ── Add/Edit Modal ─────────────────────────────────────────────────────── */}
       {modalMode && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-md">
-            <div className="px-6 py-4 border-b border-gray-200">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md">
+            <div className="px-6 py-4 border-b border-gray-100">
               <h2 className="text-lg font-semibold text-gray-900">
                 {modalMode === 'add' ? 'Add User' : 'Edit User'}
               </h2>
@@ -530,7 +567,7 @@ export default function UsersPage() {
                   required
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                 />
               </div>
               {/* Email */}
@@ -541,7 +578,7 @@ export default function UsersPage() {
                   required
                   value={form.email}
                   onChange={(e) => setForm({ ...form, email: e.target.value })}
-                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                 />
               </div>
               {/* Password */}
@@ -556,7 +593,7 @@ export default function UsersPage() {
                     onChange={(e) => setForm({ ...form, password: e.target.value })}
                     placeholder={modalMode === 'edit' ? 'Leave blank to keep current password' : ''}
                     required={modalMode === 'add'}
-                    className="w-full border border-gray-300 rounded px-3 py-2 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                   />
                   <button
                     type="button"
@@ -586,7 +623,7 @@ export default function UsersPage() {
                   value={form.role}
                   onChange={(e) => setForm({ ...form, role: e.target.value })}
                   disabled={modalMode === 'edit' && editTarget?.id === myId}
-                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500 disabled:bg-gray-100"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent disabled:bg-gray-100"
                 >
                   <option value="SALES">Sales</option>
                   <option value="OPERATIONS">Operations</option>
@@ -601,14 +638,14 @@ export default function UsersPage() {
                 <button
                   type="button"
                   onClick={closeModal}
-                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded transition-colors"
+                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-200 rounded-lg transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={saving}
-                  className="px-4 py-2 text-sm bg-green-700 hover:bg-green-600 text-white rounded transition-colors disabled:opacity-50"
+                  className="px-4 py-2 text-sm bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors disabled:opacity-50"
                 >
                   {saving ? 'Saving…' : 'Save'}
                 </button>
@@ -620,8 +657,8 @@ export default function UsersPage() {
 
       {/* ── Delete Confirm Modal ───────────────────────────────────────────────── */}
       {deleteId && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-sm p-6">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-2">Delete User</h2>
             <p className="text-sm text-gray-600 mb-6">
               Are you sure? This action cannot be undone.
@@ -629,13 +666,13 @@ export default function UsersPage() {
             <div className="flex justify-end gap-3">
               <button
                 onClick={() => setDeleteId(null)}
-                className="px-4 py-2 text-sm border border-gray-300 rounded text-gray-600 hover:text-gray-800 transition-colors"
+                className="px-4 py-2 text-sm border border-gray-200 rounded-lg text-gray-600 hover:text-gray-800 transition-colors"
               >
                 Cancel
               </button>
               <button
                 onClick={() => handleDelete(deleteId)}
-                className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
+                className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
               >
                 Delete
               </button>
@@ -644,11 +681,11 @@ export default function UsersPage() {
         </div>
       )}
 
-      {/* ── Client Portal User Add/Edit Modal ─────────────────────────────────── */}
+      {/* ── Client View User Add/Edit Modal ──────────────────────────────────── */}
       {clientModalMode && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-md">
-            <div className="px-6 py-4 border-b border-gray-200">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md">
+            <div className="px-6 py-4 border-b border-gray-100">
               <h2 className="text-lg font-semibold text-gray-900">
                 {clientModalMode === 'add' ? 'Add Client User' : 'Edit Client User'}
               </h2>
@@ -661,7 +698,7 @@ export default function UsersPage() {
                   required
                   value={clientForm.username}
                   onChange={(e) => setClientForm({ ...clientForm, username: e.target.value })}
-                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                 />
               </div>
               <div>
@@ -671,7 +708,7 @@ export default function UsersPage() {
                   required
                   value={clientForm.company_name}
                   onChange={(e) => setClientForm({ ...clientForm, company_name: e.target.value })}
-                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                 />
               </div>
               <div>
@@ -684,7 +721,7 @@ export default function UsersPage() {
                     value={clientForm.password}
                     onChange={(e) => setClientForm({ ...clientForm, password: e.target.value })}
                     required={clientModalMode === 'add'}
-                    className="w-full border border-gray-300 rounded px-3 py-2 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                   />
                   <button
                     type="button"
@@ -708,31 +745,53 @@ export default function UsersPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Rate Agreement Partner ID <span className="text-gray-400 font-normal ml-1">(optional)</span>
+                  Salesforce Account <span className="text-gray-400 font-normal ml-1">(required)</span>
                 </label>
-                <input
-                  type="text"
-                  value={clientForm.partner_id}
-                  onChange={(e) => setClientForm({ ...clientForm, partner_id: e.target.value })}
-                  placeholder="Leave blank for standard rate card"
-                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
-                />
+                {clientSfdcAccount ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-900">{clientSfdcAccount.name}</span>
+                    <span className="text-xs text-gray-400">({clientSfdcAccount.id})</span>
+                    <button type="button" onClick={() => { setClientSfdcAccount(null); setSfdcQuery('') }} className="text-xs text-red-600 hover:text-red-700 ml-1">Change</button>
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={sfdcQuery}
+                      onChange={(e) => setSfdcQuery(e.target.value)}
+                      placeholder="Search Salesforce accounts..."
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                    />
+                    {sfdcSearching && <p className="text-xs text-gray-400 mt-1">Searching...</p>}
+                    {sfdcResults.length > 0 && (
+                      <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                        {sfdcResults.map((a) => (
+                          <button key={a.id} type="button" onClick={() => { setClientSfdcAccount(a); setSfdcQuery(''); setSfdcResults([]) }}
+                            className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-b border-gray-100 last:border-0">
+                            <span className="font-medium">{a.name}</span>
+                            <span className="text-xs text-gray-400 ml-2">{a.id}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <p className="text-xs text-gray-400 mt-1">
-                  Matches an app_rate_agreements.partner_id — the client-portal AI quote engine uses this to apply a negotiated rate instead of the standard rate card.
+                  Links this client user to their Salesforce Account. Rate cards and quotes are tied to this ID.
                 </p>
               </div>
               <div className="flex justify-end gap-3 pt-2">
                 <button
                   type="button"
                   onClick={closeClientModal}
-                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded transition-colors"
+                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-200 rounded-lg transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={clientSaving}
-                  className="px-4 py-2 text-sm bg-purple-700 hover:bg-purple-600 text-white rounded transition-colors disabled:opacity-50"
+                  className="px-4 py-2 text-sm bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors disabled:opacity-50"
                 >
                   {clientSaving ? 'Saving…' : 'Save'}
                 </button>
@@ -742,10 +801,10 @@ export default function UsersPage() {
         </div>
       )}
 
-      {/* ── Client Portal Delete Confirm Modal ────────────────────────────────── */}
+      {/* ── Client View Delete Confirm Modal ─────────────────────────────────── */}
       {clientDeleteId && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-sm p-6">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-2">Delete Client User</h2>
             <p className="text-sm text-gray-600 mb-6">
               This will permanently delete the client account. Any pending hold requests will remain in the system.
@@ -753,13 +812,13 @@ export default function UsersPage() {
             <div className="flex justify-end gap-3">
               <button
                 onClick={() => setClientDeleteId(null)}
-                className="px-4 py-2 text-sm border border-gray-300 rounded text-gray-600 hover:text-gray-800 transition-colors"
+                className="px-4 py-2 text-sm border border-gray-200 rounded-lg text-gray-600 hover:text-gray-800 transition-colors"
               >
                 Cancel
               </button>
               <button
                 onClick={() => handleClientDelete(clientDeleteId)}
-                className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
+                className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
               >
                 Delete
               </button>

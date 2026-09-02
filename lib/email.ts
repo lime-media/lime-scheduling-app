@@ -73,7 +73,7 @@ export async function sendAssistanceRequestEmail(data: AssistanceRequestEmailDat
 
   const subject = `Assistance Request — ${data.companyName}${data.market ? ' · ' + data.market : ''}`
   const text = [
-    `${data.companyName} asked the client portal assistant to relay a question/need to the Lime Media team.`,
+    `${data.companyName} asked the client view assistant to relay a question/need to the Lime Media team.`,
     ``,
     data.market                    ? `Market:  ${data.market}${data.state ? ', ' + data.state : ''}` : null,
     data.startDate && data.endDate ? `Dates:   ${data.startDate} → ${data.endDate}` : null,
@@ -85,6 +85,53 @@ export async function sendAssistanceRequestEmail(data: AssistanceRequestEmailDat
   await transporter.sendMail({
     from:    SMTP_FROM ?? SMTP_USER,
     to:      'andrew@lime-media.com, bbenekos@lime-media.com',
+    subject,
+    text,
+  })
+}
+
+export interface CancellationEmailData {
+  to:          string
+  companyName: string
+  truckNumber: string
+  market:      string
+  startDate:   string
+  endDate:     string
+  reason:      string
+}
+
+export async function sendCancellationEmail(data: CancellationEmailData): Promise<void> {
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+    console.log('[email] SMTP not configured — cancellation notice (not emailed):', data)
+    return
+  }
+
+  const nodemailer = (await import('nodemailer')).default
+  const transporter = nodemailer.createTransport({
+    host:   SMTP_HOST,
+    port:   Number(SMTP_PORT ?? 587),
+    secure: Number(SMTP_PORT ?? 587) === 465,
+    auth:   { user: SMTP_USER, pass: SMTP_PASS },
+  })
+
+  const subject = `Reservation Update — ${data.market}`
+  const text = [
+    `Hi ${data.companyName},`,
+    ``,
+    `We're reaching out to let you know that your reservation for Truck ${data.truckNumber} in ${data.market} ` +
+      `(${data.startDate} – ${data.endDate}) has been cancelled.`,
+    ``,
+    `Reason: ${data.reason}`,
+    ``,
+    `If you have any questions or would like to explore other options, please don't hesitate to reach out.`,
+    ``,
+    `— The Lime Media Team`,
+  ].join('\n')
+
+  await transporter.sendMail({
+    from:    SMTP_FROM ?? SMTP_USER,
+    to:      data.to,
     subject,
     text,
   })

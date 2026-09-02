@@ -135,6 +135,21 @@ function computePerTruckTransportCharge(distanceMiles: number): number {
   )
 }
 
+/** Recompute a truck's transport charge with custom transport cost overrides. */
+export function recomputeTransportCharge(
+  truck: AvailableTruck,
+  overrides: { dayRate?: number; airfare?: number; hotelPerNight?: number }
+): number {
+  if (!truck.transport.needed) return 0
+  const days = truck.transport.transportDays
+  const overnights = Math.max(days - 1, 0)
+  return (
+    days * (overrides.dayRate ?? TRANSPORT_CONFIG.exceptionTransportDayRate)
+    + (overrides.airfare ?? TRANSPORT_CONFIG.airfareHomeOneWay)
+    + overnights * (overrides.hotelPerNight ?? TRANSPORT_CONFIG.hotelPerDiemPerNight)
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Core availability check
 // ---------------------------------------------------------------------------
@@ -146,18 +161,12 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
   const campaignCoords = await resolveCampaignCoords(market)
 
   // Fetch all data sources in parallel
-  const [scheduleRows, contextRows, holds, otherRequests, gpsMap, resolvedNearestMarket] = await Promise.all([
+  const [scheduleRows, contextRows, holds, gpsMap, resolvedNearestMarket] = await Promise.all([
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
     prisma.hold.findMany({
       where: { status: { not: 'EXPIRED' } },
       orderBy: { start_date: 'asc' },
-    }),
-    // Include ALL non-rejected hold requests (including the requesting client's own)
-    // so a truck with an existing pending hold is not selected again.
-    prisma.holdRequest.findMany({
-      where: { status: { not: 'REJECTED' } },
-      orderBy: { created_at: 'asc' },
     }),
     getLiveVehicleLocations().catch(() => new Map<string, SamsaraVehicleLocation>()),
     campaignCoords
@@ -210,10 +219,6 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
 
   for (const h of holds) {
     addBooking(h.truck_number, toDateStr(h.start_date), toDateStr(h.end_date))
-  }
-
-  for (const r of otherRequests) {
-    addBooking(r.truck_number, toDateStr(r.start_date), toDateStr(r.end_date))
   }
 
   // Get all known truck numbers

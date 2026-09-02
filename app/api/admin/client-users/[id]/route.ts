@@ -15,7 +15,7 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
-  const { username, company_name, password, partner_id } = await req.json()
+  const { username, company_name, password, partner_id, sfdc_account_id } = await req.json()
 
   if (!username?.trim() || !company_name?.trim()) {
     return NextResponse.json({ error: 'Username and company name are required' }, { status: 400 })
@@ -29,11 +29,10 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
   }
 
   const data: Record<string, string | null> = {
-    username:     username.trim(),
-    company_name: company_name.trim(),
-    // Optional — links this client to a RateAgreement for the AI quote engine (see lib/pricing).
-    // An empty string clears it back to standard rate-card pricing.
-    partner_id:   partner_id?.trim() || null,
+    username:        username.trim(),
+    company_name:    company_name.trim(),
+    partner_id:      partner_id?.trim() || null,
+    sfdc_account_id: sfdc_account_id?.trim() || null,
   }
   if (password) {
     data.password_hash = await bcrypt.hash(password, 12)
@@ -42,7 +41,7 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
   const user = await prisma.clientUser.update({
     where: { id: params.id },
     data,
-    select: { id: true, username: true, company_name: true, partner_id: true, created_at: true },
+    select: { id: true, username: true, company_name: true, partner_id: true, sfdc_account_id: true, created_at: true },
   })
 
   return NextResponse.json({ user })

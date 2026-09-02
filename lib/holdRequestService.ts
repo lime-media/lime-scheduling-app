@@ -13,15 +13,10 @@ const MIN_PROCESSING_DAYS_BEFORE_START = 3
 
 /**
  * A hold's expiration is the EARLIER of the standard 72h review SLA and the latest moment that
- * still leaves MIN_PROCESSING_DAYS_BEFORE_START full days before the campaign starts. A flat
- * 72-hour countdown makes no sense for a campaign starting in a day or two — there isn't enough
- * runway left before the trucks need to move, so the hold is already due, not "72 hours away."
- * If that start-date deadline has already passed by the time the hold is created, the hold is
- * due immediately (now), never backdated into the past.
+ * still leaves MIN_PROCESSING_DAYS_BEFORE_START full days before the campaign starts.
  *
- * Exported so the staff-side "approve extension" action (app/api/hold-requests/[id]/route.ts)
- * can grant an extension using the exact same rule — a fresh 72h SLA from the moment of
- * approval, still capped by the campaign's start date.
+ * Exported so the staff-side "approve extension" action can grant an extension using the exact
+ * same rule — a fresh 72h SLA from the moment of approval, still capped by the campaign start.
  */
 export function computeHoldExpiresAt(startDate: string): Date {
   const now = new Date()
@@ -36,7 +31,7 @@ export function computeHoldExpiresAt(startDate: string): Date {
   return standardExpiry < cappedByStart ? standardExpiry : cappedByStart
 }
 
-export interface CreateHoldRequestParams {
+export interface CreateClientHoldParams {
   truck_number: string
   market?:      string | null
   state?:       string | null
@@ -44,24 +39,22 @@ export interface CreateHoldRequestParams {
   end_date:     string // yyyy-MM-dd
   notes?:       string | null
   // Pricing snapshot — from the quote engine, locked at hold creation
-  pricing_tier?:      string | null   // Good | Better | Best
-  quoted_total?:      number | null   // total at the selected tier (campaign-level)
-  daily_rate?:        number | null   // per-truck per-day rate
-  features?:          string | null   // JSON string of included features
-  truck_count?:       number | null   // total trucks in the campaign group
-  campaign_group_id?: string | null   // links multi-truck holds into one campaign
+  pricing_tier?:      string | null
+  quoted_total?:      number | null
+  daily_rate?:        number | null
+  features?:          string | null
+  truck_count?:       number | null
+  campaign_group_id?: string | null
 }
 
 /**
- * Single source of truth for creating a client's HoldRequest — always PENDING, always tagged
- * with the client's own client_user_id, never auto-approved. Used by both the manual
- * drag-on-the-grid submission (app/api/client/hold-requests/route.ts) and the AI assistant's
- * action-block execution (app/api/client/chat/route.ts), so the side effects (Firefly sheet
- * export, email notification) can't drift between the two entry points.
+ * Creates a Hold record for a client-originated booking. All holds are immediately valid
+ * with a 72-hour expiration window. Used by the client view auto-select flow, the legacy
+ * drag-on-grid flow, and the client AI assistant.
  */
-export async function createHoldRequestForClient(
+export async function createClientHold(
   session: ClientSession,
-  params: CreateHoldRequestParams
+  params: CreateClientHoldParams
 ) {
   const {
     truck_number, market, state, start_date, end_date, notes,
@@ -71,55 +64,39 @@ export async function createHoldRequestForClient(
 
   const expiresAt = computeHoldExpiresAt(start_date)
 
-  const holdRequest = await prisma.holdRequest.create({
+  // Hold.created_by is a FK to app_users — use the SFDC service user since
+  // client users don't exist in that table.
+  const serviceUser = await prisma.user.findFirst({
+    where: { email: SFDC_SERVICE_USER_EMAIL },
+    select: { id: true },
+  })
+  if (!serviceUser) {
+    throw new Error('SFDC service user not found — cannot create client hold')
+  }
+
+  const hold = await prisma.hold.create({
     data: {
-      client_user_id:    session.id,
       truck_number,
+      client_name:       session.companyName,
       market:            market ?? '',
-      state:             state  ?? null,
+      state:             state ?? '',
       start_date:        new Date(start_date),
       end_date:          new Date(end_date),
-      notes:             notes  ?? null,
-      status:            'APPROVED',
+      status:            'HOLD',
+      source:            'CLIENT',
+      origination:       'client-view',
+      notes:             notes ?? null,
+      created_by:        serviceUser.id,
+      client_user_id:    session.id,
       pricing_tier:      pricing_tier ?? null,
       quoted_total:      quoted_total ?? null,
-      daily_rate:        daily_rate   ?? null,
-      features:          features     ?? null,
-      truck_count:       truck_count  ?? null,
+      daily_rate:        daily_rate ?? null,
+      features:          features ?? null,
+      truck_count:       truck_count ?? null,
       campaign_group_id: campaign_group_id ?? null,
       expires_at:        expiresAt,
     },
   })
-
-  // Auto-approve: immediately create the schedule-blocking Hold record.
-  // The availability engine already verified this truck is free.
-  // Hold.created_by is a FK to app_users — use the SFDC service user since
-  // client users don't exist in that table.
-  try {
-    const serviceUser = await prisma.user.findFirst({
-      where: { email: SFDC_SERVICE_USER_EMAIL },
-      select: { id: true },
-    })
-    if (serviceUser) {
-      await prisma.hold.create({
-        data: {
-          truck_number,
-          client_name:  session.companyName,
-          market:       market ?? '',
-          state:        state ?? '',
-          start_date:   new Date(start_date),
-          end_date:     new Date(end_date),
-          status:       'HOLD',
-          source:       'CLIENT',
-          origination:  'client-portal',
-          notes:        notes ?? null,
-          created_by:   serviceUser.id,
-        },
-      })
-    }
-  } catch (err) {
-    console.error('[holdRequestService] auto-approve Hold creation failed:', err)
-  }
 
   // Append to Google Sheet — Firefly only (no-op if env vars not set)
   if (session.companyName === 'Firefly' && session.username === 'firefly') {
@@ -132,7 +109,7 @@ export async function createHoldRequestForClient(
       startDate:   start_date,
       endDate:     end_date,
       notes:       notes  ?? '',
-      status:      'PENDING',
+      status:      'HOLD',
     }).catch((e) => console.error('[sheets] append failed:', e))
   }
 
@@ -151,5 +128,5 @@ export async function createHoldRequestForClient(
     notes:       (notes ?? '') + pricingNote,
   }).catch((e) => console.error('[email] send failed:', e))
 
-  return holdRequest
+  return hold
 }

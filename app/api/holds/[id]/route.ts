@@ -23,7 +23,29 @@ export async function PUT(
   }
 
   const body = await req.json()
-  const { status, notes, start_date, end_date, client_name, market, state } = body
+  const { status, notes, start_date, end_date, client_name, market, state, truck_number } = body
+
+  // If swapping trucks, check for conflicts on the new truck
+  if (truck_number && truck_number !== hold.truck_number) {
+    const effectiveStart = start_date ? new Date(start_date) : hold.start_date
+    const effectiveEnd = end_date ? new Date(end_date) : hold.end_date
+    const conflicts = await prisma.hold.findMany({
+      where: {
+        truck_number,
+        id: { not: hold.id },
+        status: { not: 'EXPIRED' },
+        start_date: { lte: effectiveEnd },
+        end_date: { gte: effectiveStart },
+      },
+    })
+    if (conflicts.length > 0) {
+      const c = conflicts[0]
+      return NextResponse.json({
+        error: `Truck ${truck_number} already has a ${c.status} for "${c.client_name}" ` +
+               `from ${c.start_date.toISOString().split('T')[0]} to ${c.end_date.toISOString().split('T')[0]}.`,
+      }, { status: 409 })
+    }
+  }
 
   const updated = await prisma.hold.update({
     where: { id: params.id },
@@ -35,6 +57,7 @@ export async function PUT(
       ...(client_name && { client_name }),
       ...(market && { market }),
       ...(state && { state }),
+      ...(truck_number && { truck_number }),
     },
   })
 

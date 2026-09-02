@@ -8,7 +8,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
-import { checkAvailability } from '@/lib/availabilityEngine'
+import { checkAvailability, recomputeTransportCharge } from '@/lib/availabilityEngine'
 import {
   computeQuote,
   VALID_STUDIES,
@@ -16,8 +16,11 @@ import {
 } from '@/lib/pricing'
 import {
   resolveMarketSizeTierId,
+  resolveRateOverridesBySfdcAccount,
+  resolveDefaultRateOverrides,
 } from '@/lib/pricing/resolvers'
 import { resolveMarketInput } from '@/lib/marketCoordinates'
+import type { RateOverrides } from '@/lib/pricing/config'
 
 export async function POST(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
@@ -140,6 +143,22 @@ export async function POST(req: NextRequest) {
 
   const selectedTrucks = availability.trucks.slice(0, truck_count)
 
+  // Load the editable default rate card, then layer client-specific overrides on top
+  const defaultOverrides = await resolveDefaultRateOverrides()
+  let rateOverrides: RateOverrides | undefined = defaultOverrides ?? undefined
+  let agreementName: string | undefined
+  if (body.sfdc_account_id) {
+    const result = await resolveRateOverridesBySfdcAccount(body.sfdc_account_id)
+    if (result.overrides) {
+      // Client overrides merge on top of defaults
+      rateOverrides = { ...rateOverrides, ...result.overrides }
+      if (result.overrides.daily_rates) {
+        rateOverrides.daily_rates = { ...rateOverrides?.daily_rates, ...result.overrides.daily_rates }
+      }
+      agreementName = result.agreementName
+    }
+  }
+
   const quote = computeQuote({
     truckCount: truck_count,
     days,
@@ -148,6 +167,7 @@ export async function POST(req: NextRequest) {
     includeSmartDirectional,
     includeDeviceId,
     studies,
+    rateOverrides,
   })
 
   const repoTrucks = selectedTrucks.filter(t => t.transport.needed)
@@ -156,10 +176,12 @@ export async function POST(req: NextRequest) {
   const MIN_DAYS_TO_ABSORB = 10
   const MIN_LEAD_DAYS_TO_ABSORB = 10
   const leadBusinessDays = availability.campaignFlags.leadBusinessDays
-  const transportAbsorbed = days >= MIN_DAYS_TO_ABSORB && leadBusinessDays >= MIN_LEAD_DAYS_TO_ABSORB
+  const transportAbsorbed = rateOverrides?.transport_included || (days >= MIN_DAYS_TO_ABSORB && leadBusinessDays >= MIN_LEAD_DAYS_TO_ABSORB)
+  const hasTransportOverrides = rateOverrides?.transport_day_rate != null || rateOverrides?.transport_airfare != null || rateOverrides?.transport_hotel_per_night != null
+  const transportOverrides = { dayRate: rateOverrides?.transport_day_rate, airfare: rateOverrides?.transport_airfare, hotelPerNight: rateOverrides?.transport_hotel_per_night }
   const totalTransportCharge = transportAbsorbed
     ? 0
-    : repoTrucks.reduce((sum, t) => sum + t.transport.chargePerTruck, 0)
+    : repoTrucks.reduce((sum, t) => sum + (hasTransportOverrides ? recomputeTransportCharge(t, transportOverrides) : t.transport.chargePerTruck), 0)
 
   let mediaTotal = quote.good.baseMedia
   if (includeShadowFencing) mediaTotal += quote.better.shadowFencing
@@ -194,14 +216,14 @@ export async function POST(req: NextRequest) {
       calendarDays,
       truckCount: truck_count,
       baseMedia: quote.good.baseMedia,
-      pricingBasis: quote.pricingBasis,
+      pricingBasis: agreementName ? `agreement: ${agreementName}` : 'standard',
       marketSizeTier: quote.input.marketSizeTier,
       schedule: { daysPerWeek, operatingHours, activationDays: days },
     },
     features: {
       shadowFencing: { included: includeShadowFencing, cost: quote.better.shadowFencing, floored: quote.better.shadowFencingFloored, digitalImpressions: quote.better.digitalImpressions },
-      smartDirectional: { included: includeSmartDirectional, cost: includeSmartDirectional ? quote.better.smartDirectional : quote.input.truckDays * 250 },
-      deviceId: { included: includeDeviceId, cost: includeDeviceId ? quote.better.deviceId : 2500 },
+      smartDirectional: { included: includeSmartDirectional, cost: includeSmartDirectional ? quote.better.smartDirectional : quote.input.truckDays * (rateOverrides?.smart_directional_daily ?? 250) },
+      deviceId: { included: includeDeviceId, cost: includeDeviceId ? quote.better.deviceId : (rateOverrides?.device_id_flat ?? 2500) },
       studies: { available: quote.best.reachOk, selected: studies, costPerStudy: quote.best.studyCost, estimatedImpressions: quote.best.estimatedImpressions, reachMinimum: 1_200_000 },
     },
     transport: {
@@ -217,7 +239,7 @@ export async function POST(req: NextRequest) {
         trucks: repoTrucks.map(t => ({
           distanceMiles: t.distanceMiles,
           transportDays: t.transport.transportDays,
-          charge: transportAbsorbed ? 0 : t.transport.chargePerTruck,
+          charge: transportAbsorbed ? 0 : (hasTransportOverrides ? recomputeTransportCharge(t, transportOverrides) : t.transport.chargePerTruck),
           from: t.currentMarket || 'Unknown',
         })),
       },

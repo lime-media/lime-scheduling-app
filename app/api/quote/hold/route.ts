@@ -130,48 +130,33 @@ export async function POST(req: NextRequest) {
   })
   const createdBy = (token.id as string) || serviceUser?.id || 'system'
 
-  // Create hold requests
+  // Create holds directly (unified — no more dual-write to HoldRequest)
   const created: string[] = []
   for (const truck of selectedTrucks) {
     try {
-      await prisma.holdRequest.create({
-        data: {
-          client_user_id: linkedClient?.id ?? null,
-          truck_number: truck.truckNumber,
-          market,
-          state: resolvedState,
-          start_date: new Date(start_date),
-          end_date: new Date(end_date),
-          status: 'APPROVED',
-          source: 'INTERNAL',
-          pricing_tier: pricingTier,
-          quoted_total: serverTotal,
-          daily_rate: quote.dailyRate,
-          features: featuresJson,
-          truck_count: selectedTrucks.length,
-          campaign_group_id: campaignGroupId,
-          expires_at: expiresAt,
-          notes: `Internal quote for ${sfdc_account_name || 'Unknown'}`,
-        },
-      })
-
-      // Auto-approve: create the schedule-blocking Hold record
       await prisma.hold.create({
         data: {
-          truck_number: truck.truckNumber,
-          client_name: sfdc_account_name || 'Unknown',
+          truck_number:      truck.truckNumber,
+          client_name:       sfdc_account_name || 'Unknown',
           market,
-          state: resolvedState ?? '',
-          start_date: new Date(start_date),
-          end_date: new Date(end_date),
-          status: 'HOLD',
-          source: 'INTERNAL',
-          origination: 'frontend',
-          notes: `Internal quote for ${sfdc_account_name || 'Unknown'}`,
-          created_by: createdBy,
+          state:             resolvedState ?? '',
+          start_date:        new Date(start_date),
+          end_date:          new Date(end_date),
+          status:            'HOLD',
+          source:            'INTERNAL',
+          origination:       'frontend',
+          notes:             `Internal quote for ${sfdc_account_name || 'Unknown'}`,
+          created_by:        createdBy,
+          client_user_id:    linkedClient?.id ?? null,
+          pricing_tier:      pricingTier,
+          quoted_total:      serverTotal,
+          daily_rate:        quote.dailyRate,
+          features:          featuresJson,
+          truck_count:       selectedTrucks.length,
+          campaign_group_id: campaignGroupId,
+          expires_at:        expiresAt,
         },
       })
-
       created.push(truck.truckNumber)
     } catch (err) {
       console.error('[quote/hold] failed to create hold for truck:', truck.truckNumber, err)
@@ -179,7 +164,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (created.length === 0) {
-    return NextResponse.json({ error: 'Failed to create hold requests' }, { status: 500 })
+    return NextResponse.json({ error: 'Failed to create holds' }, { status: 500 })
   }
 
   // Create Salesforce Opportunity
@@ -207,7 +192,7 @@ export async function POST(req: NextRequest) {
 
       if (result.success && result.id) {
         sfdcOpportunityId = result.id
-        await prisma.holdRequest.updateMany({
+        await prisma.hold.updateMany({
           where: { campaign_group_id: campaignGroupId },
           data: { sfdc_opportunity_id: result.id },
         })
@@ -224,6 +209,6 @@ export async function POST(req: NextRequest) {
     created: created.length,
     campaignGroupId,
     sfdcOpportunityId,
-    message: `Created ${created.length} hold request${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}. ${sfdcOpportunityId ? 'Salesforce opportunity created.' : ''}`,
+    message: `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}. ${sfdcOpportunityId ? 'Salesforce opportunity created.' : ''}`,
   })
 }

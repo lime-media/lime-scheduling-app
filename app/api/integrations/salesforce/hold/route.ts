@@ -85,6 +85,7 @@ export async function POST(req: NextRequest) {
         where: { id: existing.id },
         data: {
           market, state, client_name: accountName, start_date, end_date, sfdc_hold_exp,
+          expires_at: sfdc_hold_exp,
           ...(reactivated && { status: 'HOLD' }),
         },
       })
@@ -113,6 +114,7 @@ export async function POST(req: NextRequest) {
           created_by:          serviceUser.id,
           sfdc_opportunity_id: opportunityId,
           sfdc_hold_exp,
+          expires_at:          sfdc_hold_exp,
         },
       })
       results.push({ truck_number, hold_id: created.id, action: 'created' })

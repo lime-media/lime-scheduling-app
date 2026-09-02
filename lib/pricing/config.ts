@@ -172,6 +172,11 @@ export type RateOverrides = {
   device_id_flat?: number
   study_cost?: number
   hour_surcharge?: number
+  transport_included?: boolean                     // always absorb transport for this client
+  service_area_miles?: number                      // custom service area radius (default 250)
+  transport_day_rate?: number                      // per transport day rate (default $750)
+  transport_airfare?: number                       // one-way airfare home (default $350)
+  transport_hotel_per_night?: number               // hotel per diem per overnight (default $210)
 }
 
 /**

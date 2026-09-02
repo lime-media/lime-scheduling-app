@@ -3,37 +3,23 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { computeHoldExpiresAt } from '@/lib/holdRequestService'
+import { sendCancellationEmail } from '@/lib/email'
 
-type Action = 'approve' | 'reject' | 'approve_extension' | 'deny_extension'
+type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration'
 
-// Which statuses each action is valid from — mirrors the client-side gating (e.g. extension can
-// only be requested from PENDING/APPROVED/EXPIRED) so staff can't, say, approve an already-
-// rejected request or grant an extension nobody asked for.
 const VALID_FROM: Record<Action, string[]> = {
-  approve:            ['PENDING'],
-  reject:             ['PENDING', 'EXTENSION_REQUESTED'],
+  swap_truck:         ['HOLD', 'COMMITTED'],
+  cancel_notify:      ['HOLD', 'COMMITTED', 'EXTENSION_REQUESTED'],
   approve_extension:  ['EXTENSION_REQUESTED'],
   deny_extension:     ['EXTENSION_REQUESTED'],
+  update_expiration:  ['HOLD', 'COMMITTED', 'EXTENSION_REQUESTED'],
 }
 
 /**
  * PATCH /api/hold-requests/[id]
  *
- * Staff-only review actions on a client's HoldRequest — the counterpart to the client-facing
- * submit (lib/holdRequestService.ts) and extend-request (app/api/client/hold-requests/[id]/
- * extend/route.ts) endpoints. Body: { action: 'approve' | 'reject' | 'approve_extension' |
- * 'deny_extension' }.
- *
- * - approve: creates the matching confirmed Hold (app_holds — same table the internal AI
- *   assistant's PLACE_HOLD action and the Schedule Grid write to), after checking for a
- *   truck/date conflict exactly like that action does. Status → APPROVED.
- * - reject: status → REJECTED. No Hold is created.
- * - approve_extension: grants a fresh review window via the same computeHoldExpiresAt() rule
- *   used at submission (72h from now, capped by the campaign's start date) and returns the
- *   request to PENDING for a normal approve/reject decision.
- * - deny_extension: status → EXPIRED. The request's expires_at is already in the past (that's
- *   why an extension was requested) — this just makes that explicit immediately, rather than
- *   waiting for the next hourly expireHoldRequests() sweep to do the same thing.
+ * Staff actions on a Hold record from the unified Reservations page.
+ * Actions: swap_truck, cancel_notify, approve_extension, deny_extension.
  */
 export async function PATCH(
   req: NextRequest,
@@ -42,122 +28,177 @@ export async function PATCH(
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { action } = (await req.json().catch(() => ({}))) as { action?: Action }
+  const { action, truck_number, reason, expires_at: newExpiresAtStr } = (await req.json().catch(() => ({}))) as {
+    action?: Action; truck_number?: string; reason?: string; expires_at?: string
+  }
   if (!action || !(action in VALID_FROM)) {
     return NextResponse.json({ error: 'Invalid action' }, { status: 400 })
   }
 
-  const holdRequest = await prisma.holdRequest.findUnique({
+  const hold = await prisma.hold.findUnique({
     where:   { id: params.id },
-    include: { client_user: { select: { company_name: true } } },
+    include: { client_user: { select: { username: true, company_name: true } } },
   })
-  if (!holdRequest) return NextResponse.json({ error: 'Hold request not found' }, { status: 404 })
+  if (!hold) return NextResponse.json({ error: 'Hold not found' }, { status: 404 })
 
-  if (!VALID_FROM[action].includes(holdRequest.status)) {
+  if (!VALID_FROM[action].includes(hold.status)) {
     return NextResponse.json(
-      { error: `Cannot ${action.replace('_', ' ')} a request with status ${holdRequest.status}` },
+      { error: `Cannot ${action.replace('_', ' ')} a hold with status ${hold.status}` },
       { status: 400 }
     )
   }
 
-  if (action === 'approve') {
-    // Same conflict check the internal AI assistant's PLACE_HOLD action runs — a hold can't be
-    // approved onto a truck/date range something else already occupies.
+  // ── swap_truck ──────────────────────────────────────────────────────────
+  if (action === 'swap_truck') {
+    if (!truck_number) {
+      return NextResponse.json({ error: 'truck_number is required' }, { status: 400 })
+    }
+
+    const oldTruck = hold.truck_number
+
+    // Conflict check on new truck
     const conflicts = await prisma.hold.findMany({
       where: {
-        truck_number: holdRequest.truck_number,
-        status:       { not: 'EXPIRED' },
-        start_date:   { lte: holdRequest.end_date },
-        end_date:     { gte: holdRequest.start_date },
+        truck_number,
+        id:         { not: hold.id },
+        status:     { not: 'EXPIRED' },
+        start_date: { lte: hold.end_date },
+        end_date:   { gte: hold.start_date },
       },
     })
     if (conflicts.length > 0) {
       const c = conflicts[0]
       return NextResponse.json({
-        error: `Truck ${holdRequest.truck_number} already has a ${c.status} for "${c.client_name}" ` +
+        error: `Truck ${truck_number} already has a ${c.status} for "${c.client_name}" ` +
                `from ${c.start_date.toISOString().split('T')[0]} to ${c.end_date.toISOString().split('T')[0]}.`,
       }, { status: 409 })
     }
 
-    const hold = await prisma.hold.create({
-      data: {
-        truck_number: holdRequest.truck_number,
-        client_name:  holdRequest.client_user?.company_name ?? 'Unknown',
-        market:       holdRequest.market,
-        state:        holdRequest.state ?? '',
-        start_date:   holdRequest.start_date,
-        end_date:     holdRequest.end_date,
-        status:       'HOLD',
-        source:       'CLIENT',
-        origination:  'client-portal',
-        notes:        holdRequest.notes,
-        created_by:   session.user.id,
-      },
+    await prisma.hold.update({
+      where: { id: hold.id },
+      data:  { truck_number },
     })
-
-    await prisma.holdRequest.update({ where: { id: holdRequest.id }, data: { status: 'APPROVED' } })
 
     await prisma.auditLog.create({
       data: {
-        action:       'APPROVE_HOLD_REQUEST',
-        truck_number: holdRequest.truck_number,
+        action:       'SWAP_HOLD_TRUCK',
+        truck_number,
+        user_id:      session.user.id,
+        hold_id:      hold.id,
+        details:      JSON.stringify({ old_truck: oldTruck, new_truck: truck_number }),
+      },
+    })
+
+    return NextResponse.json({ ok: true, old_truck: oldTruck, new_truck: truck_number })
+  }
+
+  // ── cancel_notify ───────────────────────────────────────────────────────
+  if (action === 'cancel_notify') {
+    await prisma.auditLog.create({
+      data: {
+        action:       'CANCEL_HOLD',
+        truck_number: hold.truck_number,
         user_id:      session.user.id,
         hold_id:      hold.id,
         details:      JSON.stringify({
-          hold_request_id: holdRequest.id,
-          company_name:    holdRequest.client_user?.company_name ?? 'Unknown',
-          pricing_tier:    holdRequest.pricing_tier,
-          quoted_total:    holdRequest.quoted_total,
+          client_name: hold.client_name,
+          status: hold.status,
+          reason,
         }),
       },
     })
 
-    return NextResponse.json({ ok: true, status: 'APPROVED', hold_id: hold.id })
+    await prisma.hold.delete({ where: { id: hold.id } })
+
+    // Email the client if we have their info
+    let emailed = false
+    if (reason && hold.client_user) {
+      const startDate = hold.start_date.toISOString().split('T')[0]
+      const endDate = hold.end_date.toISOString().split('T')[0]
+      await sendCancellationEmail({
+        to:          hold.client_user.username,
+        companyName: hold.client_user.company_name,
+        truckNumber: hold.truck_number,
+        market:      hold.market,
+        startDate,
+        endDate,
+        reason,
+      })
+      emailed = true
+    }
+
+    return NextResponse.json({ ok: true, emailed })
   }
 
-  if (action === 'reject') {
-    await prisma.holdRequest.update({ where: { id: holdRequest.id }, data: { status: 'REJECTED' } })
-    await prisma.auditLog.create({
-      data: {
-        action:       'REJECT_HOLD_REQUEST',
-        truck_number: holdRequest.truck_number,
-        user_id:      session.user.id,
-        details:      JSON.stringify({ hold_request_id: holdRequest.id, company_name: holdRequest.client_user?.company_name ?? 'Unknown' }),
-      },
-    })
-    return NextResponse.json({ ok: true, status: 'REJECTED' })
-  }
-
+  // ── approve_extension ───────────────────────────────────────────────────
   if (action === 'approve_extension') {
-    // Use the client's requested extension date if provided, otherwise fall back
-    // to the standard 72h SLA recalculation.
-    const newExpiresAt = holdRequest.extension_until
-      ? holdRequest.extension_until
-      : computeHoldExpiresAt(holdRequest.start_date.toISOString().split('T')[0])
-    await prisma.holdRequest.update({
-      where: { id: holdRequest.id },
-      data:  { status: 'PENDING', expires_at: newExpiresAt, extension_until: null, extension_reason: null },
+    const newExpiresAt = hold.extension_until
+      ? hold.extension_until
+      : computeHoldExpiresAt(hold.start_date.toISOString().split('T')[0])
+
+    await prisma.hold.update({
+      where: { id: hold.id },
+      data:  { status: 'HOLD', expires_at: newExpiresAt, extension_until: null, extension_reason: null },
     })
+
     await prisma.auditLog.create({
       data: {
-        action:       'APPROVE_HOLD_REQUEST_EXTENSION',
-        truck_number: holdRequest.truck_number,
+        action:       'APPROVE_HOLD_EXTENSION',
+        truck_number: hold.truck_number,
         user_id:      session.user.id,
-        details:      JSON.stringify({ hold_request_id: holdRequest.id, new_expires_at: newExpiresAt.toISOString() }),
+        hold_id:      hold.id,
+        details:      JSON.stringify({ new_expires_at: newExpiresAt.toISOString() }),
       },
     })
-    return NextResponse.json({ ok: true, status: 'PENDING', expires_at: newExpiresAt.toISOString() })
+
+    return NextResponse.json({ ok: true, status: 'HOLD', expires_at: newExpiresAt.toISOString() })
   }
 
-  // deny_extension
-  await prisma.holdRequest.update({ where: { id: holdRequest.id }, data: { status: 'EXPIRED' } })
+  // ── update_expiration ────────────────────────────────────────────────────
+  if (action === 'update_expiration') {
+    if (!newExpiresAtStr) {
+      return NextResponse.json({ error: 'expires_at is required' }, { status: 400 })
+    }
+    const newExp = new Date(newExpiresAtStr + 'T23:59:59Z')
+    if (isNaN(newExp.getTime())) {
+      return NextResponse.json({ error: 'Invalid date' }, { status: 400 })
+    }
+
+    await prisma.hold.update({
+      where: { id: hold.id },
+      data: {
+        expires_at: newExp,
+        status: 'HOLD',
+        extension_until: null,
+        extension_reason: null,
+      },
+    })
+
+    await prisma.auditLog.create({
+      data: {
+        action:       'UPDATE_HOLD_EXPIRATION',
+        truck_number: hold.truck_number,
+        user_id:      session.user.id,
+        hold_id:      hold.id,
+        details:      JSON.stringify({ new_expires_at: newExp.toISOString() }),
+      },
+    })
+
+    return NextResponse.json({ ok: true, expires_at: newExp.toISOString() })
+  }
+
+  // ── deny_extension ──────────────────────────────────────────────────────
+  await prisma.hold.update({ where: { id: hold.id }, data: { status: 'EXPIRED' } })
+
   await prisma.auditLog.create({
     data: {
-      action:       'DENY_HOLD_REQUEST_EXTENSION',
-      truck_number: holdRequest.truck_number,
+      action:       'DENY_HOLD_EXTENSION',
+      truck_number: hold.truck_number,
       user_id:      session.user.id,
-      details:      JSON.stringify({ hold_request_id: holdRequest.id }),
+      hold_id:      hold.id,
+      details:      JSON.stringify({}),
     },
   })
+
   return NextResponse.json({ ok: true, status: 'EXPIRED' })
 }

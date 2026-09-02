@@ -13,7 +13,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getClientSession } from '@/lib/clientAuth'
-import { checkAvailability } from '@/lib/availabilityEngine'
+import { checkAvailability, recomputeTransportCharge } from '@/lib/availabilityEngine'
 import { resolveMarketInput } from '@/lib/marketCoordinates'
 import {
   computeQuote,
@@ -24,6 +24,7 @@ import {
 import {
   resolveMarketSizeTierId,
   resolveRateOverrides,
+  resolveDefaultRateOverrides,
 } from '@/lib/pricing/resolvers'
 
 /**
@@ -143,7 +144,7 @@ export async function POST(req: NextRequest) {
   const includeSmartDirectional = body.smart_directional ?? false
   const includeDeviceId = body.device_id ?? false
 
-  const [availability, marketSizeTierId, rateOverrides] = await Promise.all([
+  const [availability, marketSizeTierId, clientOverrides, defaultOverrides] = await Promise.all([
     checkAvailability({
       market: formalMarket,
       startDate: start_date,
@@ -152,7 +153,13 @@ export async function POST(req: NextRequest) {
     }),
     resolveMarketSizeTierId(formalMarket),
     resolveRateOverrides(session),
+    resolveDefaultRateOverrides(),
   ])
+
+  // Merge: default overrides as base, client-specific on top
+  const rateOverrides = clientOverrides
+    ? { ...defaultOverrides, ...clientOverrides, daily_rates: { ...defaultOverrides?.daily_rates, ...clientOverrides.daily_rates } }
+    : defaultOverrides
 
   // Not enough trucks to fill the request — don't offer a price, direct them
   // to submit a request for the team to handle manually.
@@ -197,10 +204,12 @@ export async function POST(req: NextRequest) {
   const MIN_DAYS_TO_ABSORB = 10
   const MIN_LEAD_DAYS_TO_ABSORB = 10
   const leadBusinessDays = availability.campaignFlags.leadBusinessDays
-  const transportAbsorbed = days >= MIN_DAYS_TO_ABSORB && leadBusinessDays >= MIN_LEAD_DAYS_TO_ABSORB
+  const transportAbsorbed = rateOverrides?.transport_included || (days >= MIN_DAYS_TO_ABSORB && leadBusinessDays >= MIN_LEAD_DAYS_TO_ABSORB)
+  const hasTransportOverrides = rateOverrides?.transport_day_rate != null || rateOverrides?.transport_airfare != null || rateOverrides?.transport_hotel_per_night != null
+  const transportOverrides = { dayRate: rateOverrides?.transport_day_rate, airfare: rateOverrides?.transport_airfare, hotelPerNight: rateOverrides?.transport_hotel_per_night }
   const totalTransportCharge = transportAbsorbed
     ? 0
-    : repoTrucks.reduce((sum, t) => sum + t.transport.chargePerTruck, 0)
+    : repoTrucks.reduce((sum, t) => sum + (hasTransportOverrides ? recomputeTransportCharge(t, transportOverrides) : t.transport.chargePerTruck), 0)
 
   // Feature costs
   const featureCosts = buildFeaturesResponse(quote, includeShadowFencing, includeSmartDirectional, includeDeviceId, studies, rateOverrides)

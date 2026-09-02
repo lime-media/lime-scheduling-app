@@ -33,12 +33,8 @@ export async function refreshCache(): Promise<void> {
     console.error('[scheduleCache] ATT_SOFT release check failed:', err)
   )
 
-  await expireSfdcHolds().catch((err) =>
-    console.error('[scheduleCache] SFDC hold expiry check failed:', err)
-  )
-
-  await expireHoldRequests().catch((err) =>
-    console.error('[scheduleCache] client hold-request expiry check failed:', err)
+  await expireHolds().catch((err) =>
+    console.error('[scheduleCache] hold expiry check failed:', err)
   )
 
   const [schedulesRaw, holdsRaw] = await Promise.all([
@@ -183,16 +179,19 @@ export async function releaseAttSoftHolds(): Promise<number> {
  * date, the webhook resets status back to HOLD (see
  * app/api/integrations/salesforce/hold/route.ts) — this isn't a dead end.
  */
-export async function expireSfdcHolds(): Promise<number> {
-  // Date-only comparison, local midnight — matches how holdStart/holdStop/holdExp
-  // arrive from Salesforce as bare "yyyy-MM-dd" dates with no time component.
-  const startOfToday = new Date()
-  startOfToday.setHours(0, 0, 0, 0)
+/**
+ * Unified hold expiration — expires any hold whose `expires_at` has passed.
+ * Covers both Salesforce holds (expires_at backfilled from sfdc_hold_exp)
+ * and client holds (expires_at from 72h SLA). Holds without expires_at
+ * (internal/ATT) are never matched — they don't expire automatically.
+ */
+export async function expireHolds(): Promise<number> {
+  const now = new Date()
 
   const stale = await prisma.hold.findMany({
     where: {
-      status:        'HOLD',
-      sfdc_hold_exp: { lt: startOfToday },
+      status:     { in: ['HOLD', 'EXTENSION_REQUESTED'] },
+      expires_at: { lt: now },
     },
   })
   if (stale.length === 0) return 0
@@ -205,49 +204,23 @@ export async function expireSfdcHolds(): Promise<number> {
         user_id:      hold.created_by,
         hold_id:      hold.id,
         details:      JSON.stringify({
-          reason:              'sfdc_hold_exp_passed',
+          reason:              'expires_at_passed',
+          source:              hold.source,
           sfdc_opportunity_id: hold.sfdc_opportunity_id,
-          sfdc_hold_exp:       hold.sfdc_hold_exp,
+          expires_at:          hold.expires_at,
         }),
       },
     })
     await prisma.hold.update({ where: { id: hold.id }, data: { status: 'EXPIRED' } })
-    console.log(`[hold-expiry] expired hold: truck ${hold.truck_number} | "${hold.client_name}" — sfdc_hold_exp passed`)
+    console.log(`[hold-expiry] expired hold: truck ${hold.truck_number} | "${hold.client_name}" (${hold.source}) — expires_at passed`)
   }
 
   return stale.length
 }
 
-// ── Client hold-request expiry ────────────────────────────────────────────────
-
-/**
- * Expires any client hold request whose `expires_at` has passed.
- * Only PENDING and APPROVED requests are eligible — REJECTED and already-EXPIRED
- * ones are left alone. EXTENSION_REQUESTED holds are also expired if past their
- * deadline (the extension was not granted in time).
- *
- * Mirrors the SFDC hold expiry pattern above: status flips to EXPIRED, the row
- * stays for visibility. Unlike SFDC holds there's no audit log entry — hold
- * requests are client-facing and don't feed into the staff audit trail.
- */
-export async function expireHoldRequests(): Promise<number> {
-  const now = new Date()
-
-  const stale = await prisma.holdRequest.findMany({
-    where: {
-      status:     { in: ['PENDING', 'APPROVED', 'EXTENSION_REQUESTED'] },
-      expires_at: { lt: now },
-    },
-  })
-  if (stale.length === 0) return 0
-
-  for (const req of stale) {
-    await prisma.holdRequest.update({ where: { id: req.id }, data: { status: 'EXPIRED' } })
-    console.log(`[hold-request-expiry] expired hold request: truck ${req.truck_number} | client ${req.client_user_id} — expires_at passed`)
-  }
-
-  return stale.length
-}
+// DEPRECATED — kept as re-exports for any callers not yet updated
+export const expireSfdcHolds = expireHolds
+export const expireHoldRequests = expireHolds
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

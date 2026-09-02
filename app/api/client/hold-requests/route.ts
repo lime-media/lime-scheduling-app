@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
-import { createHoldRequestForClient } from '@/lib/holdRequestService'
+import { createClientHold } from '@/lib/holdRequestService'
 import { selectTrucksForHold } from '@/lib/availabilityEngine'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
@@ -12,13 +12,13 @@ export async function GET(req: NextRequest) {
   const session = getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const requests = await prisma.holdRequest.findMany({
+  const holds = await prisma.hold.findMany({
     where:   { client_user_id: session.id },
     orderBy: { created_at: 'desc' },
   })
 
   return NextResponse.json({
-    holdRequests: requests.map((r) => ({
+    holdRequests: holds.map((r) => ({
       id:                r.id,
       truck_number:      r.truck_number,
       market:            r.market,
@@ -48,9 +48,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
 
-    // New flow: auto-select trucks when truck_number is not provided.
-    // The client sends market/dates/truck_count + pricing snapshot, and the
-    // API picks the optimal trucks via the availability engine.
+    // Auto-select trucks when truck_number is not provided.
     if (!body.truck_number && body.market && body.start_date && body.end_date && body.truck_count) {
       return handleAutoSelectHold(req, session, body)
     }
@@ -61,19 +59,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'truck_number, start_date, end_date required' }, { status: 400 })
     }
 
-    const holdRequest = await createHoldRequestForClient(session, {
+    const hold = await createClientHold(session, {
       truck_number, market, state, start_date, end_date, notes,
     })
 
-    return NextResponse.json({ ok: true, id: holdRequest.id })
+    return NextResponse.json({ ok: true, id: hold.id })
   } catch (e) {
     console.error('[client/hold-requests POST]', e)
-    return NextResponse.json({ error: 'Failed to create hold request' }, { status: 500 })
+    return NextResponse.json({ error: 'Failed to create hold' }, { status: 500 })
   }
 }
 
 /**
- * Auto-select trucks and create hold requests for a campaign.
+ * Auto-select trucks and create holds for a campaign.
  *
  * IMPORTANT: All pricing is recomputed server-side from market/dates/truck_count
  * and the client's feature selections. Client-sent quoted_total/daily_rate values
@@ -89,7 +87,6 @@ async function handleAutoSelectHold(
     end_date: string
     truck_count: number
     notes?: string
-    // Feature selections — these drive the server-side recomputation
     shadow_fencing?: boolean
     smart_directional?: boolean
     device_id?: boolean
@@ -106,7 +103,6 @@ async function handleAutoSelectHold(
     return NextResponse.json({ error: 'truck_count must be between 1 and 20' }, { status: 400 })
   }
 
-  // Select optimal trucks via availability engine
   const { selectedTrucks, availability } = await selectTrucksForHold({
     market,
     startDate: start_date,
@@ -121,7 +117,6 @@ async function handleAutoSelectHold(
   }
 
   // ── Server-side price recomputation ──────────────────────────────────────
-  // Never trust client-sent pricing. Recompute from the canonical inputs.
   const startDate = new Date(start_date + 'T00:00:00Z')
   const endDate = new Date(end_date + 'T00:00:00Z')
   const calendarDays = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1
@@ -129,7 +124,6 @@ async function handleAutoSelectHold(
   const daysPerWeek = body.days_per_week ?? defaultDaysPerWeek
   const operatingHours = body.operating_hours ?? 8
 
-  // Count activation days
   let activationDays = calendarDays
   if (daysPerWeek < 7) {
     activationDays = 0
@@ -166,7 +160,6 @@ async function handleAutoSelectHold(
     rateOverrides,
   })
 
-  // Compute media total from server-side quote
   let mediaTotal = quote.good.baseMedia
   if (includeShadowFencing) mediaTotal += quote.better.shadowFencing
   if (includeSmartDirectional) mediaTotal += quote.better.smartDirectional
@@ -175,25 +168,22 @@ async function handleAutoSelectHold(
     mediaTotal += studies.length * quote.best.studyCost
   }
 
-  // Per-truck transport
   const repoTrucks = selectedTrucks.filter(t => t.transport.needed)
   const MIN_DAYS_TO_ABSORB = 10
   const MIN_LEAD_DAYS_TO_ABSORB = 10
   const leadBusinessDays = availability.campaignFlags.leadBusinessDays
-  const transportAbsorbed = activationDays >= MIN_DAYS_TO_ABSORB && leadBusinessDays >= MIN_LEAD_DAYS_TO_ABSORB
+  const transportAbsorbed = rateOverrides?.transport_included || (activationDays >= MIN_DAYS_TO_ABSORB && leadBusinessDays >= MIN_LEAD_DAYS_TO_ABSORB)
   const transportCharge = transportAbsorbed
     ? 0
     : repoTrucks.reduce((sum, t) => sum + t.transport.chargePerTruck, 0)
 
   const serverTotal = mediaTotal + transportCharge
 
-  // Determine tier label
   let pricingTier = 'Custom'
   if (!includeShadowFencing && !includeSmartDirectional && !includeDeviceId && studies.length === 0) pricingTier = 'Good'
   else if (includeShadowFencing && !includeSmartDirectional && !includeDeviceId && studies.length === 0) pricingTier = 'Better'
   else if (includeShadowFencing && studies.length > 0 && quote.best.reachOk) pricingTier = 'Best'
 
-  // Build features snapshot
   const featuresJson = JSON.stringify({
     dailyRate: quote.dailyRate,
     hourSurcharge: quote.hourSurcharge,
@@ -216,7 +206,7 @@ async function handleAutoSelectHold(
     transportCharge,
   })
 
-  // ── Create hold requests ─────────────────────────────────────────────────
+  // ── Create holds ────────────────────────────────────────────────────────
   const campaignGroupId = `cg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const resolvedState = state || market.split(',')[1]?.trim() || null
 
@@ -225,7 +215,7 @@ async function handleAutoSelectHold(
 
   for (const truck of selectedTrucks) {
     try {
-      await createHoldRequestForClient(session, {
+      await createClientHold(session, {
         truck_number: truck.truckNumber,
         market,
         state: resolvedState,
@@ -247,19 +237,18 @@ async function handleAutoSelectHold(
   }
 
   if (created.length === 0) {
-    return NextResponse.json({ error: 'Failed to create hold requests' }, { status: 500 })
+    return NextResponse.json({ error: 'Failed to create holds' }, { status: 500 })
   }
 
   // Create Salesforce Opportunity if the client has an SFDC Account ID
   if (session.sfdcAccountId && isSfdcConfigured() && created.length > 0) {
     try {
       const oppName = `${session.companyName} - ${market} - ${start_date} to ${end_date}`
-      const expiresAt = await prisma.holdRequest.findFirst({
+      const firstHold = await prisma.hold.findFirst({
         where: { campaign_group_id: campaignGroupId },
         select: { expires_at: true },
       })
 
-      // Build activation notes from server-computed features
       const parsedFeatures = parseQuoteFeatures(featuresJson)
       const activationNotes = parsedFeatures
         ? buildActivationNotes(parsedFeatures, pricingTier)
@@ -274,15 +263,13 @@ async function handleAutoSelectHold(
         market,
         holdStart: start_date,
         holdStop: end_date,
-        holdExp: expiresAt?.expires_at?.toISOString().split('T')[0],
+        holdExp: firstHold?.expires_at?.toISOString().split('T')[0],
         truckNumbers: created,
         activationNotes,
       })
 
       if (result.success && result.id) {
-        // sfdcOpportunityId stored on hold requests below
-        // Link the opportunity back to all hold requests in this campaign group
-        await prisma.holdRequest.updateMany({
+        await prisma.hold.updateMany({
           where: { campaign_group_id: campaignGroupId },
           data: { sfdc_opportunity_id: result.id },
         })
@@ -290,7 +277,6 @@ async function handleAutoSelectHold(
         console.error('[client/hold-requests] SFDC opportunity creation failed:', result.errors)
       }
     } catch (err) {
-      // SFDC failure should never block the hold — log and continue
       console.error('[client/hold-requests] SFDC opportunity creation error:', err)
     }
   }
@@ -302,6 +288,6 @@ async function handleAutoSelectHold(
     campaignGroupId,
     trucksRequested: truck_count,
     trucksAvailable: availability.counts.total,
-    message: `Submitted ${created.length} hold request${created.length > 1 ? 's' : ''} for review. Holds expire in 72 hours.`,
+    message: `Reserved ${created.length} truck${created.length > 1 ? 's' : ''}. Holds expire in 72 hours.`,
   })
 }

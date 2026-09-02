@@ -11,12 +11,12 @@ function isOps(session: Session | null) {
 
 export async function GET() {
   const session = await getServerSession(authOptions)
-  if (!session || !isOps(session)) {
+  if (!session) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
   const users = await prisma.clientUser.findMany({
-    select: { id: true, username: true, company_name: true, partner_id: true, created_at: true },
+    select: { id: true, username: true, company_name: true, partner_id: true, sfdc_account_id: true, created_at: true },
     orderBy: { created_at: 'asc' },
   })
 
@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
-  const { username, company_name, password, partner_id } = await req.json()
+  const { username, company_name, password, partner_id, sfdc_account_id } = await req.json()
 
   if (!username?.trim() || !company_name?.trim() || !password) {
     return NextResponse.json({ error: 'Username, company name, and password are required' }, { status: 400 })
@@ -43,14 +43,13 @@ export async function POST(req: NextRequest) {
   const password_hash = await bcrypt.hash(password, 12)
   const user = await prisma.clientUser.create({
     data: {
-      username:     username.trim(),
-      company_name: company_name.trim(),
+      username:        username.trim(),
+      company_name:    company_name.trim(),
       password_hash,
-      // Optional — links this client to a RateAgreement for the AI quote engine (see
-      // lib/pricing). Left null unless ops explicitly supplies it; standard rate card applies.
-      partner_id:   partner_id?.trim() || null,
+      partner_id:      partner_id?.trim() || null,
+      sfdc_account_id: sfdc_account_id?.trim() || null,
     },
-    select: { id: true, username: true, company_name: true, partner_id: true, created_at: true },
+    select: { id: true, username: true, company_name: true, partner_id: true, sfdc_account_id: true, created_at: true },
   })
 
   return NextResponse.json({ user }, { status: 201 })

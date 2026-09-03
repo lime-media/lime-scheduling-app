@@ -584,7 +584,7 @@ function QuoteBox({
           )
         })()}
         <button
-          onClick={onSubmit}
+          onClick={() => onSubmit()}
           disabled={disabled || !complete}
           data-quote-submit
           title={!complete ? 'Fill in market, start date, end date, and trucks to continue' : undefined}

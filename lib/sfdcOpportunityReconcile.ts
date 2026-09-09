@@ -223,18 +223,19 @@ export type AutoCloseOutcome = 'closed' | 'would_close' | 'skipped'
 /**
  * Whether the outward close actually writes to Salesforce.
  *
- *   dry_run (default) — log what would close, write nothing
- *   on                — perform the write
- *   off               — skip entirely
+ *   on (default) — perform the write
+ *   dry_run      — log what would close, write nothing
+ *   off          — skip entirely
  *
- * Defaults to dry_run because the first sweep after this ships faces the whole
- * backlog the dead cron let accumulate: as of 2026-09-09 that was 124 expired
- * holds across 43 Opportunities, all of which would be stage-changed in a single
- * pass, with no undo from the app. Review one dry run, then set SFDC_AUTOCLOSE=on.
+ * The first sweep clears the whole backlog the dead cron let accumulate — as of
+ * 2026-09-09, 124 expired holds across 43 Opportunities, all stage-changed in one
+ * pass. Confirmed as intended. The flag stays as a kill switch: set
+ * SFDC_AUTOCLOSE=off to stop the outward writes without touching anything else in
+ * the sweep, or dry_run to see what a pass would do.
  */
 export function autoCloseMode(): 'on' | 'dry_run' | 'off' {
-  const raw = (process.env.SFDC_AUTOCLOSE ?? 'dry_run').trim().toLowerCase()
-  return raw === 'on' || raw === 'off' ? raw : 'dry_run'
+  const raw = (process.env.SFDC_AUTOCLOSE ?? 'on').trim().toLowerCase()
+  return raw === 'dry_run' || raw === 'off' ? raw : 'on'
 }
 
 export async function closeOpportunityAsLost(opportunityId: string): Promise<AutoCloseOutcome> {

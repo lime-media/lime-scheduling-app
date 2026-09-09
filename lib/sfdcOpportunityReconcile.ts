@@ -218,26 +218,52 @@ const ACTIVE_STATUSES = ['HOLD', 'EXTENSION_REQUESTED', 'COMMITTED']
  * called it. Because it only runs at the moment of expiry, a failed write is not
  * retried — the log line is the record.
  */
-export async function closeOpportunityAsLost(opportunityId: string): Promise<boolean> {
-  if (!isSfdcConfigured() || !SFDC_ID.test(opportunityId)) return false
+export type AutoCloseOutcome = 'closed' | 'would_close' | 'skipped'
+
+/**
+ * Whether the outward close actually writes to Salesforce.
+ *
+ *   dry_run (default) — log what would close, write nothing
+ *   on                — perform the write
+ *   off               — skip entirely
+ *
+ * Defaults to dry_run because the first sweep after this ships faces the whole
+ * backlog the dead cron let accumulate: as of 2026-09-09 that was 124 expired
+ * holds across 43 Opportunities, all of which would be stage-changed in a single
+ * pass, with no undo from the app. Review one dry run, then set SFDC_AUTOCLOSE=on.
+ */
+export function autoCloseMode(): 'on' | 'dry_run' | 'off' {
+  const raw = (process.env.SFDC_AUTOCLOSE ?? 'dry_run').trim().toLowerCase()
+  return raw === 'on' || raw === 'off' ? raw : 'dry_run'
+}
+
+export async function closeOpportunityAsLost(opportunityId: string): Promise<AutoCloseOutcome> {
+  const mode = autoCloseMode()
+  if (mode === 'off') return 'skipped'
+  if (!isSfdcConfigured() || !SFDC_ID.test(opportunityId)) return 'skipped'
 
   try {
     const stillActive = await prisma.hold.count({
       where: { sfdc_opportunity_id: opportunityId, status: { in: ACTIVE_STATUSES } },
     })
-    if (stillActive > 0) return false
+    if (stillActive > 0) return 'skipped'
 
     const stage = await getOpportunityStage(opportunityId)
-    if (!stage) return false        // couldn't ask — don't write blind
-    if (stage.isClosed) return false // already resolved, including Closed Won
+    if (!stage) return 'skipped'        // couldn't ask — don't write blind
+    if (stage.isClosed) return 'skipped' // already resolved, including Closed Won
+
+    if (mode === 'dry_run') {
+      console.log(`[sfdc-reconcile] DRY RUN — would set Opportunity ${opportunityId} ${stage.stageName} → ${SFDC_CLOSED_LOST_STAGE} (last hold expired). Set SFDC_AUTOCLOSE=on to apply.`)
+      return 'would_close'
+    }
 
     const ok = await updateOpportunity(opportunityId, { StageName: SFDC_CLOSED_LOST_STAGE })
     if (ok) {
       console.log(`[sfdc-reconcile] Opportunity ${opportunityId} ${stage.stageName} → ${SFDC_CLOSED_LOST_STAGE} (last hold expired)`)
     }
-    return ok
+    return ok ? 'closed' : 'skipped'
   } catch (err) {
     console.error(`[sfdc-reconcile] failed to close Opportunity ${opportunityId}:`, err)
-    return false
+    return 'skipped'
   }
 }

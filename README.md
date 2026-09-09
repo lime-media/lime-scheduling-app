@@ -309,6 +309,7 @@ Optional: `user_id`, `token_id`, `request_params`, `response_summary`.
 | `INTERNAL_API_KEY` | Bearer token for `/api/v1/internal/*` endpoints (MCP server) |
 | `SFDC_WEBHOOK_SECRET` | Shared secret for the Salesforce hold webhook (`x-sfdc-webhook-secret`) |
 | `CRON_SECRET` | Bearer token for `GET /api/cron`. **Required in production** — without it the sweep returns 500 and holds never expire |
+| `SFDC_AUTOCLOSE` | `on` (default), `dry_run`, or `off`. Kill switch for writing `Closed Lost - Declined` back to an Opportunity when its last hold expires. `dry_run` logs what would close without writing |
 | `SFDC_CLOSED_LOST_STAGE` | Optional. Opportunity `StageName` set when the app releases an Opportunity's last hold. Defaults to `Closed Lost - Declined` — must match the Salesforce picklist or the write is rejected |
 
 ---
@@ -362,6 +363,13 @@ not reviewing a portal booking inside the 72h SLA would mark a live deal
 Closed Lost - Declined. The customer didn't decline; we didn't answer. Requiring
 `sfdc_hold_exp` likewise excludes pushes that omitted Hold Exp and took the 72h
 fallback, so a blank optional field can't lose a rep their deal.
+
+The first sweep clears the whole backlog at once — as of 2026-09-09, 124 expired
+holds across 43 Opportunities, all stage-changed in a single pass. That is
+intended. `SFDC_AUTOCLOSE` is the kill switch if it ever needs stopping: `off`
+halts the outward writes without affecting anything else in the sweep, `dry_run`
+logs what a pass would close and reports it as `opportunities_would_close`
+without writing.
 
 - Set `CRON_SECRET` in the Vercel project's environment variables. Vercel sends it
   as `Authorization: Bearer <CRON_SECRET>`; the route rejects anything else, and

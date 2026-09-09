@@ -28,8 +28,9 @@ export interface RefreshSummary {
   sfdc_committed:        number
   sfdc_released:         number
   sfdc_checked:          number
-  holds_expired:         number
-  opportunities_closed:  number
+  holds_expired:              number
+  opportunities_closed:       number
+  opportunities_would_close:  number
 }
 
 /**
@@ -62,7 +63,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
 
   const expiry = await expireHolds().catch((err) => {
     console.error('[scheduleCache] hold expiry check failed:', err)
-    return { expired: 0, opportunities_closed: 0 }
+    return { expired: 0, opportunities_closed: 0, opportunities_would_close: 0 }
   })
 
   const [schedulesRaw, holdsRaw] = await Promise.all([
@@ -108,7 +109,8 @@ export async function refreshCache(): Promise<RefreshSummary> {
   await detectConflicts(schedules, holds)
   console.log(
     `[scheduleCache] refresh complete — ${expiry.expired} hold(s) expired ` +
-    `(${expiry.opportunities_closed} opportunit${expiry.opportunities_closed === 1 ? 'y' : 'ies'} closed lost), ` +
+    `(${expiry.opportunities_closed} opportunit${expiry.opportunities_closed === 1 ? 'y' : 'ies'} closed lost, ` +
+    `${expiry.opportunities_would_close} would close in dry run), ` +
     `${att_soft_released} ATT_SOFT hold(s) released, ` +
     `${sfdc.committed} committed / ${sfdc.released} released from ${sfdc.checked} SFDC opportunit${sfdc.checked === 1 ? 'y' : 'ies'}`
   )
@@ -118,8 +120,9 @@ export async function refreshCache(): Promise<RefreshSummary> {
     sfdc_committed:       sfdc.committed,
     sfdc_released:        sfdc.released,
     sfdc_checked:         sfdc.checked,
-    holds_expired:        expiry.expired,
-    opportunities_closed: expiry.opportunities_closed,
+    holds_expired:             expiry.expired,
+    opportunities_closed:      expiry.opportunities_closed,
+    opportunities_would_close: expiry.opportunities_would_close,
   }
 }
 
@@ -229,7 +232,11 @@ export async function releaseAttSoftHolds(): Promise<number> {
  * and client holds (expires_at from 72h SLA). Holds without expires_at
  * (internal/ATT) are never matched — they don't expire automatically.
  */
-export async function expireHolds(): Promise<{ expired: number; opportunities_closed: number }> {
+export async function expireHolds(): Promise<{
+  expired: number
+  opportunities_closed: number
+  opportunities_would_close: number
+}> {
   const now = new Date()
 
   const stale = await prisma.hold.findMany({
@@ -238,7 +245,7 @@ export async function expireHolds(): Promise<{ expired: number; opportunities_cl
       expires_at: { lt: now },
     },
   })
-  if (stale.length === 0) return { expired: 0, opportunities_closed: 0 }
+  if (stale.length === 0) return { expired: 0, opportunities_closed: 0, opportunities_would_close: 0 }
 
   for (const hold of stale) {
     await prisma.auditLog.create({
@@ -281,11 +288,14 @@ export async function expireHolds(): Promise<{ expired: number; opportunities_cl
   )
 
   let opportunities_closed = 0
+  let opportunities_would_close = 0
   for (const opportunityId of touchedOpportunities) {
-    if (await closeOpportunityAsLost(opportunityId)) opportunities_closed++
+    const outcome = await closeOpportunityAsLost(opportunityId)
+    if (outcome === 'closed') opportunities_closed++
+    else if (outcome === 'would_close') opportunities_would_close++
   }
 
-  return { expired: stale.length, opportunities_closed }
+  return { expired: stale.length, opportunities_closed, opportunities_would_close }
 }
 
 // DEPRECATED — kept as re-exports for any callers not yet updated

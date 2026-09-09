@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/prisma'
-import { sfdcQuery, isSfdcConfigured } from '@/lib/salesforceClient'
+import { sfdcQuery, updateOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
 /**
@@ -182,5 +182,55 @@ export async function getOpportunityStage(
   } catch (err) {
     console.error(`[sfdc-reconcile] stage lookup failed for ${opportunityId}:`, err)
     return null
+  }
+}
+
+/**
+ * Stage applied to an Opportunity once the app has released its last hold.
+ *
+ * This is a Salesforce picklist value — if the picklist doesn't contain it the
+ * PATCH is rejected and lib/salesforceClient.ts logs the reason. Overridable so
+ * a picklist rename is a config change, not a deploy.
+ */
+export const SFDC_CLOSED_LOST_STAGE =
+  process.env.SFDC_CLOSED_LOST_STAGE ?? 'Closed Lost Declined'
+
+// Statuses that still reserve a truck. Used to decide whether an Opportunity has
+// any life left in it.
+const ACTIVE_STATUSES = ['HOLD', 'EXTENSION_REQUESTED', 'COMMITTED']
+
+/**
+ * Close an Opportunity as lost, but only once nothing is holding a truck for it.
+ *
+ * Called when the app expires a hold. One Opportunity routinely covers several
+ * trucks, so expiring a single hold must not close the deal while its siblings
+ * are still held — hence the active-hold count first.
+ *
+ * Skips silently when the stage can't be confirmed or the Opportunity is already
+ * closed. Never throws: a Salesforce write failing must not derail the sweep that
+ * called it. Because it only runs at the moment of expiry, a failed write is not
+ * retried — the log line is the record.
+ */
+export async function closeOpportunityAsLost(opportunityId: string): Promise<boolean> {
+  if (!isSfdcConfigured() || !SFDC_ID.test(opportunityId)) return false
+
+  try {
+    const stillActive = await prisma.hold.count({
+      where: { sfdc_opportunity_id: opportunityId, status: { in: ACTIVE_STATUSES } },
+    })
+    if (stillActive > 0) return false
+
+    const stage = await getOpportunityStage(opportunityId)
+    if (!stage) return false        // couldn't ask — don't write blind
+    if (stage.isClosed) return false // already resolved, including Closed Won
+
+    const ok = await updateOpportunity(opportunityId, { StageName: SFDC_CLOSED_LOST_STAGE })
+    if (ok) {
+      console.log(`[sfdc-reconcile] Opportunity ${opportunityId} ${stage.stageName} → ${SFDC_CLOSED_LOST_STAGE} (last hold expired)`)
+    }
+    return ok
+  } catch (err) {
+    console.error(`[sfdc-reconcile] failed to close Opportunity ${opportunityId}:`, err)
+    return false
   }
 }

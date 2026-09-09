@@ -4,6 +4,7 @@ import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { computeHoldExpiresAt } from '@/lib/holdRequestService'
+import { closeOpportunityAsLost } from '@/lib/sfdcOpportunityReconcile'
 import { sendCancellationEmail } from '@/lib/email'
 
 type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration'
@@ -205,6 +206,13 @@ export async function PATCH(
       details:      JSON.stringify({}),
     },
   })
+
+  // Denying the extension expires the hold, so settle Salesforce the same way the
+  // sweep does — but only if this was the Opportunity's last active hold. Never
+  // allowed to fail the request; the helper swallows its own errors.
+  if (hold.sfdc_opportunity_id) {
+    await closeOpportunityAsLost(hold.sfdc_opportunity_id)
+  }
 
   return NextResponse.json({ ok: true, status: 'EXPIRED' })
 }

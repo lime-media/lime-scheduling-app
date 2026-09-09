@@ -9,7 +9,7 @@
 import { getPool, query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
-import { reconcileSfdcOpportunities } from '@/lib/sfdcOpportunityReconcile'
+import { reconcileSfdcOpportunities, closeOpportunityAsLost } from '@/lib/sfdcOpportunityReconcile'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 
@@ -24,11 +24,12 @@ function toDateStr(val: unknown): string {
 }
 
 export interface RefreshSummary {
-  att_soft_released:  number
-  sfdc_committed:     number
-  sfdc_released:      number
-  sfdc_checked:       number
-  holds_expired:      number
+  att_soft_released:     number
+  sfdc_committed:        number
+  sfdc_released:         number
+  sfdc_checked:          number
+  holds_expired:         number
+  opportunities_closed:  number
 }
 
 /**
@@ -59,9 +60,9 @@ export async function refreshCache(): Promise<RefreshSummary> {
     return { checked: 0, committed: 0, released: 0 }
   })
 
-  const holds_expired = await expireHolds().catch((err) => {
+  const expiry = await expireHolds().catch((err) => {
     console.error('[scheduleCache] hold expiry check failed:', err)
-    return 0
+    return { expired: 0, opportunities_closed: 0 }
   })
 
   const [schedulesRaw, holdsRaw] = await Promise.all([
@@ -106,17 +107,19 @@ export async function refreshCache(): Promise<RefreshSummary> {
 
   await detectConflicts(schedules, holds)
   console.log(
-    `[scheduleCache] refresh complete — ${holds_expired} hold(s) expired, ` +
+    `[scheduleCache] refresh complete — ${expiry.expired} hold(s) expired ` +
+    `(${expiry.opportunities_closed} opportunit${expiry.opportunities_closed === 1 ? 'y' : 'ies'} closed lost), ` +
     `${att_soft_released} ATT_SOFT hold(s) released, ` +
     `${sfdc.committed} committed / ${sfdc.released} released from ${sfdc.checked} SFDC opportunit${sfdc.checked === 1 ? 'y' : 'ies'}`
   )
 
   return {
     att_soft_released,
-    sfdc_committed: sfdc.committed,
-    sfdc_released:  sfdc.released,
-    sfdc_checked:   sfdc.checked,
-    holds_expired,
+    sfdc_committed:       sfdc.committed,
+    sfdc_released:        sfdc.released,
+    sfdc_checked:         sfdc.checked,
+    holds_expired:        expiry.expired,
+    opportunities_closed: expiry.opportunities_closed,
   }
 }
 
@@ -226,7 +229,7 @@ export async function releaseAttSoftHolds(): Promise<number> {
  * and client holds (expires_at from 72h SLA). Holds without expires_at
  * (internal/ATT) are never matched — they don't expire automatically.
  */
-export async function expireHolds(): Promise<number> {
+export async function expireHolds(): Promise<{ expired: number; opportunities_closed: number }> {
   const now = new Date()
 
   const stale = await prisma.hold.findMany({
@@ -235,7 +238,7 @@ export async function expireHolds(): Promise<number> {
       expires_at: { lt: now },
     },
   })
-  if (stale.length === 0) return 0
+  if (stale.length === 0) return { expired: 0, opportunities_closed: 0 }
 
   for (const hold of stale) {
     await prisma.auditLog.create({
@@ -256,7 +259,20 @@ export async function expireHolds(): Promise<number> {
     console.log(`[hold-expiry] expired hold: truck ${hold.truck_number} | "${hold.client_name}" (${hold.source}) — expires_at passed`)
   }
 
-  return stale.length
+  // Now that every stale hold is marked EXPIRED, settle the Salesforce side.
+  // Deduplicated because one Opportunity commonly covers several trucks, and
+  // deferred until after the loop so the "any active holds left?" check inside
+  // closeOpportunityAsLost() sees the finished state rather than a partial one.
+  const touchedOpportunities = Array.from(
+    new Set(stale.map((h) => h.sfdc_opportunity_id).filter((id): id is string => Boolean(id)))
+  )
+
+  let opportunities_closed = 0
+  for (const opportunityId of touchedOpportunities) {
+    if (await closeOpportunityAsLost(opportunityId)) opportunities_closed++
+  }
+
+  return { expired: stale.length, opportunities_closed }
 }
 
 // DEPRECATED — kept as re-exports for any callers not yet updated

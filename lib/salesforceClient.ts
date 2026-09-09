@@ -147,7 +147,16 @@ export async function updateOpportunity(
   })
 
   // SFDC returns 204 No Content on success
-  return res.status === 204
+  if (res.status === 204) return true
+
+  // Log why. The common failure is an invalid picklist value (StageName), which
+  // is otherwise indistinguishable from any other rejection at the call site.
+  const body = await res.json().catch(() => null)
+  const detail = Array.isArray(body) && body[0]?.message
+    ? `${body[0].errorCode}: ${body[0].message}`
+    : `HTTP ${res.status}`
+  console.error(`[sfdc] Opportunity ${opportunityId} update failed — ${detail}`, fields)
+  return false
 }
 
 /**

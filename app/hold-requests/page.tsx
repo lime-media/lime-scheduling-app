@@ -74,8 +74,16 @@ function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; stat
     return <span className="text-xs text-gray-400">Expired</span>
   }
 
+  // Past its expiry but not yet flipped to EXPIRED by the hourly sweep. The
+  // truck is already treated as free everywhere (see lib/holdFilters.ts) — this
+  // row is just waiting on the status write, so say that rather than the old
+  // "Expiring..." which read as a hold that never quite expired.
   if (isPast(expDate)) {
-    return <span className="text-xs text-red-500 font-medium">Expiring...</span>
+    return (
+      <span className="text-xs text-red-500 font-medium" title="Past its expiration date — the truck is already released; awaiting the hourly sweep to mark it Expired.">
+        Past due
+      </span>
+    )
   }
 
   const remaining = formatDistanceToNow(expDate, { addSuffix: false })

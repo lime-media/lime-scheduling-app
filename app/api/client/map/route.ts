@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import type { TruckLocation } from '@/app/api/trucks/locations/route'
 
@@ -27,9 +28,10 @@ export async function GET() {
         where: {
           start_date: { lte: now },
           end_date:   { gte: now },
-          // ATT_SOFT is a soft placeholder and EXPIRED is released — neither
-          // should make a truck read as booked on the client map
-          status:     { notIn: ['ATT_SOFT', 'EXPIRED'] },
+          // ATT_SOFT is a soft placeholder, and a hold is released once it is
+          // status EXPIRED or past its expires_at — none should make a truck
+          // read as booked on the client map
+          ...activeHoldWhere({ excludeAttSoft: true, now }),
         },
         orderBy: { created_at: 'desc' },
       }),

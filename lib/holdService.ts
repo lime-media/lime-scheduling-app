@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
 import { query } from '@/lib/mssql'
 
 export interface CreateHoldParams {
@@ -31,13 +32,15 @@ export async function createHold(params: CreateHoldParams): Promise<CreateHoldRe
   } = params
 
   // Check for conflicts with existing holds on same truck + date range.
-  // ATT_SOFT holds are soft placeholders and EXPIRED holds are released —
-  // neither blocks regular hold creation.
+  // ATT_SOFT holds are soft placeholders and released holds (status EXPIRED,
+  // or expires_at already passed) no longer reserve the truck — none of them
+  // block regular hold creation.
   const conflictingHolds = await prisma.hold.findMany({
     where: {
       truck_number,
-      status: { notIn: ['ATT_SOFT', 'EXPIRED'] },
-      OR: [{ start_date: { lte: new Date(end_date) }, end_date: { gte: new Date(start_date) } }],
+      ...activeHoldWhere({ excludeAttSoft: true }),
+      start_date: { lte: new Date(end_date) },
+      end_date:   { gte: new Date(start_date) },
     },
   })
 

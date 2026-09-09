@@ -8,6 +8,7 @@
 
 import { getPool, query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 
@@ -21,27 +22,43 @@ function toDateStr(val: unknown): string {
   try { return new Date(s).toISOString().split('T')[0] } catch { return '' }
 }
 
+export interface RefreshSummary {
+  att_soft_released: number
+  holds_expired:     number
+}
+
 /**
- * Fetches fresh schedule + holds data and runs conflict detection.
- * Called by the cron job every 5 minutes.
+ * Releases stale ATT_SOFT holds, expires holds past their `expires_at`, then
+ * refreshes schedule data and runs conflict detection.
+ *
+ * Driven by Vercel Cron via GET /api/cron (see vercel.json). It used to run on
+ * an in-process node-cron timer started from app/layout.tsx, which silently
+ * never fired in production: on serverless the instance is frozen once the
+ * response is sent, so an hourly timer never reaches its next tick and holds
+ * were left past their expiry indefinitely.
+ *
+ * Returns what it changed so the cron endpoint can report it.
  */
-export async function refreshCache(): Promise<void> {
+export async function refreshCache(): Promise<RefreshSummary> {
   console.log('[scheduleCache] refreshing...')
 
-  await releaseAttSoftHolds().catch((err) =>
+  const att_soft_released = await releaseAttSoftHolds().catch((err) => {
     console.error('[scheduleCache] ATT_SOFT release check failed:', err)
-  )
+    return 0
+  })
 
-  await expireHolds().catch((err) =>
+  const holds_expired = await expireHolds().catch((err) => {
     console.error('[scheduleCache] hold expiry check failed:', err)
-  )
+    return 0
+  })
 
   const [schedulesRaw, holdsRaw] = await Promise.all([
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),
-    // ATT_SOFT holds are soft placeholders and EXPIRED holds are released —
-    // exclude both from conflict detection
+    // ATT_SOFT holds are soft placeholders, and a hold is released once it is
+    // status EXPIRED or past its expires_at — exclude all of them from
+    // conflict detection
     prisma.hold.findMany({
-      where:   { status: { notIn: ['ATT_SOFT', 'EXPIRED'] } },
+      where:   activeHoldWhere({ excludeAttSoft: true }),
       orderBy: { start_date: 'asc' },
     }),
   ])
@@ -76,7 +93,12 @@ export async function refreshCache(): Promise<void> {
   }))
 
   await detectConflicts(schedules, holds)
-  console.log('[scheduleCache] refresh complete')
+  console.log(
+    `[scheduleCache] refresh complete — ${holds_expired} hold(s) expired, ` +
+    `${att_soft_released} ATT_SOFT hold(s) released`
+  )
+
+  return { att_soft_released, holds_expired }
 }
 
 // ── ATT soft-hold release ───────────────────────────────────────────────────────

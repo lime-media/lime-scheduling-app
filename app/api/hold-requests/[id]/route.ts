@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
 import { computeHoldExpiresAt } from '@/lib/holdRequestService'
 import { sendCancellationEmail } from '@/lib/email'
 
@@ -61,7 +62,7 @@ export async function PATCH(
       where: {
         truck_number,
         id:         { not: hold.id },
-        status:     { not: 'EXPIRED' },
+        ...activeHoldWhere(),
         start_date: { lte: hold.end_date },
         end_date:   { gte: hold.start_date },
       },

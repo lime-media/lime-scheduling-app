@@ -16,6 +16,7 @@
 
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
 import { SCHEDULED_QUERY, CHAT_CONTEXT_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations, type SamsaraVehicleLocation } from '@/lib/samsaraService'
 import { haversineDistance, getMarketCoords } from '@/lib/marketCoordinates'
@@ -167,7 +168,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
     prisma.hold.findMany({
-      where: { status: { not: 'EXPIRED' } },
+      where: activeHoldWhere(),
       orderBy: { start_date: 'asc' },
     }),
     getLiveVehicleLocations().catch(() => new Map<string, SamsaraVehicleLocation>()),

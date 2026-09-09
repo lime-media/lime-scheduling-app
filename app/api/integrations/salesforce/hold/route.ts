@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
+import { endOfDayUtc } from '@/lib/dateOnly'
 
 interface SfdcHoldPayload {
   opportunityId: string
@@ -45,6 +46,18 @@ export async function POST(req: NextRequest) {
   const end_date   = new Date(holdStop)
   const sfdc_hold_exp = holdExp ? new Date(holdExp) : null
 
+  // Hold Exp is the last day the hold is valid, so it survives until the END of
+  // that day. `new Date('2026-09-08')` is 00:00Z — the start — which would
+  // release the truck a full calendar day early.
+  const sfdc_expires_at = holdExp ? endOfDayUtc(holdExp) : null
+
+  const now = new Date()
+  // A pushed Hold Exp that has already passed does not reserve anything.
+  // Salesforce re-pushes an Opportunity on any field edit, so this is the
+  // common case for stale deals, not an edge case.
+  const pushedExpiryIsFuture = sfdc_expires_at !== null && sfdc_expires_at > now
+  const pushedExpiryIsPast   = sfdc_expires_at !== null && sfdc_expires_at <= now
+
   const results: Array<{ truck_number: string; hold_id: string; action: 'created' | 'updated' | 'removed' }> = []
 
   // Reconcile: drop holds this Opportunity previously pushed for trucks that
@@ -76,17 +89,32 @@ export async function POST(req: NextRequest) {
     })
 
     if (existing) {
-      // A hold auto-expired by lib/scheduleCache.ts's expireSfdcHolds() means the deal
-      // was stale as of its old sfdc_hold_exp — a fresh push means Salesforce still
-      // considers it active, so un-expire it. A COMMITTED hold is left alone; that's a
-      // real booking, not something this webhook should revert.
-      const reactivated = existing.status === 'EXPIRED'
+      // A hold expired by expireHolds() means the deal was stale as of its old
+      // Hold Exp date. A fresh push revives it ONLY if Salesforce sent a Hold Exp
+      // that is still in the future.
+      //
+      // Reactivating on any push regardless of date is what made Salesforce holds
+      // immortal: the sweep would expire a hold, the next sync would push the same
+      // already-past Hold Exp and flip it straight back to HOLD, and the truck
+      // stayed blocked forever while the UI showed a permanent "past due" badge.
+      //
+      // The mirror case matters too — if the push carries a Hold Exp that has
+      // already passed, expire the hold here rather than leaving it active until
+      // the next sweep happens to run.
+      //
+      // A COMMITTED hold is left alone in both directions; that's a real booking,
+      // not something this webhook should revert.
+      const reactivated = existing.status === 'EXPIRED' && pushedExpiryIsFuture
+      const expiredNow  =
+        pushedExpiryIsPast && (existing.status === 'HOLD' || existing.status === 'EXTENSION_REQUESTED')
+
       const updated = await prisma.hold.update({
         where: { id: existing.id },
         data: {
           market, state, client_name: accountName, start_date, end_date, sfdc_hold_exp,
-          expires_at: sfdc_hold_exp,
+          expires_at: sfdc_expires_at,
           ...(reactivated && { status: 'HOLD' }),
+          ...(expiredNow  && { status: 'EXPIRED' }),
         },
       })
       results.push({ truck_number, hold_id: updated.id, action: 'updated' })
@@ -96,7 +124,17 @@ export async function POST(req: NextRequest) {
           truck_number,
           user_id:      serviceUser.id,
           hold_id:      updated.id,
-          details:      JSON.stringify({ source: 'salesforce', opportunityId, accountName, start_date, end_date, ...(reactivated && { reactivated_from_expired: true }) }),
+          details:      JSON.stringify({
+            source: 'salesforce', opportunityId, accountName, start_date, end_date,
+            sfdc_hold_exp, expires_at: sfdc_expires_at,
+            ...(reactivated && { reactivated_from_expired: true }),
+            ...(expiredNow  && { expired_on_push: 'sfdc_hold_exp_already_passed' }),
+            ...(existing.status === 'EXPIRED' && !reactivated && {
+              left_expired: sfdc_hold_exp === null
+                ? 'no_hold_exp_on_push'
+                : 'sfdc_hold_exp_already_passed',
+            }),
+          }),
         },
       })
     } else {
@@ -108,13 +146,15 @@ export async function POST(req: NextRequest) {
           client_name:         accountName,
           start_date,
           end_date,
-          status:              'HOLD',
+          // An Opportunity pushed with a Hold Exp already in the past has nothing
+          // left to reserve — record it, but don't let it block the truck.
+          status:              pushedExpiryIsPast ? 'EXPIRED' : 'HOLD',
           source:              'SALESFORCE',
           notes:               `Auto-created from Salesforce Opportunity ${opportunityId}${market ? '' : ' — market/state unknown, no live GPS for this truck'}`,
           created_by:          serviceUser.id,
           sfdc_opportunity_id: opportunityId,
           sfdc_hold_exp,
-          expires_at:          sfdc_hold_exp,
+          expires_at:          sfdc_expires_at,
         },
       })
       results.push({ truck_number, hold_id: created.id, action: 'created' })

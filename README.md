@@ -307,6 +307,8 @@ Optional: `user_id`, `token_id`, `request_params`, `response_summary`.
 | `ANTHROPIC_API_KEY` | Claude AI (chat assistant) |
 | `NEXTAUTH_SECRET` | NextAuth session secret |
 | `INTERNAL_API_KEY` | Bearer token for `/api/v1/internal/*` endpoints (MCP server) |
+| `SFDC_WEBHOOK_SECRET` | Shared secret for the Salesforce hold webhook (`x-sfdc-webhook-secret`) |
+| `CRON_SECRET` | Bearer token for `GET /api/cron`. **Required in production** — without it the sweep returns 500 and holds never expire |
 
 ---
 
@@ -321,3 +323,24 @@ vercel --prod
 ```
 
 The app is hosted on Vercel. Pushing to `main` on GitHub does not auto-deploy — run `vercel --prod` manually after committing.
+
+### Scheduled maintenance sweep
+
+`vercel.json` registers an hourly Vercel Cron against `GET /api/cron`. That sweep
+expires holds past their `expires_at`, releases stale `ATT_SOFT` holds, and re-runs
+conflict detection.
+
+- Set `CRON_SECRET` in the Vercel project's environment variables. Vercel sends it
+  as `Authorization: Bearer <CRON_SECRET>`; the route rejects anything else, and
+  returns 500 if the variable is unset.
+- Hourly scheduling requires a **Pro** plan — Hobby projects are limited to one
+  cron run per day. If this project is on Hobby, change the schedule in
+  `vercel.json` to a daily expression and expect up to 24h of lag before a hold
+  is marked `EXPIRED`.
+- Availability does not depend on this job. Read paths derive released-ness from
+  `expires_at` directly (`lib/holdFilters.ts`), so a truck frees up on time even
+  if the sweep is late — the job is what writes the `EXPIRED` status.
+- To force a sweep by hand:
+  ```bash
+  curl -H "Authorization: Bearer $CRON_SECRET" https://<your-deployment>/api/cron
+  ```

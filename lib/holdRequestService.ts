@@ -6,7 +6,9 @@ import type { ClientSession } from '@/lib/clientAuth'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
 // Standard review SLA — 72 hours (3 days) from submission.
-const HOLD_EXPIRATION_HOURS = 72
+// Exported so the Salesforce webhook can fall back to the same window when an
+// Opportunity arrives with trucks/start/stop but no Hold Exp date.
+export const HOLD_EXPIRATION_HOURS = 72
 // The team needs this many full days of runway before a campaign starts to actually process an
 // approved hold (route the truck, confirm logistics, etc.) — the same 3-day figure as the
 // standard SLA above, but anchored to the campaign's start date instead of the submission time.

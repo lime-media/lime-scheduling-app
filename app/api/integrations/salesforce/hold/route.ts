@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { endOfDayUtc } from '@/lib/dateOnly'
+import { HOLD_EXPIRATION_HOURS } from '@/lib/holdRequestService'
 
 interface SfdcHoldPayload {
   opportunityId: string
@@ -42,21 +43,42 @@ export async function POST(req: NextRequest) {
 
   const gpsMap = await getLiveVehicleLocations().catch(() => new Map())
 
-  const start_date = new Date(holdStart)
-  const end_date   = new Date(holdStop)
+  const now = new Date()
+
+  const start_date    = new Date(holdStart)
+  const end_date      = new Date(holdStop)
   const sfdc_hold_exp = holdExp ? new Date(holdExp) : null
+
+  // Only act on Opportunities whose LED fields are actually filled in. The
+  // required-field guard above covers presence; this covers garbage that still
+  // parses as a string but not as a date, which would otherwise be written to
+  // the row as Invalid Date.
+  if (
+    isNaN(start_date.getTime()) ||
+    isNaN(end_date.getTime()) ||
+    (sfdc_hold_exp !== null && isNaN(sfdc_hold_exp.getTime()))
+  ) {
+    return NextResponse.json(
+      { error: 'Invalid date in holdStart, holdStop or holdExp — expected yyyy-MM-dd' },
+      { status: 400 }
+    )
+  }
 
   // Hold Exp is the last day the hold is valid, so it survives until the END of
   // that day. `new Date('2026-09-08')` is 00:00Z — the start — which would
   // release the truck a full calendar day early.
-  const sfdc_expires_at = holdExp ? endOfDayUtc(holdExp) : null
+  const explicitExpiry = holdExp ? endOfDayUtc(holdExp) : null
 
-  const now = new Date()
-  // A pushed Hold Exp that has already passed does not reserve anything.
-  // Salesforce re-pushes an Opportunity on any field edit, so this is the
-  // common case for stale deals, not an edge case.
-  const pushedExpiryIsFuture = sfdc_expires_at !== null && sfdc_expires_at > now
-  const pushedExpiryIsPast   = sfdc_expires_at !== null && sfdc_expires_at <= now
+  // An LED Opportunity is supposed to carry Hold Exp alongside trucks, start and
+  // stop. If the first three are filled in and only the expiration is missing,
+  // fall back to the standard 72h review window rather than writing a null
+  // expires_at — a null can never be matched by expireHolds(), so the hold would
+  // reserve the truck forever with no badge and nothing to sweep it up.
+  // The fallback is a ONE-TIME grant, not a renewable one. Resolved per hold
+  // below, because an existing row's own expiry has to win over a fresh default —
+  // otherwise a stale Opportunity that keeps syncing without a Hold Exp would
+  // push its window out by 72h on every sync and never expire either.
+  const defaultExpiry = new Date(now.getTime() + HOLD_EXPIRATION_HOURS * 60 * 60 * 1000)
 
   const results: Array<{ truck_number: string; hold_id: string; action: 'created' | 'updated' | 'removed' }> = []
 
@@ -104,15 +126,24 @@ export async function POST(req: NextRequest) {
       //
       // A COMMITTED hold is left alone in both directions; that's a real booking,
       // not something this webhook should revert.
-      const reactivated = existing.status === 'EXPIRED' && pushedExpiryIsFuture
+      //
+      // Expiry resolution, in order: an explicit Hold Exp always wins; failing
+      // that the row keeps the expiry it already has, so repeated pushes can't
+      // renew a 72h fallback forever; only a row with nothing at all (a legacy
+      // null) gets a fresh default.
+      const effectiveExpiry = explicitExpiry ?? existing.expires_at ?? defaultExpiry
+      const expiryDefaulted = explicitExpiry === null && existing.expires_at === null
+      const expiryIsPast    = effectiveExpiry <= now
+
+      const reactivated = existing.status === 'EXPIRED' && !expiryIsPast
       const expiredNow  =
-        pushedExpiryIsPast && (existing.status === 'HOLD' || existing.status === 'EXTENSION_REQUESTED')
+        expiryIsPast && (existing.status === 'HOLD' || existing.status === 'EXTENSION_REQUESTED')
 
       const updated = await prisma.hold.update({
         where: { id: existing.id },
         data: {
           market, state, client_name: accountName, start_date, end_date, sfdc_hold_exp,
-          expires_at: sfdc_expires_at,
+          expires_at: effectiveExpiry,
           ...(reactivated && { status: 'HOLD' }),
           ...(expiredNow  && { status: 'EXPIRED' }),
         },
@@ -126,18 +157,24 @@ export async function POST(req: NextRequest) {
           hold_id:      updated.id,
           details:      JSON.stringify({
             source: 'salesforce', opportunityId, accountName, start_date, end_date,
-            sfdc_hold_exp, expires_at: sfdc_expires_at,
+            sfdc_hold_exp, expires_at: effectiveExpiry,
+            ...(expiryDefaulted && { expires_at_defaulted: 'no_hold_exp_on_push_72h' }),
+            ...(explicitExpiry === null && existing.expires_at !== null && {
+              expires_at_retained: 'no_hold_exp_on_push_kept_existing',
+            }),
             ...(reactivated && { reactivated_from_expired: true }),
-            ...(expiredNow  && { expired_on_push: 'sfdc_hold_exp_already_passed' }),
+            ...(expiredNow  && { expired_on_push: 'expiry_already_passed' }),
             ...(existing.status === 'EXPIRED' && !reactivated && {
-              left_expired: sfdc_hold_exp === null
-                ? 'no_hold_exp_on_push'
-                : 'sfdc_hold_exp_already_passed',
+              left_expired: 'expiry_already_passed',
             }),
           }),
         },
       })
     } else {
+      // No prior row, so there is nothing to preserve — an absent Hold Exp gets
+      // the one-time 72h fallback here.
+      const newExpiry = explicitExpiry ?? defaultExpiry
+
       const created = await prisma.hold.create({
         data: {
           truck_number,
@@ -148,13 +185,15 @@ export async function POST(req: NextRequest) {
           end_date,
           // An Opportunity pushed with a Hold Exp already in the past has nothing
           // left to reserve — record it, but don't let it block the truck.
-          status:              pushedExpiryIsPast ? 'EXPIRED' : 'HOLD',
+          status:              newExpiry <= now ? 'EXPIRED' : 'HOLD',
           source:              'SALESFORCE',
-          notes:               `Auto-created from Salesforce Opportunity ${opportunityId}${market ? '' : ' — market/state unknown, no live GPS for this truck'}`,
+          notes:               `Auto-created from Salesforce Opportunity ${opportunityId}`
+                                 + (market ? '' : ' — market/state unknown, no live GPS for this truck')
+                                 + (explicitExpiry === null ? ' — no Hold Exp on the Opportunity, defaulted to 72h' : ''),
           created_by:          serviceUser.id,
           sfdc_opportunity_id: opportunityId,
           sfdc_hold_exp,
-          expires_at:          sfdc_expires_at,
+          expires_at:          newExpiry,
         },
       })
       results.push({ truck_number, hold_id: created.id, action: 'created' })
@@ -164,7 +203,12 @@ export async function POST(req: NextRequest) {
           truck_number,
           user_id:      serviceUser.id,
           hold_id:      created.id,
-          details:      JSON.stringify({ source: 'salesforce', opportunityId, accountName, start_date, end_date }),
+          details:      JSON.stringify({
+            source: 'salesforce', opportunityId, accountName, start_date, end_date,
+            sfdc_hold_exp, expires_at: newExpiry,
+            ...(explicitExpiry === null && { expires_at_defaulted: 'no_hold_exp_on_push_72h' }),
+            ...(newExpiry <= now && { created_expired: 'expiry_already_passed' }),
+          }),
         },
       })
     }

@@ -20,6 +20,12 @@ MSSQL_PORT=1433
 MSSQL_DATABASE="limemediauat_PROD"
 MSSQL_USER="limeuatadmin"
 MSSQL_PASSWORD="YOUR_PASSWORD"
+
+# Shared secret for the Salesforce hold webhook (x-sfdc-webhook-secret header)
+SFDC_WEBHOOK_SECRET="<shared with the Salesforce outbound message>"
+# Bearer token for GET /api/cron (the hourly hold-expiry sweep). Required in
+# production — Vercel Cron sends it as `Authorization: Bearer <CRON_SECRET>`.
+CRON_SECRET="<output of: openssl rand -base64 32>"
 ```
 
 ## 2. Create the App Tables in Azure SQL
@@ -49,6 +55,7 @@ against limemediauat using any SQL client:
 8. `prisma/mcp-v2-client-users-migration.sql` — `mcp_tokens.user_type`, `mcp_query_log.user_type`, drops hard FKs
 9. `prisma/mcp-widen-user-id-migration.sql` — widens `user_id` to `NVARCHAR(255)` on `mcp_tokens`/`mcp_query_log`
 10. `prisma/migrations/20260810000000_add_client_chat_tables/migration.sql` — `client_chat_conversations`, `client_chat_messages` (**not yet applied anywhere** — required by the in-progress client-portal AI chat feature; run this before that code path goes live)
+11. `prisma/migrations/20260908000000_fix_sfdc_expires_at_end_of_day/migration.sql` — **data backfill, no schema change.** Moves Salesforce `app_holds.expires_at` values off 00:00 (start of the last valid day) to end-of-day, correcting a one-day-early expiry inherited from migration `20260901000000`. Run once per database; safe to re-run.
 
 **Option A — sqlcmd (CLI), one file at a time:**
 ```bash

@@ -29,7 +29,7 @@ CRON_SECRET="<output of: openssl rand -base64 32>"
 
 # Optional — Opportunity StageName applied when the app releases an
 # Opportunity's last hold. Must exist in the Salesforce picklist.
-SFDC_CLOSED_LOST_STAGE="Closed Lost Declined"
+SFDC_CLOSED_LOST_STAGE="Closed Lost - Declined"
 ```
 
 ## 2. Create the App Tables in Azure SQL

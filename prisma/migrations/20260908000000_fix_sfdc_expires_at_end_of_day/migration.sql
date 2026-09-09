@@ -23,7 +23,11 @@
 -- ── Step 1: move midnight expiries to the end of the same day ────────────────
 IF COL_LENGTH('dbo.app_holds', 'expires_at') IS NOT NULL
     UPDATE dbo.app_holds
-    SET expires_at = DATEADD(MILLISECOND, -1, DATEADD(DAY, 1, CAST(expires_at AS DATE)))
+    -- CAST(... AS DATE) truncates to the calendar day; converting to DATETIME2
+    -- before the millisecond arithmetic is required, because DATEADD rejects
+    -- time-based dateparts on a DATE. Result is 23:59:59.999 of the same day.
+    SET expires_at = DATEADD(MILLISECOND, -1,
+                       DATEADD(DAY, 1, CONVERT(DATETIME2, CAST(expires_at AS DATE))))
     WHERE source = 'SALESFORCE'
       AND expires_at IS NOT NULL
       AND CAST(expires_at AS TIME) = '00:00:00';

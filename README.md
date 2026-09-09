@@ -309,7 +309,7 @@ Optional: `user_id`, `token_id`, `request_params`, `response_summary`.
 | `INTERNAL_API_KEY` | Bearer token for `/api/v1/internal/*` endpoints (MCP server) |
 | `SFDC_WEBHOOK_SECRET` | Shared secret for the Salesforce hold webhook (`x-sfdc-webhook-secret`) |
 | `CRON_SECRET` | Bearer token for `GET /api/cron`. **Required in production** — without it the sweep returns 500 and holds never expire |
-| `SFDC_CLOSED_LOST_STAGE` | Optional. Opportunity `StageName` set when the app releases an Opportunity's last hold. Defaults to `Closed Lost Declined` — must match the Salesforce picklist or the write is rejected |
+| `SFDC_CLOSED_LOST_STAGE` | Optional. Opportunity `StageName` set when the app releases an Opportunity's last hold. Defaults to `Closed Lost - Declined` — must match the Salesforce picklist or the write is rejected |
 
 ---
 
@@ -342,7 +342,7 @@ ask", never "closed". Requires `SFDC_CLIENT_ID`/`SFDC_CLIENT_SECRET`; the step
 no-ops if they're unset.
 
 **Closing the loop outward.** When the app expires a hold, it also sets the
-Opportunity to `Closed Lost Declined` (`SFDC_CLOSED_LOST_STAGE`) — but only once
+Opportunity to `Closed Lost - Declined` (`SFDC_CLOSED_LOST_STAGE`) — but only once
 that Opportunity has no active holds left, since one Opportunity routinely covers
 several trucks and expiring one must not close a deal whose siblings are still
 held. Already-closed Opportunities are skipped, so a Closed Won deal is never

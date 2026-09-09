@@ -193,7 +193,7 @@ export async function getOpportunityStage(
  * a picklist rename is a config change, not a deploy.
  */
 export const SFDC_CLOSED_LOST_STAGE =
-  process.env.SFDC_CLOSED_LOST_STAGE ?? 'Closed Lost Declined'
+  process.env.SFDC_CLOSED_LOST_STAGE ?? 'Closed Lost - Declined'
 
 // Statuses that still reserve a truck. Used to decide whether an Opportunity has
 // any life left in it.

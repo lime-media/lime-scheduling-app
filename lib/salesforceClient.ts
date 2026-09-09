@@ -35,6 +35,7 @@ async function getAccessToken(): Promise<{ accessToken: string; instanceUrl: str
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: params.toString(),
+    cache: 'no-store',
   })
 
   const data = await res.json()
@@ -61,6 +62,13 @@ async function sfdcFetch(path: string, options: RequestInit = {}): Promise<Respo
   const url = `${instanceUrl}/services/data/${API_VERSION}${path}`
   return fetch(url, {
     ...options,
+    // Next patches fetch and will put GET responses in the Data Cache — the first
+    // production sweep logged "Updating Data Cache" against every SOQL query. A
+    // cached stage read is actively wrong here: getOpportunityStage() issues the
+    // same URL for the same Opportunity every hour, so the reconcile would decide
+    // Closed Won/Lost from a stale snapshot, and the webhook's revival check would
+    // gate on one too. Salesforce is authoritative and must be read live.
+    cache: 'no-store',
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',

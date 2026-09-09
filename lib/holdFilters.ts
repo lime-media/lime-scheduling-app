@@ -17,8 +17,14 @@ import type { Prisma } from '@prisma/client'
  * holds, plus Salesforce pushes that carry no Hold Exp date) and always count
  * as active.
  *
- * The `gte` below is the exact complement of the `lt` in expireHolds(), so a
- * hold is never both "active" here and "stale" to the sweep.
+ * COMMITTED is exempt from the expiry half entirely. expireHolds() only ever
+ * matches HOLD and EXTENSION_REQUESTED, so a committed booking is immune to the
+ * sweep — and committing a hold does not clear `expires_at`
+ * (app/api/holds/[id]/route.ts writes `status` alone). Without the exemption a
+ * client hold committed by ops would silently vanish from the grid, map,
+ * inventory, availability and conflict detection 72h later, while the
+ * Reservations page still showed it as active with no badge. That is a
+ * double-booking waiting to happen, so status wins over expiry here.
  */
 export function activeHoldWhere(
   opts: { excludeAttSoft?: boolean; now?: Date } = {}
@@ -26,6 +32,10 @@ export function activeHoldWhere(
   const { excludeAttSoft = false, now = new Date() } = opts
   return {
     status: excludeAttSoft ? { notIn: ['ATT_SOFT', 'EXPIRED'] } : { not: 'EXPIRED' },
-    OR: [{ expires_at: null }, { expires_at: { gte: now } }],
+    OR: [
+      { status: 'COMMITTED' },
+      { expires_at: null },
+      { expires_at: { gte: now } },
+    ],
   }
 }

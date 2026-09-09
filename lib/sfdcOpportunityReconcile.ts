@@ -26,10 +26,17 @@ import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 // SOQL has a query-length limit; 200 ids per IN clause stays well inside it.
 const SOQL_ID_CHUNK = 200
 
-// Statuses worth checking. EXPIRED holds are already released. COMMITTED is
-// included so an Opportunity that flips from Closed Won to Closed Lost still
-// gives the truck back.
-const RECONCILABLE_STATUSES = ['HOLD', 'EXTENSION_REQUESTED', 'COMMITTED']
+// Statuses worth checking. EXPIRED holds are already released, and COMMITTED is
+// left alone — the same rule expireHolds() and the webhook follow: a committed
+// booking is a human decision that automation does not revert.
+//
+// Including it created a loop with the outward close in expireHolds(): once this
+// job set an Opportunity to Closed Lost, any re-activation in the app (a grid
+// status edit, or update_expiration, which sets status back to HOLD) was flipped
+// to EXPIRED again on the next hourly pass. Ops would re-book the truck, watch it
+// look fine, and see it silently release an hour later, with nothing in the UI
+// explaining that the fix had to happen in Salesforce.
+const RECONCILABLE_STATUSES = ['HOLD', 'EXTENSION_REQUESTED']
 
 // Salesforce ids are 15- or 18-character alphanumerics. Anything else is not
 // interpolated into SOQL.

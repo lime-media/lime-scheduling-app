@@ -338,7 +338,13 @@ it: **Closed Won → `COMMITTED`** (the deal is real, so the truck genuinely is 
 and `COMMITTED` is already immune to expiry), **Closed Lost → `EXPIRED`** (releases
 the truck, row stays visible for ops). Still-open Opportunities are left alone, and
 so is any Opportunity Salesforce doesn't return — an absent record means "couldn't
-ask", never "closed". Requires `SFDC_CLIENT_ID`/`SFDC_CLIENT_SECRET`; the step
+ask", never "closed".
+
+Holds that are already `COMMITTED` are never touched by the reconcile, matching the
+rule the rest of the app follows: a committed booking is a human decision that
+automation does not revert. The tradeoff is that an Opportunity flipping Closed Won
+→ Closed Lost will not release a truck that ops had already committed — that needs
+a manual release. Requires `SFDC_CLIENT_ID`/`SFDC_CLIENT_SECRET`; the step
 no-ops if they're unset.
 
 **Closing the loop outward.** When the app expires a hold, it also sets the
@@ -348,6 +354,14 @@ several trucks and expiring one must not close a deal whose siblings are still
 held. Already-closed Opportunities are skipped, so a Closed Won deal is never
 overwritten. This fires at the moment of expiry (the sweep, and a denied
 extension); a failed Salesforce write is logged but not retried.
+
+It is deliberately narrow: **only holds with `source = 'SALESFORCE'` that carry an
+`sfdc_hold_exp`.** Client-portal bookings also have an `sfdc_opportunity_id` —
+the app opens a `WARM` Opportunity for them — so without that scoping, ops merely
+not reviewing a portal booking inside the 72h SLA would mark a live deal
+Closed Lost - Declined. The customer didn't decline; we didn't answer. Requiring
+`sfdc_hold_exp` likewise excludes pushes that omitted Hold Exp and took the 72h
+fallback, so a blank optional field can't lose a rep their deal.
 
 - Set `CRON_SECRET` in the Vercel project's environment variables. Vercel sends it
   as `Authorization: Bearer <CRON_SECRET>`; the route rejects anything else, and

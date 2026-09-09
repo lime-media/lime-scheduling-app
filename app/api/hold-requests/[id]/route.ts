@@ -208,9 +208,11 @@ export async function PATCH(
   })
 
   // Denying the extension expires the hold, so settle Salesforce the same way the
-  // sweep does — but only if this was the Opportunity's last active hold. Never
+  // sweep does — same scoping as expireHolds(): only holds Salesforce itself put
+  // an expiry on, never a client-portal booking whose WARM Opportunity the app
+  // created. Only closes if this was the Opportunity's last active hold, and never
   // allowed to fail the request; the helper swallows its own errors.
-  if (hold.sfdc_opportunity_id) {
+  if (hold.sfdc_opportunity_id && hold.source === 'SALESFORCE' && hold.sfdc_hold_exp !== null) {
     await closeOpportunityAsLost(hold.sfdc_opportunity_id)
   }
 

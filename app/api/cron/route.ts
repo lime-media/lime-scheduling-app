@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { refreshCache } from '@/lib/scheduleCache'
 
-// Never cached, and allowed to outrun the default function budget — the sweep
-// does several MSSQL round trips plus per-hold writes.
+// Never cached, and given a generous budget. The sweep is serial: per-hold audit
+// and status writes, a Salesforce round trip per Opportunity it closes, then
+// SCHEDULED_QUERY and per-conflict MSSQL writes in detectConflicts. The first
+// production run also faces the entire backlog that accumulated while the old
+// in-process timer silently never fired, so it is far slower than steady state.
+// 300s is the Pro ceiling; every stage is idempotent, so a run that still times
+// out is retried by the next hour rather than losing work.
 export const dynamic     = 'force-dynamic'
-export const maxDuration = 60
+export const maxDuration = 300
 
 /**
  * Scheduled maintenance sweep — expires holds past their `expires_at`,

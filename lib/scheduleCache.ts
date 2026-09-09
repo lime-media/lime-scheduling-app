@@ -263,8 +263,21 @@ export async function expireHolds(): Promise<{ expired: number; opportunities_cl
   // Deduplicated because one Opportunity commonly covers several trucks, and
   // deferred until after the loop so the "any active holds left?" check inside
   // closeOpportunityAsLost() sees the finished state rather than a partial one.
+  //
+  // Restricted to holds Salesforce itself put an expiry on. Client-portal holds
+  // also carry an sfdc_opportunity_id — the app creates a WARM Opportunity for
+  // them — so without this guard, ops simply not reviewing a portal booking
+  // within the 72h internal SLA would move a live deal to Closed Lost - Declined.
+  // The customer didn't decline; we didn't answer. Requiring sfdc_hold_exp also
+  // excludes SFDC pushes that omitted Hold Exp and got the 72h fallback, so a rep
+  // leaving an optional field blank can't lose their own deal.
   const touchedOpportunities = Array.from(
-    new Set(stale.map((h) => h.sfdc_opportunity_id).filter((id): id is string => Boolean(id)))
+    new Set(
+      stale
+        .filter((h) => h.source === 'SALESFORCE' && h.sfdc_hold_exp !== null)
+        .map((h) => h.sfdc_opportunity_id)
+        .filter((id): id is string => Boolean(id))
+    )
   )
 
   let opportunities_closed = 0

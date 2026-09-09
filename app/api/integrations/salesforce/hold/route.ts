@@ -157,11 +157,17 @@ export async function POST(req: NextRequest) {
       const expiredNow  =
         expiryIsPast && (existing.status === 'HOLD' || existing.status === 'EXTENSION_REQUESTED')
 
+      // A committed booking's expiry is meaningless — nothing expires it — so don't
+      // restamp one. Left unguarded, a re-saved Closed Won Opportunity would write
+      // its old past Hold Exp onto a COMMITTED row, and an un-commit back to HOLD
+      // would then expire it on the spot.
+      const isCommitted = existing.status === 'COMMITTED'
+
       const updated = await prisma.hold.update({
         where: { id: existing.id },
         data: {
           market, state, client_name: accountName, start_date, end_date, sfdc_hold_exp,
-          expires_at: effectiveExpiry,
+          ...(isCommitted ? {} : { expires_at: effectiveExpiry }),
           ...(reactivated && { status: revivedAsCommitted ? 'COMMITTED' : 'HOLD' }),
           ...(expiredNow  && { status: 'EXPIRED' }),
         },
@@ -175,7 +181,10 @@ export async function POST(req: NextRequest) {
           hold_id:      updated.id,
           details:      JSON.stringify({
             source: 'salesforce', opportunityId, accountName, start_date, end_date,
-            sfdc_hold_exp, expires_at: effectiveExpiry,
+            sfdc_hold_exp,
+            ...(isCommitted
+              ? { expires_at_untouched: 'hold_is_committed' }
+              : { expires_at: effectiveExpiry }),
             ...(expiryDefaulted && { expires_at_defaulted: 'no_hold_exp_on_push_72h' }),
             ...(explicitExpiry === null && existing.expires_at !== null && {
               expires_at_retained: 'no_hold_exp_on_push_kept_existing',

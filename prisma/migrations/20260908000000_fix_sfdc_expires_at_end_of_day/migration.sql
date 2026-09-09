@@ -12,6 +12,10 @@
 --
 -- Safe to re-run: after the first pass no SALESFORCE row has a 00:00:00 time,
 -- so the UPDATE matches nothing.
+--
+-- Verified against production 2026-09-09: the review SELECT below returned 161
+-- rows, and the optional step 2 SELECT returned 0 — confirming no hold was ever
+-- auto-expired, since the old in-process timer could not fire on Vercel.
 
 -- ── Review first ─────────────────────────────────────────────────────────────
 -- SELECT id, truck_number, client_name, status, expires_at
@@ -21,16 +25,26 @@
 --   AND CAST(expires_at AS TIME) = '00:00:00';
 
 -- ── Step 1: move midnight expiries to the end of the same day ────────────────
-IF COL_LENGTH('dbo.app_holds', 'expires_at') IS NOT NULL
-    UPDATE dbo.app_holds
-    -- CAST(... AS DATE) truncates to the calendar day; converting to DATETIME2
-    -- before the millisecond arithmetic is required, because DATEADD rejects
-    -- time-based dateparts on a DATE. Result is 23:59:59.999 of the same day.
-    SET expires_at = DATEADD(MILLISECOND, -1,
-                       DATEADD(DAY, 1, CONVERT(DATETIME2, CAST(expires_at AS DATE))))
-    WHERE source = 'SALESFORCE'
-      AND expires_at IS NOT NULL
-      AND CAST(expires_at AS TIME) = '00:00:00';
+--
+-- No IF COL_LENGTH guard here on purpose. It reads as a safety check but it is
+-- the opposite: if the connection is pointed at a database without this table,
+-- COL_LENGTH returns NULL, the UPDATE is skipped, and the run reports
+-- "0 rows affected" with no error — indistinguishable from a clean no-op. That
+-- happened on the first production attempt. Better to fail loudly on the wrong
+-- database than to succeed silently on it.
+--
+-- Re-running is still safe: after the first pass no SALESFORCE row has a
+-- 00:00:00 time, so the WHERE matches nothing.
+--
+-- CAST(... AS DATE) truncates to the calendar day; converting to DATETIME2
+-- before the millisecond arithmetic is required, because DATEADD rejects
+-- time-based dateparts on a DATE. Result is 23:59:59.999 of the same day.
+UPDATE dbo.app_holds
+SET expires_at = DATEADD(MILLISECOND, -1,
+                   DATEADD(DAY, 1, CONVERT(DATETIME2, CAST(expires_at AS DATE))))
+WHERE source = 'SALESFORCE'
+  AND expires_at IS NOT NULL
+  AND CAST(expires_at AS TIME) = '00:00:00';
 
 -- ── Step 2 (OPTIONAL — review before running) ────────────────────────────────
 -- Holds the sweep expired a day early. After step 1 their corrected expiry is

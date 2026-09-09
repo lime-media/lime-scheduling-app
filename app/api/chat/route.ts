@@ -4,6 +4,7 @@ import { authOptions } from '@/lib/auth'
 import Anthropic from '@anthropic-ai/sdk'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
 import { CHAT_CONTEXT_QUERY, CHAT_SCHEDULE_WINDOW_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { formatMarketState } from '@/lib/format'
@@ -130,12 +131,14 @@ async function executePlaceHold(
     return { success: false, message: 'Action failed: missing required fields in action block.' }
   }
 
-  // Conflict check — EXPIRED holds are released, so they shouldn't block a new hold
+  // Conflict check — released holds (status EXPIRED, or expires_at already
+  // passed) shouldn't block a new hold
   const conflicts = await prisma.hold.findMany({
     where: {
       truck_number: truck,
-      status: { not: 'EXPIRED' },
-      OR: [{ start_date: { lte: new Date(end_date) }, end_date: { gte: new Date(start_date) } }],
+      ...activeHoldWhere(),
+      start_date: { lte: new Date(end_date) },
+      end_date:   { gte: new Date(start_date) },
     },
   })
   if (conflicts.length > 0) {
@@ -219,9 +222,10 @@ async function buildScheduleContext(): Promise<string> {
   const [truckRows, windowRows, holds, gpsMap] = await Promise.all([
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
     query<Record<string, unknown>[]>(CHAT_SCHEDULE_WINDOW_QUERY),
-    // EXPIRED holds are released — don't tell the assistant a truck is held by one
+    // Released holds — status EXPIRED, or expires_at already passed — don't tell
+    // the assistant a truck is held by one
     prisma.hold.findMany({
-      where: { status: { not: 'EXPIRED' } },
+      where: activeHoldWhere(),
       include: { user: { select: { name: true } } },
       orderBy: { start_date: 'asc' },
     }),

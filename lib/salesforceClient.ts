@@ -147,16 +147,40 @@ export async function updateOpportunity(
   })
 
   // SFDC returns 204 No Content on success
-  return res.status === 204
+  if (res.status === 204) return true
+
+  // Log why. The common failure is an invalid picklist value (StageName), which
+  // is otherwise indistinguishable from any other rejection at the call site.
+  const body = await res.json().catch(() => null)
+  const detail = Array.isArray(body) && body[0]?.message
+    ? `${body[0].errorCode}: ${body[0].message}`
+    : `HTTP ${res.status}`
+  console.error(`[sfdc] Opportunity ${opportunityId} update failed — ${detail}`, fields)
+  return false
 }
 
 /**
  * Query Salesforce using SOQL.
+ *
+ * Throws on a non-2xx response rather than returning an empty array. A failed
+ * query and a query with genuinely no matches used to be indistinguishable,
+ * which is dangerous for any caller that treats "not returned" as a fact about
+ * the record — the Opportunity stage reconcile in lib/sfdcOpportunityReconcile.ts
+ * would read an auth failure as "no open Opportunities" if this stayed silent.
  */
 export async function sfdcQuery<T = Record<string, unknown>>(soql: string): Promise<T[]> {
   const res = await sfdcFetch(`/query?q=${encodeURIComponent(soql)}`)
-  const data = await res.json()
-  return data.records ?? []
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    // Salesforce returns errors as [{ message, errorCode }]
+    const detail = Array.isArray(data) && data[0]?.message
+      ? `${data[0].errorCode}: ${data[0].message}`
+      : `HTTP ${res.status}`
+    throw new Error(`Salesforce SOQL query failed — ${detail}`)
+  }
+
+  return data?.records ?? []
 }
 
 /**

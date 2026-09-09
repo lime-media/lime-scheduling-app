@@ -16,3 +16,20 @@ import { parseISO } from 'date-fns'
 export function parseDateOnly(value: string): Date {
   return parseISO(value.slice(0, 10))
 }
+
+/**
+ * The last instant of a calendar day, in UTC.
+ *
+ * Salesforce sends Hold Exp as a bare "YYYY-MM-DD", and that date is the LAST
+ * day the hold is valid — the truck is only released the day after (see the
+ * expiry contract in lib/scheduleCache.ts). Parsing it with `new Date()` yields
+ * 00:00Z, the *start* of that day, so comparing it against `now` releases the
+ * hold a full calendar day early.
+ *
+ * The rest of the app already anchors date-only expirations to end-of-day —
+ * see the `update_expiration` action in app/api/hold-requests/[id]/route.ts,
+ * which builds `T23:59:59Z`. This keeps the Salesforce path on that convention.
+ */
+export function endOfDayUtc(value: string): Date {
+  return new Date(value.slice(0, 10) + 'T23:59:59.999Z')
+}

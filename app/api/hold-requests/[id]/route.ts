@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
 import { computeHoldExpiresAt } from '@/lib/holdRequestService'
+import { closeOpportunityAsLost } from '@/lib/sfdcOpportunityReconcile'
 import { sendCancellationEmail } from '@/lib/email'
 
 type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration'
@@ -61,7 +63,7 @@ export async function PATCH(
       where: {
         truck_number,
         id:         { not: hold.id },
-        status:     { not: 'EXPIRED' },
+        ...activeHoldWhere(),
         start_date: { lte: hold.end_date },
         end_date:   { gte: hold.start_date },
       },
@@ -204,6 +206,15 @@ export async function PATCH(
       details:      JSON.stringify({}),
     },
   })
+
+  // Denying the extension expires the hold, so settle Salesforce the same way the
+  // sweep does — same scoping as expireHolds(): only holds Salesforce itself put
+  // an expiry on, never a client-portal booking whose WARM Opportunity the app
+  // created. Only closes if this was the Opportunity's last active hold, and never
+  // allowed to fail the request; the helper swallows its own errors.
+  if (hold.sfdc_opportunity_id && hold.source === 'SALESFORCE' && hold.sfdc_hold_exp !== null) {
+    await closeOpportunityAsLost(hold.sfdc_opportunity_id)
+  }
 
   return NextResponse.json({ ok: true, status: 'EXPIRED' })
 }

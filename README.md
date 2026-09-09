@@ -307,6 +307,9 @@ Optional: `user_id`, `token_id`, `request_params`, `response_summary`.
 | `ANTHROPIC_API_KEY` | Claude AI (chat assistant) |
 | `NEXTAUTH_SECRET` | NextAuth session secret |
 | `INTERNAL_API_KEY` | Bearer token for `/api/v1/internal/*` endpoints (MCP server) |
+| `SFDC_WEBHOOK_SECRET` | Shared secret for the Salesforce hold webhook (`x-sfdc-webhook-secret`) |
+| `CRON_SECRET` | Bearer token for `GET /api/cron`. **Required in production** — without it the sweep returns 500 and holds never expire |
+| `SFDC_CLOSED_LOST_STAGE` | Optional. Opportunity `StageName` set when the app releases an Opportunity's last hold. Defaults to `Closed Lost - Declined` — must match the Salesforce picklist or the write is rejected |
 
 ---
 
@@ -321,3 +324,56 @@ vercel --prod
 ```
 
 The app is hosted on Vercel. Pushing to `main` on GitHub does not auto-deploy — run `vercel --prod` manually after committing.
+
+### Scheduled maintenance sweep
+
+`vercel.json` registers an hourly Vercel Cron against `GET /api/cron`. That sweep
+releases stale `ATT_SOFT` holds, reconciles Salesforce Opportunity stages, expires
+holds past their `expires_at`, and re-runs conflict detection.
+
+**Opportunity stage reconcile.** Salesforce never tells us when an Opportunity
+closes — the hold webhook payload carries trucks and dates, no stage. So the sweep
+pulls the stage for every Opportunity behind an active `SALESFORCE` hold and settles
+it: **Closed Won → `COMMITTED`** (the deal is real, so the truck genuinely is booked,
+and `COMMITTED` is already immune to expiry), **Closed Lost → `EXPIRED`** (releases
+the truck, row stays visible for ops). Still-open Opportunities are left alone, and
+so is any Opportunity Salesforce doesn't return — an absent record means "couldn't
+ask", never "closed".
+
+Holds that are already `COMMITTED` are never touched by the reconcile, matching the
+rule the rest of the app follows: a committed booking is a human decision that
+automation does not revert. The tradeoff is that an Opportunity flipping Closed Won
+→ Closed Lost will not release a truck that ops had already committed — that needs
+a manual release. Requires `SFDC_CLIENT_ID`/`SFDC_CLIENT_SECRET`; the step
+no-ops if they're unset.
+
+**Closing the loop outward.** When the app expires a hold, it also sets the
+Opportunity to `Closed Lost - Declined` (`SFDC_CLOSED_LOST_STAGE`) — but only once
+that Opportunity has no active holds left, since one Opportunity routinely covers
+several trucks and expiring one must not close a deal whose siblings are still
+held. Already-closed Opportunities are skipped, so a Closed Won deal is never
+overwritten. This fires at the moment of expiry (the sweep, and a denied
+extension); a failed Salesforce write is logged but not retried.
+
+It is deliberately narrow: **only holds with `source = 'SALESFORCE'` that carry an
+`sfdc_hold_exp`.** Client-portal bookings also have an `sfdc_opportunity_id` —
+the app opens a `WARM` Opportunity for them — so without that scoping, ops merely
+not reviewing a portal booking inside the 72h SLA would mark a live deal
+Closed Lost - Declined. The customer didn't decline; we didn't answer. Requiring
+`sfdc_hold_exp` likewise excludes pushes that omitted Hold Exp and took the 72h
+fallback, so a blank optional field can't lose a rep their deal.
+
+- Set `CRON_SECRET` in the Vercel project's environment variables. Vercel sends it
+  as `Authorization: Bearer <CRON_SECRET>`; the route rejects anything else, and
+  returns 500 if the variable is unset.
+- Hourly scheduling requires a **Pro** plan — Hobby projects are limited to one
+  cron run per day. If this project is on Hobby, change the schedule in
+  `vercel.json` to a daily expression and expect up to 24h of lag before a hold
+  is marked `EXPIRED`.
+- Availability does not depend on this job. Read paths derive released-ness from
+  `expires_at` directly (`lib/holdFilters.ts`), so a truck frees up on time even
+  if the sweep is late — the job is what writes the `EXPIRED` status.
+- To force a sweep by hand:
+  ```bash
+  curl -H "Authorization: Bearer $CRON_SECRET" https://<your-deployment>/api/cron
+  ```

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { validateInternalApiKey } from '@/lib/internalAuth'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
 import { SCHEDULED_QUERY, ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 
@@ -29,8 +30,9 @@ export async function GET(request: Request) {
     const [trucksRaw, schedulesRaw, holds] = await Promise.all([
       query<Record<string, unknown>[]>(ALL_TRUCKS_QUERY),
       query<Record<string, unknown>[]>(SCHEDULED_QUERY),
-      // EXPIRED holds are released — exclude them so projected_market isn't stale
-      prisma.hold.findMany({ where: { status: { not: 'EXPIRED' } }, orderBy: { start_date: 'asc' } }),
+      // Released holds (status EXPIRED, or expires_at already passed) don't
+      // reserve a truck — exclude them so projected_market isn't stale
+      prisma.hold.findMany({ where: activeHoldWhere(), orderBy: { start_date: 'asc' } }),
     ])
 
     let gpsMap = new Map<string, { city: string; state: string }>()

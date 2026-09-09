@@ -2,11 +2,19 @@
 
 Documented from the live GitHub configuration on `lime-media/lime-scheduling-app`
 (ruleset + PR history) — not aspirational, this is what's actually enforced and
-actually happened as of 2026-08-10.
+actually happened as of 2026-09-08.
 
 ## Branches
 
-- **`main`** is the default and only long-lived branch. Everything ships through it.
+- **`main`** is the default branch and what production deploys from.
+- **`uat`** is a second long-lived branch, used as the integration branch since
+  2026-08-18 (PR #37, alongside a one-off `Merge main into uat, resolving conflicts`).
+  Topic branches now merge into `uat`, and `uat` is PR'd into `main` as a batch —
+  PRs #37, #40, #42, #44, #46, #50, #52 and #54 are all `uat → main`.
+- Because those `uat → main` merge commits are never merged back, `uat` reads as
+  several commits *behind* `main` while their file trees are identical. That gap
+  is bookkeeping, not drift — `git diff origin/uat origin/main` is empty. Branch
+  off whichever you're targeting; the content is the same.
 - Work happens on short-lived topic branches, prefixed by intent:
   - `feature/…` or `feat/…` — new functionality (e.g. `feature/mcp-v2-auth-and-holds`, `feat/admin-mint-endpoint`)
   - `fix/…` — bug fixes (e.g. `fix/admin-middleware-bypass`, `fix/widen-mcp-user-id-column`)
@@ -36,7 +44,7 @@ only gate is the one human approval, and org admins can skip even that.
 
 ## What actually happens in practice
 
-Looking at PRs #1–#10:
+Looking at PRs #1–#10 (all of which predate the `uat` branch — they went straight into `main`):
 
 - **PRs opened by a non-admin contributor** (`LMG-Andrew`) got a real review — one
   approval from `Sarah-Lime` before merge, every time (#2, #5, #6, #7). PR #4 from the
@@ -56,9 +64,11 @@ Looking at PRs #1–#10:
 
 ## Net process
 
-1. Branch off `main` as `feature/…` or `fix/…`.
-2. Open a PR back into `main`.
+1. Branch off `uat` as `feature/…` or `fix/…`.
+2. Open a PR back into `uat`.
 3. If you're not an org admin, you need **1 approval** before merge — no CI gate exists, so review is the only check.
+   Note the ruleset only protects `main`, so a PR into `uat` is not gated by it; the review norm is convention, not enforcement.
 4. If you are an org admin, you can merge without an approval (bypass), and that's the observed pattern for admin-authored PRs.
 5. Merge via "Merge pull request" (merge commit) — that's the convention used so far, though squash/rebase are technically permitted.
 6. The topic branch is left in place after merge (not auto-deleted).
+7. Separately, `uat` is PR'd into `main` when a batch is ready to ship. That PR *is* covered by the ruleset above.

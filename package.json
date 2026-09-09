@@ -23,7 +23,6 @@
     "mssql": "^12.2.1",
     "next": "14.2.35",
     "next-auth": "^4.24.13",
-    "node-cron": "^4.2.1",
     "nodemailer": "^7.0.13",
     "prisma": "^5.22.0",
     "react": "^18",

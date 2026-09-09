@@ -152,11 +152,26 @@ export async function updateOpportunity(
 
 /**
  * Query Salesforce using SOQL.
+ *
+ * Throws on a non-2xx response rather than returning an empty array. A failed
+ * query and a query with genuinely no matches used to be indistinguishable,
+ * which is dangerous for any caller that treats "not returned" as a fact about
+ * the record — the Opportunity stage reconcile in lib/sfdcOpportunityReconcile.ts
+ * would read an auth failure as "no open Opportunities" if this stayed silent.
  */
 export async function sfdcQuery<T = Record<string, unknown>>(soql: string): Promise<T[]> {
   const res = await sfdcFetch(`/query?q=${encodeURIComponent(soql)}`)
-  const data = await res.json()
-  return data.records ?? []
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    // Salesforce returns errors as [{ message, errorCode }]
+    const detail = Array.isArray(data) && data[0]?.message
+      ? `${data[0].errorCode}: ${data[0].message}`
+      : `HTTP ${res.status}`
+    throw new Error(`Salesforce SOQL query failed — ${detail}`)
+  }
+
+  return data?.records ?? []
 }
 
 /**

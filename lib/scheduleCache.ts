@@ -9,6 +9,7 @@
 import { getPool, query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
+import { reconcileSfdcOpportunities } from '@/lib/sfdcOpportunityReconcile'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 
@@ -23,13 +24,17 @@ function toDateStr(val: unknown): string {
 }
 
 export interface RefreshSummary {
-  att_soft_released: number
-  holds_expired:     number
+  att_soft_released:  number
+  sfdc_committed:     number
+  sfdc_released:      number
+  sfdc_checked:       number
+  holds_expired:      number
 }
 
 /**
- * Releases stale ATT_SOFT holds, expires holds past their `expires_at`, then
- * refreshes schedule data and runs conflict detection.
+ * Releases stale ATT_SOFT holds, settles holds whose Salesforce Opportunity has
+ * closed, expires holds past their `expires_at`, then refreshes schedule data
+ * and runs conflict detection.
  *
  * Driven by Vercel Cron via GET /api/cron (see vercel.json). It used to run on
  * an in-process node-cron timer started from app/layout.tsx, which silently
@@ -45,6 +50,13 @@ export async function refreshCache(): Promise<RefreshSummary> {
   const att_soft_released = await releaseAttSoftHolds().catch((err) => {
     console.error('[scheduleCache] ATT_SOFT release check failed:', err)
     return 0
+  })
+
+  // Before expiry: a Closed Won Opportunity sitting past its Hold Exp should be
+  // committed, not expired out from under itself.
+  const sfdc = await reconcileSfdcOpportunities().catch((err) => {
+    console.error('[scheduleCache] SFDC opportunity reconcile failed:', err)
+    return { checked: 0, committed: 0, released: 0 }
   })
 
   const holds_expired = await expireHolds().catch((err) => {
@@ -95,10 +107,17 @@ export async function refreshCache(): Promise<RefreshSummary> {
   await detectConflicts(schedules, holds)
   console.log(
     `[scheduleCache] refresh complete — ${holds_expired} hold(s) expired, ` +
-    `${att_soft_released} ATT_SOFT hold(s) released`
+    `${att_soft_released} ATT_SOFT hold(s) released, ` +
+    `${sfdc.committed} committed / ${sfdc.released} released from ${sfdc.checked} SFDC opportunit${sfdc.checked === 1 ? 'y' : 'ies'}`
   )
 
-  return { att_soft_released, holds_expired }
+  return {
+    att_soft_released,
+    sfdc_committed: sfdc.committed,
+    sfdc_released:  sfdc.released,
+    sfdc_checked:   sfdc.checked,
+    holds_expired,
+  }
 }
 
 // ── ATT soft-hold release ───────────────────────────────────────────────────────

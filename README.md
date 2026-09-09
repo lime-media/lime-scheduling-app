@@ -327,8 +327,18 @@ The app is hosted on Vercel. Pushing to `main` on GitHub does not auto-deploy �
 ### Scheduled maintenance sweep
 
 `vercel.json` registers an hourly Vercel Cron against `GET /api/cron`. That sweep
-expires holds past their `expires_at`, releases stale `ATT_SOFT` holds, and re-runs
-conflict detection.
+releases stale `ATT_SOFT` holds, reconciles Salesforce Opportunity stages, expires
+holds past their `expires_at`, and re-runs conflict detection.
+
+**Opportunity stage reconcile.** Salesforce never tells us when an Opportunity
+closes — the hold webhook payload carries trucks and dates, no stage. So the sweep
+pulls the stage for every Opportunity behind an active `SALESFORCE` hold and settles
+it: **Closed Won → `COMMITTED`** (the deal is real, so the truck genuinely is booked,
+and `COMMITTED` is already immune to expiry), **Closed Lost → `EXPIRED`** (releases
+the truck, row stays visible for ops). Still-open Opportunities are left alone, and
+so is any Opportunity Salesforce doesn't return — an absent record means "couldn't
+ask", never "closed". Requires `SFDC_CLIENT_ID`/`SFDC_CLIENT_SECRET`; the step
+no-ops if they're unset.
 
 - Set `CRON_SECRET` in the Vercel project's environment variables. Vercel sends it
   as `Authorization: Bearer <CRON_SECRET>`; the route rejects anything else, and

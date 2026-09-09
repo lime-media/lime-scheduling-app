@@ -4,6 +4,7 @@ import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { endOfDayUtc } from '@/lib/dateOnly'
 import { HOLD_EXPIRATION_HOURS } from '@/lib/holdRequestService'
+import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 
 interface SfdcHoldPayload {
   opportunityId: string
@@ -135,7 +136,24 @@ export async function POST(req: NextRequest) {
       const expiryDefaulted = explicitExpiry === null && existing.expires_at === null
       const expiryIsPast    = effectiveExpiry <= now
 
-      const reactivated = existing.status === 'EXPIRED' && !expiryIsPast
+      // Reviving an expired hold is the one place this webhook can undo the
+      // hourly Opportunity reconcile, so it's worth a stage lookup here — and
+      // only here, since reactivation is rare. Without it, editing a Closed Lost
+      // Opportunity would flip its hold back to HOLD, the next sweep would close
+      // it again, and the truck would flap hourly.
+      //
+      // A null stage means "couldn't ask" — fall through to the old behaviour and
+      // let the sweep settle it within the hour, rather than dropping a revival
+      // that may well be legitimate.
+      let revivalStage: Awaited<ReturnType<typeof getOpportunityStage>> = null
+      if (existing.status === 'EXPIRED' && !expiryIsPast) {
+        revivalStage = await getOpportunityStage(opportunityId)
+      }
+      const blockedByClosedLost = revivalStage?.isClosed === true && revivalStage.isWon === false
+      // A won deal coming back is a real booking, not a tentative hold.
+      const revivedAsCommitted  = revivalStage?.isClosed === true && revivalStage.isWon === true
+
+      const reactivated = existing.status === 'EXPIRED' && !expiryIsPast && !blockedByClosedLost
       const expiredNow  =
         expiryIsPast && (existing.status === 'HOLD' || existing.status === 'EXTENSION_REQUESTED')
 
@@ -144,7 +162,7 @@ export async function POST(req: NextRequest) {
         data: {
           market, state, client_name: accountName, start_date, end_date, sfdc_hold_exp,
           expires_at: effectiveExpiry,
-          ...(reactivated && { status: 'HOLD' }),
+          ...(reactivated && { status: revivedAsCommitted ? 'COMMITTED' : 'HOLD' }),
           ...(expiredNow  && { status: 'EXPIRED' }),
         },
       })
@@ -162,7 +180,14 @@ export async function POST(req: NextRequest) {
             ...(explicitExpiry === null && existing.expires_at !== null && {
               expires_at_retained: 'no_hold_exp_on_push_kept_existing',
             }),
-            ...(reactivated && { reactivated_from_expired: true }),
+            ...(reactivated && {
+              reactivated_from_expired: true,
+              reactivated_as: revivedAsCommitted ? 'COMMITTED' : 'HOLD',
+            }),
+            ...(blockedByClosedLost && {
+              reactivation_blocked: 'sfdc_opportunity_closed_lost',
+              stage_name: revivalStage?.stageName,
+            }),
             ...(expiredNow  && { expired_on_push: 'expiry_already_passed' }),
             ...(existing.status === 'EXPIRED' && !reactivated && {
               left_expired: 'expiry_already_passed',

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { query, getPool } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
 import { SCHEDULED_QUERY, ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { getClientSession } from '@/lib/clientAuth'
@@ -26,9 +27,9 @@ export async function GET(req: NextRequest) {
   try {
     const session = getClientSession(req)
 
-    // EXPIRED holds are released — they shouldn't occupy the grid
+    // Released holds — status EXPIRED, or expires_at already passed — shouldn't occupy the grid
     const holdsPromise = prisma.hold.findMany({
-      where: { status: { not: 'EXPIRED' } },
+      where: activeHoldWhere(),
       orderBy: { start_date: 'asc' },
     })
 

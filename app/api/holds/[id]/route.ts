@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
 
 export async function PUT(
   req: NextRequest,
@@ -33,7 +34,7 @@ export async function PUT(
       where: {
         truck_number,
         id: { not: hold.id },
-        status: { not: 'EXPIRED' },
+        ...activeHoldWhere(),
         start_date: { lte: effectiveEnd },
         end_date: { gte: effectiveStart },
       },

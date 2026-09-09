@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { validateInternalApiKey } from '@/lib/internalAuth'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
 import { ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 
@@ -84,8 +85,9 @@ export async function GET(request: Request) {
         where: {
           start_date: { lte: new Date(endDate + 'T23:59:59Z') },
           end_date: { gte: new Date(startDate + 'T00:00:00Z') },
-          // EXPIRED holds are released — don't report the truck as unavailable to partners
-          status: { not: 'EXPIRED' },
+          // Released holds don't make a truck unavailable to partners — that covers
+          // both status EXPIRED and a hold whose expires_at has already passed.
+          ...activeHoldWhere(),
         },
         orderBy: { start_date: 'asc' },
       }),

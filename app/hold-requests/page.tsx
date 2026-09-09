@@ -74,8 +74,16 @@ function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; stat
     return <span className="text-xs text-gray-400">Expired</span>
   }
 
+  // Past its expiry but not yet flipped to EXPIRED by the hourly sweep. The
+  // truck is already treated as free everywhere (see lib/holdFilters.ts) — this
+  // row is just waiting on the status write, so say that rather than the old
+  // "Expiring..." which read as a hold that never quite expired.
   if (isPast(expDate)) {
-    return <span className="text-xs text-red-500 font-medium">Expiring...</span>
+    return (
+      <span className="text-xs text-red-500 font-medium" title="Past its expiration date — the truck is already released; awaiting the hourly sweep to mark it Expired.">
+        Past due
+      </span>
+    )
   }
 
   const remaining = formatDistanceToNow(expDate, { addSuffix: false })
@@ -118,6 +126,7 @@ export default function HoldRequestsPage() {
   const [cancelMode, setCancelMode] = useState(false)
   const [cancelReason, setCancelReason] = useState('')
   const [newExpiresAt, setNewExpiresAt] = useState('')
+  const [expiredWindowDays, setExpiredWindowDays] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
 
   const fetchRequests = useCallback(async () => {
@@ -127,6 +136,7 @@ export default function HoldRequestsPage() {
       if (!res.ok) throw new Error()
       const data = await res.json()
       setRequests(data.holdRequests || [])
+      setExpiredWindowDays(typeof data.expired_window_days === 'number' ? data.expired_window_days : null)
     } catch (err) {
       toast.error('Failed to load hold requests')
       console.error(err)
@@ -384,6 +394,11 @@ export default function HoldRequestsPage() {
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Reservations</h1>
             <p className="text-sm text-gray-500 mt-0.5">All hold requests and reservations — edit, cancel, or manage extensions</p>
+            {expiredWindowDays !== null && (filterStatus === '' || filterStatus === 'EXPIRED') && (
+              <p className="text-xs text-gray-400 mt-1">
+                Showing expired reservations from the last {expiredWindowDays} days. Older ones are kept but not listed here.
+              </p>
+            )}
           </div>
           <div className="flex gap-2 flex-shrink-0 flex-wrap">
             {(['', 'HOLD', 'ATT_SOFT', 'EXTENSION_REQUESTED', 'EXPIRED'] as const).map((s) => (

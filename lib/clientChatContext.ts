@@ -1,5 +1,6 @@
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
 import { SCHEDULED_QUERY, CHAT_CONTEXT_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import type { ClientSession } from '@/lib/clientAuth'
@@ -76,7 +77,10 @@ export async function buildClientChatContext(session: ClientSession): Promise<Cl
   const [scheduleRows, contextRows, holds, gpsMap] = await Promise.all([
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
-    prisma.hold.findMany({ where: { status: { not: 'EXPIRED' } }, orderBy: { start_date: 'asc' } }),
+    // Released holds — status EXPIRED, or expires_at already passed — must not
+    // make the assistant tell a client a truck is taken when createClientHold()
+    // would accept the booking.
+    prisma.hold.findMany({ where: activeHoldWhere(), orderBy: { start_date: 'asc' } }),
     getLiveVehicleLocations().catch(() => new Map<string, { formatted_address: string; city: string; state: string }>()),
   ])
 

@@ -8,6 +8,8 @@
 
 import { getPool, query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
+import { reconcileSfdcOpportunities, closeOpportunityAsLost } from '@/lib/sfdcOpportunityReconcile'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 
@@ -21,27 +23,55 @@ function toDateStr(val: unknown): string {
   try { return new Date(s).toISOString().split('T')[0] } catch { return '' }
 }
 
+export interface RefreshSummary {
+  att_soft_released:     number
+  sfdc_committed:        number
+  sfdc_released:         number
+  sfdc_checked:          number
+  holds_expired:         number
+  opportunities_closed:  number
+}
+
 /**
- * Fetches fresh schedule + holds data and runs conflict detection.
- * Called by the cron job every 5 minutes.
+ * Releases stale ATT_SOFT holds, settles holds whose Salesforce Opportunity has
+ * closed, expires holds past their `expires_at`, then refreshes schedule data
+ * and runs conflict detection.
+ *
+ * Driven by Vercel Cron via GET /api/cron (see vercel.json). It used to run on
+ * an in-process node-cron timer started from app/layout.tsx, which silently
+ * never fired in production: on serverless the instance is frozen once the
+ * response is sent, so an hourly timer never reaches its next tick and holds
+ * were left past their expiry indefinitely.
+ *
+ * Returns what it changed so the cron endpoint can report it.
  */
-export async function refreshCache(): Promise<void> {
+export async function refreshCache(): Promise<RefreshSummary> {
   console.log('[scheduleCache] refreshing...')
 
-  await releaseAttSoftHolds().catch((err) =>
+  const att_soft_released = await releaseAttSoftHolds().catch((err) => {
     console.error('[scheduleCache] ATT_SOFT release check failed:', err)
-  )
+    return 0
+  })
 
-  await expireHolds().catch((err) =>
+  // Before expiry: a Closed Won Opportunity sitting past its Hold Exp should be
+  // committed, not expired out from under itself.
+  const sfdc = await reconcileSfdcOpportunities().catch((err) => {
+    console.error('[scheduleCache] SFDC opportunity reconcile failed:', err)
+    return { checked: 0, committed: 0, released: 0 }
+  })
+
+  const expiry = await expireHolds().catch((err) => {
     console.error('[scheduleCache] hold expiry check failed:', err)
-  )
+    return { expired: 0, opportunities_closed: 0 }
+  })
 
   const [schedulesRaw, holdsRaw] = await Promise.all([
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),
-    // ATT_SOFT holds are soft placeholders and EXPIRED holds are released —
-    // exclude both from conflict detection
+    // ATT_SOFT holds are soft placeholders, and a hold is released once it is
+    // status EXPIRED or past its expires_at — exclude all of them from
+    // conflict detection
     prisma.hold.findMany({
-      where:   { status: { notIn: ['ATT_SOFT', 'EXPIRED'] } },
+      where:   activeHoldWhere({ excludeAttSoft: true }),
       orderBy: { start_date: 'asc' },
     }),
   ])
@@ -76,7 +106,21 @@ export async function refreshCache(): Promise<void> {
   }))
 
   await detectConflicts(schedules, holds)
-  console.log('[scheduleCache] refresh complete')
+  console.log(
+    `[scheduleCache] refresh complete — ${expiry.expired} hold(s) expired ` +
+    `(${expiry.opportunities_closed} opportunit${expiry.opportunities_closed === 1 ? 'y' : 'ies'} closed lost), ` +
+    `${att_soft_released} ATT_SOFT hold(s) released, ` +
+    `${sfdc.committed} committed / ${sfdc.released} released from ${sfdc.checked} SFDC opportunit${sfdc.checked === 1 ? 'y' : 'ies'}`
+  )
+
+  return {
+    att_soft_released,
+    sfdc_committed:       sfdc.committed,
+    sfdc_released:        sfdc.released,
+    sfdc_checked:         sfdc.checked,
+    holds_expired:        expiry.expired,
+    opportunities_closed: expiry.opportunities_closed,
+  }
 }
 
 // ── ATT soft-hold release ───────────────────────────────────────────────────────
@@ -185,7 +229,7 @@ export async function releaseAttSoftHolds(): Promise<number> {
  * and client holds (expires_at from 72h SLA). Holds without expires_at
  * (internal/ATT) are never matched — they don't expire automatically.
  */
-export async function expireHolds(): Promise<number> {
+export async function expireHolds(): Promise<{ expired: number; opportunities_closed: number }> {
   const now = new Date()
 
   const stale = await prisma.hold.findMany({
@@ -194,7 +238,7 @@ export async function expireHolds(): Promise<number> {
       expires_at: { lt: now },
     },
   })
-  if (stale.length === 0) return 0
+  if (stale.length === 0) return { expired: 0, opportunities_closed: 0 }
 
   for (const hold of stale) {
     await prisma.auditLog.create({
@@ -215,7 +259,33 @@ export async function expireHolds(): Promise<number> {
     console.log(`[hold-expiry] expired hold: truck ${hold.truck_number} | "${hold.client_name}" (${hold.source}) — expires_at passed`)
   }
 
-  return stale.length
+  // Now that every stale hold is marked EXPIRED, settle the Salesforce side.
+  // Deduplicated because one Opportunity commonly covers several trucks, and
+  // deferred until after the loop so the "any active holds left?" check inside
+  // closeOpportunityAsLost() sees the finished state rather than a partial one.
+  //
+  // Restricted to holds Salesforce itself put an expiry on. Client-portal holds
+  // also carry an sfdc_opportunity_id — the app creates a WARM Opportunity for
+  // them — so without this guard, ops simply not reviewing a portal booking
+  // within the 72h internal SLA would move a live deal to Closed Lost - Declined.
+  // The customer didn't decline; we didn't answer. Requiring sfdc_hold_exp also
+  // excludes SFDC pushes that omitted Hold Exp and got the 72h fallback, so a rep
+  // leaving an optional field blank can't lose their own deal.
+  const touchedOpportunities = Array.from(
+    new Set(
+      stale
+        .filter((h) => h.source === 'SALESFORCE' && h.sfdc_hold_exp !== null)
+        .map((h) => h.sfdc_opportunity_id)
+        .filter((id): id is string => Boolean(id))
+    )
+  )
+
+  let opportunities_closed = 0
+  for (const opportunityId of touchedOpportunities) {
+    if (await closeOpportunityAsLost(opportunityId)) opportunities_closed++
+  }
+
+  return { expired: stale.length, opportunities_closed }
 }
 
 // DEPRECATED — kept as re-exports for any callers not yet updated

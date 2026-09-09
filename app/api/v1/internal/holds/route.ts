@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { validateInternalApiKey } from '@/lib/internalAuth'
 import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
 import { createHold } from '@/lib/holdService'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { appendHoldRequestToSheet } from '@/lib/googleSheets'
@@ -49,7 +50,7 @@ export async function POST(req: NextRequest) {
     const conflicts = await prisma.hold.findMany({
       where: {
         truck_number,
-        status: { notIn: ['EXPIRED', 'ATT_SOFT'] },
+        ...activeHoldWhere({ excludeAttSoft: true }),
         start_date: { lte: new Date(end_date) },
         end_date: { gte: new Date(start_date) },
       },

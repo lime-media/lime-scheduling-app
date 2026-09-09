@@ -2,7 +2,14 @@ import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 
-// Paths that never need auth
+// Paths this middleware doesn't gate.
+//
+// The /api/* entries here are NOT unauthenticated — each one authenticates itself
+// against a shared secret instead of a NextAuth session (INTERNAL_API_KEY,
+// SFDC_WEBHOOK_SECRET, CRON_SECRET). Anything called by a machine belongs here:
+// a session redirect returns 307 to /login, and non-browser callers don't follow
+// redirects — Vercel Cron in particular records the job as complete and never
+// reaches the route.
 const ALWAYS_PUBLIC = [
   '/login',
   '/client/login',
@@ -11,6 +18,7 @@ const ALWAYS_PUBLIC = [
   '/api/v1/internal',
   '/api/admin',
   '/api/integrations',
+  '/api/cron',
   '/_next',
   '/favicon.ico',
   '/logo.png',

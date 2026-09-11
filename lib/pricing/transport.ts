@@ -10,8 +10,10 @@
  * Policy (one rule set, all callers)
  * ---------------------------------------------------------------------------
  *
- *   Swarm gate   More trucks than the market's base concurrency exits auto-
- *                pricing entirely and returns MANUAL_QUOTE.
+ *   Truck count  Not part of this model. Asking for more trucks than a market
+ *                holds is not a refusal — the extra trucks come from further
+ *                away and the distance is billed as transport. Only genuine
+ *                unavailability blocks a booking.
  *
  *   Who is billed  Only trucks that must actually reposition — further than
  *                  the service area radius (default 250mi) from the campaign.
@@ -73,8 +75,6 @@ export type TransportOrder = {
   leadBusinessDays: number
   /** One leg per truck assigned to the campaign. */
   legs: TruckLeg[]
-  /** Nearest market's concurrent truck capacity. null skips the swarm gate. */
-  baseConcurrency: number | null
   /** Rate agreement: always absorb transport for this client. */
   transportIncluded?: boolean
   overrides?: TransportCostOverrides | null
@@ -92,12 +92,10 @@ export type PricedLeg = {
   fromMarket?: string
 }
 
-export type TransportOutcome = 'INCLUDED' | 'ABSORBED' | 'BILLED' | 'MANUAL_QUOTE'
+export type TransportOutcome = 'INCLUDED' | 'ABSORBED' | 'BILLED'
 
 export type TransportResult = {
   outcome: TransportOutcome
-  /** Only set on MANUAL_QUOTE. */
-  reason?: 'SWARM'
   /** Total charged across all repositioning trucks. 0 unless BILLED. */
   charge: number
   absorbed: boolean
@@ -197,7 +195,7 @@ export function estimatedLegs(
 // ---------------------------------------------------------------------------
 
 export function priceTransport(order: TransportOrder): TransportResult {
-  const { activationDays, leadBusinessDays, legs, baseConcurrency, overrides } = order
+  const { activationDays, leadBusinessDays, legs, overrides } = order
 
   const empty = {
     charge: 0,
@@ -208,11 +206,6 @@ export function priceTransport(order: TransportOrder): TransportResult {
     depositRequired: false,
     depositPerTruck: 0,
     depositAmount: 0,
-  }
-
-  // Swarm gate: more trucks than the market can field exits auto-pricing.
-  if (baseConcurrency !== null && legs.length > baseConcurrency) {
-    return { ...empty, outcome: 'MANUAL_QUOTE', reason: 'SWARM' }
   }
 
   const repoLegs = legs.filter(l => l.needsRepositioning)

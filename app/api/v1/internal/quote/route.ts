@@ -151,7 +151,6 @@ export async function POST(request: Request) {
             nearestDistance,
             rateOverrides?.service_area_miles,
           ),
-          baseConcurrency: nearestMarket.baseConcurrency,
           transportIncluded: rateOverrides?.transport_included,
           overrides: {
             dayRate: rateOverrides?.transport_day_rate,
@@ -161,14 +160,12 @@ export async function POST(request: Request) {
         })
 
         // Internal margin check — NEVER returned to buyer-facing surfaces
-        if (transport.outcome !== 'MANUAL_QUOTE') {
-          margin = marginCheck(
-            days,
-            quote.effectiveDailyRate,
-            transport.outcome === 'BILLED',
-            nearestDistance,
-          )
-        }
+        margin = marginCheck(
+          days,
+          quote.effectiveDailyRate,
+          transport.outcome === 'BILLED',
+          nearestDistance,
+        )
       }
     }
 
@@ -187,13 +184,7 @@ export async function POST(request: Request) {
 
     // Presentation: absorbed transport emits no line at all (spec §7)
     if (transport) {
-      if (transport.outcome === 'MANUAL_QUOTE') {
-        response.transport = {
-          outcome: 'MANUAL_QUOTE',
-          reason: transport.reason,
-          message: 'This configuration requires a custom quote. A rep will follow up.',
-        }
-      } else if (transport.outcome === 'BILLED') {
+      if (transport.outcome === 'BILLED') {
         response.transport = {
           outcome: 'BILLED',
           estimated: true,

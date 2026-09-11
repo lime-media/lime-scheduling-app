@@ -8,9 +8,12 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
-import { checkAvailability, recomputeTransportCharge } from '@/lib/availabilityEngine'
+import { checkAvailability, legsFromTrucks } from '@/lib/availabilityEngine'
 import {
   computeQuote,
+  priceTransport,
+  countActivationDays,
+  defaultDaysPerWeek,
   VALID_STUDIES,
   type StudyType,
 } from '@/lib/pricing'
@@ -85,26 +88,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid date range' }, { status: 400 })
   }
 
-  const defaultDaysPerWeek = calendarDays <= 6 ? 7 : 5
-  const daysPerWeek = body.days_per_week ?? defaultDaysPerWeek
+  const daysPerWeek = body.days_per_week ?? defaultDaysPerWeek(calendarDays)
   const operatingHours = body.operating_hours ?? 8
-
-  // Count activation days
-  function countActivationDays(startStr: string, endStr: string, dpw: number): number {
-    if (dpw === 7) {
-      const s = new Date(startStr + 'T00:00:00Z'), e = new Date(endStr + 'T00:00:00Z')
-      return Math.round((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)) + 1
-    }
-    let count = 0
-    const c = new Date(startStr + 'T00:00:00Z'), e = new Date(endStr + 'T00:00:00Z')
-    while (c <= e) {
-      const dow = c.getUTCDay()
-      if (dpw === 5 && dow >= 1 && dow <= 5) count++
-      else if (dpw === 6 && dow >= 1 && dow <= 6) count++
-      c.setUTCDate(c.getUTCDate() + 1)
-    }
-    return count
-  }
 
   const days = countActivationDays(start_date, end_date, daysPerWeek)
 
@@ -170,18 +155,30 @@ export async function POST(req: NextRequest) {
     rateOverrides,
   })
 
-  const repoTrucks = selectedTrucks.filter(t => t.transport.needed)
-  const localTrucks = selectedTrucks.filter(t => !t.transport.needed)
+  const transport = priceTransport({
+    activationDays: days,
+    leadBusinessDays: availability.campaignFlags.leadBusinessDays,
+    legs: legsFromTrucks(selectedTrucks),
+    baseConcurrency: availability.nearestAcceptedMarket?.baseConcurrency ?? null,
+    transportIncluded: rateOverrides?.transport_included,
+    overrides: {
+      dayRate: rateOverrides?.transport_day_rate,
+      airfare: rateOverrides?.transport_airfare,
+      hotelPerNight: rateOverrides?.transport_hotel_per_night,
+    },
+  })
 
-  const MIN_DAYS_TO_ABSORB = 10
-  const MIN_LEAD_DAYS_TO_ABSORB = 10
-  const leadBusinessDays = availability.campaignFlags.leadBusinessDays
-  const transportAbsorbed = rateOverrides?.transport_included || (days >= MIN_DAYS_TO_ABSORB && leadBusinessDays >= MIN_LEAD_DAYS_TO_ABSORB)
-  const hasTransportOverrides = rateOverrides?.transport_day_rate != null || rateOverrides?.transport_airfare != null || rateOverrides?.transport_hotel_per_night != null
-  const transportOverrides = { dayRate: rateOverrides?.transport_day_rate, airfare: rateOverrides?.transport_airfare, hotelPerNight: rateOverrides?.transport_hotel_per_night }
-  const totalTransportCharge = transportAbsorbed
-    ? 0
-    : repoTrucks.reduce((sum, t) => sum + (hasTransportOverrides ? recomputeTransportCharge(t, transportOverrides) : t.transport.chargePerTruck), 0)
+  // Swarm: surfaced through the same channel the pages already use for
+  // "can't quote this" so the UI shows a message instead of a partial result.
+  if (transport.outcome === 'MANUAL_QUOTE') {
+    return NextResponse.json({
+      insufficient: true,
+      message: 'This campaign needs more trucks than the market can field concurrently. It requires a custom quote — a rep will follow up.',
+      transport: { outcome: 'MANUAL_QUOTE', reason: transport.reason },
+    })
+  }
+
+  const totalTransportCharge = transport.charge
 
   let mediaTotal = quote.good.baseMedia
   if (includeShadowFencing) mediaTotal += quote.better.shadowFencing
@@ -206,6 +203,27 @@ export async function POST(req: NextRequest) {
       nearby: availability.counts.nearby,
       repositioning: availability.counts.repositioning,
       sufficient: true,
+      cannotArrive: availability.counts.cannotArrive,
+      wouldStrandSuccessor: availability.counts.wouldStrandSuccessor,
+      originFellBackToGps: availability.counts.originFellBackToGps,
+      gpsFallbackMarkets: [...new Set(
+        availability.trucks
+          .map(t => t.chain.inbound.originFellBackToGps)
+          .filter((m): m is string => Boolean(m)),
+      )],
+      excluded: availability.infeasible.map(t => ({
+        truckNumber: t.truckNumber,
+        from: t.currentMarket || 'Unknown',
+        reason: t.reason,
+        detail: t.detail,
+      })),
+      requiresOverride: availability.trucks
+        .filter(t => t.requiresOverride)
+        .map(t => ({
+          truckNumber: t.truckNumber,
+          from: t.currentMarket || 'Unknown',
+          detail: t.chain.detail ?? '',
+        })),
     },
     pricing: {
       dailyRate: quote.dailyRate,
@@ -227,23 +245,38 @@ export async function POST(req: NextRequest) {
       studies: { available: quote.best.reachOk, selected: studies, costPerStudy: quote.best.studyCost, estimatedImpressions: quote.best.estimatedImpressions, reachMinimum: 1_200_000 },
     },
     transport: {
-      outcome: repoTrucks.length === 0 ? 'INCLUDED' : transportAbsorbed ? 'ABSORBED' : 'BILLED',
-      charge: totalTransportCharge,
-      absorbed: transportAbsorbed,
-      absorbedReason: transportAbsorbed && repoTrucks.length > 0
-        ? `Transport included for campaigns of ${MIN_DAYS_TO_ABSORB}+ days with ${MIN_LEAD_DAYS_TO_ABSORB}+ business days notice.`
-        : undefined,
+      outcome: transport.outcome,
+      charge: transport.charge,
+      absorbed: transport.absorbed,
+      absorbedReason: transport.absorbedReason,
       repositioning: {
-        truckCount: repoTrucks.length,
-        charge: totalTransportCharge,
-        trucks: repoTrucks.map(t => ({
-          distanceMiles: t.distanceMiles,
-          transportDays: t.transport.transportDays,
-          charge: transportAbsorbed ? 0 : (hasTransportOverrides ? recomputeTransportCharge(t, transportOverrides) : t.transport.chargePerTruck),
-          from: t.currentMarket || 'Unknown',
+        truckCount: transport.repositioningTruckCount,
+        charge: transport.charge,
+        trucks: transport.legs.map(l => ({
+          distanceMiles: l.distanceMiles,
+          transportDays: l.transportDays,
+          charge: l.charge,
+          from: l.fromMarket ?? 'Unknown',
         })),
       },
-      localCount: localTrucks.length,
+      localCount: transport.localTruckCount,
+      depositRequired: transport.depositRequired,
+      depositAmount: transport.depositAmount,
+    },
+    _internal: {
+      // Deadhead this booking adds to each truck's next job. Flagged, not billed:
+      // the successor's transport was quoted when it was booked and is not re-rated.
+      chainFlags: selectedTrucks
+        .filter(t => t.chain.successor && !t.chain.successor.unresolvedMarket
+          && (t.chain.successor.deltaTransportDays !== 0 || t.chain.successor.deltaCost !== 0))
+        .map(t => ({
+          truckNumber: t.truckNumber,
+          successorMarket: t.chain.successor!.market,
+          successorStart: t.chain.successor!.startsOn,
+          deltaTransportDays: t.chain.successor!.deltaTransportDays,
+          deltaCost: Math.round(t.chain.successor!.deltaCost),
+        })),
+      _warning: 'INTERNAL ONLY — never expose to buyers',
     },
     market: formalMarket,
     activeTier,

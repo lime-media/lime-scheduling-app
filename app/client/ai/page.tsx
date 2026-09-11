@@ -17,6 +17,9 @@ type QuoteResponse = {
     nearby: number
     repositioning: number
     sufficient: boolean
+    /** Counts only — fleet detail stays internal. */
+    cannotArrive?: number
+    wouldStrandSuccessor?: number
   }
   pricing: {
     dailyRate: number
@@ -147,6 +150,23 @@ function AvailabilitySummary({ data }: { data: QuoteResponse }) {
           <p>{availability.repositioning} available with repositioning</p>
         )}
       </div>
+
+      {/* Some trucks exist but cannot serve these dates. Explaining that the
+          limit is scheduling rather than fleet size makes the next question
+          ("can we shift the dates?") the obvious one. */}
+      {((availability.cannotArrive ?? 0) + (availability.wouldStrandSuccessor ?? 0)) > 0 && (
+        <div className="mt-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-xs text-blue-800">
+          <p className="font-medium">
+            {(availability.cannotArrive ?? 0) + (availability.wouldStrandSuccessor ?? 0)} additional truck
+            {((availability.cannotArrive ?? 0) + (availability.wouldStrandSuccessor ?? 0)) !== 1 ? 's' : ''} could not be scheduled for these dates
+          </p>
+          <p className="text-blue-600 mt-0.5">
+            {(availability.cannotArrive ?? 0) > 0 && 'Some are too far from your market to arrive in time. '}
+            {(availability.wouldStrandSuccessor ?? 0) > 0 && 'Some are committed elsewhere immediately afterward. '}
+            More lead time or slightly different dates usually opens these up.
+          </p>
+        </div>
+      )}
 
       {/* Transport summary */}
       {transport.outcome === 'MANUAL_QUOTE' && (

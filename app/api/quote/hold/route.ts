@@ -9,12 +9,20 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
-import { selectTrucksForHold, recomputeTransportCharge } from '@/lib/availabilityEngine'
+import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { computeHoldExpiresAt } from '@/lib/holdRequestService'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
-import { computeQuote, VALID_STUDIES, type StudyType } from '@/lib/pricing'
+import {
+  computeQuote,
+  priceTransport,
+  countActivationDays,
+  countCalendarDays,
+  defaultDaysPerWeek,
+  VALID_STUDIES,
+  type StudyType,
+} from '@/lib/pricing'
 import { resolveMarketSizeTierId, resolveRateOverridesBySfdcAccount, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
 import type { RateOverrides } from '@/lib/pricing/config'
 
@@ -69,24 +77,10 @@ export async function POST(req: NextRequest) {
   const expiresAt = computeHoldExpiresAt(start_date)
 
   // ── Server-side price recomputation ──────────────────────────────────────
-  const startDateObj = new Date(start_date + 'T00:00:00Z')
-  const endDateObj = new Date(end_date + 'T00:00:00Z')
-  const calendarDays = Math.round((endDateObj.getTime() - startDateObj.getTime()) / (1000 * 60 * 60 * 24)) + 1
-  const defaultDpw = calendarDays <= 6 ? 7 : 5
-  const dpw = days_per_week ?? defaultDpw
+  const calendarDays = countCalendarDays(start_date, end_date)
+  const dpw = days_per_week ?? defaultDaysPerWeek(calendarDays)
   const opHours = operating_hours ?? 8
-
-  let activationDays = calendarDays
-  if (dpw < 7) {
-    activationDays = 0
-    const c = new Date(start_date + 'T00:00:00Z'), e = new Date(end_date + 'T00:00:00Z')
-    while (c <= e) {
-      const dow = c.getUTCDay()
-      if (dpw === 5 && dow >= 1 && dow <= 5) activationDays++
-      else if (dpw === 6 && dow >= 1 && dow <= 6) activationDays++
-      c.setUTCDate(c.getUTCDate() + 1)
-    }
-  }
+  const activationDays = countActivationDays(start_date, end_date, dpw)
 
   const includeSF = shadow_fencing !== false
   const includeSD = smart_directional ?? false
@@ -108,18 +102,47 @@ export async function POST(req: NextRequest) {
   if (includeDID) mediaTotal += quote.better.deviceId
   if (quote.best.reachOk && studies.length > 0) mediaTotal += studies.length * quote.best.studyCost
 
-  const repoTrucks = selectedTrucks.filter(t => t.transport.needed)
-  const { leadBusinessDays } = availability.campaignFlags
-  const hasTransportOverrides = rateOverrides?.transport_day_rate != null || rateOverrides?.transport_airfare != null || rateOverrides?.transport_hotel_per_night != null
-  const transportOverrides = { dayRate: rateOverrides?.transport_day_rate, airfare: rateOverrides?.transport_airfare, hotelPerNight: rateOverrides?.transport_hotel_per_night }
-  const transportAbsorbed = rateOverrides?.transport_included || (activationDays >= 10 && leadBusinessDays >= 10)
-  const transportCharge = transportAbsorbed ? 0 : repoTrucks.reduce((sum, t) => sum + (hasTransportOverrides ? recomputeTransportCharge(t, transportOverrides) : t.transport.chargePerTruck), 0)
+  const transport = priceTransport({
+    activationDays,
+    leadBusinessDays: availability.campaignFlags.leadBusinessDays,
+    legs: legsFromTrucks(selectedTrucks),
+    baseConcurrency: availability.nearestAcceptedMarket?.baseConcurrency ?? null,
+    transportIncluded: rateOverrides?.transport_included,
+    overrides: {
+      dayRate: rateOverrides?.transport_day_rate,
+      airfare: rateOverrides?.transport_airfare,
+      hotelPerNight: rateOverrides?.transport_hotel_per_night,
+    },
+  })
+
+  if (transport.outcome === 'MANUAL_QUOTE') {
+    return NextResponse.json({
+      error: 'This configuration requires a custom quote. A rep will follow up.',
+      reason: transport.reason,
+    }, { status: 409 })
+  }
+
+  const transportCharge = transport.charge
   const serverTotal = mediaTotal + transportCharge
 
   let pricingTier = 'Custom'
   if (!includeSF && !includeSD && !includeDID && studies.length === 0) pricingTier = 'Good'
   else if (includeSF && !includeSD && !includeDID && studies.length === 0) pricingTier = 'Better'
   else if (includeSF && studies.length > 0 && quote.best.reachOk) pricingTier = 'Best'
+
+  // Deadhead this booking imposes on each truck's NEXT job. Recorded with the
+  // reservation and returned so it is visible when the hold is placed — not
+  // billed, and not re-rating the successor's own quote.
+  const successorImpact = selectedTrucks
+    .filter(t => t.chain.successor && !t.chain.successor.unresolvedMarket
+      && (t.chain.successor.deltaTransportDays !== 0 || t.chain.successor.deltaCost !== 0))
+    .map(t => ({
+      truckNumber: t.truckNumber,
+      successorMarket: t.chain.successor!.market,
+      successorStart: t.chain.successor!.startsOn,
+      deltaTransportDays: t.chain.successor!.deltaTransportDays,
+      deltaCost: Math.round(t.chain.successor!.deltaCost),
+    }))
 
   const featuresJson = JSON.stringify({
     dailyRate: quote.dailyRate, hourSurcharge: quote.hourSurcharge,
@@ -133,6 +156,7 @@ export async function POST(req: NextRequest) {
     studies, studyCost: quote.best.studyCost,
     studiesTotal: quote.best.reachOk ? studies.length * quote.best.studyCost : 0,
     transportCharge,
+    successorImpact,
   })
 
   // Find a ClientUser linked to this SFDC Account if one exists.
@@ -228,5 +252,9 @@ export async function POST(req: NextRequest) {
     campaignGroupId,
     sfdcOpportunityId,
     message: `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}. ${sfdcOpportunityId ? 'Salesforce opportunity created.' : ''}`,
+    _internal: {
+      chainFlags: successorImpact,
+      _warning: 'INTERNAL ONLY — downstream deadhead, recorded not billed',
+    },
   })
 }

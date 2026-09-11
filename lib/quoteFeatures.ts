@@ -23,6 +23,18 @@ export type QuoteFeatures = {
   studyCost?: number
   studiesTotal?: number
   transportCharge?: number
+  /**
+   * Deadhead this booking adds to each truck's next job, captured at hold time.
+   * Recorded for review only — never part of any total, and deliberately absent
+   * from buildActivationNotes() so it cannot reach a Salesforce buyer view.
+   */
+  successorImpact?: {
+    truckNumber: string
+    successorMarket: string
+    successorStart: string
+    deltaTransportDays: number
+    deltaCost: number
+  }[]
 }
 
 export function parseQuoteFeatures(features: string | null | undefined): QuoteFeatures | null {

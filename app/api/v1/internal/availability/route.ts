@@ -5,6 +5,9 @@ import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
+import { loadFleetTimelines } from '@/lib/fleetTimelines'
+import { checkChainFeasibility } from '@/lib/chainFeasibility'
+import { resolveCampaignCoords } from '@/lib/pricing/resolvers'
 
 const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
 
@@ -66,6 +69,14 @@ export async function GET(request: Request) {
       { status: 400 }
     )
   }
+
+  // Optional. Without it this endpoint answers "when is each truck booked?",
+  // which says nothing about whether a truck could actually serve a campaign.
+  // With it, every truck is additionally run through the same chain feasibility
+  // rules the quote and hold paths use: can it arrive, and does taking it strand
+  // the job it is already committed to. Callers that omit `market` get the
+  // calendar view unchanged.
+  const market = searchParams.get('market')
 
   const unitIdsParam = searchParams.get('unit_ids')
   const unitIdFilter = unitIdsParam
@@ -149,6 +160,57 @@ export async function GET(request: Request) {
       })
     }
 
+    // Feasibility pass — only when a market was supplied.
+    type FeasibilityEntry = {
+      can_serve: boolean
+      reason?: string
+      detail?: string
+      requires_soft_hold_override: boolean
+      departs_from: string
+      transport_days: number
+      distance_miles: number
+      priced_from_gps_fallback?: string
+    }
+    const feasibilityByTruck = new Map<string, FeasibilityEntry>()
+    let marketResolved = false
+
+    if (market) {
+      const campaignCoords = await resolveCampaignCoords(market)
+      if (campaignCoords) {
+        marketResolved = true
+        const { timelines, gpsMap: fleetGps } = await loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS })
+        const today = new Date().toISOString().split('T')[0]
+
+        for (const num of trucksRaw.map(r => String(r.truck_number ?? ''))) {
+          if (!num || HIDDEN_TRUCKS.has(num)) continue
+          if (unitIdFilter && !unitIdFilter.has(num)) continue
+
+          const truckGps = fleetGps.get(num)
+          const chain = checkChainFeasibility({
+            campaignStart: startDate,
+            campaignEnd: endDate,
+            campaignCoords,
+            jobs: timelines.get(num) ?? [],
+            currentCoords: truckGps?.latitude && truckGps?.longitude
+              ? { lat: truckGps.latitude, lng: truckGps.longitude }
+              : null,
+            today,
+          })
+
+          feasibilityByTruck.set(num, {
+            can_serve: chain.feasible,
+            reason: chain.blockedBy,
+            detail: chain.detail,
+            requires_soft_hold_override: !chain.feasible && chain.overridable,
+            departs_from: chain.inbound.originLabel,
+            transport_days: chain.inbound.transportDays,
+            distance_miles: chain.inbound.distanceMiles,
+            priced_from_gps_fallback: chain.inbound.originFellBackToGps,
+          })
+        }
+      }
+    }
+
     // Build the response: one entry per requested truck
     const activeTrucks = trucksRaw
       .map((r) => String(r.truck_number ?? ''))
@@ -184,12 +246,20 @@ export async function GET(request: Request) {
           end_date: b.end_date,
           status: 'unavailable' as const,
         })),
+        // Present only when `market` was supplied.
+        ...(feasibilityByTruck.has(num) ? { feasibility: feasibilityByTruck.get(num) } : {}),
       }
     })
 
     return NextResponse.json({
       trucks,
       query_range: { start_date: startDate, end_date: endDate },
+      // Tells the caller whether can_serve was actually evaluated. A free
+      // calendar slot is NOT the same as a truck that can serve the market.
+      feasibility_checked: Boolean(market) && marketResolved,
+      ...(market && !marketResolved
+        ? { feasibility_warning: `Market "${market}" could not be geocoded — feasibility not evaluated.` }
+        : {}),
       generated_at: now.toISOString(),
     })
   } catch (error) {

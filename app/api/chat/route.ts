@@ -8,6 +8,7 @@ import { activeHoldWhere } from '@/lib/holdFilters'
 import { CHAT_CONTEXT_QUERY, CHAT_SCHEDULE_WINDOW_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { formatMarketState } from '@/lib/format'
+import { checkTruckFeasibility } from '@/lib/availabilityEngine'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -147,6 +148,27 @@ async function executePlaceHold(
       success: false,
       message: `Hold not placed — conflict: truck ${truck} already has a ${c.status} for "${c.client_name}" from ${c.start_date.toISOString().split('T')[0]} to ${c.end_date.toISOString().split('T')[0]}.`,
     }
+  }
+
+  // Chain feasibility — the assistant picks trucks from prose, so this is the
+  // only thing standing between a plausible-sounding suggestion and a truck
+  // that cannot physically make the dates.
+  try {
+    const feasibility = await checkTruckFeasibility({
+      truckNumber: truck,
+      market,
+      startDate: start_date,
+      endDate: end_date,
+    })
+    if (!feasibility.ok && !feasibility.overridable) {
+      return {
+        success: false,
+        message: `Hold not placed — ${feasibility.detail ?? `truck ${truck} cannot serve these dates`}`,
+      }
+    }
+  } catch (err) {
+    // Deliberate fail-open — see holdService. Tagged for alerting.
+    console.error('[chat] FEASIBILITY_CHECK_FAILED (allowing hold):', err)
   }
 
   const hold = await prisma.hold.create({

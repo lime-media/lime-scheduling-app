@@ -10,7 +10,13 @@ import { Navbar } from '@/components/Navbar'
 // ---------------------------------------------------------------------------
 
 type QuoteResponse = {
-  availability: { requested: number; available: number; local: number; nearby: number; repositioning: number; sufficient: boolean }
+  availability: {
+    requested: number; available: number; local: number; nearby: number; repositioning: number; sufficient: boolean
+    cannotArrive?: number
+    wouldStrandSuccessor?: number
+    excluded?: { truckNumber: string; from: string; reason: string; detail: string }[]
+    requiresOverride?: { truckNumber: string; from: string; detail: string }[]
+  }
   pricing: { dailyRate: number; effectiveDailyRate: number; hourSurcharge: number; truckDays: number; days: number; calendarDays: number; truckCount: number; baseMedia: number; pricingBasis: string; marketSizeTier: { id: number; label: string }; schedule: { daysPerWeek: number; operatingHours: number; activationDays: number } }
   features: {
     shadowFencing: { included: boolean; cost: number; floored: boolean; digitalImpressions: number }
@@ -19,6 +25,7 @@ type QuoteResponse = {
     studies: { available: boolean; selected: string[]; costPerStudy: number; estimatedImpressions: number; reachMinimum: number }
   }
   transport: { outcome: string; charge?: number; absorbed?: boolean; absorbedReason?: string; repositioning?: { truckCount: number; charge: number; trucks: { distanceMiles: number; transportDays: number; charge: number; from: string }[] }; localCount?: number }
+  _internal?: { chainFlags?: { truckNumber: string; successorMarket: string; successorStart: string; deltaTransportDays: number; deltaCost: number }[] }
   market: string
   activeTier: string
   mediaTotal: number
@@ -36,6 +43,13 @@ type FeatureToggles = { shadowFencing: boolean; smartDirectional: boolean; devic
 
 const VALID_STUDIES = ['web_lift', 'foot_traffic', 'sales_lift', 'brand_lift'] as const
 const STUDY_LABELS: Record<string, string> = { web_lift: 'Web Lift', foot_traffic: 'Foot Traffic', sales_lift: 'Sales Lift', brand_lift: 'Brand Lift' }
+
+const EXCLUSION_LABELS: Record<string, string> = {
+  CANNOT_ARRIVE:      'Cannot arrive in time',
+  STRANDS_SUCCESSOR:  'Would strand a later booking',
+  UNKNOWN_ORIGIN:     'No known location',
+  BOOKED:             'Already booked',
+}
 
 function fmtMoney(n: number): string { return '$' + Math.round(n).toLocaleString('en-US') }
 function todayStr(): string { return new Date().toISOString().split('T')[0] }
@@ -344,6 +358,63 @@ export default function InternalQuotePage() {
                 {(quoteResult.availability.local + quoteResult.availability.nearby) > 0 && <p>{quoteResult.availability.local + quoteResult.availability.nearby} local</p>}
                 {quoteResult.availability.repositioning > 0 && <p>{quoteResult.availability.repositioning} available with repositioning</p>}
               </div>
+
+              {/* Trucks ruled out by logistics — shown so thin availability
+                  reads as a constraint, not an empty fleet. */}
+              {(quoteResult.availability.excluded?.length ?? 0) > 0 && (
+                <details className="mt-2 group">
+                  <summary className="cursor-pointer text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 list-none flex items-center justify-between">
+                    <span className="font-medium">
+                      {quoteResult.availability.excluded!.length} truck{quoteResult.availability.excluded!.length !== 1 ? 's' : ''} ruled out
+                      {(quoteResult.availability.cannotArrive ?? 0) > 0 && ` · ${quoteResult.availability.cannotArrive} can't arrive in time`}
+                      {(quoteResult.availability.wouldStrandSuccessor ?? 0) > 0 && ` · ${quoteResult.availability.wouldStrandSuccessor} would strand a later booking`}
+                    </span>
+                    <span className="text-amber-600 ml-2 group-open:rotate-180 transition-transform">&#9662;</span>
+                  </summary>
+                  <ul className="mt-1.5 space-y-1">
+                    {quoteResult.availability.excluded!.map((t) => (
+                      <li key={t.truckNumber} className="text-xs text-gray-600 px-3">
+                        <span className="font-medium text-gray-800">Truck {t.truckNumber}</span>
+                        <span className="text-gray-400"> · {t.from}</span>
+                        <span className="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600">
+                          {EXCLUSION_LABELS[t.reason] ?? t.reason}
+                        </span>
+                        <p className="text-gray-500 mt-0.5">{t.detail}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+
+              {/* Available only by displacing a soft hold — a rep decision. */}
+              {(quoteResult.availability.requiresOverride?.length ?? 0) > 0 && (
+                <div className="mt-2 bg-purple-50 border border-purple-200 rounded-lg px-3 py-2 text-xs text-purple-800">
+                  <p className="font-medium">
+                    {quoteResult.availability.requiresOverride!.length} truck{quoteResult.availability.requiresOverride!.length !== 1 ? 's' : ''} available only by releasing a soft hold
+                  </p>
+                  <p className="text-purple-600 mt-0.5">Not included in this quote. Release the AT&amp;T soft hold first to use {quoteResult.availability.requiresOverride!.length !== 1 ? 'them' : 'it'}.</p>
+                  {quoteResult.availability.requiresOverride!.map((t) => (
+                    <p key={t.truckNumber} className="text-purple-600 mt-1">
+                      <span className="font-medium">Truck {t.truckNumber}</span> ({t.from}) — {t.detail}
+                    </p>
+                  ))}
+                </div>
+              )}
+
+              {/* Internal: deadhead this booking adds to each truck's next job.
+                  Flagged only — never added to the quoted price. */}
+              {(quoteResult._internal?.chainFlags?.length ?? 0) > 0 && (
+                <div className="mt-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-600">
+                  <p className="font-medium text-gray-700">Internal &middot; downstream impact (not billed)</p>
+                  {quoteResult._internal!.chainFlags!.map((f) => (
+                    <p key={f.truckNumber} className="mt-0.5">
+                      Truck {f.truckNumber} &rarr; {f.successorMarket} on {f.successorStart}:{' '}
+                      {f.deltaTransportDays > 0 ? '+' : ''}{f.deltaTransportDays} transport day{Math.abs(f.deltaTransportDays) !== 1 ? 's' : ''}
+                      {f.deltaCost !== 0 && ` · ${f.deltaCost > 0 ? '+' : '-'}${fmtMoney(Math.abs(f.deltaCost))}`}
+                    </p>
+                  ))}
+                </div>
+              )}
               {quoteResult.transport.outcome === 'ABSORBED' && quoteResult.transport.repositioning && quoteResult.transport.repositioning.truckCount > 0 && (
                 <div className="mt-2 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-800">
                   <p className="font-medium">Transport included</p>

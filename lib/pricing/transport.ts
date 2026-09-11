@@ -1,72 +1,115 @@
 /**
- * Transport pricing layer.
+ * Transport pricing — THE single engine.
  *
- * Inclusion zone model: accepted markets define operational bases. The 450-mile
- * radius (SERVICE_AREA_RADIUS_MILES) is the inclusion zone boundary.
+ * Every surface that prices transport calls priceTransport() in this file:
+ * the Quote Builder, the rep quote route, hold requests, and the internal
+ * MCP endpoint. There is no second implementation and no inline copy of
+ * these rules anywhere else. If transport pricing changes, it changes here.
  *
- * Four triggers can cause transport to be billed:
- *   1. SHORT_FLIGHT — campaign under 3 days
- *   2. RUSH — lead time under 10 business days
- *   3. OUTSIDE_INCLUSION_ZONE — campaign city > 450 miles from nearest accepted market
- *   4. SWARM — more trucks than market base concurrency (→ manual quote, exits pricing)
+ * ---------------------------------------------------------------------------
+ * Policy (one rule set, all callers)
+ * ---------------------------------------------------------------------------
  *
- * When inside the inclusion zone and no other trigger fires, transport is absorbed
- * into the day rate — the buyer sees no transport line at all.
+ *   Swarm gate   More trucks than the market's base concurrency exits auto-
+ *                pricing entirely and returns MANUAL_QUOTE.
  *
- * Rules do not stack: one transport charge regardless of how many triggers fire.
- * Transport days are derived from actual distance: ceil(distance / 450).
+ *   Who is billed  Only trucks that must actually reposition — further than
+ *                  the service area radius (default 250mi) from the campaign.
+ *                  A truck already in market is never charged.
  *
- * Source: Transport Pricing Implementation Spec v1, 30 July 2026.
+ *   Absorbed when  The client's rate agreement sets transport_included, OR
+ *                  the campaign is 10+ activation days AND booked with 10+
+ *                  business days of lead time. Both conditions, not either.
+ *
+ *   How much       Per repositioning truck, from its own actual distance:
+ *                    (transport days x day rate) + airfare home
+ *                    + (overnights x hotel per diem)
+ *                  Transport days = ceil(distance / 450), minimum 1.
+ *
+ * Callers differ only in how they supply legs, not in the rules applied:
+ *   - Quote/hold routes pass real trucks with live GPS distances.
+ *   - The MCP endpoint has no truck selection, so it estimates every truck
+ *     as sitting at the nearest accepted market (see estimatedLegs).
+ *
+ * When transport is absorbed or no truck needs repositioning, the buyer sees
+ * no transport line at all — not a $0 line (spec §7).
+ *
+ * Source: Transport Pricing Implementation Spec v1, 30 July 2026, unified
+ * onto the per-truck model 2026-09-11.
  */
 
 import { TRANSPORT_CONFIG, SERVICE_AREA_RADIUS_MILES } from './config'
 
 // ---------------------------------------------------------------------------
+// Absorption thresholds
+// ---------------------------------------------------------------------------
+
+export const MIN_ACTIVATION_DAYS_TO_ABSORB = 10
+export const MIN_LEAD_BUSINESS_DAYS_TO_ABSORB = 10
+
+// ---------------------------------------------------------------------------
 // Input types
 // ---------------------------------------------------------------------------
 
+/** Per-client transport cost overrides, from a Rate Agreement. */
+export type TransportCostOverrides = {
+  dayRate?: number
+  airfare?: number
+  hotelPerNight?: number
+}
+
+/** One truck's position relative to the campaign. */
+export type TruckLeg = {
+  distanceMiles: number
+  needsRepositioning: boolean
+  truckNumber?: string
+  fromMarket?: string
+}
+
 export type TransportOrder = {
-  flightDays: number          // billable campaign days
-  leadBusinessDays: number    // confirmation date -> first activation day
-  simultaneousUnits: number   // trucks requested concurrently
-  // Market location — resolved by the quote endpoint from geocoding
-  distanceToNearestMarketMiles: number
-  nearestMarketDma: string
-  nearestMarketBaseConcurrency: number
+  /** Billable activation days — NOT the calendar span. */
+  activationDays: number
+  /** Business days between today and campaign start. */
+  leadBusinessDays: number
+  /** One leg per truck assigned to the campaign. */
+  legs: TruckLeg[]
+  /** Nearest market's concurrent truck capacity. null skips the swarm gate. */
+  baseConcurrency: number | null
+  /** Rate agreement: always absorb transport for this client. */
+  transportIncluded?: boolean
+  overrides?: TransportCostOverrides | null
 }
 
 // ---------------------------------------------------------------------------
 // Output types
 // ---------------------------------------------------------------------------
 
-export type TransportIncluded = {
-  outcome: 'INCLUDED'
-  transportCharge: 0
+export type PricedLeg = {
+  distanceMiles: number
+  transportDays: number
+  charge: number
+  truckNumber?: string
+  fromMarket?: string
 }
 
-export type TransportBilled = {
-  outcome: 'BILLED'
-  triggers: TransportTrigger[]
-  transportDays: number
-  chargePerTruck: number
-  transportCharge: number    // chargePerTruck * simultaneousUnits
-  truckCount: number
+export type TransportOutcome = 'INCLUDED' | 'ABSORBED' | 'BILLED' | 'MANUAL_QUOTE'
+
+export type TransportResult = {
+  outcome: TransportOutcome
+  /** Only set on MANUAL_QUOTE. */
+  reason?: 'SWARM'
+  /** Total charged across all repositioning trucks. 0 unless BILLED. */
+  charge: number
+  absorbed: boolean
+  absorbedReason?: string
+  repositioningTruckCount: number
+  localTruckCount: number
+  /** Repositioning legs only; charge is 0 on each when absorbed. */
+  legs: PricedLeg[]
   depositRequired: boolean
   depositPerTruck: number
-  depositAmount: number      // depositPerTruck * simultaneousUnits
+  depositAmount: number
 }
-
-export type TransportManualQuote = {
-  outcome: 'MANUAL_QUOTE'
-  reason: 'SWARM'
-}
-
-export type TransportTrigger = 'SHORT_FLIGHT' | 'RUSH' | 'OUTSIDE_INCLUSION_ZONE'
-
-export type TransportResult =
-  | TransportIncluded
-  | TransportBilled
-  | TransportManualQuote
 
 // ---------------------------------------------------------------------------
 // Derived cost helpers (compute, do not hardcode — per spec §2)
@@ -97,68 +140,130 @@ export function absorbedLegCost(transportDays: number): number {
 }
 
 /**
- * Compute transport days from distance.
- * Each transport day covers 450 miles (TRANSPORT_CONFIG.transportDay.milesPerDay).
+ * Transport days for a distance. Each day covers 450 miles.
+ * Note this is the driving range per day — NOT the service area radius.
  */
 export function transportDaysFromDistance(distanceMiles: number): number {
   return Math.max(1, Math.ceil(distanceMiles / TRANSPORT_CONFIG.transportDay.milesPerDay))
 }
 
+/**
+ * Whether a truck at this distance has to reposition to serve the campaign.
+ * The single definition of the service-area boundary.
+ */
+export function needsRepositioning(distanceMiles: number, serviceAreaMiles?: number): boolean {
+  return distanceMiles > (serviceAreaMiles ?? SERVICE_AREA_RADIUS_MILES)
+}
+
+/**
+ * Billed cost of repositioning ONE truck across a given distance.
+ * The only place this formula exists.
+ */
+export function chargeForLeg(
+  distanceMiles: number,
+  overrides?: TransportCostOverrides | null,
+): number {
+  const days = transportDaysFromDistance(distanceMiles)
+  const overnights = Math.max(days - 1, 0)
+  return (
+    days * (overrides?.dayRate ?? TRANSPORT_CONFIG.exceptionTransportDayRate)
+    + (overrides?.airfare ?? TRANSPORT_CONFIG.airfareHomeOneWay)
+    + overnights * (overrides?.hotelPerNight ?? TRANSPORT_CONFIG.hotelPerDiemPerNight)
+  )
+}
+
+/**
+ * Build legs for callers that have no truck selection (the MCP endpoint).
+ *
+ * Every truck is assumed to be sitting at the nearest accepted market, so the
+ * campaign's distance to that market stands in for each truck's real distance.
+ * This is an estimate: once trucks are actually selected, the quote routes
+ * price the same order from live GPS positions and may land lower.
+ */
+export function estimatedLegs(
+  truckCount: number,
+  distanceToNearestMarketMiles: number,
+  serviceAreaMiles?: number,
+): TruckLeg[] {
+  const repositions = needsRepositioning(distanceToNearestMarketMiles, serviceAreaMiles)
+  return Array.from({ length: truckCount }, () => ({
+    distanceMiles: distanceToNearestMarketMiles,
+    needsRepositioning: repositions,
+  }))
+}
+
 // ---------------------------------------------------------------------------
-// Transport pricing algorithm (spec §4, adapted for inclusion zone model)
-//
-// Evaluate in order. Charge is computed once — rules do not stack.
+// The engine
 // ---------------------------------------------------------------------------
 
 export function priceTransport(order: TransportOrder): TransportResult {
-  // R4 first: swarm exits auto-pricing entirely
-  if (order.simultaneousUnits > order.nearestMarketBaseConcurrency) {
-    return { outcome: 'MANUAL_QUOTE', reason: 'SWARM' }
+  const { activationDays, leadBusinessDays, legs, baseConcurrency, overrides } = order
+
+  const empty = {
+    charge: 0,
+    absorbed: false,
+    repositioningTruckCount: 0,
+    localTruckCount: 0,
+    legs: [] as PricedLeg[],
+    depositRequired: false,
+    depositPerTruck: 0,
+    depositAmount: 0,
   }
 
-  // Evaluate all three transport triggers
-  const isOutsideInclusionZone = order.distanceToNearestMarketMiles > SERVICE_AREA_RADIUS_MILES
-  const isShortFlight = order.flightDays < TRANSPORT_CONFIG.minFlightDays
-  const isRush = order.leadBusinessDays < TRANSPORT_CONFIG.standardLeadTimeBusinessDays
+  // Swarm gate: more trucks than the market can field exits auto-pricing.
+  if (baseConcurrency !== null && legs.length > baseConcurrency) {
+    return { ...empty, outcome: 'MANUAL_QUOTE', reason: 'SWARM' }
+  }
 
-  const billed = isOutsideInclusionZone || isShortFlight || isRush
+  const repoLegs = legs.filter(l => l.needsRepositioning)
+  const localCount = legs.length - repoLegs.length
 
-  if (!billed) {
-    // Transport included — emit NO transport line (spec §7)
+  // Nothing to reposition — no transport line at all.
+  if (repoLegs.length === 0) {
+    return { ...empty, outcome: 'INCLUDED', localTruckCount: localCount }
+  }
+
+  const absorbed =
+    order.transportIncluded === true
+    || (activationDays >= MIN_ACTIVATION_DAYS_TO_ABSORB
+        && leadBusinessDays >= MIN_LEAD_BUSINESS_DAYS_TO_ABSORB)
+
+  const pricedLegs: PricedLeg[] = repoLegs.map(l => ({
+    distanceMiles: l.distanceMiles,
+    transportDays: transportDaysFromDistance(l.distanceMiles),
+    charge: absorbed ? 0 : chargeForLeg(l.distanceMiles, overrides),
+    truckNumber: l.truckNumber,
+    fromMarket: l.fromMarket,
+  }))
+
+  const charge = pricedLegs.reduce((sum, l) => sum + l.charge, 0)
+
+  if (absorbed) {
     return {
-      outcome: 'INCLUDED',
-      transportCharge: 0 as const,
+      ...empty,
+      outcome: 'ABSORBED',
+      absorbed: true,
+      absorbedReason: `Transport included for campaigns of ${MIN_ACTIVATION_DAYS_TO_ABSORB}+ days with ${MIN_LEAD_BUSINESS_DAYS_TO_ABSORB}+ business days notice.`,
+      repositioningTruckCount: repoLegs.length,
+      localTruckCount: localCount,
+      legs: pricedLegs,
     }
   }
 
-  // Billed: compute charge per truck, then multiply by truck count.
-  // Each truck requires its own repositioning leg.
-  const transportDays = transportDaysFromDistance(order.distanceToNearestMarketMiles)
-  const overnights = Math.max(transportDays - 1, 0)
-
-  const chargePerTruck =
-    transportDays * TRANSPORT_CONFIG.exceptionTransportDayRate
-    + TRANSPORT_CONFIG.airfareHomeOneWay
-    + overnights * TRANSPORT_CONFIG.hotelPerDiemPerNight
-
-  const triggers: TransportTrigger[] = []
-  if (isShortFlight) triggers.push('SHORT_FLIGHT')
-  if (isRush) triggers.push('RUSH')
-  if (isOutsideInclusionZone) triggers.push('OUTSIDE_INCLUSION_ZONE')
-
-  const depositPerTruck = TRANSPORT_CONFIG.depositTransportDays * TRANSPORT_CONFIG.exceptionTransportDayRate
+  const depositPerTruck =
+    TRANSPORT_CONFIG.depositTransportDays
+    * (overrides?.dayRate ?? TRANSPORT_CONFIG.exceptionTransportDayRate)
 
   return {
     outcome: 'BILLED',
-    triggers,
-    transportDays,
-    chargePerTruck,
-    transportCharge: chargePerTruck * order.simultaneousUnits,
-    truckCount: order.simultaneousUnits,
-    // Deposit required for rush or outside inclusion zone (higher cancellation risk)
-    depositRequired: isRush || isOutsideInclusionZone,
+    charge,
+    absorbed: false,
+    repositioningTruckCount: repoLegs.length,
+    localTruckCount: localCount,
+    legs: pricedLegs,
+    depositRequired: true,
     depositPerTruck,
-    depositAmount: depositPerTruck * order.simultaneousUnits,
+    depositAmount: depositPerTruck * repoLegs.length,
   }
 }
 
@@ -170,15 +275,10 @@ export function cancellationCharge(
   distanceToNearestMarketMiles: number,
   truckCount: number,
   dispatched: boolean,
+  overrides?: TransportCostOverrides | null,
 ): number {
   if (!dispatched) return 0
-
-  const transportDays = transportDaysFromDistance(distanceToNearestMarketMiles)
-  const perTruck =
-    transportDays * TRANSPORT_CONFIG.exceptionTransportDayRate
-    + TRANSPORT_CONFIG.airfareHomeOneWay
-    + Math.max(transportDays - 1, 0) * TRANSPORT_CONFIG.hotelPerDiemPerNight
-  return perTruck * truckCount
+  return chargeForLeg(distanceToNearestMarketMiles, overrides) * truckCount
 }
 
 // ---------------------------------------------------------------------------

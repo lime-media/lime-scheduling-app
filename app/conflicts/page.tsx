@@ -6,6 +6,26 @@ import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
 import { Navbar } from '@/components/Navbar'
 
+type InfeasibleHold = {
+  holdId:       string
+  truckNumber:  string
+  clientName:   string
+  market:       string
+  startDate:    string
+  endDate:      string
+  status:       string
+  origination:  string
+  reason:       string
+  detail:       string
+  overridable:  boolean
+}
+
+const REASON_LABELS: Record<string, string> = {
+  CANNOT_ARRIVE:     'Cannot arrive in time',
+  STRANDS_SUCCESSOR: 'Strands a later booking',
+  UNKNOWN_ORIGIN:    'No known location',
+}
+
 type Conflict = {
   id:                string
   hold_id:           string
@@ -35,6 +55,11 @@ export default function ConflictsPage() {
   const [conflicts, setConflicts] = useState<Conflict[]>([])
   const [loading,   setLoading]   = useState(true)
   const [acting,    setActing]    = useState<string | null>(null)   // id of row being acted on
+  // Holds that cannot actually be served. Mostly Salesforce and ATT sync
+  // writes, which bypass the feasibility gate on purpose — plus anything that
+  // became impossible after a neighbouring job moved.
+  const [infeasible,        setInfeasible]        = useState<InfeasibleHold[]>([])
+  const [infeasibleLoading, setInfeasibleLoading] = useState(true)
 
   useEffect(() => {
     if (status === 'unauthenticated') router.push('/login')
@@ -53,7 +78,21 @@ export default function ConflictsPage() {
     }
   }, [])
 
+  const fetchInfeasible = useCallback(async () => {
+    setInfeasibleLoading(true)
+    try {
+      const res = await fetch('/api/holds/infeasible')
+      if (res.ok) {
+        const data = await res.json()
+        setInfeasible(data.infeasible ?? [])
+      }
+    } catch { /* ignore */ } finally {
+      setInfeasibleLoading(false)
+    }
+  }, [])
+
   useEffect(() => { fetchConflicts() }, [fetchConflicts])
+  useEffect(() => { fetchInfeasible() }, [fetchInfeasible])
 
   const act = async (id: string, action: 'resolve' | 'release-hold') => {
     setActing(id)
@@ -97,7 +136,7 @@ export default function ConflictsPage() {
               )}
             </div>
             <button
-              onClick={fetchConflicts}
+              onClick={() => { fetchConflicts(); fetchInfeasible() }}
               className="text-xs text-green-700 hover:text-green-900 font-medium border border-green-200 px-2 py-1 rounded-lg transition-colors"
             >
               Refresh
@@ -160,6 +199,73 @@ export default function ConflictsPage() {
                             Release Hold
                           </button>
                         </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* ---- Holds that cannot be served ------------------------------ */}
+          <div className="flex items-center gap-3 mt-10 mb-4">
+            <h2 className="text-xl font-bold text-gray-900">Cannot Be Served</h2>
+            {infeasible.length > 0 && (
+              <span className="bg-amber-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
+                {infeasible.length}
+              </span>
+            )}
+          </div>
+          <p className="text-sm text-gray-500 -mt-2 mb-4">
+            Active holds whose truck cannot physically make the dates. Salesforce and AT&amp;T sync
+            write holds without this check on purpose, so they surface here rather than being rejected.
+            A hold can also appear after a nearby job moves.
+          </p>
+
+          {infeasibleLoading ? (
+            <div className="flex justify-center py-10">
+              <div className="w-6 h-6 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : infeasible.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center bg-white rounded-xl border border-gray-200">
+              <p className="text-base font-semibold text-gray-700">Every hold is servable</p>
+              <p className="text-sm text-gray-500 mt-1">All trucks can reach their markets and make their next job</p>
+            </div>
+          ) : (
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50/80 border-b border-gray-200">
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Truck</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Client</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Market</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Dates</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Source</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Problem</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {infeasible.map((h) => (
+                    <tr key={h.holdId} className="hover:bg-amber-50/30 transition-colors align-top">
+                      <td className="px-4 py-3 font-semibold text-gray-800">{h.truckNumber}</td>
+                      <td className="px-4 py-3 text-gray-700">{h.clientName}</td>
+                      <td className="px-4 py-3 text-gray-700">{h.market}</td>
+                      <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{h.startDate} &rarr; {h.endDate}</td>
+                      <td className="px-4 py-3">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
+                          {h.origination}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${
+                          h.overridable ? 'bg-purple-100 text-purple-800' : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {REASON_LABELS[h.reason] ?? h.reason}
+                        </span>
+                        {h.overridable && (
+                          <span className="ml-1.5 text-xs text-purple-600">resolvable by releasing a soft hold</span>
+                        )}
+                        <p className="text-xs text-gray-500 mt-1 max-w-xl">{h.detail}</p>
                       </td>
                     </tr>
                   ))}

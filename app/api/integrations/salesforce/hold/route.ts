@@ -210,6 +210,10 @@ export async function POST(req: NextRequest) {
       const newExpiry = explicitExpiry ?? defaultExpiry
 
       const created = await prisma.hold.create({
+        // MIRROR PATH — no feasibility gate by design. This reflects a booking
+        // that already exists upstream; refusing it would drop a record the
+        // source system believes is real. Infeasible holds created here are
+        // reported by GET /api/holds/infeasible instead of being blocked.
         data: {
           truck_number,
           market,

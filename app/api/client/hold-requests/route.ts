@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
 import { createClientHold } from '@/lib/holdRequestService'
-import { selectTrucksForHold } from '@/lib/availabilityEngine'
+import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
-import { computeQuote, VALID_STUDIES, type StudyType } from '@/lib/pricing'
+import { computeQuote, priceTransport, VALID_STUDIES, type StudyType } from '@/lib/pricing'
 import { resolveMarketSizeTierId, resolveRateOverrides } from '@/lib/pricing/resolvers'
 
 export async function GET(req: NextRequest) {
@@ -168,14 +168,27 @@ async function handleAutoSelectHold(
     mediaTotal += studies.length * quote.best.studyCost
   }
 
-  const repoTrucks = selectedTrucks.filter(t => t.transport.needed)
-  const MIN_DAYS_TO_ABSORB = 10
-  const MIN_LEAD_DAYS_TO_ABSORB = 10
-  const leadBusinessDays = availability.campaignFlags.leadBusinessDays
-  const transportAbsorbed = rateOverrides?.transport_included || (activationDays >= MIN_DAYS_TO_ABSORB && leadBusinessDays >= MIN_LEAD_DAYS_TO_ABSORB)
-  const transportCharge = transportAbsorbed
-    ? 0
-    : repoTrucks.reduce((sum, t) => sum + t.transport.chargePerTruck, 0)
+  const transport = priceTransport({
+    activationDays,
+    leadBusinessDays: availability.campaignFlags.leadBusinessDays,
+    legs: legsFromTrucks(selectedTrucks),
+    baseConcurrency: availability.nearestAcceptedMarket?.baseConcurrency ?? null,
+    transportIncluded: rateOverrides?.transport_included,
+    overrides: {
+      dayRate: rateOverrides?.transport_day_rate,
+      airfare: rateOverrides?.transport_airfare,
+      hotelPerNight: rateOverrides?.transport_hotel_per_night,
+    },
+  })
+
+  if (transport.outcome === 'MANUAL_QUOTE') {
+    return NextResponse.json({
+      error: 'This configuration requires a custom quote. A rep will follow up.',
+      reason: transport.reason,
+    }, { status: 409 })
+  }
+
+  const transportCharge = transport.charge
 
   const serverTotal = mediaTotal + transportCharge
 

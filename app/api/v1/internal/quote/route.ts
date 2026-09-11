@@ -4,19 +4,36 @@ import { prisma } from '@/lib/prisma'
 import {
   computeQuote,
   priceTransport,
+  estimatedLegs,
   marginCheck,
+  countActivationDays,
+  countCalendarDays,
+  defaultDaysPerWeek,
+  resolveNearestAcceptedMarket,
   type QuoteInput,
-  type TransportOrder,
   type RateOverrides,
   type StudyType,
-  type TransportResult,
 } from '@/lib/pricing'
+
+/**
+ * Canonical quote endpoint for the MCP server.
+ *
+ * Pricing rules live entirely in lib/pricing — this route does no pricing math
+ * of its own. It differs from the client quote routes in ONE respect: it has no
+ * truck selection, so it cannot know where individual trucks are. It therefore
+ * estimates every truck as sitting at the nearest accepted market and hands
+ * those legs to the same transport engine the client routes use.
+ *
+ * That estimate is conservative. Once real trucks are selected, the client
+ * routes price the same campaign from live GPS and may come in lower.
+ */
 
 type QuoteRequestBody = {
   start_date: string
   end_date: string
   truck_count: number
   operating_hours?: number
+  days_per_week?: 5 | 6 | 7
   market_size_tier?: number
   include_smart_directional?: boolean
   include_device_id?: boolean
@@ -27,23 +44,6 @@ type QuoteRequestBody = {
   campaign_lng?: number
   // Partner context (for rate agreement lookup)
   partner_id?: string
-}
-
-/**
- * Haversine distance in miles between two lat/lng points.
- */
-function haversineDistanceMiles(
-  lat1: number, lng1: number,
-  lat2: number, lng2: number,
-): number {
-  const R = 3958.8 // Earth radius in miles
-  const dLat = (lat2 - lat1) * Math.PI / 180
-  const dLng = (lng2 - lng1) * Math.PI / 180
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLng / 2) * Math.sin(dLng / 2)
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
 export async function POST(request: Request) {
@@ -72,7 +72,6 @@ export async function POST(request: Request) {
     partner_id,
   } = body
 
-  // Validate required fields
   if (!truck_count || truck_count < 1) {
     return NextResponse.json({ error: 'truck_count must be at least 1' }, { status: 400 })
   }
@@ -80,15 +79,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'start_date and end_date are required' }, { status: 400 })
   }
 
-  const start = new Date(start_date + 'T00:00:00Z')
-  const end = new Date(end_date + 'T00:00:00Z')
-  const days = Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1
-  if (days < 1) {
+  const calendarDays = countCalendarDays(start_date, end_date)
+  if (!Number.isFinite(calendarDays) || calendarDays < 1) {
     return NextResponse.json({ error: 'end_date must be on or after start_date' }, { status: 400 })
   }
 
+  // Bill activation days, not the calendar span — same rule as every other
+  // quoting surface. A two-week Mon-Fri campaign is 10 days, not 14.
+  const daysPerWeek = body.days_per_week ?? defaultDaysPerWeek(calendarDays)
+  const days = countActivationDays(start_date, end_date, daysPerWeek)
+
   try {
-    // Look up Rate Agreement if partner_id provided
+    // Rate Agreement lookup
     let rateOverrides: RateOverrides | null = null
     let agreementName: string | null = null
 
@@ -113,7 +115,6 @@ export async function POST(request: Request) {
       }
     }
 
-    // Compute the tiered quote
     const quoteInput: QuoteInput = {
       truckCount: truck_count,
       days,
@@ -131,42 +132,33 @@ export async function POST(request: Request) {
       quote.pricingBasis = `agreement: ${agreementName}`
     }
 
-    // Evaluate transport if we have location + lead time
-    let transport: TransportResult | null = null
+    // Transport — same engine as the client routes, fed estimated legs.
+    let transport = null
     let margin = null
+    let nearestDistance: number | null = null
 
     if (campaign_lat !== undefined && campaign_lng !== undefined && lead_business_days !== undefined) {
-      // Find the nearest accepted market
-      const acceptedMarkets = await prisma.acceptedMarket.findMany({
-        where: { is_active: true },
-      })
+      const nearestMarket = await resolveNearestAcceptedMarket(campaign_lat, campaign_lng)
 
-      if (acceptedMarkets.length === 0) {
-        // No accepted markets configured — skip transport evaluation
-      } else {
-        let nearestMarket = acceptedMarkets[0]
-        let nearestDistance = Infinity
+      if (nearestMarket) {
+        nearestDistance = nearestMarket.distanceMiles
 
-        for (const market of acceptedMarkets) {
-          const dist = haversineDistanceMiles(campaign_lat, campaign_lng, market.lat, market.lng)
-          if (dist < nearestDistance) {
-            nearestDistance = dist
-            nearestMarket = market
-          }
-        }
-
-        nearestDistance = Math.round(nearestDistance * 10) / 10
-
-        const transportOrder: TransportOrder = {
-          flightDays: days,
+        transport = priceTransport({
+          activationDays: days,
           leadBusinessDays: lead_business_days,
-          simultaneousUnits: truck_count,
-          distanceToNearestMarketMiles: nearestDistance,
-          nearestMarketDma: nearestMarket.dma_name,
-          nearestMarketBaseConcurrency: nearestMarket.base_concurrency,
-        }
-
-        transport = priceTransport(transportOrder)
+          legs: estimatedLegs(
+            truck_count,
+            nearestDistance,
+            rateOverrides?.service_area_miles,
+          ),
+          baseConcurrency: nearestMarket.baseConcurrency,
+          transportIncluded: rateOverrides?.transport_included,
+          overrides: {
+            dayRate: rateOverrides?.transport_day_rate,
+            airfare: rateOverrides?.transport_airfare,
+            hotelPerNight: rateOverrides?.transport_hotel_per_night,
+          },
+        })
 
         // Internal margin check — NEVER returned to buyer-facing surfaces
         if (transport.outcome !== 'MANUAL_QUOTE') {
@@ -180,13 +172,20 @@ export async function POST(request: Request) {
       }
     }
 
-    // Build response
     const response: Record<string, unknown> = {
       quote,
-      campaign: { start_date, end_date, days, truck_count },
+      campaign: {
+        start_date,
+        end_date,
+        days,
+        calendar_days: calendarDays,
+        activation_days: days,
+        days_per_week: daysPerWeek,
+        truck_count,
+      },
     }
 
-    // Transport: follow spec §7 presentation rules
+    // Presentation: absorbed transport emits no line at all (spec §7)
     if (transport) {
       if (transport.outcome === 'MANUAL_QUOTE') {
         response.transport = {
@@ -197,21 +196,20 @@ export async function POST(request: Request) {
       } else if (transport.outcome === 'BILLED') {
         response.transport = {
           outcome: 'BILLED',
-          triggers: transport.triggers,
-          transportDays: transport.transportDays,
-          truckCount: transport.truckCount,
-          chargePerTruck: transport.chargePerTruck,
-          transportCharge: transport.transportCharge,
+          estimated: true,
+          estimatedFromMiles: nearestDistance,
+          transportDays: transport.legs[0]?.transportDays ?? 0,
+          truckCount: transport.repositioningTruckCount,
+          chargePerTruck: transport.legs[0]?.charge ?? 0,
+          transportCharge: transport.charge,
           depositRequired: transport.depositRequired,
           depositPerTruck: transport.depositRequired ? transport.depositPerTruck : undefined,
           depositAmount: transport.depositRequired ? transport.depositAmount : undefined,
-          grandTotalWithTransport: quote.best.total + transport.transportCharge,
+          grandTotalWithTransport: quote.best.total + transport.charge,
         }
       }
-      // INCLUDED → no transport key at all (spec §7: not a $0 line)
     }
 
-    // Internal margin — include but mark clearly
     if (margin) {
       response._internal = {
         margin,

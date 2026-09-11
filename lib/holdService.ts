@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { query } from '@/lib/mssql'
+import { checkTruckFeasibility } from '@/lib/availabilityEngine'
 
 export interface CreateHoldParams {
   truck_number: string
@@ -13,10 +14,18 @@ export interface CreateHoldParams {
   notes?: string
   created_by: string
   origination?: 'frontend' | 'mcp'
+  /**
+   * Skip the chain feasibility gate. Only for paths that MIRROR a booking made
+   * elsewhere (Salesforce pushes, ATT sync) — refusing those would drop a record
+   * the upstream system already believes exists. Such holds are still reported
+   * by the infeasible-hold audit. Never set this on a path where someone is
+   * actually choosing a truck.
+   */
+  skipFeasibilityCheck?: boolean
 }
 
 export interface HoldConflictError {
-  type: 'hold_conflict' | 'schedule_conflict'
+  type: 'hold_conflict' | 'schedule_conflict' | 'feasibility_conflict'
   message: string
 }
 
@@ -28,7 +37,7 @@ export async function createHold(params: CreateHoldParams): Promise<CreateHoldRe
   const {
     truck_number, market, state, client_name,
     start_date, end_date, status, notes,
-    created_by, origination = 'frontend',
+    created_by, origination = 'frontend', skipFeasibilityCheck = false,
   } = params
 
   // Check for conflicts with existing holds on same truck + date range.
@@ -79,6 +88,32 @@ export async function createHold(params: CreateHoldParams): Promise<CreateHoldRe
   } catch (err) {
     // If the schedule check fails, log but don't block hold creation
     console.error('[holdService] schedule conflict check failed:', err)
+  }
+
+  // Chain feasibility: can the truck get there, and does taking it strand a job
+  // it is already committed to? Soft (ATT_SOFT) successors are overridable and
+  // handled at selection time, so anything still blocking here is a hard break.
+  if (!skipFeasibilityCheck) {
+    try {
+      const feasibility = await checkTruckFeasibility({
+        truckNumber: truck_number,
+        market,
+        startDate: start_date,
+        endDate: end_date,
+      })
+      if (!feasibility.ok && !feasibility.overridable) {
+        return {
+          success: false,
+          error: {
+            type: 'feasibility_conflict',
+            message: `Cannot place hold — ${feasibility.detail ?? 'truck cannot serve these dates'}`,
+          },
+        }
+      }
+    } catch (err) {
+      // Never let a logistics lookup failure block a booking outright.
+      console.error('[holdService] feasibility check failed, allowing hold:', err)
+    }
   }
 
   const hold = await prisma.hold.create({

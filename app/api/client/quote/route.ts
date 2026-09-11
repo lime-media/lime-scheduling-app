@@ -4,21 +4,20 @@
  * Computes availability (with per-truck transport and travel day blocking),
  * media pricing, and returns per-feature costs for client-side recalculation.
  *
- * Transport model:
- *   - Per-truck: trucks >250mi from the campaign market incur repositioning charges
- *   - Campaign-level: short flight (<3 days) and rush (<10 biz day lead) add surcharges
- *   - Swarm: >3 trucks triggers manual quote
- *   - Travel days are blocked on each truck's schedule
+ * Transport is priced by the single engine in lib/pricing/transport.ts — this
+ * route measures nothing and decides nothing about transport on its own.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getClientSession } from '@/lib/clientAuth'
-import { checkAvailability, recomputeTransportCharge } from '@/lib/availabilityEngine'
+import { checkAvailability, legsFromTrucks } from '@/lib/availabilityEngine'
 import { resolveMarketInput } from '@/lib/marketCoordinates'
 import {
   computeQuote,
+  priceTransport,
+  countActivationDays,
+  defaultDaysPerWeek,
   VALID_STUDIES,
-  TRANSPORT_CONFIG,
   type StudyType,
 } from '@/lib/pricing'
 import {
@@ -27,36 +26,6 @@ import {
   resolveDefaultRateOverrides,
 } from '@/lib/pricing/resolvers'
 
-/**
- * Count activation days within a date range based on a weekly schedule.
- * - 7 days/week: every calendar day
- * - 6 days/week: Mon-Sat (skip Sunday)
- * - 5 days/week: Mon-Fri (skip Saturday and Sunday)
- */
-function countActivationDays(startStr: string, endStr: string, daysPerWeek: number): number {
-  if (daysPerWeek === 7) {
-    const start = new Date(startStr + 'T00:00:00Z')
-    const end = new Date(endStr + 'T00:00:00Z')
-    return Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1
-  }
-
-  let count = 0
-  const current = new Date(startStr + 'T00:00:00Z')
-  const end = new Date(endStr + 'T00:00:00Z')
-
-  while (current <= end) {
-    const dow = current.getUTCDay() // 0=Sun, 6=Sat
-    if (daysPerWeek === 5) {
-      // Mon-Fri
-      if (dow >= 1 && dow <= 5) count++
-    } else {
-      // 6 days: Mon-Sat
-      if (dow >= 1 && dow <= 6) count++
-    }
-    current.setUTCDate(current.getUTCDate() + 1)
-  }
-  return count
-}
 
 export async function POST(req: NextRequest) {
   const session = getClientSession(req)
@@ -128,8 +97,7 @@ export async function POST(req: NextRequest) {
   // - Campaigns 6 days or less: every day (default days_per_week=7)
   // - Campaigns 7+ days: Mon-Fri schedule (default days_per_week=5)
   // - Client can opt into 6 or 7 day weeks for longer campaigns
-  const defaultDaysPerWeek = calendarDays <= 6 ? 7 : 5
-  const daysPerWeek = body.days_per_week ?? defaultDaysPerWeek
+  const daysPerWeek = body.days_per_week ?? defaultDaysPerWeek(calendarDays)
   const operatingHours = body.operating_hours ?? 8
 
   // Count actual activation days based on the schedule pattern
@@ -195,23 +163,32 @@ export async function POST(req: NextRequest) {
     rateOverrides,
   })
 
-  // Per-truck transport: trucks beyond 250mi incur repositioning charges.
-  // ABSORBED when BOTH conditions are met:
-  //   - Campaign is 10+ activation days
-  //   - 10+ business days lead time
-  // Otherwise, repositioning is billed to the client.
-  const repoTrucks = selectedTrucks.filter(t => t.transport.needed)
-  const localTrucks = selectedTrucks.filter(t => !t.transport.needed)
+  // Transport — priced by the single engine in lib/pricing/transport.ts
+  const transport = priceTransport({
+    activationDays: days,
+    leadBusinessDays: availability.campaignFlags.leadBusinessDays,
+    legs: legsFromTrucks(selectedTrucks),
+    baseConcurrency: availability.nearestAcceptedMarket?.baseConcurrency ?? null,
+    transportIncluded: rateOverrides?.transport_included,
+    overrides: {
+      dayRate: rateOverrides?.transport_day_rate,
+      airfare: rateOverrides?.transport_airfare,
+      hotelPerNight: rateOverrides?.transport_hotel_per_night,
+    },
+  })
 
-  const MIN_DAYS_TO_ABSORB = 10
-  const MIN_LEAD_DAYS_TO_ABSORB = 10
-  const leadBusinessDays = availability.campaignFlags.leadBusinessDays
-  const transportAbsorbed = rateOverrides?.transport_included || (days >= MIN_DAYS_TO_ABSORB && leadBusinessDays >= MIN_LEAD_DAYS_TO_ABSORB)
-  const hasTransportOverrides = rateOverrides?.transport_day_rate != null || rateOverrides?.transport_airfare != null || rateOverrides?.transport_hotel_per_night != null
-  const transportOverrides = { dayRate: rateOverrides?.transport_day_rate, airfare: rateOverrides?.transport_airfare, hotelPerNight: rateOverrides?.transport_hotel_per_night }
-  const totalTransportCharge = transportAbsorbed
-    ? 0
-    : repoTrucks.reduce((sum, t) => sum + (hasTransportOverrides ? recomputeTransportCharge(t, transportOverrides) : t.transport.chargePerTruck), 0)
+  // Swarm: surfaced through the same channel the pages already use for
+  // "can't quote this" so the UI shows a message instead of a partial result.
+  if (transport.outcome === 'MANUAL_QUOTE') {
+    return NextResponse.json({
+      insufficient: true,
+      message: 'This campaign needs more trucks than the market can field concurrently. It requires a custom quote — a rep will follow up.',
+      transport: { outcome: 'MANUAL_QUOTE', reason: transport.reason },
+      market: formalMarket,
+    })
+  }
+
+  const totalTransportCharge = transport.charge
 
   // Feature costs
   const featureCosts = buildFeaturesResponse(quote, includeShadowFencing, includeSmartDirectional, includeDeviceId, studies, rateOverrides)
@@ -242,31 +219,23 @@ export async function POST(req: NextRequest) {
     pricing: buildPricingResponse(quote, days, truck_count, calendarDays, daysPerWeek, operatingHours),
     features: featureCosts,
     transport: {
-      outcome: repoTrucks.length === 0
-        ? 'INCLUDED' as const
-        : transportAbsorbed
-          ? 'ABSORBED' as const
-          : 'BILLED' as const,
-      charge: totalTransportCharge,
-      absorbed: transportAbsorbed,
-      absorbedReason: transportAbsorbed && repoTrucks.length > 0
-        ? `Transport included for campaigns of ${MIN_DAYS_TO_ABSORB}+ days with ${MIN_LEAD_DAYS_TO_ABSORB}+ business days notice.`
-        : undefined,
+      outcome: transport.outcome,
+      charge: transport.charge,
+      absorbed: transport.absorbed,
+      absorbedReason: transport.absorbedReason,
       repositioning: {
-        truckCount: repoTrucks.length,
-        charge: totalTransportCharge,
-        trucks: repoTrucks.map(t => ({
-          distanceMiles: t.distanceMiles,
-          transportDays: t.transport.transportDays,
-          charge: transportAbsorbed ? 0 : t.transport.chargePerTruck,
-          from: t.currentMarket || 'Unknown',
+        truckCount: transport.repositioningTruckCount,
+        charge: transport.charge,
+        trucks: transport.legs.map(l => ({
+          distanceMiles: l.distanceMiles,
+          transportDays: l.transportDays,
+          charge: l.charge,
+          from: l.fromMarket ?? 'Unknown',
         })),
       },
-      localCount: localTrucks.length,
-      depositRequired: !transportAbsorbed && repoTrucks.length > 0,
-      depositAmount: !transportAbsorbed && repoTrucks.length > 0
-        ? repoTrucks.length * TRANSPORT_CONFIG.depositTransportDays * TRANSPORT_CONFIG.exceptionTransportDayRate
-        : 0,
+      localCount: transport.localTruckCount,
+      depositRequired: transport.depositRequired,
+      depositAmount: transport.depositAmount,
     },
     market: formalMarket,
     activeTier,
@@ -274,6 +243,10 @@ export async function POST(req: NextRequest) {
     transportCharge: totalTransportCharge,
     grandTotal,
     presets: buildPresetsResponse(quote),
+    _internal: {
+      chainFlags: buildChainFlags(selectedTrucks),
+      _warning: 'INTERNAL ONLY — deadhead imposed on downstream jobs, not billed',
+    },
   })
 }
 
@@ -289,7 +262,32 @@ function buildAvailabilityResponse(a: Awaited<ReturnType<typeof checkAvailabilit
     nearby: a.counts.nearby,
     repositioning: a.counts.repositioning,
     sufficient: a.sufficient,
+    // COUNTS ONLY on the client surface. Truck numbers, the markets they are
+    // sitting in, and which of them could be freed by displacing a soft hold
+    // are all internal fleet posture — the staff quote route returns the
+    // detail, a buyer gets the shape of the constraint and nothing more.
+    cannotArrive: a.counts.cannotArrive,
+    wouldStrandSuccessor: a.counts.wouldStrandSuccessor,
   }
+}
+
+/**
+ * Deadhead this booking imposes on each selected truck's NEXT job.
+ *
+ * Flagged, never priced: the successor's transport was already quoted when it
+ * was booked and is not re-rated here. Internal only.
+ */
+function buildChainFlags(trucks: { truckNumber: string; chain: { successor: null | { market: string; startsOn: string; deltaTransportDays: number; deltaCost: number; unresolvedMarket: boolean } } }[]) {
+  return trucks
+    .filter(t => t.chain.successor && !t.chain.successor.unresolvedMarket
+      && (t.chain.successor.deltaTransportDays !== 0 || t.chain.successor.deltaCost !== 0))
+    .map(t => ({
+      truckNumber: t.truckNumber,
+      successorMarket: t.chain.successor!.market,
+      successorStart: t.chain.successor!.startsOn,
+      deltaTransportDays: t.chain.successor!.deltaTransportDays,
+      deltaCost: Math.round(t.chain.successor!.deltaCost),
+    }))
 }
 
 function buildPricingResponse(

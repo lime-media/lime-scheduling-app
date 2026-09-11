@@ -9,12 +9,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
-import { selectTrucksForHold, recomputeTransportCharge } from '@/lib/availabilityEngine'
+import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { computeHoldExpiresAt } from '@/lib/holdRequestService'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
-import { computeQuote, VALID_STUDIES, type StudyType } from '@/lib/pricing'
+import { computeQuote, priceTransport, VALID_STUDIES, type StudyType } from '@/lib/pricing'
 import { resolveMarketSizeTierId, resolveRateOverridesBySfdcAccount, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
 import type { RateOverrides } from '@/lib/pricing/config'
 
@@ -108,12 +108,27 @@ export async function POST(req: NextRequest) {
   if (includeDID) mediaTotal += quote.better.deviceId
   if (quote.best.reachOk && studies.length > 0) mediaTotal += studies.length * quote.best.studyCost
 
-  const repoTrucks = selectedTrucks.filter(t => t.transport.needed)
-  const { leadBusinessDays } = availability.campaignFlags
-  const hasTransportOverrides = rateOverrides?.transport_day_rate != null || rateOverrides?.transport_airfare != null || rateOverrides?.transport_hotel_per_night != null
-  const transportOverrides = { dayRate: rateOverrides?.transport_day_rate, airfare: rateOverrides?.transport_airfare, hotelPerNight: rateOverrides?.transport_hotel_per_night }
-  const transportAbsorbed = rateOverrides?.transport_included || (activationDays >= 10 && leadBusinessDays >= 10)
-  const transportCharge = transportAbsorbed ? 0 : repoTrucks.reduce((sum, t) => sum + (hasTransportOverrides ? recomputeTransportCharge(t, transportOverrides) : t.transport.chargePerTruck), 0)
+  const transport = priceTransport({
+    activationDays,
+    leadBusinessDays: availability.campaignFlags.leadBusinessDays,
+    legs: legsFromTrucks(selectedTrucks),
+    baseConcurrency: availability.nearestAcceptedMarket?.baseConcurrency ?? null,
+    transportIncluded: rateOverrides?.transport_included,
+    overrides: {
+      dayRate: rateOverrides?.transport_day_rate,
+      airfare: rateOverrides?.transport_airfare,
+      hotelPerNight: rateOverrides?.transport_hotel_per_night,
+    },
+  })
+
+  if (transport.outcome === 'MANUAL_QUOTE') {
+    return NextResponse.json({
+      error: 'This configuration requires a custom quote. A rep will follow up.',
+      reason: transport.reason,
+    }, { status: 409 })
+  }
+
+  const transportCharge = transport.charge
   const serverTotal = mediaTotal + transportCharge
 
   let pricingTier = 'Custom'

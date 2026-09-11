@@ -13,7 +13,6 @@ import { countActivationDays, countCalendarDays, defaultDaysPerWeek }
 
 const local = (mi: number): TruckLeg => ({ distanceMiles: mi, needsRepositioning: false })
 const repo  = (mi: number): TruckLeg => ({ distanceMiles: mi, needsRepositioning: true })
-const base = { baseConcurrency: 10 as number | null }
 
 section('leg charge formula (unchanged from old client path)')
 eq('300mi = 1 day, no hotel', chargeForLeg(300), 1 * 750 + 350)
@@ -30,64 +29,59 @@ eq('min 1 transport day', transportDaysFromDistance(10), 1)
 section('absorption rule: 10+ activation days AND 10+ lead')
 const mixed = [local(20), local(40), repo(400)]
 eq('12 days / 15 lead -> ABSORBED',
-   priceTransport({ ...base, activationDays: 12, leadBusinessDays: 15, legs: mixed }).outcome, 'ABSORBED')
+   priceTransport({ activationDays: 12, leadBusinessDays: 15, legs: mixed }).outcome, 'ABSORBED')
 eq('12 days / 5 lead -> BILLED',
-   priceTransport({ ...base, activationDays: 12, leadBusinessDays: 5, legs: mixed }).outcome, 'BILLED')
+   priceTransport({ activationDays: 12, leadBusinessDays: 5, legs: mixed }).outcome, 'BILLED')
 eq('5 days / 15 lead -> BILLED',
-   priceTransport({ ...base, activationDays: 5, leadBusinessDays: 15, legs: mixed }).outcome, 'BILLED')
+   priceTransport({ activationDays: 5, leadBusinessDays: 15, legs: mixed }).outcome, 'BILLED')
 eq('exactly 10/10 -> ABSORBED',
-   priceTransport({ ...base, activationDays: 10, leadBusinessDays: 10, legs: mixed }).outcome, 'ABSORBED')
+   priceTransport({ activationDays: 10, leadBusinessDays: 10, legs: mixed }).outcome, 'ABSORBED')
 
 section('only repositioning trucks are billed')
-const billed = priceTransport({ ...base, activationDays: 5, leadBusinessDays: 5, legs: mixed })
+const billed = priceTransport({ activationDays: 5, leadBusinessDays: 5, legs: mixed })
 eq('1 of 3 trucks billed', billed.repositioningTruckCount, 1)
 eq('2 local trucks counted', billed.localTruckCount, 2)
 eq('charge = one leg only', billed.charge, chargeForLeg(400))
 eq('deposit = 1 day x 1 truck', billed.depositAmount, 750)
 
 section('all-local campaign emits no transport')
-const allLocal = priceTransport({ ...base, activationDays: 2, leadBusinessDays: 1, legs: [local(10), local(30)] })
+const allLocal = priceTransport({ activationDays: 2, leadBusinessDays: 1, legs: [local(10), local(30)] })
 eq('outcome INCLUDED', allLocal.outcome, 'INCLUDED')
 eq('charge 0', allLocal.charge, 0)
 eq('no deposit', allLocal.depositRequired, false)
 
 section('short flight / rush alone no longer bill a local campaign')
 eq('2-day rush, all local -> INCLUDED',
-   priceTransport({ ...base, activationDays: 2, leadBusinessDays: 0, legs: [local(5)] }).outcome, 'INCLUDED')
+   priceTransport({ activationDays: 2, leadBusinessDays: 0, legs: [local(5)] }).outcome, 'INCLUDED')
 
 section('rate agreement transport_included')
-const inc = priceTransport({ ...base, activationDays: 2, leadBusinessDays: 1, legs: mixed, transportIncluded: true })
+const inc = priceTransport({ activationDays: 2, leadBusinessDays: 1, legs: mixed, transportIncluded: true })
 eq('outcome ABSORBED', inc.outcome, 'ABSORBED')
 eq('charge 0', inc.charge, 0)
 
-section('truck count NEVER blocks a quote (regression: PR #62 swarm gate)')
-// Every seeded market has base_concurrency = 1, so gating on it refused every
-// multi-truck request in every market. Concurrency is advisory, not a cap:
-// extra trucks come from further away and the distance is billed.
+section('truck count NEVER blocks a quote (regression: PR #62/#64)')
+// #62 refused any order exceeding a market's base_concurrency. Every market is
+// seeded at 1, so that refused every multi-truck request everywhere. Concurrency
+// is no longer part of the model at all — only real unavailability blocks a sale.
 const multi = priceTransport({
-  baseConcurrency: 1, activationDays: 5, leadBusinessDays: 5,
+  activationDays: 5, leadBusinessDays: 5,
   legs: [local(10), local(20), repo(400)],
 })
-eq('3 trucks vs concurrency 1 -> still priced', multi.outcome, 'BILLED')
-eq('flagged as exceeding market concurrency', multi.exceedsMarketConcurrency, true)
+eq('3 trucks -> priced', multi.outcome, 'BILLED')
 eq('only the repositioning truck is billed', multi.charge, chargeForLeg(400))
 
-const twoLocal = priceTransport({
-  baseConcurrency: 1, activationDays: 5, leadBusinessDays: 5,
-  legs: [local(10), local(20)],
-})
-eq('2 local trucks vs concurrency 1 -> INCLUDED, not refused', twoLocal.outcome, 'INCLUDED')
-eq('still flagged advisory', twoLocal.exceedsMarketConcurrency, true)
+eq('2 local trucks -> INCLUDED, not refused',
+   priceTransport({ activationDays: 5, leadBusinessDays: 5, legs: [local(10), local(20)] }).outcome,
+   'INCLUDED')
 
-const within = priceTransport({
-  baseConcurrency: 5, activationDays: 5, leadBusinessDays: 5,
-  legs: [local(10), local(20)],
-})
-eq('within concurrency -> no advisory flag', within.exceedsMarketConcurrency, false)
+// The case the old gate was reaching for: >3 concurrent trucks. Still quotable.
+eq('5 trucks -> priced, not refused',
+   priceTransport({ activationDays: 5, leadBusinessDays: 5, legs: [local(1), local(2), local(3), local(4), local(5)] }).outcome,
+   'INCLUDED')
 
 // Far-flung multi-truck orders must produce a PRICE, however large.
 const farFleet = priceTransport({
-  baseConcurrency: 1, activationDays: 2, leadBusinessDays: 2,
+  activationDays: 2, leadBusinessDays: 2,
   legs: [repo(1000), repo(1000), repo(1000)],
 })
 eq('3 distant trucks -> priced, not refused', farFleet.outcome, 'BILLED')
@@ -96,12 +90,12 @@ eq('an extreme price is still a price', farFleet.charge > 9000, true)
 
 section('MCP estimate uses the SAME engine, only different legs')
 const mcpLegs = estimatedLegs(3, 400)
-const mcp = priceTransport({ ...base, activationDays: 5, leadBusinessDays: 5, legs: mcpLegs })
-const client = priceTransport({ ...base, activationDays: 5, leadBusinessDays: 5, legs: [repo(400), repo(400), repo(400)] })
+const mcp = priceTransport({ activationDays: 5, leadBusinessDays: 5, legs: mcpLegs })
+const client = priceTransport({ activationDays: 5, leadBusinessDays: 5, legs: [repo(400), repo(400), repo(400)] })
 eq('identical legs -> identical result', mcp.charge, client.charge)
 eq('MCP estimate bills all 3 (no GPS)', mcp.charge, 3 * chargeForLeg(400))
 eq('MCP absorbs on the same 10/10 rule',
-   priceTransport({ ...base, activationDays: 10, leadBusinessDays: 10, legs: mcpLegs }).outcome, 'ABSORBED')
+   priceTransport({ activationDays: 10, leadBusinessDays: 10, legs: mcpLegs }).outcome, 'ABSORBED')
 eq('estimate inside radius -> no repositioning', estimatedLegs(2, 100)[0].needsRepositioning, false)
 
 section('activation days (the MCP day-count fix)')

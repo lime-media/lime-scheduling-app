@@ -151,7 +151,6 @@ export async function POST(request: Request) {
             nearestDistance,
             rateOverrides?.service_area_miles,
           ),
-          baseConcurrency: nearestMarket.baseConcurrency,
           transportIncluded: rateOverrides?.transport_included,
           overrides: {
             dayRate: rateOverrides?.transport_day_rate,

@@ -193,13 +193,13 @@ The 450-mile figure is **how far a truck drives in a day** — it is not the 250
 
 A **deposit** of one transport day (**$750 per repositioning truck**) is required whenever transport is billed.
 
-### Truck count never blocks a quote
+### Truck count is not part of the model
 
-Asking for more trucks than a market holds is **not** a reason to refuse. The extra trucks come from wherever they are and the distance is billed as transport. A four-truck campaign in a one-truck market is quotable; it is simply more expensive.
+Asking for more trucks than a market normally holds is **not** a reason to refuse or to re-price. The extra trucks come from wherever they are, and the distance they travel is billed as transport like any other repositioning. A four-truck campaign in a one-truck market is quotable; it is simply more expensive.
 
-Each market's `base_concurrency` is recorded as an **advisory** flag (`exceedsMarketConcurrency`) so ops can see when a campaign is leaning on other markets. It is not a cap.
+There is no swarm rule, no concurrency cap, and no per-market truck limit anywhere in pricing.
 
-> This replaces the swarm gate shipped on 2026-09-11. That gate refused any order exceeding `base_concurrency`, and since every seeded market has `base_concurrency = 1`, it refused **every multi-truck request in every market**. Removed 2026-09-12.
+> **History.** A "swarm" trigger was intended to mean *more than three trucks concurrently in one market*. That was never implemented. On 2026-09-11 a gate keyed on each market's `base_concurrency` shipped instead — and since all 50 markets are seeded at `base_concurrency = 1`, it refused **every multi-truck request in every market**. Both the gate and the concurrency concept were removed on 2026-09-12. If a swarm rule is wanted, it needs deciding from scratch: what the threshold means, and whether it should gate a quote at all or simply flag one.
 
 ### The only two reasons a quote is refused
 
@@ -369,7 +369,7 @@ The two-transport-engine split and the calendar-vs-activation-day mismatch descr
 | Hotel per overnight | $210 |
 | Deposit | 1 transport day ($750) / truck |
 | Standard lead time | 10 business days |
-| Truck count | never blocks a quote; advisory flag only |
+| Truck count | not part of the pricing model |
 | Transport absorption | 10+ activation days AND 10+ business days lead |
 | Billed trucks | only those > 250mi from campaign |
 | Margin review threshold | 42.6% gross contribution |

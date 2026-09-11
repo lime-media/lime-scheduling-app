@@ -169,7 +169,6 @@ async function handleAutoSelectHold(
     activationDays,
     leadBusinessDays: availability.campaignFlags.leadBusinessDays,
     legs: legsFromTrucks(selectedTrucks),
-    baseConcurrency: availability.nearestAcceptedMarket?.baseConcurrency ?? null,
     transportIncluded: rateOverrides?.transport_included,
     overrides: {
       dayRate: rateOverrides?.transport_day_rate,

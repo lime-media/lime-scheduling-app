@@ -15,6 +15,7 @@ type InfeasibleHold = {
   endDate:      string
   status:       string
   origination:  string
+  source:       string
   reason:       string
   detail:       string
   overridable:  boolean
@@ -60,6 +61,9 @@ export default function ConflictsPage() {
   // became impossible after a neighbouring job moved.
   const [infeasible,        setInfeasible]        = useState<InfeasibleHold[]>([])
   const [infeasibleLoading, setInfeasibleLoading] = useState(true)
+  // A failed audit must never render as "nothing to report" — this is the one
+  // table whose job is catching unservable bookings.
+  const [infeasibleError, setInfeasibleError] = useState<string | null>(null)
   // Data-quality signals from the same audit: markets that do not geocode.
   const [dataGaps, setDataGaps] = useState<{ gpsFallbacks: { holdId: string; priorMarket: string }[]; unresolvedMarkets: { holdId: string; market: string }[] }>({ gpsFallbacks: [], unresolvedMarkets: [] })
 
@@ -82,8 +86,12 @@ export default function ConflictsPage() {
 
   const fetchInfeasible = useCallback(async () => {
     setInfeasibleLoading(true)
+    setInfeasibleError(null)
     try {
       const res = await fetch('/api/holds/infeasible')
+      if (!res.ok) {
+        setInfeasibleError(`Audit failed (${res.status}). This list may be incomplete.`)
+      }
       if (res.ok) {
         const data = await res.json()
         setInfeasible(data.infeasible ?? [])
@@ -92,7 +100,9 @@ export default function ConflictsPage() {
           unresolvedMarkets: data.unresolvedMarkets ?? [],
         })
       }
-    } catch { /* ignore */ } finally {
+    } catch {
+      setInfeasibleError('Audit could not run. This list may be incomplete.')
+    } finally {
       setInfeasibleLoading(false)
     }
   }, [])
@@ -250,11 +260,18 @@ export default function ConflictsPage() {
             </div>
           )}
 
+          {infeasibleError && (
+            <div className="mb-4 bg-amber-50 border border-amber-300 rounded-xl px-4 py-3 text-sm text-amber-900">
+              <p className="font-semibold">Could not verify holds</p>
+              <p className="mt-0.5">{infeasibleError}</p>
+            </div>
+          )}
+
           {infeasibleLoading ? (
             <div className="flex justify-center py-10">
               <div className="w-6 h-6 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
             </div>
-          ) : infeasible.length === 0 ? (
+          ) : infeasible.length === 0 && !infeasibleError ? (
             <div className="flex flex-col items-center justify-center py-12 text-center bg-white rounded-xl border border-gray-200">
               <p className="text-base font-semibold text-gray-700">Every hold is servable</p>
               <p className="text-sm text-gray-500 mt-1">All trucks can reach their markets and make their next job</p>
@@ -281,8 +298,9 @@ export default function ConflictsPage() {
                       <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{h.startDate} &rarr; {h.endDate}</td>
                       <td className="px-4 py-3">
                         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
-                          {h.origination}
+                          {h.source}
                         </span>
+                        <span className="ml-1 text-xs text-gray-400">{h.origination}</span>
                       </td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${

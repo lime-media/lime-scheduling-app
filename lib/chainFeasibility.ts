@@ -194,7 +194,12 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
   let successorImpact: SuccessorImpact | null = null
   if (successor) {
     const succCoords = coordsForJob(successor.market, successor.state)
-    const gapDays = daysBetween(campaignEnd, successor.start)
+    // Symmetric with the inbound leg: the campaign's final day is occupied by
+    // the campaign, exactly as the predecessor's final day is occupied by the
+    // predecessor. Travel can only start the day AFTER. Counting from
+    // campaignEnd would hand the truck a free travel day it does not have and
+    // let a one-day leg slip past a back-to-back commitment.
+    const gapDays = daysBetween(nextDay(campaignEnd), successor.start)
 
     if (!succCoords) {
       successorImpact = {

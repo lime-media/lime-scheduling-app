@@ -167,7 +167,8 @@ async function executePlaceHold(
       }
     }
   } catch (err) {
-    console.error('[chat] feasibility check failed, allowing hold:', err)
+    // Deliberate fail-open — see holdService. Tagged for alerting.
+    console.error('[chat] FEASIBILITY_CHECK_FAILED (allowing hold):', err)
   }
 
   const hold = await prisma.hold.create({

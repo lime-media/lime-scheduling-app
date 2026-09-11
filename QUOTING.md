@@ -230,6 +230,8 @@ Pricing answers *what it costs*. Feasibility answers *whether it is possible*, a
 
 **Rule 3 — it does not strand its next job.** After the campaign, the truck must still reach whatever it is already committed to. If the next job is in Seattle starting the day after ours ends, and Seattle is 5 transport days away, taking this booking would break a job you have already sold.
 
+Both travel rules count the **days actually free between jobs**. A campaign ending the 25th with the next job starting the 26th has **zero** free days, not one — the 25th belongs to the campaign and the 26th to the next job. Back-to-back bookings therefore need the next market to be inside the service area, or they are refused.
+
 ### Where the truck departs from
 
 Distance is measured from the **release point** — where the truck will actually be when it becomes free — not from where its GPS reads today. A truck working Miami through the 12th is a Miami truck for a campaign starting the 14th, even if it is currently parked in Dallas. The same distance drives both the feasibility check and the transport charge, so they can never disagree.
@@ -300,6 +302,8 @@ A non-zero count means market names are drifting from the coordinate map and som
 Feasibility is recomputed from the stored job chain every time, so a second campaign evaluating the same truck sees the first campaign as a job and has to route around it. Writing transit days into the calendar would be **derived data** — correct only for the chain that existed when it was written, and stale the moment a job moves or cancels. Blocking transit on the grid is a display question, not a correctness one.
 
 ## 7. What the client sees vs. what's internal
+
+Nothing under an `_internal` key is returned on a client-authenticated route — not the margin check, and not the downstream deadhead flags. Those appear only on the staff routes (`/api/quote`, `/api/quote/hold`) and the MCP endpoint; on the client routes the same values are logged server-side instead. A client-facing response is visible in the browser network tab whether or not the UI renders it.
 
 Every quote runs an **internal margin check** that must never reach a buyer. It compares revenue against activation-day cost plus any absorbed transport, and flags the deal for review if gross contribution falls below **42.6%**.
 

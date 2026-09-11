@@ -19,9 +19,7 @@
 
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
-import { activeHoldWhere } from '@/lib/holdFilters'
-import { SCHEDULED_QUERY, CHAT_CONTEXT_QUERY } from '@/lib/scheduleQuery'
-import { getLiveVehicleLocations, type SamsaraVehicleLocation } from '@/lib/samsaraService'
+import { CHAT_CONTEXT_QUERY } from '@/lib/scheduleQuery'
 import { getMarketCoords } from '@/lib/marketCoordinates'
 import {
   resolveNearestAcceptedMarket,
@@ -35,7 +33,6 @@ import {
   chargeForLeg,
   type TruckLeg,
 } from '@/lib/pricing/transport'
-import { buildTruckTimelines, type DayRow } from '@/lib/truckTimeline'
 import { checkChainFeasibility, type ChainResult } from '@/lib/chainFeasibility'
 import { loadFleetTimelines } from '@/lib/fleetTimelines'
 
@@ -130,14 +127,6 @@ export type AvailabilityInput = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function toDateStr(val: unknown): string {
-  if (!val) return ''
-  if (val instanceof Date) return val.toISOString().split('T')[0]
-  const s = String(val)
-  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10)
-  try { return new Date(s).toISOString().split('T')[0] } catch { return '' }
-}
-
 function normalizeMarket(m: unknown): string {
   return String(m ?? '').replace(/\s*,\s*/g, ', ').trim()
 }
@@ -175,19 +164,16 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
   // Resolve campaign market coordinates
   const campaignCoords = await resolveCampaignCoords(market)
 
-  // Fetch all data sources in parallel
-  const [scheduleRows, contextRows, holds, gpsMap, resolvedNearestMarket] = await Promise.all([
-    query<Record<string, unknown>[]>(SCHEDULED_QUERY),
+  // Fetch all data sources in parallel. Timelines come from the shared loader —
+  // this module does not build its own, or the duplication starts again.
+  const [fleet, contextRows, resolvedNearestMarket] = await Promise.all([
+    loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS }),
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
-    prisma.hold.findMany({
-      where: activeHoldWhere(),
-      orderBy: { start_date: 'asc' },
-    }),
-    getLiveVehicleLocations().catch(() => new Map<string, SamsaraVehicleLocation>()),
     campaignCoords
       ? resolveNearestAcceptedMarket(campaignCoords.lat, campaignCoords.lng)
       : Promise.resolve(null),
   ])
+  const { timelines, gpsMap } = fleet
 
   // Fallback for unknown markets — conservative 1000mi distance.
   // Also use the nearest accepted market's coords as a proxy for the campaign
@@ -213,37 +199,6 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
       // unresolvable, requiring a manual quote for transport.
     }
   }
-
-  // Build per-truck job timelines. Unlike a plain date range, each job carries
-  // the market it happens in — that is what makes the chain check possible.
-  const scheduleDays: DayRow[] = []
-  for (const row of scheduleRows) {
-    const truckNumber = String(row.truck_number ?? '')
-    if (HIDDEN_TRUCKS.has(truckNumber)) continue
-    const day = toDateStr(row.shift_start)
-    if (!day) continue
-    scheduleDays.push({
-      truckNumber,
-      date: day,
-      market: normalizeMarket(row.standard_market_name || row.market),
-      state: String(row.state ?? ''),
-      program: String(row.program ?? ''),
-    })
-  }
-
-  const timelines = buildTruckTimelines(
-    scheduleDays,
-    holds
-      .filter(h => !HIDDEN_TRUCKS.has(h.truck_number))
-      .map(h => ({
-        truck_number: h.truck_number,
-        start_date: toDateStr(h.start_date),
-        end_date: toDateStr(h.end_date),
-        market: normalizeMarket(h.market),
-        state: String(h.state ?? ''),
-        status: h.status,
-      })),
-  )
 
   const bookedByTruck = new Map<string, { start: string; end: string }[]>()
   for (const [truckNumber, jobs] of timelines) {

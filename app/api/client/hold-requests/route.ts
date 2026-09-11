@@ -5,7 +5,15 @@ import { createClientHold } from '@/lib/holdRequestService'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
-import { computeQuote, priceTransport, VALID_STUDIES, type StudyType } from '@/lib/pricing'
+import {
+  computeQuote,
+  priceTransport,
+  countActivationDays,
+  countCalendarDays,
+  defaultDaysPerWeek,
+  VALID_STUDIES,
+  type StudyType,
+} from '@/lib/pricing'
 import { resolveMarketSizeTierId, resolveRateOverrides } from '@/lib/pricing/resolvers'
 
 export async function GET(req: NextRequest) {
@@ -103,11 +111,20 @@ async function handleAutoSelectHold(
     return NextResponse.json({ error: 'truck_count must be between 1 and 20' }, { status: 400 })
   }
 
+  // Resolved before selection: a custom service_area_miles changes WHICH trucks
+  // need repositioning, so selecting first and applying the override afterwards
+  // makes the hold disagree with the quote the client just accepted.
+  const [marketSizeTierId, rateOverrides] = await Promise.all([
+    resolveMarketSizeTierId(market),
+    resolveRateOverrides(session),
+  ])
+
   const { selectedTrucks, availability } = await selectTrucksForHold({
     market,
     startDate: start_date,
     endDate: end_date,
     truckCount: truck_count,
+    serviceAreaMiles: rateOverrides?.service_area_miles,
   })
 
   if (selectedTrucks.length === 0) {
@@ -117,25 +134,10 @@ async function handleAutoSelectHold(
   }
 
   // ── Server-side price recomputation ──────────────────────────────────────
-  const startDate = new Date(start_date + 'T00:00:00Z')
-  const endDate = new Date(end_date + 'T00:00:00Z')
-  const calendarDays = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1
-  const defaultDaysPerWeek = calendarDays <= 6 ? 7 : 5
-  const daysPerWeek = body.days_per_week ?? defaultDaysPerWeek
+  const calendarDays = countCalendarDays(start_date, end_date)
+  const daysPerWeek = body.days_per_week ?? defaultDaysPerWeek(calendarDays)
   const operatingHours = body.operating_hours ?? 8
-
-  let activationDays = calendarDays
-  if (daysPerWeek < 7) {
-    activationDays = 0
-    const c = new Date(start_date + 'T00:00:00Z')
-    const e = new Date(end_date + 'T00:00:00Z')
-    while (c <= e) {
-      const dow = c.getUTCDay()
-      if (daysPerWeek === 5 && dow >= 1 && dow <= 5) activationDays++
-      else if (daysPerWeek === 6 && dow >= 1 && dow <= 6) activationDays++
-      c.setUTCDate(c.getUTCDate() + 1)
-    }
-  }
+  const activationDays = countActivationDays(start_date, end_date, daysPerWeek)
 
   const includeShadowFencing = body.shadow_fencing !== false
   const includeSmartDirectional = body.smart_directional ?? false
@@ -143,11 +145,6 @@ async function handleAutoSelectHold(
   const studies = (body.studies ?? [])
     .map(s => s.trim().toLowerCase())
     .filter((s): s is StudyType => (VALID_STUDIES as readonly string[]).includes(s))
-
-  const [marketSizeTierId, rateOverrides] = await Promise.all([
-    resolveMarketSizeTierId(market),
-    resolveRateOverrides(session),
-  ])
 
   const quote = computeQuote({
     truckCount: truck_count,
@@ -211,6 +208,10 @@ async function handleAutoSelectHold(
       deltaTransportDays: t.chain.successor!.deltaTransportDays,
       deltaCost: Math.round(t.chain.successor!.deltaCost),
     }))
+
+  if (successorImpact.length > 0) {
+    console.info('[client/hold-requests] downstream deadhead (not billed):', JSON.stringify(successorImpact))
+  }
 
   const featuresJson = JSON.stringify({
     dailyRate: quote.dailyRate,
@@ -318,9 +319,7 @@ async function handleAutoSelectHold(
     trucksRequested: truck_count,
     trucksAvailable: availability.counts.total,
     message: `Reserved ${created.length} truck${created.length > 1 ? 's' : ''}. Holds expire in 72 hours.`,
-    _internal: {
-      chainFlags: successorImpact,
-      _warning: 'INTERNAL ONLY — downstream deadhead, recorded not billed',
-    },
+    // NO _internal BLOCK HERE — client-authenticated route. successorImpact is
+    // recorded on the hold's features JSON and logged; it is not sent back.
   })
 }

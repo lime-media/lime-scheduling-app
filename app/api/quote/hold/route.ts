@@ -14,7 +14,15 @@ import { computeHoldExpiresAt } from '@/lib/holdRequestService'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
-import { computeQuote, priceTransport, VALID_STUDIES, type StudyType } from '@/lib/pricing'
+import {
+  computeQuote,
+  priceTransport,
+  countActivationDays,
+  countCalendarDays,
+  defaultDaysPerWeek,
+  VALID_STUDIES,
+  type StudyType,
+} from '@/lib/pricing'
 import { resolveMarketSizeTierId, resolveRateOverridesBySfdcAccount, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
 import type { RateOverrides } from '@/lib/pricing/config'
 
@@ -69,24 +77,10 @@ export async function POST(req: NextRequest) {
   const expiresAt = computeHoldExpiresAt(start_date)
 
   // ── Server-side price recomputation ──────────────────────────────────────
-  const startDateObj = new Date(start_date + 'T00:00:00Z')
-  const endDateObj = new Date(end_date + 'T00:00:00Z')
-  const calendarDays = Math.round((endDateObj.getTime() - startDateObj.getTime()) / (1000 * 60 * 60 * 24)) + 1
-  const defaultDpw = calendarDays <= 6 ? 7 : 5
-  const dpw = days_per_week ?? defaultDpw
+  const calendarDays = countCalendarDays(start_date, end_date)
+  const dpw = days_per_week ?? defaultDaysPerWeek(calendarDays)
   const opHours = operating_hours ?? 8
-
-  let activationDays = calendarDays
-  if (dpw < 7) {
-    activationDays = 0
-    const c = new Date(start_date + 'T00:00:00Z'), e = new Date(end_date + 'T00:00:00Z')
-    while (c <= e) {
-      const dow = c.getUTCDay()
-      if (dpw === 5 && dow >= 1 && dow <= 5) activationDays++
-      else if (dpw === 6 && dow >= 1 && dow <= 6) activationDays++
-      c.setUTCDate(c.getUTCDate() + 1)
-    }
-  }
+  const activationDays = countActivationDays(start_date, end_date, dpw)
 
   const includeSF = shadow_fencing !== false
   const includeSD = smart_directional ?? false

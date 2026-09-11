@@ -190,6 +190,12 @@ export async function POST(req: NextRequest) {
 
   const totalTransportCharge = transport.charge
 
+  // Internal signal, server-side only — see buildChainFlags().
+  const chainFlags = buildChainFlags(selectedTrucks)
+  if (chainFlags.length > 0) {
+    console.info('[client/quote] downstream deadhead (not billed):', JSON.stringify(chainFlags))
+  }
+
   // Feature costs
   const featureCosts = buildFeaturesResponse(quote, includeShadowFencing, includeSmartDirectional, includeDeviceId, studies, rateOverrides)
 
@@ -243,10 +249,10 @@ export async function POST(req: NextRequest) {
     transportCharge: totalTransportCharge,
     grandTotal,
     presets: buildPresetsResponse(quote),
-    _internal: {
-      chainFlags: buildChainFlags(selectedTrucks),
-      _warning: 'INTERNAL ONLY — deadhead imposed on downstream jobs, not billed',
-    },
+    // NO _internal BLOCK HERE. This route is client-authenticated: anything
+    // returned is visible in the browser network tab whether or not the UI
+    // renders it. Downstream deadhead, truck numbers and successor markets are
+    // fleet posture — they go to the staff routes only (see /api/quote).
   })
 }
 
@@ -275,7 +281,10 @@ function buildAvailabilityResponse(a: Awaited<ReturnType<typeof checkAvailabilit
  * Deadhead this booking imposes on each selected truck's NEXT job.
  *
  * Flagged, never priced: the successor's transport was already quoted when it
- * was booked and is not re-rated here. Internal only.
+ * was booked and is not re-rated here.
+ *
+ * INTERNAL ONLY — never include the result in a client-facing response body.
+ * On this route it is logged server-side; the staff routes return it.
  */
 function buildChainFlags(trucks: { truckNumber: string; chain: { successor: null | { market: string; startsOn: string; deltaTransportDays: number; deltaCost: number; unresolvedMarket: boolean } } }[]) {
   return trucks

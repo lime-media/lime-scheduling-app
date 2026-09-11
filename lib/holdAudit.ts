@@ -26,6 +26,8 @@ export type InfeasibleHold = {
   endDate: string
   status: string
   origination: string
+  /** SFDC / CLIENT / INTERNAL — tells a mirror-path artifact from a real bug. */
+  source: string
   reason: string
   detail: string
   /** True when the blocker is a soft hold — resolvable without moving this booking. */
@@ -106,6 +108,7 @@ export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
         endDate: h.end_date,
         status: h.status,
         origination: h.origination,
+        source: h.source,
         reason: chain.blockedBy ?? 'CANNOT_ARRIVE',
         detail: chain.detail ?? '',
         overridable: chain.overridable,

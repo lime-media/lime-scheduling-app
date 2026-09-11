@@ -28,6 +28,7 @@ export type FleetHold = {
   status: string
   client_name: string
   origination: string
+  source: string
 }
 
 export type FleetTimelines = {
@@ -88,6 +89,7 @@ export async function loadFleetTimelines(opts: {
       status: h.status,
       client_name: h.client_name,
       origination: h.origination,
+      source: h.source,
     }))
 
   const timelines = buildTruckTimelines(

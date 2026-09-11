@@ -111,8 +111,10 @@ export async function createHold(params: CreateHoldParams): Promise<CreateHoldRe
         }
       }
     } catch (err) {
-      // Never let a logistics lookup failure block a booking outright.
-      console.error('[holdService] feasibility check failed, allowing hold:', err)
+      // Deliberate fail-open: a logistics lookup outage must not stop a booking.
+      // Tagged so it is greppable and distinguishable from a business rejection —
+      // a spike here means the check is not running, not that trucks are free.
+      console.error('[holdService] FEASIBILITY_CHECK_FAILED (allowing hold):', err)
     }
   }
 

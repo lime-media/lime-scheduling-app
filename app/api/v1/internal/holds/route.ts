@@ -3,6 +3,7 @@ import { validateInternalApiKey } from '@/lib/internalAuth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { createHold } from '@/lib/holdService'
+import { checkTruckFeasibility } from '@/lib/availabilityEngine'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { appendHoldRequestToSheet } from '@/lib/googleSheets'
 import { computeHoldExpiresAt } from '@/lib/holdRequestService'
@@ -60,6 +61,26 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         error: `Truck ${truck_number} already has a ${c.status} for "${c.client_name}" from ${c.start_date.toISOString().split('T')[0]} to ${c.end_date.toISOString().split('T')[0]}.`,
       }, { status: 409 })
+    }
+
+    // Chain feasibility — this is a booking DECISION made through MCP, not a
+    // mirror of one made elsewhere, so it is gated like every other decision
+    // path. (The Salesforce and ATT sync writers are the deliberate exemptions.)
+    try {
+      const feasibility = await checkTruckFeasibility({
+        truckNumber: truck_number,
+        market: market ?? '',
+        startDate: start_date,
+        endDate: end_date,
+      })
+      if (!feasibility.ok && !feasibility.overridable) {
+        return NextResponse.json({
+          error: `Cannot place hold — ${feasibility.detail ?? 'truck cannot serve these dates'}`,
+          reason: feasibility.reason,
+        }, { status: 409 })
+      }
+    } catch (err) {
+      console.error('[v1/internal/holds] FEASIBILITY_CHECK_FAILED (allowing hold):', err)
     }
 
     const hold = await prisma.hold.create({

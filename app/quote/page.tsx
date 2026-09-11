@@ -14,6 +14,8 @@ type QuoteResponse = {
     requested: number; available: number; local: number; nearby: number; repositioning: number; sufficient: boolean
     cannotArrive?: number
     wouldStrandSuccessor?: number
+    originFellBackToGps?: number
+    gpsFallbackMarkets?: string[]
     excluded?: { truckNumber: string; from: string; reason: string; detail: string }[]
     requiresOverride?: { truckNumber: string; from: string; detail: string }[]
   }
@@ -398,6 +400,20 @@ export default function InternalQuotePage() {
                       <span className="font-medium">Truck {t.truckNumber}</span> ({t.from}) — {t.detail}
                     </p>
                   ))}
+                </div>
+              )}
+
+              {/* Data quality: a prior job's market did not geocode, so those
+                  trucks were priced from live GPS — the old, wrong basis. */}
+              {(quoteResult.availability.originFellBackToGps ?? 0) > 0 && (
+                <div className="mt-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-800">
+                  <p className="font-medium">
+                    {quoteResult.availability.originFellBackToGps} truck{quoteResult.availability.originFellBackToGps !== 1 ? 's' : ''} priced from GPS, not their prior job
+                  </p>
+                  <p className="text-red-600 mt-0.5">
+                    Unrecognized market{(quoteResult.availability.gpsFallbackMarkets?.length ?? 0) !== 1 ? 's' : ''}:{' '}
+                    {quoteResult.availability.gpsFallbackMarkets?.join('; ')}. Transport for these may be wrong — verify before sending.
+                  </p>
                 </div>
               )}
 

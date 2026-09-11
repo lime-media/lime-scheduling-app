@@ -62,6 +62,13 @@ export type InboundLeg = {
   daysAvailable: number
   /** False when neither a prior job nor a live position could be geocoded. */
   originResolved: boolean
+  /**
+   * Set when a prior job EXISTS but its market could not be geocoded, so the
+   * truck silently fell back to live GPS — i.e. the old, wrong basis. Carries
+   * the market string that failed, so drift between program_schedule market
+   * names and the coordinate map is visible instead of silent.
+   */
+  originFellBackToGps?: string
 }
 
 export type SuccessorImpact = {
@@ -163,6 +170,10 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
     earliestDeparture,
     daysAvailable,
     originResolved: originCoords !== null,
+    originFellBackToGps:
+      predecessor && !predCoords
+        ? ([predecessor.market, predecessor.state].filter(Boolean).join(', ') || 'unknown')
+        : undefined,
   }
 
   // No usable origin — we cannot plan logistics for this truck at all. Surfaced

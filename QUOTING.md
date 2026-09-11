@@ -263,6 +263,7 @@ A campaign that leaves a truck far out with nothing after it carries **no return
 | Quote Builder, rep quote, hold requests | gated at truck selection |
 | Grid hold, MCP hold (`createHold`) | **hard blocked** — `feasibility_conflict` |
 | AI chat hold | **hard blocked** |
+| MCP availability (`?market=`) | reports `feasibility` per truck |
 | Salesforce push | writes, never blocked |
 | ATT sync | writes, never blocked |
 
@@ -275,6 +276,24 @@ GET /api/holds/infeasible
 That endpoint recomputes feasibility across every active hold and returns the ones that cannot be served, with the reason. It is deliberately **not** a stored flag on the hold row — feasibility is a property of the whole chain, so a flag written at insert time is wrong the moment a neighbouring job moves. A hold booked cleanly in March can become infeasible in April because something else changed around it; only recomputing catches that.
 
 If the feasibility lookup itself errors, the hold is allowed through and the error is logged. A logistics service being down should not stop the business taking a booking.
+
+### Asking the MCP availability endpoint the right question
+
+`GET /api/v1/internal/availability` answers "when is each truck booked?" — a calendar view that says nothing about whether a truck could serve a given market. Pass an optional **`market`** parameter and every truck is additionally run through the chain rules, returning a `feasibility` block per truck plus a top-level `feasibility_checked` flag.
+
+**A free calendar slot is not the same as a servable truck.** Callers that omit `market` get the old behavior, unchanged — and no feasibility guarantee.
+
+### When a market name does not resolve
+
+Distance depends on matching `program_schedule` market names against the coordinate map. When a prior job's market cannot be matched, the truck **falls back to live GPS** — the old, wrong basis — rather than failing.
+
+That fallback is counted and reported, never silent:
+
+- staff quote shows a red "priced from GPS, not their prior job" warning naming the markets
+- `/conflicts` shows a "Market names not recognized" banner
+- the server logs a warning per quote
+
+A non-zero count means market names are drifting from the coordinate map and some transport is being priced from the wrong origin. Fixing it is a data task: add the missing markets to the map.
 
 ### Why transit days are not blocked on the calendar
 

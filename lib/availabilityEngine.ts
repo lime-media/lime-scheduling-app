@@ -37,6 +37,7 @@ import {
 } from '@/lib/pricing/transport'
 import { buildTruckTimelines, type DayRow } from '@/lib/truckTimeline'
 import { checkChainFeasibility, type ChainResult } from '@/lib/chainFeasibility'
+import { loadFleetTimelines } from '@/lib/fleetTimelines'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -98,6 +99,12 @@ export type AvailabilityResult = {
     repositioning: number
     cannotArrive: number
     wouldStrandSuccessor: number
+    /**
+     * Trucks whose prior job market could not be geocoded, so distance fell
+     * back to live GPS. Non-zero means market names are drifting from the
+     * coordinate map and some quotes are on the old, wrong basis.
+     */
+    originFellBackToGps: number
   }
   /** Whether enough trucks are available to fill the request */
   sufficient: boolean
@@ -361,6 +368,15 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
   }
 
   // Sort by distance (closest first — cheapest trucks selected first)
+  const fellBack = availableTrucks
+    .map(t => t.chain.inbound.originFellBackToGps)
+    .filter((m): m is string => Boolean(m))
+  if (fellBack.length > 0) {
+    console.warn(
+      `[availability] ${fellBack.length} truck(s) fell back to GPS — prior-job market not geocodable: ${[...new Set(fellBack)].join('; ')}`,
+    )
+  }
+
   // Rank by what the booking actually costs across the chain, not by inbound
   // distance alone: a close truck with a distant next job can be the more
   // expensive choice. Trucks needing a soft-hold override always sort last —
@@ -381,6 +397,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     repositioning: availableTrucks.filter(t => t.proximityBucket === 'REPOSITIONING').length,
     cannotArrive: infeasible.filter(t => t.reason === 'CANNOT_ARRIVE').length,
     wouldStrandSuccessor: infeasible.filter(t => t.reason === 'STRANDS_SUCCESSOR').length,
+    originFellBackToGps: availableTrucks.filter(t => t.chain.inbound.originFellBackToGps).length,
   }
 
   return {
@@ -450,39 +467,10 @@ export async function checkTruckFeasibility(params: {
     return { ok: true, overridable: false, reason: 'UNRESOLVED_MARKET', detail: `Market "${market}" could not be geocoded — feasibility not checked.` }
   }
 
-  const [scheduleRows, holds, gpsMap] = await Promise.all([
-    query<Record<string, unknown>[]>(SCHEDULED_QUERY),
-    prisma.hold.findMany({ where: activeHoldWhere(), orderBy: { start_date: 'asc' } }),
-    getLiveVehicleLocations().catch(() => new Map<string, SamsaraVehicleLocation>()),
-  ])
-
-  const scheduleDays: DayRow[] = []
-  for (const row of scheduleRows) {
-    if (String(row.truck_number ?? '') !== truckNumber) continue
-    const day = toDateStr(row.shift_start)
-    if (!day) continue
-    scheduleDays.push({
-      truckNumber,
-      date: day,
-      market: normalizeMarket(row.standard_market_name || row.market),
-      state: String(row.state ?? ''),
-      program: String(row.program ?? ''),
-    })
-  }
-
-  const timelines = buildTruckTimelines(
-    scheduleDays,
-    holds
-      .filter(h => h.truck_number === truckNumber && h.id !== excludeHoldId)
-      .map(h => ({
-        truck_number: h.truck_number,
-        start_date: toDateStr(h.start_date),
-        end_date: toDateStr(h.end_date),
-        market: normalizeMarket(h.market),
-        state: String(h.state ?? ''),
-        status: h.status,
-      })),
-  )
+  const { timelines, gpsMap } = await loadFleetTimelines({
+    hiddenTrucks: HIDDEN_TRUCKS,
+    excludeHoldId,
+  })
 
   const gps = gpsMap.get(truckNumber)
   const currentCoords = gps?.latitude && gps?.longitude

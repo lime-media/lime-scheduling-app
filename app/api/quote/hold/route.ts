@@ -136,6 +136,20 @@ export async function POST(req: NextRequest) {
   else if (includeSF && !includeSD && !includeDID && studies.length === 0) pricingTier = 'Better'
   else if (includeSF && studies.length > 0 && quote.best.reachOk) pricingTier = 'Best'
 
+  // Deadhead this booking imposes on each truck's NEXT job. Recorded with the
+  // reservation and returned so it is visible when the hold is placed — not
+  // billed, and not re-rating the successor's own quote.
+  const successorImpact = selectedTrucks
+    .filter(t => t.chain.successor && !t.chain.successor.unresolvedMarket
+      && (t.chain.successor.deltaTransportDays !== 0 || t.chain.successor.deltaCost !== 0))
+    .map(t => ({
+      truckNumber: t.truckNumber,
+      successorMarket: t.chain.successor!.market,
+      successorStart: t.chain.successor!.startsOn,
+      deltaTransportDays: t.chain.successor!.deltaTransportDays,
+      deltaCost: Math.round(t.chain.successor!.deltaCost),
+    }))
+
   const featuresJson = JSON.stringify({
     dailyRate: quote.dailyRate, hourSurcharge: quote.hourSurcharge,
     truckDays: quote.input.truckDays, truckCount: truck_count,
@@ -148,6 +162,7 @@ export async function POST(req: NextRequest) {
     studies, studyCost: quote.best.studyCost,
     studiesTotal: quote.best.reachOk ? studies.length * quote.best.studyCost : 0,
     transportCharge,
+    successorImpact,
   })
 
   // Find a ClientUser linked to this SFDC Account if one exists.
@@ -243,5 +258,9 @@ export async function POST(req: NextRequest) {
     campaignGroupId,
     sfdcOpportunityId,
     message: `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}. ${sfdcOpportunityId ? 'Salesforce opportunity created.' : ''}`,
+    _internal: {
+      chainFlags: successorImpact,
+      _warning: 'INTERNAL ONLY — downstream deadhead, recorded not billed',
+    },
   })
 }

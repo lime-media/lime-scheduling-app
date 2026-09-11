@@ -60,6 +60,8 @@ export default function ConflictsPage() {
   // became impossible after a neighbouring job moved.
   const [infeasible,        setInfeasible]        = useState<InfeasibleHold[]>([])
   const [infeasibleLoading, setInfeasibleLoading] = useState(true)
+  // Data-quality signals from the same audit: markets that do not geocode.
+  const [dataGaps, setDataGaps] = useState<{ gpsFallbacks: { holdId: string; priorMarket: string }[]; unresolvedMarkets: { holdId: string; market: string }[] }>({ gpsFallbacks: [], unresolvedMarkets: [] })
 
   useEffect(() => {
     if (status === 'unauthenticated') router.push('/login')
@@ -85,6 +87,10 @@ export default function ConflictsPage() {
       if (res.ok) {
         const data = await res.json()
         setInfeasible(data.infeasible ?? [])
+        setDataGaps({
+          gpsFallbacks: data.gpsFallbacks ?? [],
+          unresolvedMarkets: data.unresolvedMarkets ?? [],
+        })
       }
     } catch { /* ignore */ } finally {
       setInfeasibleLoading(false)
@@ -221,6 +227,28 @@ export default function ConflictsPage() {
             write holds without this check on purpose, so they surface here rather than being rejected.
             A hold can also appear after a nearby job moves.
           </p>
+
+          {/* Market names that do not resolve to coordinates. Distinct from a
+              scheduling problem: these holds are priced on the wrong basis and
+              nothing else will surface it. */}
+          {(dataGaps.gpsFallbacks.length > 0 || dataGaps.unresolvedMarkets.length > 0) && (
+            <div className="mb-4 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm">
+              <p className="font-semibold text-red-800">Market names not recognized</p>
+              {dataGaps.gpsFallbacks.length > 0 && (
+                <p className="text-red-700 mt-1">
+                  <span className="font-medium">{dataGaps.gpsFallbacks.length} hold{dataGaps.gpsFallbacks.length !== 1 ? 's' : ''}</span> priced from GPS instead of the prior job, because that job&apos;s market could not be matched:{' '}
+                  {[...new Set(dataGaps.gpsFallbacks.map(g => g.priorMarket))].join('; ')}
+                </p>
+              )}
+              {dataGaps.unresolvedMarkets.length > 0 && (
+                <p className="text-red-700 mt-1">
+                  <span className="font-medium">{dataGaps.unresolvedMarkets.length} hold{dataGaps.unresolvedMarkets.length !== 1 ? 's' : ''}</span> skipped entirely — market not recognized:{' '}
+                  {[...new Set(dataGaps.unresolvedMarkets.map(g => g.market))].join('; ')}
+                </p>
+              )}
+              <p className="text-red-600 text-xs mt-1.5">Add these to the market coordinate map so transport is priced from the right origin.</p>
+            </div>
+          )}
 
           {infeasibleLoading ? (
             <div className="flex justify-center py-10">

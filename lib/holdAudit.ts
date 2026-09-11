@@ -12,14 +12,10 @@
  * not written into the calendar. Recomputing is always current.
  */
 
-import { prisma } from '@/lib/prisma'
-import { query } from '@/lib/mssql'
-import { activeHoldWhere } from '@/lib/holdFilters'
-import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
-import { getLiveVehicleLocations, type SamsaraVehicleLocation } from '@/lib/samsaraService'
 import { resolveCampaignCoords } from '@/lib/pricing/resolvers'
-import { buildTruckTimelines, type DayRow, type TruckJob } from '@/lib/truckTimeline'
+import { loadFleetTimelines } from '@/lib/fleetTimelines'
 import { checkChainFeasibility } from '@/lib/chainFeasibility'
+import type { TruckJob } from '@/lib/truckTimeline'
 
 export type InfeasibleHold = {
   holdId: string
@@ -39,19 +35,14 @@ export type InfeasibleHold = {
 export type HoldAuditResult = {
   checked: number
   infeasible: InfeasibleHold[]
-  /** Holds skipped because their market could not be geocoded. */
+  /** Holds skipped because their own market could not be geocoded. */
   unresolvedMarkets: { holdId: string; market: string }[]
-}
-
-function toDateStr(val: unknown): string {
-  if (!val) return ''
-  if (val instanceof Date) return val.toISOString().split('T')[0]
-  const s = String(val)
-  return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : ''
-}
-
-function normalizeMarket(m: unknown): string {
-  return String(m ?? '').replace(/\s*,\s*/g, ', ').trim()
+  /**
+   * Holds whose PRIOR job market could not be geocoded, so distance fell back
+   * to live GPS. These are priced on the old, wrong basis — a data problem, not
+   * a scheduling one.
+   */
+  gpsFallbacks: { holdId: string; priorMarket: string }[]
 }
 
 /**
@@ -60,41 +51,7 @@ function normalizeMarket(m: unknown): string {
  */
 export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
   const today = new Date().toISOString().split('T')[0]
-
-  const [scheduleRows, holds, gpsMap] = await Promise.all([
-    query<Record<string, unknown>[]>(SCHEDULED_QUERY),
-    prisma.hold.findMany({ where: activeHoldWhere(), orderBy: { start_date: 'asc' } }),
-    getLiveVehicleLocations().catch(() => new Map<string, SamsaraVehicleLocation>()),
-  ])
-
-  const scheduleDays: DayRow[] = []
-  for (const row of scheduleRows) {
-    const truckNumber = String(row.truck_number ?? '')
-    const day = toDateStr(row.shift_start)
-    if (!truckNumber || !day) continue
-    scheduleDays.push({
-      truckNumber,
-      date: day,
-      market: normalizeMarket(row.standard_market_name || row.market),
-      state: String(row.state ?? ''),
-      program: String(row.program ?? ''),
-    })
-  }
-
-  const holdRows = holds.map(h => ({
-    id: h.id,
-    truck_number: h.truck_number,
-    start_date: toDateStr(h.start_date),
-    end_date: toDateStr(h.end_date),
-    market: normalizeMarket(h.market),
-    state: String(h.state ?? ''),
-    status: h.status,
-    client_name: h.client_name,
-    origination: h.origination,
-  }))
-
-  // Full timelines once; each hold is then removed from its own truck's chain.
-  const allTimelines = buildTruckTimelines(scheduleDays, holdRows)
+  const { timelines, gpsMap, holds } = await loadFleetTimelines()
 
   const coordCache = new Map<string, Awaited<ReturnType<typeof resolveCampaignCoords>>>()
   async function coordsFor(market: string) {
@@ -104,9 +61,10 @@ export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
 
   const infeasible: InfeasibleHold[] = []
   const unresolvedMarkets: { holdId: string; market: string }[] = []
+  const gpsFallbacks: { holdId: string; priorMarket: string }[] = []
   let checked = 0
 
-  for (const h of holdRows) {
+  for (const h of holds) {
     if (!h.start_date || !h.end_date) continue
     if (h.end_date < today) continue // already in the past — nothing to fix
 
@@ -117,7 +75,7 @@ export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
     }
 
     // The hold under test must not appear in its own chain.
-    const jobs: TruckJob[] = (allTimelines.get(h.truck_number) ?? []).filter(
+    const jobs: TruckJob[] = (timelines.get(h.truck_number) ?? []).filter(
       j => !(j.source === 'HOLD' && j.start === h.start_date && j.end === h.end_date
              && j.market === h.market && j.status === h.status),
     )
@@ -133,6 +91,11 @@ export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
     })
 
     checked++
+
+    if (chain.inbound.originFellBackToGps) {
+      gpsFallbacks.push({ holdId: h.id, priorMarket: chain.inbound.originFellBackToGps })
+    }
+
     if (!chain.feasible) {
       infeasible.push({
         holdId: h.id,
@@ -150,5 +113,5 @@ export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
     }
   }
 
-  return { checked, infeasible, unresolvedMarkets }
+  return { checked, infeasible, unresolvedMarkets, gpsFallbacks }
 }

@@ -205,6 +205,12 @@ export async function POST(req: NextRequest) {
       sufficient: true,
       cannotArrive: availability.counts.cannotArrive,
       wouldStrandSuccessor: availability.counts.wouldStrandSuccessor,
+      originFellBackToGps: availability.counts.originFellBackToGps,
+      gpsFallbackMarkets: [...new Set(
+        availability.trucks
+          .map(t => t.chain.inbound.originFellBackToGps)
+          .filter((m): m is string => Boolean(m)),
+      )],
       excluded: availability.infeasible.map(t => ({
         truckNumber: t.truckNumber,
         from: t.currentMarket || 'Unknown',

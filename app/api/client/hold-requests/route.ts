@@ -197,6 +197,21 @@ async function handleAutoSelectHold(
   else if (includeShadowFencing && !includeSmartDirectional && !includeDeviceId && studies.length === 0) pricingTier = 'Better'
   else if (includeShadowFencing && studies.length > 0 && quote.best.reachOk) pricingTier = 'Best'
 
+
+  // Deadhead this booking imposes on each truck's NEXT job. Recorded with the
+  // reservation and returned to the caller so it is visible at the moment the
+  // hold is placed — not billed, and not re-rating the successor's own quote.
+  const successorImpact = selectedTrucks
+    .filter(t => t.chain.successor && !t.chain.successor.unresolvedMarket
+      && (t.chain.successor.deltaTransportDays !== 0 || t.chain.successor.deltaCost !== 0))
+    .map(t => ({
+      truckNumber: t.truckNumber,
+      successorMarket: t.chain.successor!.market,
+      successorStart: t.chain.successor!.startsOn,
+      deltaTransportDays: t.chain.successor!.deltaTransportDays,
+      deltaCost: Math.round(t.chain.successor!.deltaCost),
+    }))
+
   const featuresJson = JSON.stringify({
     dailyRate: quote.dailyRate,
     hourSurcharge: quote.hourSurcharge,
@@ -217,6 +232,7 @@ async function handleAutoSelectHold(
     studyCost: quote.best.studyCost,
     studiesTotal: quote.best.reachOk ? studies.length * quote.best.studyCost : 0,
     transportCharge,
+    successorImpact,
   })
 
   // ── Create holds ────────────────────────────────────────────────────────
@@ -302,5 +318,9 @@ async function handleAutoSelectHold(
     trucksRequested: truck_count,
     trucksAvailable: availability.counts.total,
     message: `Reserved ${created.length} truck${created.length > 1 ? 's' : ''}. Holds expire in 72 hours.`,
+    _internal: {
+      chainFlags: successorImpact,
+      _warning: 'INTERNAL ONLY — downstream deadhead, recorded not billed',
+    },
   })
 }

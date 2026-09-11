@@ -108,8 +108,8 @@ export function marketSizeTierFromDmaCode(dmaCode: string): number {
 // Beyond this distance, the truck incurs a billed transport charge.
 export const SERVICE_AREA_RADIUS_MILES = 250
 
-// Swarm threshold: campaigns requesting more than this many trucks trigger manual quote.
-export const SWARM_TRUCK_LIMIT = 3
+// Swarm is evaluated against each market's base_concurrency from the database,
+// not a global constant — see priceTransport() in transport.ts.
 
 export const TRANSPORT_CONFIG = {
   // ---- revenue (reference only for margin check)

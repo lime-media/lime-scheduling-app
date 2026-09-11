@@ -2,10 +2,18 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
 import { createClientHold } from '@/lib/holdRequestService'
-import { selectTrucksForHold } from '@/lib/availabilityEngine'
+import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
-import { computeQuote, VALID_STUDIES, type StudyType } from '@/lib/pricing'
+import {
+  computeQuote,
+  priceTransport,
+  countActivationDays,
+  countCalendarDays,
+  defaultDaysPerWeek,
+  VALID_STUDIES,
+  type StudyType,
+} from '@/lib/pricing'
 import { resolveMarketSizeTierId, resolveRateOverrides } from '@/lib/pricing/resolvers'
 
 export async function GET(req: NextRequest) {
@@ -103,11 +111,20 @@ async function handleAutoSelectHold(
     return NextResponse.json({ error: 'truck_count must be between 1 and 20' }, { status: 400 })
   }
 
+  // Resolved before selection: a custom service_area_miles changes WHICH trucks
+  // need repositioning, so selecting first and applying the override afterwards
+  // makes the hold disagree with the quote the client just accepted.
+  const [marketSizeTierId, rateOverrides] = await Promise.all([
+    resolveMarketSizeTierId(market),
+    resolveRateOverrides(session),
+  ])
+
   const { selectedTrucks, availability } = await selectTrucksForHold({
     market,
     startDate: start_date,
     endDate: end_date,
     truckCount: truck_count,
+    serviceAreaMiles: rateOverrides?.service_area_miles,
   })
 
   if (selectedTrucks.length === 0) {
@@ -117,25 +134,10 @@ async function handleAutoSelectHold(
   }
 
   // ── Server-side price recomputation ──────────────────────────────────────
-  const startDate = new Date(start_date + 'T00:00:00Z')
-  const endDate = new Date(end_date + 'T00:00:00Z')
-  const calendarDays = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1
-  const defaultDaysPerWeek = calendarDays <= 6 ? 7 : 5
-  const daysPerWeek = body.days_per_week ?? defaultDaysPerWeek
+  const calendarDays = countCalendarDays(start_date, end_date)
+  const daysPerWeek = body.days_per_week ?? defaultDaysPerWeek(calendarDays)
   const operatingHours = body.operating_hours ?? 8
-
-  let activationDays = calendarDays
-  if (daysPerWeek < 7) {
-    activationDays = 0
-    const c = new Date(start_date + 'T00:00:00Z')
-    const e = new Date(end_date + 'T00:00:00Z')
-    while (c <= e) {
-      const dow = c.getUTCDay()
-      if (daysPerWeek === 5 && dow >= 1 && dow <= 5) activationDays++
-      else if (daysPerWeek === 6 && dow >= 1 && dow <= 6) activationDays++
-      c.setUTCDate(c.getUTCDate() + 1)
-    }
-  }
+  const activationDays = countActivationDays(start_date, end_date, daysPerWeek)
 
   const includeShadowFencing = body.shadow_fencing !== false
   const includeSmartDirectional = body.smart_directional ?? false
@@ -143,11 +145,6 @@ async function handleAutoSelectHold(
   const studies = (body.studies ?? [])
     .map(s => s.trim().toLowerCase())
     .filter((s): s is StudyType => (VALID_STUDIES as readonly string[]).includes(s))
-
-  const [marketSizeTierId, rateOverrides] = await Promise.all([
-    resolveMarketSizeTierId(market),
-    resolveRateOverrides(session),
-  ])
 
   const quote = computeQuote({
     truckCount: truck_count,
@@ -168,14 +165,27 @@ async function handleAutoSelectHold(
     mediaTotal += studies.length * quote.best.studyCost
   }
 
-  const repoTrucks = selectedTrucks.filter(t => t.transport.needed)
-  const MIN_DAYS_TO_ABSORB = 10
-  const MIN_LEAD_DAYS_TO_ABSORB = 10
-  const leadBusinessDays = availability.campaignFlags.leadBusinessDays
-  const transportAbsorbed = rateOverrides?.transport_included || (activationDays >= MIN_DAYS_TO_ABSORB && leadBusinessDays >= MIN_LEAD_DAYS_TO_ABSORB)
-  const transportCharge = transportAbsorbed
-    ? 0
-    : repoTrucks.reduce((sum, t) => sum + t.transport.chargePerTruck, 0)
+  const transport = priceTransport({
+    activationDays,
+    leadBusinessDays: availability.campaignFlags.leadBusinessDays,
+    legs: legsFromTrucks(selectedTrucks),
+    baseConcurrency: availability.nearestAcceptedMarket?.baseConcurrency ?? null,
+    transportIncluded: rateOverrides?.transport_included,
+    overrides: {
+      dayRate: rateOverrides?.transport_day_rate,
+      airfare: rateOverrides?.transport_airfare,
+      hotelPerNight: rateOverrides?.transport_hotel_per_night,
+    },
+  })
+
+  if (transport.outcome === 'MANUAL_QUOTE') {
+    return NextResponse.json({
+      error: 'This configuration requires a custom quote. A rep will follow up.',
+      reason: transport.reason,
+    }, { status: 409 })
+  }
+
+  const transportCharge = transport.charge
 
   const serverTotal = mediaTotal + transportCharge
 
@@ -183,6 +193,25 @@ async function handleAutoSelectHold(
   if (!includeShadowFencing && !includeSmartDirectional && !includeDeviceId && studies.length === 0) pricingTier = 'Good'
   else if (includeShadowFencing && !includeSmartDirectional && !includeDeviceId && studies.length === 0) pricingTier = 'Better'
   else if (includeShadowFencing && studies.length > 0 && quote.best.reachOk) pricingTier = 'Best'
+
+
+  // Deadhead this booking imposes on each truck's NEXT job. Recorded with the
+  // reservation and returned to the caller so it is visible at the moment the
+  // hold is placed — not billed, and not re-rating the successor's own quote.
+  const successorImpact = selectedTrucks
+    .filter(t => t.chain.successor && !t.chain.successor.unresolvedMarket
+      && (t.chain.successor.deltaTransportDays !== 0 || t.chain.successor.deltaCost !== 0))
+    .map(t => ({
+      truckNumber: t.truckNumber,
+      successorMarket: t.chain.successor!.market,
+      successorStart: t.chain.successor!.startsOn,
+      deltaTransportDays: t.chain.successor!.deltaTransportDays,
+      deltaCost: Math.round(t.chain.successor!.deltaCost),
+    }))
+
+  if (successorImpact.length > 0) {
+    console.info('[client/hold-requests] downstream deadhead (not billed):', JSON.stringify(successorImpact))
+  }
 
   const featuresJson = JSON.stringify({
     dailyRate: quote.dailyRate,
@@ -204,6 +233,7 @@ async function handleAutoSelectHold(
     studyCost: quote.best.studyCost,
     studiesTotal: quote.best.reachOk ? studies.length * quote.best.studyCost : 0,
     transportCharge,
+    successorImpact,
   })
 
   // ── Create holds ────────────────────────────────────────────────────────
@@ -289,5 +319,7 @@ async function handleAutoSelectHold(
     trucksRequested: truck_count,
     trucksAvailable: availability.counts.total,
     message: `Reserved ${created.length} truck${created.length > 1 ? 's' : ''}. Holds expire in 72 hours.`,
+    // NO _internal BLOCK HERE — client-authenticated route. successorImpact is
+    // recorded on the hold's features JSON and logged; it is not sent back.
   })
 }

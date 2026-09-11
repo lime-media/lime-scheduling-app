@@ -10,26 +10,31 @@
  *   - Trucks beyond 250mi: transport billed per-truck based on actual distance
  *   - Travel days (ceil(distance / 450mi per day)) are checked against the
  *     truck's schedule — if the truck is booked during transit, it's excluded
- *   - Swarm: campaigns requesting >3 trucks trigger manual quote
- *   - Short flight (<3 days) and rush (<10 biz day lead) still apply
+ *   - Swarm: campaigns requesting more trucks than the market's base
+ *     concurrency trigger a manual quote (enforced in priceTransport)
+ *
+ * Transport MATH lives in lib/pricing/transport.ts — this module only measures
+ * distances and hands legs to that engine. It defines no pricing rules of its own.
  */
 
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
-import { activeHoldWhere } from '@/lib/holdFilters'
-import { SCHEDULED_QUERY, CHAT_CONTEXT_QUERY } from '@/lib/scheduleQuery'
-import { getLiveVehicleLocations, type SamsaraVehicleLocation } from '@/lib/samsaraService'
-import { haversineDistance, getMarketCoords } from '@/lib/marketCoordinates'
+import { CHAT_CONTEXT_QUERY } from '@/lib/scheduleQuery'
+import { getMarketCoords } from '@/lib/marketCoordinates'
 import {
   resolveNearestAcceptedMarket,
   resolveCampaignCoords,
   businessDaysBetween,
   type NearestMarketResult,
 } from '@/lib/pricing/resolvers'
+import { TRANSPORT_CONFIG } from '@/lib/pricing/config'
 import {
-  SERVICE_AREA_RADIUS_MILES,
-  TRANSPORT_CONFIG,
-} from '@/lib/pricing/config'
+  needsRepositioning,
+  chargeForLeg,
+  type TruckLeg,
+} from '@/lib/pricing/transport'
+import { checkChainFeasibility, type ChainResult } from '@/lib/chainFeasibility'
+import { loadFleetTimelines } from '@/lib/fleetTimelines'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -56,19 +61,47 @@ export type AvailableTruck = {
   proximityBucket: ProximityBucket
   currentMarket: string
   hasGps: boolean
-  /** Per-truck transport details (repositioning cost from this truck's location) */
+  /** Per-truck transport details (repositioning cost from this truck's release point) */
   transport: TruckTransport
+  /** Where the truck departs from, and what this booking does to its next job. */
+  chain: ChainResult
+  /**
+   * Feasible only by displacing a soft hold. Never selected automatically —
+   * surfaced so a rep can make the call.
+   */
+  requiresOverride: boolean
+}
+
+/** A truck that cannot take the campaign, with the reason, for surfacing in the UI. */
+export type InfeasibleTruck = {
+  truckNumber: string
+  currentMarket: string
+  reason: 'CANNOT_ARRIVE' | 'STRANDS_SUCCESSOR' | 'UNKNOWN_ORIGIN' | 'BOOKED'
+  detail: string
 }
 
 export type AvailabilityResult = {
   /** All available trucks ranked by proximity (closest first) */
   trucks: AvailableTruck[]
+  /**
+   * Trucks excluded for logistics reasons, with why. Never silently dropped —
+   * an empty result with no explanation is what let the arrival gap hide.
+   */
+  infeasible: InfeasibleTruck[]
   /** Counts by proximity bucket */
   counts: {
     total: number
     local: number
     nearby: number
     repositioning: number
+    cannotArrive: number
+    wouldStrandSuccessor: number
+    /**
+     * Trucks whose prior job market could not be geocoded, so distance fell
+     * back to live GPS. Non-zero means market names are drifting from the
+     * coordinate map and some quotes are on the old, wrong basis.
+     */
+    originFellBackToGps: number
   }
   /** Whether enough trucks are available to fill the request */
   sufficient: boolean
@@ -94,14 +127,6 @@ export type AvailabilityInput = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function toDateStr(val: unknown): string {
-  if (!val) return ''
-  if (val instanceof Date) return val.toISOString().split('T')[0]
-  const s = String(val)
-  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10)
-  try { return new Date(s).toISOString().split('T')[0] } catch { return '' }
-}
-
 function normalizeMarket(m: unknown): string {
   return String(m ?? '').replace(/\s*,\s*/g, ', ').trim()
 }
@@ -111,46 +136,22 @@ function rangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: strin
 }
 
 function classifyDistance(distanceMiles: number, serviceAreaMiles?: number): ProximityBucket {
-  const radius = serviceAreaMiles ?? SERVICE_AREA_RADIUS_MILES
-  if (distanceMiles <= 50) return 'LOCAL'
-  if (distanceMiles <= radius) return 'NEARBY'
-  return 'REPOSITIONING'
+  if (needsRepositioning(distanceMiles, serviceAreaMiles)) return 'REPOSITIONING'
+  return distanceMiles <= 50 ? 'LOCAL' : 'NEARBY'
 }
 
-/** Subtract N calendar days from a YYYY-MM-DD string */
-function subtractDays(dateStr: string, days: number): string {
-  const d = new Date(dateStr + 'T00:00:00Z')
-  d.setUTCDate(d.getUTCDate() - days)
-  return d.toISOString().split('T')[0]
-}
-
-function transportDaysFromDistance(distanceMiles: number): number {
-  return Math.max(1, Math.ceil(distanceMiles / TRANSPORT_CONFIG.transportDay.milesPerDay))
-}
-
-function computePerTruckTransportCharge(distanceMiles: number): number {
-  const days = transportDaysFromDistance(distanceMiles)
-  const overnights = Math.max(days - 1, 0)
-  return (
-    days * TRANSPORT_CONFIG.exceptionTransportDayRate
-    + TRANSPORT_CONFIG.airfareHomeOneWay
-    + overnights * TRANSPORT_CONFIG.hotelPerDiemPerNight
-  )
-}
-
-/** Recompute a truck's transport charge with custom transport cost overrides. */
-export function recomputeTransportCharge(
-  truck: AvailableTruck,
-  overrides: { dayRate?: number; airfare?: number; hotelPerNight?: number }
-): number {
-  if (!truck.transport.needed) return 0
-  const days = truck.transport.transportDays
-  const overnights = Math.max(days - 1, 0)
-  return (
-    days * (overrides.dayRate ?? TRANSPORT_CONFIG.exceptionTransportDayRate)
-    + (overrides.airfare ?? TRANSPORT_CONFIG.airfareHomeOneWay)
-    + overnights * (overrides.hotelPerNight ?? TRANSPORT_CONFIG.hotelPerDiemPerNight)
-  )
+/**
+ * Convert selected trucks into transport legs for priceTransport().
+ * This is the adapter for callers that HAVE real truck positions; callers
+ * without truck selection use estimatedLegs() from lib/pricing/transport.
+ */
+export function legsFromTrucks(trucks: AvailableTruck[]): TruckLeg[] {
+  return trucks.map(t => ({
+    distanceMiles: t.distanceMiles,
+    needsRepositioning: t.transport.needed,
+    truckNumber: t.truckNumber,
+    fromMarket: t.currentMarket || 'Unknown',
+  }))
 }
 
 // ---------------------------------------------------------------------------
@@ -163,19 +164,16 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
   // Resolve campaign market coordinates
   const campaignCoords = await resolveCampaignCoords(market)
 
-  // Fetch all data sources in parallel
-  const [scheduleRows, contextRows, holds, gpsMap, resolvedNearestMarket] = await Promise.all([
-    query<Record<string, unknown>[]>(SCHEDULED_QUERY),
+  // Fetch all data sources in parallel. Timelines come from the shared loader —
+  // this module does not build its own, or the duplication starts again.
+  const [fleet, contextRows, resolvedNearestMarket] = await Promise.all([
+    loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS }),
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
-    prisma.hold.findMany({
-      where: activeHoldWhere(),
-      orderBy: { start_date: 'asc' },
-    }),
-    getLiveVehicleLocations().catch(() => new Map<string, SamsaraVehicleLocation>()),
     campaignCoords
       ? resolveNearestAcceptedMarket(campaignCoords.lat, campaignCoords.lng)
       : Promise.resolve(null),
   ])
+  const { timelines, gpsMap } = fleet
 
   // Fallback for unknown markets — conservative 1000mi distance.
   // Also use the nearest accepted market's coords as a proxy for the campaign
@@ -202,26 +200,9 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     }
   }
 
-  // Build per-truck booked date ranges
-  type BookedRange = { start: string; end: string }
-  const bookedByTruck = new Map<string, BookedRange[]>()
-
-  const addBooking = (truckNumber: string, start: string, end: string) => {
-    if (HIDDEN_TRUCKS.has(truckNumber)) return
-    if (!start || !end) return
-    const ranges = bookedByTruck.get(truckNumber) ?? []
-    ranges.push({ start, end })
-    bookedByTruck.set(truckNumber, ranges)
-  }
-
-  for (const row of scheduleRows) {
-    const truckNumber = String(row.truck_number ?? '')
-    const day = toDateStr(row.shift_start)
-    if (day) addBooking(truckNumber, day, day)
-  }
-
-  for (const h of holds) {
-    addBooking(h.truck_number, toDateStr(h.start_date), toDateStr(h.end_date))
+  const bookedByTruck = new Map<string, { start: string; end: string }[]>()
+  for (const [truckNumber, jobs] of timelines) {
+    bookedByTruck.set(truckNumber, jobs.map(j => ({ start: j.start, end: j.end })))
   }
 
   // Get all known truck numbers
@@ -245,67 +226,82 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
   // Swarm is evaluated in the quote route based on how many selected trucks
   // actually need repositioning — not here on the total request count.
 
-  // Check each truck: date availability + proximity + travel day blocking
+  // Check each truck: campaign window free, can arrive, does not strand its next job
+  const today = new Date().toISOString().split('T')[0]
   const availableTrucks: AvailableTruck[] = []
+  const infeasible: InfeasibleTruck[] = []
 
   for (const truckNumber of allTruckNumbers) {
     const ranges = bookedByTruck.get(truckNumber) ?? []
 
     // Determine truck location
     const gps = gpsMap.get(truckNumber)
-    let distanceMiles = Infinity
+    let currentCoords: { lat: number; lng: number } | null = null
     let currentMarket = ''
     let hasGps = false
 
-    if (gps?.latitude && gps?.longitude && effectiveCampaignCoords) {
-      distanceMiles = haversineDistance(gps.latitude, gps.longitude, effectiveCampaignCoords.lat, effectiveCampaignCoords.lng)
+    if (gps?.latitude && gps?.longitude) {
+      currentCoords = { lat: gps.latitude, lng: gps.longitude }
       currentMarket = [gps.city, gps.state].filter(Boolean).join(', ')
       hasGps = true
-    } else if (effectiveCampaignCoords) {
+    } else {
       const contextRow = contextRows.find(r => String(r.truck_number ?? '') === truckNumber)
       const lastKnownMarket = normalizeMarket(contextRow?.last_known_market)
       if (lastKnownMarket) {
-        const lkmCoords = getMarketCoords(lastKnownMarket)
-        if (lkmCoords) {
-          distanceMiles = haversineDistance(lkmCoords.lat, lkmCoords.lng, effectiveCampaignCoords.lat, effectiveCampaignCoords.lng)
-        }
+        currentCoords = getMarketCoords(lastKnownMarket) ?? null
         currentMarket = lastKnownMarket
-      }
-    } else {
-      if (gps?.city) {
-        currentMarket = [gps.city, gps.state].filter(Boolean).join(', ')
-        hasGps = true
       }
     }
 
-    // Trucks with no location data at all — skip them, we can't plan logistics
-    if (!Number.isFinite(distanceMiles)) continue
+    // Without campaign coordinates there is nothing to measure against — the
+    // quote will fall back to a manual transport quote.
+    if (!effectiveCampaignCoords) continue
 
-    distanceMiles = Math.round(distanceMiles * 10) / 10
+    // Rule 2: the campaign window itself must be free.
+    if (ranges.some(r => rangesOverlap(r.start, r.end, startDate, endDate))) {
+      infeasible.push({
+        truckNumber,
+        currentMarket,
+        reason: 'BOOKED',
+        detail: `Already booked during ${startDate} to ${endDate}.`,
+      })
+      continue
+    }
+
+    // Rules 1 and 3: can it get there, and can it still make its next job?
+    const chain = checkChainFeasibility({
+      campaignStart: startDate,
+      campaignEnd: endDate,
+      campaignCoords: effectiveCampaignCoords,
+      jobs: timelines.get(truckNumber) ?? [],
+      currentCoords,
+      today,
+      serviceAreaMiles,
+    })
+
+    if (!chain.feasible && !chain.overridable) {
+      infeasible.push({
+        truckNumber,
+        currentMarket,
+        reason: chain.blockedBy ?? 'CANNOT_ARRIVE',
+        detail: chain.detail ?? '',
+      })
+      continue
+    }
+
+    // Distance is measured from the RELEASE point, not live GPS — a truck
+    // finishing in Miami is a Miami truck for the next campaign, and both the
+    // feasibility check and the transport charge have to agree on that.
+    const distanceMiles = chain.inbound.distanceMiles
     const bucket = classifyDistance(distanceMiles, serviceAreaMiles)
-
-    // Compute travel days needed for repositioning
-    const travelDays = bucket === 'REPOSITIONING'
-      ? transportDaysFromDistance(distanceMiles)
-      : 0
-
-    // Check availability: campaign dates + travel days before campaign start.
-    // The truck must be free for the campaign AND the transit period.
-    const effectiveStart = travelDays > 0
-      ? subtractDays(startDate, travelDays)
-      : startDate
-
-    const hasConflict = ranges.some(r => rangesOverlap(r.start, r.end, effectiveStart, endDate))
-    if (hasConflict) continue
-
-    // Compute per-truck transport
     const needsTransport = bucket === 'REPOSITIONING'
+
     const transport: TruckTransport = needsTransport
       ? {
           needed: true,
           distanceMiles,
-          transportDays: travelDays,
-          chargePerTruck: computePerTruckTransportCharge(distanceMiles),
+          transportDays: chain.inbound.transportDays,
+          chargePerTruck: chargeForLeg(distanceMiles),
         }
       : {
           needed: false,
@@ -314,10 +310,6 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
           chargePerTruck: 0,
         }
 
-    // Short flight and rush surcharges apply even to local trucks — these are
-    // campaign-level triggers that add cost on top of per-truck repo.
-    // They're surfaced as campaign flags, not per-truck charges.
-
     availableTrucks.push({
       truckNumber,
       distanceMiles,
@@ -325,23 +317,49 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
       currentMarket,
       hasGps,
       transport,
+      chain,
+      requiresOverride: !chain.feasible && chain.overridable,
     })
   }
 
   // Sort by distance (closest first — cheapest trucks selected first)
-  availableTrucks.sort((a, b) => a.distanceMiles - b.distanceMiles)
+  const fellBack = availableTrucks
+    .map(t => t.chain.inbound.originFellBackToGps)
+    .filter((m): m is string => Boolean(m))
+  if (fellBack.length > 0) {
+    console.warn(
+      `[availability] ${fellBack.length} truck(s) fell back to GPS — prior-job market not geocodable: ${[...new Set(fellBack)].join('; ')}`,
+    )
+  }
+
+  // Rank by what the booking actually costs across the chain, not by inbound
+  // distance alone: a close truck with a distant next job can be the more
+  // expensive choice. Trucks needing a soft-hold override always sort last —
+  // they are options for a rep, never automatic picks.
+  const chainCost = (t: AvailableTruck) =>
+    t.transport.chargePerTruck + Math.max(0, t.chain.successor?.deltaCost ?? 0)
+
+  availableTrucks.sort((a, b) =>
+    Number(a.requiresOverride) - Number(b.requiresOverride)
+    || chainCost(a) - chainCost(b)
+    || a.distanceMiles - b.distanceMiles
+  )
 
   const counts = {
     total: availableTrucks.length,
     local: availableTrucks.filter(t => t.proximityBucket === 'LOCAL').length,
     nearby: availableTrucks.filter(t => t.proximityBucket === 'NEARBY').length,
     repositioning: availableTrucks.filter(t => t.proximityBucket === 'REPOSITIONING').length,
+    cannotArrive: infeasible.filter(t => t.reason === 'CANNOT_ARRIVE').length,
+    wouldStrandSuccessor: infeasible.filter(t => t.reason === 'STRANDS_SUCCESSOR').length,
+    originFellBackToGps: availableTrucks.filter(t => t.chain.inbound.originFellBackToGps).length,
   }
 
   return {
     trucks: availableTrucks,
+    infeasible,
     counts,
-    sufficient: availableTrucks.length >= truckCount,
+    sufficient: availableTrucks.filter(t => !t.requiresOverride).length >= truckCount,
     nearestAcceptedMarket,
     campaignFlags: { shortFlight, rush, leadBusinessDays },
   }
@@ -356,6 +374,79 @@ export async function selectTrucksForHold(input: AvailabilityInput): Promise<{
   availability: AvailabilityResult
 }> {
   const availability = await checkAvailability(input)
-  const selectedTrucks = availability.trucks.slice(0, input.truckCount)
+  // Only cleanly feasible trucks are auto-selected. Displacing a soft hold is a
+  // decision for a rep, never something a quote or hold flow does on its own.
+  const selectedTrucks = availability.trucks
+    .filter(t => !t.requiresOverride)
+    .slice(0, input.truckCount)
   return { selectedTrucks, availability }
+}
+
+// ---------------------------------------------------------------------------
+// Single-truck feasibility — for write paths and audits
+// ---------------------------------------------------------------------------
+
+export type TruckFeasibility = {
+  /** True when the booking can be placed without breaking anything. */
+  ok: boolean
+  /** True when the only blocker is a soft hold a rep may displace. */
+  overridable: boolean
+  reason?: 'CANNOT_ARRIVE' | 'STRANDS_SUCCESSOR' | 'UNKNOWN_ORIGIN' | 'UNRESOLVED_MARKET'
+  detail?: string
+}
+
+/**
+ * Evaluate one truck against one campaign, independent of the quote flow.
+ *
+ * checkAvailability() answers "which trucks could take this?"; this answers
+ * "can THIS truck take this?", which is the question the hold write paths and
+ * the infeasible-hold audit need. Both run the same chain rules.
+ *
+ * `excludeHoldId` lets an audit re-evaluate an existing hold without the hold
+ * itself counting as its own predecessor or successor.
+ */
+export async function checkTruckFeasibility(params: {
+  truckNumber: string
+  market: string
+  startDate: string
+  endDate: string
+  excludeHoldId?: string
+  serviceAreaMiles?: number
+}): Promise<TruckFeasibility> {
+  const { truckNumber, market, startDate, endDate, excludeHoldId, serviceAreaMiles } = params
+
+  const campaignCoords = await resolveCampaignCoords(market)
+  if (!campaignCoords) {
+    // Cannot place the campaign on a map — no chain check is possible. Not a
+    // failure of the truck, so this never blocks on its own.
+    return { ok: true, overridable: false, reason: 'UNRESOLVED_MARKET', detail: `Market "${market}" could not be geocoded — feasibility not checked.` }
+  }
+
+  const { timelines, gpsMap } = await loadFleetTimelines({
+    hiddenTrucks: HIDDEN_TRUCKS,
+    excludeHoldId,
+  })
+
+  const gps = gpsMap.get(truckNumber)
+  const currentCoords = gps?.latitude && gps?.longitude
+    ? { lat: gps.latitude, lng: gps.longitude }
+    : null
+
+  const chain = checkChainFeasibility({
+    campaignStart: startDate,
+    campaignEnd: endDate,
+    campaignCoords,
+    jobs: timelines.get(truckNumber) ?? [],
+    currentCoords,
+    today: new Date().toISOString().split('T')[0],
+    serviceAreaMiles,
+  })
+
+  if (chain.feasible) return { ok: true, overridable: false }
+  return {
+    ok: false,
+    overridable: chain.overridable,
+    reason: chain.blockedBy,
+    detail: chain.detail,
+  }
 }

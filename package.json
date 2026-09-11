@@ -10,7 +10,8 @@
     "postinstall": "prisma generate",
     "db:generate": "prisma generate",
     "db:seed": "ts-node --compiler-options '{\"module\":\"CommonJS\"}' prisma/seed.ts",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "test": "ts-node -r tsconfig-paths/register --compiler-options '{\"module\":\"CommonJS\",\"types\":[\"node\"]}' tests/run.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.85.0",

@@ -127,6 +127,20 @@ export async function POST(req: NextRequest) {
     resolveMarketSizeTierId(formalMarket),
   ])
 
+  // Only two reasons to refuse: market outside the service area, or no truck
+  // can physically reach it. Truck count is never a reason on its own.
+  if (!availability.marketResolved) {
+    return NextResponse.json({
+      availability: {
+        requested: truck_count, available: 0, local: 0, nearby: 0,
+        repositioning: 0, sufficient: false,
+      },
+      insufficient: true,
+      outOfServiceArea: true,
+      message: `Could not locate "${formalMarket}" — Lime Media serves the contiguous 48 states.`,
+    })
+  }
+
   if (!availability.sufficient) {
     return NextResponse.json({
       availability: {
@@ -138,11 +152,15 @@ export async function POST(req: NextRequest) {
         sufficient: false,
       },
       insufficient: true,
-      message: `${availability.counts.total} trucks available, but ${truck_count} requested.`,
+      message: `${availability.counts.total} truck${availability.counts.total !== 1 ? 's' : ''} can reach this market for these dates, but ${truck_count} requested.`
+        + (availability.counts.cannotArrive > 0 ? ` ${availability.counts.cannotArrive} excluded: cannot arrive in time.` : '')
+        + (availability.counts.wouldStrandSuccessor > 0 ? ` ${availability.counts.wouldStrandSuccessor} excluded: would strand a later booking.` : ''),
     })
   }
 
-  const selectedTrucks = availability.trucks.slice(0, truck_count)
+  const selectedTrucks = availability.trucks
+    .filter(t => !t.requiresOverride)
+    .slice(0, truck_count)
 
   const quote = computeQuote({
     truckCount: truck_count,
@@ -167,16 +185,6 @@ export async function POST(req: NextRequest) {
       hotelPerNight: rateOverrides?.transport_hotel_per_night,
     },
   })
-
-  // Swarm: surfaced through the same channel the pages already use for
-  // "can't quote this" so the UI shows a message instead of a partial result.
-  if (transport.outcome === 'MANUAL_QUOTE') {
-    return NextResponse.json({
-      insufficient: true,
-      message: 'This campaign needs more trucks than the market can field concurrently. It requires a custom quote — a rep will follow up.',
-      transport: { outcome: 'MANUAL_QUOTE', reason: transport.reason },
-    })
-  }
 
   const totalTransportCharge = transport.charge
 

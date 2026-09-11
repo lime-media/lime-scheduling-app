@@ -60,16 +60,39 @@ const inc = priceTransport({ ...base, activationDays: 2, leadBusinessDays: 1, le
 eq('outcome ABSORBED', inc.outcome, 'ABSORBED')
 eq('charge 0', inc.charge, 0)
 
-section('swarm gate (now on every path)')
-eq('4 trucks vs concurrency 3 -> MANUAL_QUOTE',
-   priceTransport({ baseConcurrency: 3, activationDays: 12, leadBusinessDays: 12, legs: [local(1), local(1), local(1), local(1)] }).outcome,
-   'MANUAL_QUOTE')
-eq('3 trucks vs concurrency 3 -> priced',
-   priceTransport({ baseConcurrency: 3, activationDays: 12, leadBusinessDays: 12, legs: [local(1), local(1), local(1)] }).outcome,
-   'INCLUDED')
-eq('null concurrency skips gate',
-   priceTransport({ baseConcurrency: null, activationDays: 12, leadBusinessDays: 12, legs: [local(1), local(1), local(1), local(1)] }).outcome,
-   'INCLUDED')
+section('truck count NEVER blocks a quote (regression: PR #62 swarm gate)')
+// Every seeded market has base_concurrency = 1, so gating on it refused every
+// multi-truck request in every market. Concurrency is advisory, not a cap:
+// extra trucks come from further away and the distance is billed.
+const multi = priceTransport({
+  baseConcurrency: 1, activationDays: 5, leadBusinessDays: 5,
+  legs: [local(10), local(20), repo(400)],
+})
+eq('3 trucks vs concurrency 1 -> still priced', multi.outcome, 'BILLED')
+eq('flagged as exceeding market concurrency', multi.exceedsMarketConcurrency, true)
+eq('only the repositioning truck is billed', multi.charge, chargeForLeg(400))
+
+const twoLocal = priceTransport({
+  baseConcurrency: 1, activationDays: 5, leadBusinessDays: 5,
+  legs: [local(10), local(20)],
+})
+eq('2 local trucks vs concurrency 1 -> INCLUDED, not refused', twoLocal.outcome, 'INCLUDED')
+eq('still flagged advisory', twoLocal.exceedsMarketConcurrency, true)
+
+const within = priceTransport({
+  baseConcurrency: 5, activationDays: 5, leadBusinessDays: 5,
+  legs: [local(10), local(20)],
+})
+eq('within concurrency -> no advisory flag', within.exceedsMarketConcurrency, false)
+
+// Far-flung multi-truck orders must produce a PRICE, however large.
+const farFleet = priceTransport({
+  baseConcurrency: 1, activationDays: 2, leadBusinessDays: 2,
+  legs: [repo(1000), repo(1000), repo(1000)],
+})
+eq('3 distant trucks -> priced, not refused', farFleet.outcome, 'BILLED')
+eq('every distant truck billed', farFleet.charge, 3 * chargeForLeg(1000))
+eq('an extreme price is still a price', farFleet.charge > 9000, true)
 
 section('MCP estimate uses the SAME engine, only different legs')
 const mcpLegs = estimatedLegs(3, 400)

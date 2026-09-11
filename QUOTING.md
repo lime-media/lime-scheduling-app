@@ -193,9 +193,20 @@ The 450-mile figure is **how far a truck drives in a day** — it is not the 250
 
 A **deposit** of one transport day (**$750 per repositioning truck**) is required whenever transport is billed.
 
-### Swarm gate
+### Truck count never blocks a quote
 
-If a campaign requests **more trucks than the nearest market's base concurrency**, the quote exits automated pricing entirely and returns **manual quote** — "a rep will follow up." This applies on every surface, including client self-serve. The limit is per-market, read from the accepted-markets table; there is no global truck-count limit.
+Asking for more trucks than a market holds is **not** a reason to refuse. The extra trucks come from wherever they are and the distance is billed as transport. A four-truck campaign in a one-truck market is quotable; it is simply more expensive.
+
+Each market's `base_concurrency` is recorded as an **advisory** flag (`exceedsMarketConcurrency`) so ops can see when a campaign is leaning on other markets. It is not a cap.
+
+> This replaces the swarm gate shipped on 2026-09-11. That gate refused any order exceeding `base_concurrency`, and since every seeded market has `base_concurrency = 1`, it refused **every multi-truck request in every market**. Removed 2026-09-12.
+
+### The only two reasons a quote is refused
+
+1. **Outside the service area** — the campaign market cannot be located. Lime Media serves the contiguous 48 states.
+2. **No reachable truck** — every truck is either booked, cannot arrive in time, or would strand a later commitment.
+
+Anything else gets a price, however large. A campaign needing trucks from 1,000 miles away is expensive, not impossible, and the buyer is entitled to see the number.
 
 ### One engine, two ways of measuring distance
 
@@ -358,7 +369,7 @@ The two-transport-engine split and the calendar-vs-activation-day mismatch descr
 | Hotel per overnight | $210 |
 | Deposit | 1 transport day ($750) / truck |
 | Standard lead time | 10 business days |
-| Swarm gate | > market base concurrency → manual quote |
+| Truck count | never blocks a quote; advisory flag only |
 | Transport absorption | 10+ activation days AND 10+ business days lead |
 | Billed trucks | only those > 250mi from campaign |
 | Margin review threshold | 42.6% gross contribution |

@@ -10,8 +10,10 @@
  * Policy (one rule set, all callers)
  * ---------------------------------------------------------------------------
  *
- *   Swarm gate   More trucks than the market's base concurrency exits auto-
- *                pricing entirely and returns MANUAL_QUOTE.
+ *   Concurrency  ADVISORY ONLY. Asking for more trucks than a market holds is
+ *                not a refusal — the extra trucks come from further away and the
+ *                distance is billed as transport. A quote is never blocked on
+ *                truck count; only genuine unavailability blocks a booking.
  *
  *   Who is billed  Only trucks that must actually reposition — further than
  *                  the service area radius (default 250mi) from the campaign.
@@ -92,12 +94,17 @@ export type PricedLeg = {
   fromMarket?: string
 }
 
-export type TransportOutcome = 'INCLUDED' | 'ABSORBED' | 'BILLED' | 'MANUAL_QUOTE'
+export type TransportOutcome = 'INCLUDED' | 'ABSORBED' | 'BILLED'
 
 export type TransportResult = {
   outcome: TransportOutcome
-  /** Only set on MANUAL_QUOTE. */
-  reason?: 'SWARM'
+  /**
+   * Advisory only: the order asks for more concurrent trucks than the nearest
+   * market's base_concurrency. This does NOT block a quote — trucks come from
+   * wherever they are and the extra distance is priced as transport. Surfaced
+   * internally so ops can see when a campaign is leaning on other markets.
+   */
+  exceedsMarketConcurrency: boolean
   /** Total charged across all repositioning trucks. 0 unless BILLED. */
   charge: number
   absorbed: boolean
@@ -199,7 +206,14 @@ export function estimatedLegs(
 export function priceTransport(order: TransportOrder): TransportResult {
   const { activationDays, leadBusinessDays, legs, baseConcurrency, overrides } = order
 
+  // Advisory, never a gate. Concurrency is a statement about how many trucks a
+  // market holds, not a cap on what can be sold: additional trucks are pulled
+  // from further away and billed for the repositioning.
+  const exceedsMarketConcurrency =
+    baseConcurrency !== null && legs.length > baseConcurrency
+
   const empty = {
+    exceedsMarketConcurrency,
     charge: 0,
     absorbed: false,
     repositioningTruckCount: 0,
@@ -208,11 +222,6 @@ export function priceTransport(order: TransportOrder): TransportResult {
     depositRequired: false,
     depositPerTruck: 0,
     depositAmount: 0,
-  }
-
-  // Swarm gate: more trucks than the market can field exits auto-pricing.
-  if (baseConcurrency !== null && legs.length > baseConcurrency) {
-    return { ...empty, outcome: 'MANUAL_QUOTE', reason: 'SWARM' }
   }
 
   const repoLegs = legs.filter(l => l.needsRepositioning)
@@ -256,6 +265,7 @@ export function priceTransport(order: TransportOrder): TransportResult {
 
   return {
     outcome: 'BILLED',
+    exceedsMarketConcurrency,
     charge,
     absorbed: false,
     repositioningTruckCount: repoLegs.length,

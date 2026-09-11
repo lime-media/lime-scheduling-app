@@ -131,8 +131,23 @@ export async function POST(req: NextRequest) {
     serviceAreaMiles: rateOverrides?.service_area_miles,
   })
 
-  // Not enough trucks to fill the request — don't offer a price, direct them
-  // to submit a request for the team to handle manually.
+  // There are exactly two reasons to refuse a quote: the market is outside the
+  // service area, or no reachable truck exists. Truck COUNT is never one of
+  // them — extra trucks come from further away and the distance is billed.
+  if (!availability.marketResolved) {
+    return NextResponse.json({
+      availability: {
+        requested: truck_count, available: 0, local: 0, nearby: 0,
+        repositioning: 0, sufficient: false,
+      },
+      insufficient: true,
+      outOfServiceArea: true,
+      message: `We could not locate "${formalMarket}". Lime Media serves the contiguous 48 states — check the spelling, or submit a request and the team will follow up.`,
+    })
+  }
+
+  // Not enough reachable trucks to fill the request — every truck that could
+  // physically make these dates is already committed.
   if (!availability.sufficient) {
     return NextResponse.json({
       availability: {
@@ -144,12 +159,16 @@ export async function POST(req: NextRequest) {
         sufficient: false,
       },
       insufficient: true,
-      message: `We have ${availability.counts.total} truck${availability.counts.total !== 1 ? 's' : ''} available for your requested dates, but you need ${truck_count}. Submit a request and the Lime Media team will work on a solution.`,
+      message: `We have ${availability.counts.total} truck${availability.counts.total !== 1 ? 's' : ''} that can reach your market for these dates, but you need ${truck_count}. Submit a request and the Lime Media team will work on a solution.`,
     })
   }
 
-  // Select the best trucks (closest first, up to requested count)
-  const selectedTrucks = availability.trucks.slice(0, truck_count)
+  // Select the best trucks (cheapest chain first, up to requested count).
+  // Override-only trucks are excluded here for the same reason they are
+  // excluded from `sufficient` — displacing a soft hold is a rep's decision.
+  const selectedTrucks = availability.trucks
+    .filter(t => !t.requiresOverride)
+    .slice(0, truck_count)
 
   // Compute media pricing
   const quote = computeQuote({
@@ -176,17 +195,6 @@ export async function POST(req: NextRequest) {
       hotelPerNight: rateOverrides?.transport_hotel_per_night,
     },
   })
-
-  // Swarm: surfaced through the same channel the pages already use for
-  // "can't quote this" so the UI shows a message instead of a partial result.
-  if (transport.outcome === 'MANUAL_QUOTE') {
-    return NextResponse.json({
-      insufficient: true,
-      message: 'This campaign needs more trucks than the market can field concurrently. It requires a custom quote — a rep will follow up.',
-      transport: { outcome: 'MANUAL_QUOTE', reason: transport.reason },
-      market: formalMarket,
-    })
-  }
 
   const totalTransportCharge = transport.charge
 

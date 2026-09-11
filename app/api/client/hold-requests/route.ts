@@ -178,13 +178,6 @@ async function handleAutoSelectHold(
     },
   })
 
-  if (transport.outcome === 'MANUAL_QUOTE') {
-    return NextResponse.json({
-      error: 'This configuration requires a custom quote. A rep will follow up.',
-      reason: transport.reason,
-    }, { status: 409 })
-  }
-
   const transportCharge = transport.charge
 
   const serverTotal = mediaTotal + transportCharge

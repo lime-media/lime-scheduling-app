@@ -6,7 +6,7 @@
 
 import { prisma } from '@/lib/prisma'
 import { haversineDistance, getMarketCoords, resolveMarketInput, type MarketMatch } from '@/lib/marketCoordinates'
-import { marketSizeTierFromDmaCode, type RateOverrides } from './config'
+import { marketSizeTierFromDmaCode, NON_DMA_MARKET_TIER, type RateOverrides } from './config'
 import { loadStandardMarketCoords, normalizeMarketKey, titleCaseMarket } from '@/lib/marketBounds'
 import type { ClientSession } from '@/lib/clientAuth'
 
@@ -21,23 +21,47 @@ import type { ClientSession } from '@/lib/clientAuth'
  * doesn't over-promise on lift-study eligibility.
  */
 export async function resolveMarketSizeTierId(market: string): Promise<number> {
-  if (!market) return 3
+  if (!market) return NON_DMA_MARKET_TIER
   try {
     const acceptedMarkets = await prisma.acceptedMarket.findMany({
       where: { is_active: true },
       select: { dma_code: true, dma_name: true },
     })
-    const marketLower = market.toLowerCase()
-    const matched = acceptedMarkets.find((am) => {
-      const dmaCity = am.dma_name.split(',')[0].trim().toLowerCase()
-      const reqCity = marketLower.split(',')[0].trim()
-      return dmaCity === reqCity || marketLower.includes(dmaCity) || dmaCity.includes(reqCity)
-    })
-    return matched ? marketSizeTierFromDmaCode(matched.dma_code) : 3
+    const matched = matchAcceptedDma(market, acceptedMarkets)
+    return matched
+      ? marketSizeTierFromDmaCode(matched.dma_code)
+      : NON_DMA_MARKET_TIER
   } catch (err) {
-    console.error('[resolvers] market size tier lookup failed, using default tier 3:', err)
-    return 3
+    console.error('[resolvers] market size tier lookup failed, using the small-metro tier:', err)
+    return NON_DMA_MARKET_TIER
   }
+}
+
+/**
+ * Match a market against the accepted top-50 DMAs.
+ *
+ * Deliberately stricter than the old substring test, which matched in BOTH
+ * directions (`market.includes(dmaCity) || dmaCity.includes(reqCity)`). That
+ * made "York, PA" match the New York DMA and jump from tier 4 to tier 1 —
+ * a 4.5x impressions error from a substring. Now: same city, and same state
+ * when both state it.
+ */
+export function matchAcceptedDma<T extends { dma_code: string; dma_name: string }>(
+  market: string,
+  acceptedMarkets: T[],
+): T | undefined {
+  const key = normalizeMarketKey(market)
+  const city = key.split(',')[0].trim()
+  const state = key.split(',')[1]?.trim()
+  if (!city) return undefined
+
+  return acceptedMarkets.find((am) => {
+    const dmaKey = normalizeMarketKey(am.dma_name)
+    const dmaCity = dmaKey.split(',')[0].trim()
+    const dmaState = dmaKey.split(',')[1]?.trim()
+    if (dmaCity !== city) return false
+    return !state || !dmaState || state === dmaState
+  })
 }
 
 // ---------------------------------------------------------------------------

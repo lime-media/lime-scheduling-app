@@ -30,6 +30,24 @@ CRON_SECRET="<output of: openssl rand -base64 32>"
 # Optional — Opportunity StageName applied when the app releases an
 # Opportunity's last hold. Must exist in the Salesforce picklist.
 SFDC_CLOSED_LOST_STAGE="Closed Lost - Declined"
+
+# Optional — who receives team notifications.
+#
+# These are now EDITED IN THE APP at /settings (Operations role). A value saved
+# there wins; these env vars remain as a deploy-level override for environments
+# with no database rows yet, and a compiled default backs both up.
+#   a client successfully booked (client portal + MCP)
+HOLD_NOTIFY_EMAIL="andrew@lime-media.com"
+#   a client could NOT self-serve and wants a human: failed-quote requests,
+#   hold extension requests, and AI chat escalations
+ASSIST_NOTIFY_EMAIL="andrew@lime-media.com"
+#   a hold was detected overlapping a scheduled LED program
+NOTIFY_EMAIL="andrew@lime-media.com"
+
+# Optional — set to "off" to stop the hourly sweep writing Closed Lost back to
+# Salesforce. Defaults to ON. Worth setting off in any environment that shares
+# a Salesforce org with production.
+SFDC_AUTOCLOSE="on"
 ```
 
 ## 2. Create the App Tables in Azure SQL

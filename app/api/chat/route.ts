@@ -133,8 +133,11 @@ async function executePlaceHold(
     return { success: false, message: 'Action failed: missing required fields in action block.' }
   }
 
-  // Conflict check — released holds (status EXPIRED, or expires_at already
-  // passed) shouldn't block a new hold
+  // Hold conflicts — checked here for the better message (it names the client).
+  // Released holds (status EXPIRED, or expires_at already passed) don't block.
+  // NOTE: this sees the hold table ONLY. Program schedules are caught by
+  // checkTruckFeasibility below; this query alone used to let the assistant
+  // book a truck straight over a scheduled LED program.
   const conflicts = await prisma.hold.findMany({
     where: {
       truck_number: truck,
@@ -151,9 +154,10 @@ async function executePlaceHold(
     }
   }
 
-  // Chain feasibility — the assistant picks trucks from prose, so this is the
-  // only thing standing between a plausible-sounding suggestion and a truck
-  // that cannot physically make the dates.
+  // Feasibility — the assistant picks trucks from prose, so this is the only
+  // thing standing between a plausible-sounding suggestion and a truck that is
+  // already working, cannot physically make the dates, or would strand a later
+  // commitment. Covers dbo.program_schedule as well as holds.
   try {
     const feasibility = await checkTruckFeasibility({
       truckNumber: truck,

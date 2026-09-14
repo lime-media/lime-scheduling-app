@@ -50,3 +50,13 @@ export function countActivationDays(
   }
   return count
 }
+
+/**
+ * Calendar days from today until a campaign starts. Negative when in the past.
+ * Both sides normalized to UTC midnight so a US-local "today" cannot drift a day.
+ */
+export function daysUntil(startStr: string, today = new Date()): number {
+  const from = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())
+  const to = new Date(startStr + 'T00:00:00Z').getTime()
+  return Math.round((to - from) / 86400000)
+}

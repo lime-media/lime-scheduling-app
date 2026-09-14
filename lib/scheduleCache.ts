@@ -10,6 +10,7 @@ import { getPool, query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { reconcileSfdcOpportunities, closeOpportunityAsLost } from '@/lib/sfdcOpportunityReconcile'
+import { warnExpiringHolds } from '@/lib/holdExpiryWarnings'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 
@@ -31,6 +32,8 @@ export interface RefreshSummary {
   holds_expired:              number
   opportunities_closed:       number
   opportunities_would_close:  number
+  expiry_warnings_sent:       number
+  expiry_warning_recipients:  number
 }
 
 /**
@@ -64,6 +67,14 @@ export async function refreshCache(): Promise<RefreshSummary> {
   const expiry = await expireHolds().catch((err) => {
     console.error('[scheduleCache] hold expiry check failed:', err)
     return { expired: 0, opportunities_closed: 0, opportunities_would_close: 0 }
+  })
+
+  // After expiry, so anything that just lapsed is not warned about on its way
+  // out. Never allowed to fail the sweep — a warning is worth less than the
+  // expiry and reconcile work that runs alongside it.
+  const warnings = await warnExpiringHolds().catch((err) => {
+    console.error('[scheduleCache] expiry warnings failed:', err)
+    return { candidates: 0, warned: 0, recipients: 0, skipped_already_warned: 0, skipped_no_email: 0 }
   })
 
   const [schedulesRaw, holdsRaw] = await Promise.all([
@@ -112,7 +123,9 @@ export async function refreshCache(): Promise<RefreshSummary> {
     `(${expiry.opportunities_closed} opportunit${expiry.opportunities_closed === 1 ? 'y' : 'ies'} closed lost, ` +
     `${expiry.opportunities_would_close} would close in dry run), ` +
     `${att_soft_released} ATT_SOFT hold(s) released, ` +
-    `${sfdc.committed} committed / ${sfdc.released} released from ${sfdc.checked} SFDC opportunit${sfdc.checked === 1 ? 'y' : 'ies'}`
+    `${sfdc.committed} committed / ${sfdc.released} released from ${sfdc.checked} SFDC opportunit${sfdc.checked === 1 ? 'y' : 'ies'}, ` +
+    `${warnings.warned} expiry warning(s) to ${warnings.recipients} user(s)` +
+    (warnings.skipped_no_email > 0 ? ` (${warnings.skipped_no_email} unwarned — no email)` : '')
   )
 
   return {
@@ -123,6 +136,8 @@ export async function refreshCache(): Promise<RefreshSummary> {
     holds_expired:             expiry.expired,
     opportunities_closed:      expiry.opportunities_closed,
     opportunities_would_close: expiry.opportunities_would_close,
+    expiry_warnings_sent:      warnings.warned,
+    expiry_warning_recipients: warnings.recipients,
   }
 }
 

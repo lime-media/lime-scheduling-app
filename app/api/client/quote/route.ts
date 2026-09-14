@@ -15,6 +15,8 @@ import { checkAvailability, legsFromTrucks } from '@/lib/availabilityEngine'
 import {
   computeQuote,
   priceTransport,
+  daysUntil,
+  MIN_CLIENT_LEAD_DAYS,
   countActivationDays,
   defaultDaysPerWeek,
   VALID_STUDIES,
@@ -55,6 +57,22 @@ export async function POST(req: NextRequest) {
   const { market, start_date, end_date, truck_count } = body
   if (!market || !start_date || !end_date || !truck_count || truck_count < 1) {
     return NextResponse.json({ error: 'market, start_date, end_date, and truck_count (>= 1) are required' }, { status: 400 })
+  }
+
+
+  // Near-term campaigns are not self-serviceable. Internal staff are NOT subject
+  // to this (see /api/quote) — they may have approval or context the engine
+  // lacks. This is a CLIENT-surface policy, enforced server-side so it cannot be
+  // bypassed by calling the API directly.
+  const leadDays = daysUntil(start_date)
+  if (leadDays < MIN_CLIENT_LEAD_DAYS) {
+    return NextResponse.json({
+      insufficient: true,
+      rushBlocked: true,
+      message: leadDays < 0
+        ? 'That start date has already passed. Please choose a future date.'
+        : `Campaigns starting within ${MIN_CLIENT_LEAD_DAYS} days can't be booked online — there isn't enough time to position trucks and crew. Submit a request and the Lime Media team will see what's possible.`,
+    })
   }
 
   // Resolve the market input — handles disambiguation and formalization

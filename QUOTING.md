@@ -243,6 +243,19 @@ Pricing answers *what it costs*. Feasibility answers *whether it is possible*, a
 
 Both travel rules count the **days actually free between jobs**. A campaign ending the 25th with the next job starting the 26th has **zero** free days, not one — the 25th belongs to the campaign and the 26th to the next job. Back-to-back bookings therefore need the next market to be inside the service area, or they are refused.
 
+### What the reservation truck-picker shows
+
+The swap picker on the Reservations page reports, per truck:
+
+- **Departs `<market>`** — where the truck will be when *this campaign* starts, not where it is today
+- **from its prior booking** or **current GPS position** — which of the two sources that came from
+- **`TRANSPORT 2d · $2,060`** or **`IN MARKET`** — whether this choice incurs a repositioning charge, and how much
+- **`NEEDS SOFT-HOLD RELEASE`** — available only by displacing an `ATT_SOFT` hold
+
+When the origin is a prior booking, the truck's *present* GPS market is shown underneath in parentheses, since those differ precisely when the distinction matters.
+
+The reservation's own hold is excluded from the timelines while this runs, so the truck currently assigned does not block itself and is measured on the same basis as the alternatives offered beside it.
+
 ### Where the truck departs from
 
 Distance is measured from where the truck **will actually be** when the campaign starts. Two sources, and which applies depends on whether the truck is committed between now and then:

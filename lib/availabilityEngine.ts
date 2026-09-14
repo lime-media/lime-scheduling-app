@@ -127,6 +127,15 @@ export type AvailabilityInput = {
   endDate: string             // YYYY-MM-DD
   truckCount: number          // requested number of trucks
   serviceAreaMiles?: number   // override SERVICE_AREA_RADIUS_MILES (from rate card)
+  /**
+   * Ignore this hold when building timelines.
+   *
+   * For the truck-swap picker: the reservation being edited would otherwise
+   * block its own truck as BOOKED, so the truck currently assigned could never
+   * appear in its own alternatives list — and its origin and transport could not
+   * be computed on the same basis as the trucks offered beside it.
+   */
+  excludeHoldId?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +174,7 @@ export function legsFromTrucks(trucks: AvailableTruck[]): TruckLeg[] {
 // ---------------------------------------------------------------------------
 
 export async function checkAvailability(input: AvailabilityInput): Promise<AvailabilityResult> {
-  const { market, startDate, endDate, truckCount, serviceAreaMiles } = input
+  const { market, startDate, endDate, truckCount, serviceAreaMiles, excludeHoldId } = input
 
   // Resolve campaign market coordinates
   const campaignCoords = await resolveCampaignCoords(market)
@@ -173,7 +182,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
   // Fetch all data sources in parallel. Timelines come from the shared loader —
   // this module does not build its own, or the duplication starts again.
   const [fleet, contextRows, resolvedNearestMarket] = await Promise.all([
-    loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS }),
+    loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS, excludeHoldId }),
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
     campaignCoords
       ? resolveNearestAcceptedMarket(campaignCoords.lat, campaignCoords.lng)

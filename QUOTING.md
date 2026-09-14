@@ -318,9 +318,17 @@ If the feasibility lookup itself errors, the hold is allowed through and the err
 
 **A free calendar slot is not the same as a servable truck.** Callers that omit `market` get the old behavior, unchanged — and no feasibility guarantee.
 
+### Where market coordinates come from
+
+Every scheduled shift requires selecting a market, and that selection carries a `standard_market_uid`. Where the LED schema includes bounding boxes on `standard_market_lookup`, the market's centroid travels with the job — **the coordinates are the market the team chose**, not a guess from its name.
+
+The old path was a 281-entry hardcoded file (`lib/marketCoordinates.ts`), built in June 2026 for grid proximity filtering and never intended as an authoritative list. Measured against production's 355 standard markets it covers **61%**; 137 markets had no coordinates at all, and 63 file entries are not markets. It remains as a fallback for holds (which carry no market uid) and for databases where the bounds migration has not landed.
+
+The bounds columns reach environments at different times, and referencing a column SQL Server does not have is a hard error rather than a null — so capability is detected once per process (`hasMarketBounds()`) and the query is chosen accordingly. A market row with null bounds behaves exactly as if the columns were absent.
+
 ### When a market name does not resolve
 
-Distance depends on matching `program_schedule` market names against the coordinate map. When a prior job's market cannot be matched, the truck **falls back to live GPS** — the old, wrong basis — rather than failing.
+Where the fallback is still in use, distance depends on matching `program_schedule` market names against the coordinate map. When a prior job's market cannot be matched, the truck **falls back to live GPS** — the old, wrong basis — rather than failing.
 
 The fallback is only reported when the unmappable job **has not started yet**. If the job is already running, the truck is physically in that market, so its GPS reads the right place and the distance is correct — there is nothing to verify. Only an upcoming job makes GPS describe where the truck *is* rather than where it will *depart from*.
 

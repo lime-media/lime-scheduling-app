@@ -14,7 +14,8 @@
 import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
 import { activeHoldWhere } from '@/lib/holdFilters'
-import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
+import { scheduledWithMarketQuery } from '@/lib/scheduleQuery'
+import { hasMarketBounds } from '@/lib/marketBounds'
 import { getLiveVehicleLocations, type SamsaraVehicleLocation } from '@/lib/samsaraService'
 import { buildTruckTimelines, type DayRow, type TruckJob } from '@/lib/truckTimeline'
 
@@ -56,8 +57,11 @@ export async function loadFleetTimelines(opts: {
 } = {}): Promise<FleetTimelines> {
   const hidden = opts.hiddenTrucks ?? new Set<string>()
 
+  // Ask the database what it can give us before asking for it.
+  const withBounds = await hasMarketBounds()
+
   const [scheduleRows, holds, gpsMap] = await Promise.all([
-    query<Record<string, unknown>[]>(SCHEDULED_QUERY),
+    query<Record<string, unknown>[]>(scheduledWithMarketQuery(withBounds)),
     prisma.hold.findMany({ where: activeHoldWhere(), orderBy: { start_date: 'asc' } }),
     getLiveVehicleLocations().catch(() => new Map<string, SamsaraVehicleLocation>()),
   ])
@@ -68,12 +72,18 @@ export async function loadFleetTimelines(opts: {
     if (!truckNumber || hidden.has(truckNumber)) continue
     const day = toDateStr(row.shift_start)
     if (!day) continue
+    const lat = Number(row.market_lat)
+    const lng = Number(row.market_lng)
     scheduleDays.push({
       truckNumber,
       date: day,
       market: normalizeMarket(row.standard_market_name || row.market),
       state: String(row.state ?? ''),
       program: String(row.program ?? ''),
+      // Only when the database supplied them AND they are real numbers; a
+      // market row with null bounds behaves exactly like the columns being absent.
+      lat: Number.isFinite(lat) && row.market_lat != null ? lat : undefined,
+      lng: Number.isFinite(lng) && row.market_lng != null ? lng : undefined,
     })
   }
 

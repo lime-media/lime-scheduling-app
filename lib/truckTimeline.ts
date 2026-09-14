@@ -25,6 +25,13 @@ export type TruckJob = {
   end: string            // YYYY-MM-DD, inclusive
   market: string
   state: string
+  /**
+   * The market's own coordinates, from standard_market_lookup. Present only
+   * where the LED schema carries bounding boxes. When set this is authoritative
+   * — it is the market the team selected, not a guess from its name.
+   */
+  lat?: number
+  lng?: number
   program?: string
   source: TruckJobSource
   status?: string
@@ -38,6 +45,8 @@ export type DayRow = {
   market: string
   state: string
   program?: string
+  lat?: number
+  lng?: number
 }
 
 function nextDayStr(dateStr: string): string {
@@ -81,6 +90,8 @@ export function groupDaysIntoJobs(rows: DayRow[]): Map<string, TruckJob[]> {
           market: day.market,
           state: day.state,
           program: day.program,
+          lat: day.lat,
+          lng: day.lng,
           source: 'SCHEDULE',
           yieldable: false,
         })

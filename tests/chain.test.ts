@@ -9,7 +9,7 @@
  */
 import { eq, section } from './harness'
 import { getMarketCoords } from '@/lib/marketCoordinates'
-import { checkChainFeasibility, coordsForJob, jobMarketLabel } from '@/lib/chainFeasibility'
+import { checkChainFeasibility, coordsForJob, jobMarketLabel, jobCoords } from '@/lib/chainFeasibility'
 import { buildTruckTimelines, groupDaysIntoJobs, type TruckJob } from '@/lib/truckTimeline'
 
 
@@ -243,6 +243,24 @@ eq('label appends a missing state', jobMarketLabel('Doral', 'FL'), 'Doral, FL')
 eq('Doral resolves', coordsForJob('Doral, FL', 'FL') !== null, true)
 eq('North Palm Beach resolves', coordsForJob('North Palm Beach, FL', 'FL') !== null, true)
 eq('Elizabeth resolves', coordsForJob('Elizabeth, NJ', 'NJ') !== null, true)
+
+section('market geography beats the name file')
+// A job carrying its own centroid is authoritative — it is the market the team
+// selected. The name file only covers 61% of production markets.
+eq('job coordinates win over the name lookup',
+   jobCoords({ market: 'Dallas, TX', state: 'TX', lat: 12.5, lng: -34.5 }),
+   { lat: 12.5, lng: -34.5 })
+eq('falls back to the name file when absent',
+   jobCoords({ market: 'Dallas, TX', state: 'TX' }) !== null, true)
+// The 137 markets with no file entry now resolve, if the database supplies them.
+eq('unmapped market resolves when the market supplies coords',
+   jobCoords({ market: 'Allentown, PA', state: 'PA', lat: 40.6, lng: -75.5 }),
+   { lat: 40.6, lng: -75.5 })
+eq('unmapped market still null without them',
+   jobCoords({ market: 'Allentown, PA', state: 'PA' }), null)
+// Half a coordinate is not a coordinate.
+eq('partial coordinates are ignored',
+   jobCoords({ market: 'Allentown, PA', state: 'PA', lat: 40.6 }), null)
 
 section('timeline grouping')
 const grouped = groupDaysIntoJobs([

@@ -147,6 +147,22 @@ export function coordsForJob(market: string, state: string): Coords | null {
   return city && city !== market ? getMarketCoords(city) ?? null : null
 }
 
+/**
+ * A job's coordinates, preferring the market's own geography over a name lookup.
+ *
+ * When standard_market_lookup carries bounding boxes, the centroid travels with
+ * the job and is authoritative — it is the market the team actually selected,
+ * not a guess from a 281-entry name file that covers 61% of them. The name
+ * lookup stays as the fallback for holds (which carry no market uid) and for
+ * databases where the bounds migration has not landed.
+ */
+export function jobCoords(job: { market: string; state: string; lat?: number; lng?: number }): Coords | null {
+  if (typeof job.lat === 'number' && typeof job.lng === 'number') {
+    return { lat: job.lat, lng: job.lng }
+  }
+  return coordsForJob(job.market, job.state)
+}
+
 /** Human label for a job's market, without duplicating the state. */
 export function jobMarketLabel(market: string, state: string): string {
   if (!market) return state || 'unknown'
@@ -192,7 +208,7 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
   //
   // Using a past job's market was wrong in exactly the case that matters most:
   // an idle truck that has since been moved.
-  const predCoords = predecessor ? coordsForJob(predecessor.market, predecessor.state) : null
+  const predCoords = predecessor ? jobCoords(predecessor) : null
   const originCoords = predCoords ?? currentCoords
   const originIsPriorJob = predCoords !== null
   const earliestDeparture = predecessor ? nextDay(predecessor.end) : today
@@ -237,7 +253,7 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
   // added deadhead can be flagged.
   let successorImpact: SuccessorImpact | null = null
   if (successor) {
-    const succCoords = coordsForJob(successor.market, successor.state)
+    const succCoords = jobCoords(successor)
     // Symmetric with the inbound leg: the campaign's final day is occupied by
     // the campaign, exactly as the predecessor's final day is occupied by the
     // predecessor. Travel can only start the day AFTER. Counting from

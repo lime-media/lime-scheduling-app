@@ -7,7 +7,7 @@
 import { prisma } from '@/lib/prisma'
 import { haversineDistance, getMarketCoords, resolveMarketInput, type MarketMatch } from '@/lib/marketCoordinates'
 import { marketSizeTierFromDmaCode, type RateOverrides } from './config'
-import { loadStandardMarketCoords, normalizeMarketKey } from '@/lib/marketBounds'
+import { loadStandardMarketCoords, normalizeMarketKey, titleCaseMarket } from '@/lib/marketBounds'
 import type { ClientSession } from '@/lib/clientAuth'
 
 // ---------------------------------------------------------------------------
@@ -172,13 +172,15 @@ export async function resolveCampaignCoords(market: string): Promise<CampaignCoo
     if (exact) return { ...exact, source: 'standard_market' }
 
     // City-only match, for "Allentown" against "Allentown, PA"
+    // City-only, e.g. "Allentown" against "Allentown, PA". Sorted so an
+    // ambiguous city resolves the same way every time rather than following
+    // Map insertion order.
     const city = key.split(',')[0].trim()
     if (city) {
-      for (const [name, coords] of standardMarkets) {
-        if (name.split(',')[0].trim() === city) {
-          return { ...coords, source: 'standard_market' }
-        }
-      }
+      const hits = [...standardMarkets.entries()]
+        .filter(([name]) => name.split(',')[0].trim() === city)
+        .sort(([a], [b]) => a.localeCompare(b))
+      if (hits.length > 0) return { ...hits[0][1], source: 'standard_market' }
     }
   } catch (err) {
     console.error('[resolvers] standard market coord lookup failed:', err)
@@ -326,7 +328,7 @@ export async function resolveMarketInputAll(input: string): Promise<MarketMatch[
   for (const [name, coords] of standard) {
     const nameCity = name.split(',')[0].trim()
     const nameState = name.split(',')[1]?.trim()
-    const match: MarketMatch = { key: name, formal: formalizeMarketName(name), ...coords }
+    const match: MarketMatch = { key: name, formal: titleCaseMarket(name), ...coords }
 
     if (name === key) exact.push(match)
     else if (city && nameCity === city && (!state || nameState === state)) cityMatches.push(match)
@@ -343,9 +345,3 @@ export async function resolveMarketInputAll(input: string): Promise<MarketMatch[
   return [...byKey.values()].sort((a, b) => a.formal.localeCompare(b.formal))
 }
 
-/** Title-case a "city, st" key for display: "allentown, pa" -> "Allentown, PA". */
-function formalizeMarketName(key: string): string {
-  const [city, state] = key.split(',').map(p => p.trim())
-  const titled = city.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
-  return state ? `${titled}, ${state.toUpperCase()}` : titled
-}

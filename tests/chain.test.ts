@@ -174,11 +174,16 @@ eq('prior ends 9/20, campaign starts 9/21 -> 0 days available', inboundSym.inbou
 eq('inbound blocked on the same geometry', inboundSym.feasible, false)
 
 section('deadhead delta: flagged, never priced')
-// Prior job Dallas, campaign OKC, successor Seattle.
+// Prior job Miami (upcoming, so it IS the origin), campaign OKC, successor
+// Seattle. GPS is deliberately a DIFFERENT market from the prior job so the
+// assertions below actually exercise a prior-job origin rather than passing
+// because GPS happens to agree.
 const delta = run('', {
   start: '2026-09-21', end: '2026-09-25', gps: 'Dallas, TX',
-  jobs: [job('2026-09-01', '2026-09-05', 'Dallas', 'TX'), job('2026-10-20', '2026-10-25', 'Seattle', 'WA')],
+  jobs: [job('2026-09-14', '2026-09-16', 'Miami', 'FL'), job('2026-10-20', '2026-10-25', 'Seattle', 'WA')],
 })
+eq('origin really is the prior job', delta.inbound.originIsPriorJob, true)
+eq('origin is Miami, not the Dallas GPS', delta.inbound.originLabel, 'Miami, FL')
 eq('feasible', delta.feasible, true)
 eq('successor impact reported', delta.successor !== null, true)
 eq('baseline measured from prior job', delta.successor!.baselineDistanceMiles > 0, true)
@@ -188,9 +193,11 @@ eq('delta is a number', typeof delta.successor!.deltaCost, 'number')
 const toward = checkChainFeasibility({
   campaignStart: '2026-09-21', campaignEnd: '2026-09-25',
   campaignCoords: C('Seattle, WA'),
-  jobs: [job('2026-09-01', '2026-09-05', 'Miami', 'FL'), job('2026-10-20', '2026-10-25', 'Portland', 'OR')],
-  currentCoords: C('Miami, FL'), today: TODAY,
+  // Upcoming prior job, and GPS set elsewhere so the prior job is doing the work.
+  jobs: [job('2026-09-14', '2026-09-16', 'Miami', 'FL'), job('2026-10-20', '2026-10-25', 'Portland', 'OR')],
+  currentCoords: C('Dallas, TX'), today: TODAY,
 })
+eq('toward: origin is the prior job', toward.inbound.originIsPriorJob, true)
 eq('moving toward successor -> negative delta', toward.successor!.deltaCost < 0, true)
 
 section('unknown data is surfaced, not dropped')

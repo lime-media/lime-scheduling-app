@@ -57,25 +57,6 @@ export async function hasMarketBounds(): Promise<boolean> {
   return cached
 }
 
-/** Test seam — forget the cached capability. */
-export function resetMarketBoundsCache(): void {
-  cached = null
-}
-
-/**
- * The centroid select list, when bounds are available.
- * NULL bounds yield NULL coordinates, which callers treat as "not resolved"
- * and fall back exactly as if the columns were absent.
- */
-export const MARKET_CENTROID_SELECT = `
-    CASE WHEN sml.bounds_ne_lat IS NOT NULL AND sml.bounds_sw_lat IS NOT NULL
-         THEN (sml.bounds_ne_lat + sml.bounds_sw_lat) / 2.0 END AS market_lat,
-    CASE WHEN sml.bounds_ne_lng IS NOT NULL AND sml.bounds_sw_lng IS NOT NULL
-         THEN (sml.bounds_ne_lng + sml.bounds_sw_lng) / 2.0 END AS market_lng`
-
-export const MARKET_CENTROID_JOIN = `
-LEFT JOIN dbo.standard_market_lookup sml
-    ON  sml.standard_market_uid = cpm.standard_market_uid`
 
 // ---------------------------------------------------------------------------
 // Name-keyed lookup, for records that carry no standard_market_uid
@@ -139,10 +120,6 @@ export async function loadStandardMarketCoords(): Promise<Map<string, MarketCoor
   return marketCoordsCache
 }
 
-/** Test seam — forget the cached market coordinates. */
-export function resetStandardMarketCoordsCache(): void {
-  marketCoordsCache = null
-}
 
 /**
  * The canonical standard-market name for a free-text market, or null.
@@ -168,26 +145,63 @@ export async function canonicalMarketName(market: string, state?: string): Promi
   }
   if (coords.size === 0) return null
 
-  // Build the reverse map once per call from the cached list — small (356) and
-  // avoids holding a second copy.
-  const key = normalizeMarketKey(raw)
+  const matched = matchMarketKey(raw, state, coords.keys())
+  return matched ? titleCaseMarket(matched) : null
+}
+
+/**
+ * Match free-text market input against a set of canonical keys.
+ *
+ * Pure and separated from the database so the rule itself is testable:
+ *   1. "market, state" when the state is not already on the end
+ *   2. the market as written
+ *   3. city-only, but ONLY when exactly one market has that city — "Portland"
+ *      matching both OR and ME is an ambiguity, not a result.
+ *
+ * An explicitly supplied state is a CONSTRAINT, not a hint. "Dallas, GA" must
+ * not fall back to "Dallas, TX" just because Texas is the only Dallas we know —
+ * that would silently relocate a campaign a thousand miles.
+ */
+export function matchMarketKey(
+  market: string,
+  state: string | undefined,
+  keys: Iterable<string>,
+): string | null {
+  const key = normalizeMarketKey(market)
+  if (!key) return null
+
+  const keyList = [...keys]
+  const known = new Set(keyList)
+
   const withState =
     state && !key.endsWith(`, ${state.trim().toLowerCase()}`)
-      ? normalizeMarketKey(`${raw}, ${state}`)
+      ? normalizeMarketKey(`${market}, ${state}`)
       : key
 
   for (const candidate of [withState, key]) {
-    if (coords.has(candidate)) return titleCaseMarket(candidate)
+    if (known.has(candidate)) return candidate
   }
 
-  // City-only match, so "Dallas" resolves to "Dallas, TX" when unambiguous.
   const city = key.split(',')[0].trim()
   if (!city) return null
-  const cityHits = [...coords.keys()].filter(k => k.split(',')[0].trim() === city)
-  return cityHits.length === 1 ? titleCaseMarket(cityHits[0]) : null
+
+  // Whatever state the caller actually stated, from either source.
+  const statedState = (key.split(',')[1]?.trim() || state?.trim().toLowerCase() || '')
+
+  const cityHits = keyList.filter(k => k.split(',')[0].trim() === city)
+
+  if (statedState) {
+    // A stated state narrows; it never broadens. No match in that state is a
+    // non-match, not an invitation to pick a different one.
+    const inState = cityHits.filter(k => k.split(',')[1]?.trim() === statedState)
+    return inState.length === 1 ? inState[0] : null
+  }
+
+  return cityHits.length === 1 ? cityHits[0] : null
 }
 
-function titleCaseMarket(key: string): string {
+/** Title-case a "city, st" key for display: "allentown, pa" -> "Allentown, PA". */
+export function titleCaseMarket(key: string): string {
   const [city, st] = key.split(',').map(p => p.trim())
   const titled = city.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
   return st ? `${titled}, ${st.toUpperCase()}` : titled

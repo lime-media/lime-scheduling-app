@@ -10,11 +10,10 @@
 //   HOLD_NOTIFY_EMAIL    inbound client reservations (portal and MCP)
 //   ASSIST_NOTIFY_EMAIL  client assistance / extension requests
 //
-// Comma-separated for multiple recipients. The defaults below preserve current
-// behavior when the vars are unset.
+// Comma-separated for multiple recipients.
 
 const HOLD_NOTIFY_TO   = process.env.HOLD_NOTIFY_EMAIL   || 'andrew@lime-media.com'
-const ASSIST_NOTIFY_TO = process.env.ASSIST_NOTIFY_EMAIL || 'andrew@lime-media.com, bbenekos@lime-media.com'
+const ASSIST_NOTIFY_TO = process.env.ASSIST_NOTIFY_EMAIL || 'andrew@lime-media.com'
 
 export interface HoldRequestEmailData {
   companyName:  string

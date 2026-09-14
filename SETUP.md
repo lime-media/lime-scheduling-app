@@ -32,12 +32,13 @@ CRON_SECRET="<output of: openssl rand -base64 32>"
 SFDC_CLOSED_LOST_STAGE="Closed Lost - Declined"
 
 # Optional — who receives team notifications. Comma-separated for several.
-# Both default to the addresses below, so neither is required for correct
+# Both default to the address below, so neither is required for correct
 # behavior; set them to change the list without a deploy.
-#   inbound client reservations (client portal + MCP)
+#   a client successfully booked (client portal + MCP)
 HOLD_NOTIFY_EMAIL="andrew@lime-media.com"
-#   client assistance and hold-extension requests
-ASSIST_NOTIFY_EMAIL="andrew@lime-media.com,bbenekos@lime-media.com"
+#   a client could NOT self-serve and wants a human: failed-quote requests,
+#   hold extension requests, and AI chat escalations
+ASSIST_NOTIFY_EMAIL="andrew@lime-media.com"
 
 # Optional — set to "off" to stop the hourly sweep writing Closed Lost back to
 # Salesforce. Defaults to ON. Worth setting off in any environment that shares

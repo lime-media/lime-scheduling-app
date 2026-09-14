@@ -1,5 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
+import { checkTruckFeasibility } from '@/lib/availabilityEngine'
+import { daysUntil, MIN_CLIENT_LEAD_DAYS } from '@/lib/pricing'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { appendHoldRequestToSheet } from '@/lib/googleSheets'
@@ -49,6 +51,13 @@ export interface CreateClientHoldParams {
   features?:          string | null
   truck_count?:       number | null
   campaign_group_id?: string | null
+  /**
+   * Skip the feasibility check. Only for callers that already vetted this truck
+   * through selectTrucksForHold — it avoids reloading the fleet timelines once
+   * per truck in a multi-truck campaign. Never set it on a path where a client
+   * supplies the truck number directly.
+   */
+  skipFeasibilityCheck?: boolean
 }
 
 /**
@@ -65,6 +74,19 @@ export async function createClientHold(
     pricing_tier, quoted_total, daily_rate, features,
     truck_count, campaign_group_id,
   } = params
+
+  // Client self-serve lead time. Enforced HERE rather than in the route because
+  // both client paths funnel through this function — the auto-select flow checks
+  // it earlier for a friendlier response, but the legacy drag-on-grid flow calls
+  // straight in with a truck number and would otherwise skip the gate entirely.
+  const leadDays = daysUntil(start_date)
+  if (leadDays < MIN_CLIENT_LEAD_DAYS) {
+    throw new Error(
+      leadDays < 0
+        ? 'That start date has already passed.'
+        : `Campaigns starting within ${MIN_CLIENT_LEAD_DAYS} days can't be booked online. Submit a request and the Lime Media team will follow up.`,
+    )
+  }
 
   const expiresAt = computeHoldExpiresAt(start_date)
 
@@ -90,6 +112,32 @@ export async function createClientHold(
   if (conflicts.length > 0) {
     const c = conflicts[0]
     throw new Error(`Truck ${truck_number} already booked for "${c.client_name}" from ${c.start_date.toISOString().split('T')[0]} to ${c.end_date.toISOString().split('T')[0]}`)
+  }
+
+  // The conflict query above sees the hold table ONLY — it knows nothing about
+  // dbo.program_schedule, so on its own it would let a client book a truck that
+  // is already out on a scheduled LED program. Same gap that was open on the
+  // chat route. Callers that already vetted the truck through
+  // selectTrucksForHold pass skipFeasibilityCheck to avoid reloading the fleet
+  // timelines once per truck in a multi-truck campaign.
+  if (!params.skipFeasibilityCheck) {
+    // A lookup FAILURE is tolerated (fail-open, same as every other path); a
+    // truck REJECTION must propagate. Kept separate so the throw below can
+    // never be swallowed by the catch meant for infrastructure errors.
+    let feasibility: Awaited<ReturnType<typeof checkTruckFeasibility>> | null = null
+    try {
+      feasibility = await checkTruckFeasibility({
+        truckNumber: truck_number,
+        market: market ?? '',
+        startDate: start_date,
+        endDate: end_date,
+      })
+    } catch (err) {
+      console.error('[holdRequestService] FEASIBILITY_CHECK_FAILED (allowing hold):', err)
+    }
+    if (feasibility && !feasibility.ok && !feasibility.overridable) {
+      throw new Error(feasibility.detail ?? `Truck ${truck_number} cannot serve these dates`)
+    }
   }
 
   // Canonical market name — holds carry no standard_market_uid, so this string

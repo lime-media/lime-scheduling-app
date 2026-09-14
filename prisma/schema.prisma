@@ -3,19 +3,18 @@ generator client {
 }
 
 datasource db {
-  provider          = "sqlserver"
-  url               = env("DATABASE_URL")
-
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
 }
 
 // role: SALES | OPERATIONS
 model User {
-  id            String         @id @default(cuid())
-  email         String         @unique
+  id            String     @id @default(cuid())
+  email         String     @unique
   name          String
   password_hash String
-  role          String         @default("SALES")
-  created_at    DateTime       @default(now())
+  role          String     @default("SALES")
+  created_at    DateTime   @default(now())
   holds         Hold[]
   audit_logs    AuditLog[]
   otp_codes     OtpCode[]
@@ -27,40 +26,40 @@ model User {
 // source: INTERNAL | SALESFORCE | CLIENT
 // origination: frontend | client-view | mcp
 model Hold {
-  id                  String     @id @default(cuid())
+  id                  String      @id @default(cuid())
   truck_number        String
   market              String
   state               String
   client_name         String
   start_date          DateTime
   end_date            DateTime
-  status              String     @default("HOLD")
-  source              String     @default("INTERNAL")
-  origination         String     @default("frontend")
+  status              String      @default("HOLD")
+  source              String      @default("INTERNAL")
+  origination         String      @default("frontend")
   notes               String?
   created_by          String
-  created_at          DateTime   @default(now())
-  updated_at          DateTime   @updatedAt
+  created_at          DateTime    @default(now())
+  updated_at          DateTime    @updatedAt
   // Salesforce link — lets repeat pushes for the same Opportunity update
   // the existing hold instead of creating duplicates.
   sfdc_opportunity_id String?
-  sfdc_hold_exp       DateTime?  // DEPRECATED — use expires_at instead
+  sfdc_hold_exp       DateTime? // DEPRECATED — use expires_at instead
   // Client user link (nullable — only set for CLIENT-sourced holds)
   client_user_id      String?
   // Pricing snapshot — locked at hold creation from the quote engine
-  pricing_tier        String?                        // Good | Better | Best
-  quoted_total        Float?                         // total price at the selected tier (campaign-level)
-  daily_rate          Float?                         // per-truck per-day rate
-  features            String?    @db.NVarChar(Max)   // JSON: feature breakdown
+  pricing_tier        String? // Good | Better | Best
+  quoted_total        Float? // total price at the selected tier (campaign-level)
+  daily_rate          Float? // per-truck per-day rate
+  features            String?     @db.NVarChar(Max) // JSON: feature breakdown
   // Campaign grouping
-  truck_count         Int?                           // total trucks in the campaign
-  campaign_group_id   String?                        // groups multi-truck holds into one campaign
+  truck_count         Int? // total trucks in the campaign
+  campaign_group_id   String? // groups multi-truck holds into one campaign
   // Unified expiration — 72h for client holds, sfdc_hold_exp for Salesforce, null for no expiry
   expires_at          DateTime?
-  extension_reason    String?    @db.NVarChar(Max)   // client's reason when requesting extension
-  extension_until     DateTime?                       // requested extension date (client picks)
+  extension_reason    String?     @db.NVarChar(Max) // client's reason when requesting extension
+  extension_until     DateTime? // requested extension date (client picks)
   // Relations
-  user                User       @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user                User        @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
   client_user         ClientUser? @relation(fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   audit_logs          AuditLog[]
 
@@ -73,27 +72,27 @@ model Hold {
 // All new code writes to Hold directly. This model is retained only for
 // rollback safety and historical reads.
 model HoldRequest {
-  id                  String     @id @default(cuid())
+  id                  String      @id @default(cuid())
   client_user_id      String?
   truck_number        String
   market              String
   state               String?
   start_date          DateTime
   end_date            DateTime
-  notes               String?    @db.NVarChar(Max)
-  status              String     @default("PENDING")
-  source              String     @default("CLIENT")
+  notes               String?     @db.NVarChar(Max)
+  status              String      @default("PENDING")
+  source              String      @default("CLIENT")
   pricing_tier        String?
   quoted_total        Float?
   daily_rate          Float?
-  features            String?    @db.NVarChar(Max)
+  features            String?     @db.NVarChar(Max)
   truck_count         Int?
   campaign_group_id   String?
   sfdc_opportunity_id String?
   expires_at          DateTime?
-  extension_reason    String?    @db.NVarChar(Max)
+  extension_reason    String?     @db.NVarChar(Max)
   extension_until     DateTime?
-  created_at          DateTime   @default(now())
+  created_at          DateTime    @default(now())
   client_user         ClientUser? @relation("HoldRequestClientUser", fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([campaign_group_id])
@@ -101,22 +100,22 @@ model HoldRequest {
 }
 
 model ClientUser {
-  id            String             @id @default(cuid())
-  username      String             @unique
-  password_hash String
-  company_name  String
-  email         String?
+  id              String             @id @default(cuid())
+  username        String             @unique
+  password_hash   String
+  company_name    String
+  email           String?
   // Optional link to a RateAgreement.partner_id — lets the client-portal AI quote engine apply
   // this client's negotiated rate instead of the standard rate card. Null means standard pricing.
   // Set by ops via the admin client-users screen; not self-serve.
   partner_id      String?
   // Salesforce Account ID — links this client to their SFDC Account so outbound
   // opportunities can be created under the correct account.
-  sfdc_account_id  String?
-  created_at    DateTime           @default(now())
-  holds         Hold[]
-  hold_requests HoldRequest[]     @relation("HoldRequestClientUser") // DEPRECATED
-  ai_questions  ClientAiQuestion[]
+  sfdc_account_id String?
+  created_at      DateTime           @default(now())
+  holds           Hold[]
+  hold_requests   HoldRequest[]      @relation("HoldRequestClientUser") // DEPRECATED
+  ai_questions    ClientAiQuestion[]
 
   @@map("app_client_users")
 }
@@ -178,13 +177,13 @@ model OtpCode {
 // user_type: app_user | client_user
 // No hard FK on user_id — target table depends on user_type
 model McpToken {
-  id          String    @id @default(cuid())
-  token_hash  String
-  user_id     String    @db.NVarChar(255)
-  user_type   String    @default("app_user")
-  label       String
-  created_at  DateTime  @default(now())
-  revoked_at  DateTime?
+  id         String    @id @default(cuid())
+  token_hash String
+  user_id    String    @db.NVarChar(255)
+  user_type  String    @default("app_user")
+  label      String
+  created_at DateTime  @default(now())
+  revoked_at DateTime?
 
   @@map("mcp_tokens")
 }
@@ -214,13 +213,13 @@ model McpQueryLog {
 // agreement_type: standard | volume_discount | flat_rate | custom
 model RateAgreement {
   id              String   @id @default(cuid())
-  partner_id      String   // DEPRECATED — use sfdc_account_id
-  sfdc_account_id String?  // Salesforce Account ID — the canonical link
+  partner_id      String // DEPRECATED — use sfdc_account_id
+  sfdc_account_id String? // Salesforce Account ID — the canonical link
   name            String
   agreement_type  String   @default("standard")
   effective_date  DateTime
   expiration_date DateTime
-  rate_overrides  String   // JSON: selective overrides to the standard rate card
+  rate_overrides  String // JSON: selective overrides to the standard rate card
   created_by      String
   notes           String?
   created_at      DateTime @default(now())
@@ -233,13 +232,25 @@ model RateAgreement {
 // Operational bases where Lime maintains driver pools and fleet presence.
 // Any campaign city within 450 miles of an accepted market is serviceable.
 // Beyond 450 miles = outside service area.
+/// Editable application settings, so operational configuration that changes
+/// with people rather than code — notification recipients, for instance — can
+/// be edited in the app instead of requiring a PR and a deploy.
+model AppSetting {
+  key        String   @id
+  value      String   @db.NVarChar(Max)
+  updated_at DateTime @updatedAt
+  updated_by String?
+
+  @@map("app_settings")
+}
+
 model AcceptedMarket {
   id               String   @id @default(cuid())
   dma_code         String   @unique
   dma_name         String
   lat              Float
   lng              Float
-  base_concurrency Int      @default(1)  // max simultaneous trucks before swarm trigger
+  base_concurrency Int      @default(1) // max simultaneous trucks before swarm trigger
   notes            String?
   is_active        Boolean  @default(true)
   created_at       DateTime @default(now())

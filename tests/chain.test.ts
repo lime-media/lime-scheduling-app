@@ -10,7 +10,7 @@
 import { eq, section } from './harness'
 import { getMarketCoords } from '@/lib/marketCoordinates'
 import { checkChainFeasibility, coordsForJob, jobMarketLabel, jobCoords } from '@/lib/chainFeasibility'
-import { buildTruckTimelines, groupDaysIntoJobs, type TruckJob } from '@/lib/truckTimeline'
+import { buildTruckTimelines, groupDaysIntoJobs, findWindowClash, type TruckJob } from '@/lib/truckTimeline'
 import { normalizeMarketKey } from '@/lib/marketBounds'
 
 
@@ -121,6 +121,23 @@ const softPlusReal = run('', {
 })
 eq('real job wins over a later soft hold', softPlusReal.inbound.originLabel, 'Miami, FL')
 eq('departure not gated by the soft hold', softPlusReal.inbound.earliestDeparture, '2026-09-16')
+
+section('rule 2: the campaign window itself must be free')
+// checkChainFeasibility does NOT check this — the caller does. Single-truck
+// callers (chat, hold writes) had no such check, so a truck already running a
+// program could be booked over it. Asserted here as the contract.
+// A job straddling the campaign is neither a predecessor (it ends after the
+// campaign starts) nor a successor (it starts before the campaign ends), so the
+// chain check has nothing to say about it and reports FEASIBLE. That is correct
+// and is exactly why the caller must check the window separately — the bug was
+// a caller that never did.
+const overlapping = run('', {
+  start: '2026-09-21', end: '2026-09-25', gps: 'Oklahoma City, OK',
+  jobs: [job('2026-09-23', '2026-09-27', 'Dallas', 'TX')],
+})
+eq('overlapping job is not a predecessor', overlapping.inbound.originIsPriorJob, false)
+eq('overlapping job is not a successor', overlapping.successor, null)
+eq('chain check alone reports feasible', overlapping.feasible, true)
 
 section('rule 3: does not strand the next job')
 const strands = run('', {
@@ -307,3 +324,20 @@ const withCoords = buildTruckTimelines(
 eq('hold coordinates survive into the timeline', [withCoords[0].lat, withCoords[0].lng], [40.6, -75.5])
 eq('and are used as the origin', jobCoords(withCoords[0]), { lat: 40.6, lng: -75.5 })
 
+
+section('window clash detection (the check every caller must run)')
+const busy: TruckJob[] = [
+  job('2026-09-10', '2026-09-14', 'Dallas', 'TX'),
+  job('2026-09-23', '2026-09-27', 'Miami', 'FL'),
+]
+eq('straddling the start', findWindowClash(busy, '2026-09-12', '2026-09-18')?.market, 'Dallas')
+eq('straddling the end', findWindowClash(busy, '2026-09-20', '2026-09-24')?.market, 'Miami')
+eq('fully inside a job', findWindowClash(busy, '2026-09-11', '2026-09-13')?.market, 'Dallas')
+eq('job fully inside the campaign', findWindowClash(busy, '2026-09-01', '2026-09-30')?.market, 'Dallas')
+eq('exact same dates', findWindowClash(busy, '2026-09-10', '2026-09-14')?.market, 'Dallas')
+eq('touching on the first day', findWindowClash(busy, '2026-09-14', '2026-09-18')?.market, 'Dallas')
+eq('touching on the last day', findWindowClash(busy, '2026-09-06', '2026-09-10')?.market, 'Dallas')
+eq('clear gap between jobs', findWindowClash(busy, '2026-09-16', '2026-09-21'), null)
+eq('entirely before', findWindowClash(busy, '2026-09-01', '2026-09-09'), null)
+eq('entirely after', findWindowClash(busy, '2026-09-28', '2026-09-30'), null)
+eq('no jobs at all', findWindowClash([], '2026-09-01', '2026-09-30'), null)

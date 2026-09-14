@@ -1,3 +1,4 @@
+import { getSetting } from '@/lib/appSettings'
 import nodemailer from 'nodemailer'
 
 export interface ConflictEmailPayload {
@@ -32,7 +33,9 @@ export async function sendConflictEmail(conflict: ConflictEmailPayload): Promise
     return
   }
 
-  const to = process.env.NOTIFY_EMAIL || process.env.SMTP_USER
+  // Settings row wins, then NOTIFY_EMAIL, then the compiled default; SMTP_USER
+  // remains the last resort so a send is never addressed to nothing.
+  const to = (await getSetting('notify.conflicts')) || process.env.SMTP_USER
   if (!to) return
 
   await transporter.sendMail({

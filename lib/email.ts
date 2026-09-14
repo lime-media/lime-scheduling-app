@@ -1,5 +1,21 @@
+import { getSetting } from '@/lib/appSettings'
+
 // Email notifications — wire up SMTP credentials in .env when ready.
 // Required env vars: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
+//
+// Team notification recipients are env-configurable so the distribution list can
+// change without a deploy. They were previously hardcoded here, which is how the
+// inbound-reservation alert ended up pointed at a single person with the real
+// list commented out one line above it — a code change, a PR and a promotion is
+// too much friction for "add someone to an email".
+//
+// Recipients are resolved at SEND time via lib/appSettings: the row edited on
+// the Settings page wins, the env var is still honoured as a deploy-level
+// override, and a compiled default guarantees a notification is never addressed
+// to nothing.
+//
+//   notify.holds   / HOLD_NOTIFY_EMAIL    a client booked
+//   notify.assist  / ASSIST_NOTIFY_EMAIL  a client needs a human
 
 export interface HoldRequestEmailData {
   companyName:  string
@@ -40,8 +56,7 @@ export async function sendHoldRequestEmail(data: HoldRequestEmailData): Promise<
 
   await transporter.sendMail({
     from:    SMTP_FROM ?? SMTP_USER,
-    // to:      'andrew@lime-media.com, bbenekos@lime-media.com',
-    to:      'schaudhari@lime-media.com',
+    to:      await getSetting('notify.holds'),
     subject,
     text,
   })
@@ -84,7 +99,7 @@ export async function sendAssistanceRequestEmail(data: AssistanceRequestEmailDat
 
   await transporter.sendMail({
     from:    SMTP_FROM ?? SMTP_USER,
-    to:      'andrew@lime-media.com, bbenekos@lime-media.com',
+    to:      await getSetting('notify.assist'),
     subject,
     text,
   })
@@ -175,5 +190,85 @@ export async function sendOtpEmail(data: OtpEmailData): Promise<void> {
     to:      data.to,
     subject,
     text,
+  })
+}
+
+export interface ExpiringHoldSummary {
+  truckNumber: string
+  clientName:  string
+  market:      string
+  startDate:   string
+  endDate:     string
+  expiresAt:   string
+  hoursLeft:   number
+}
+
+export interface ExpiringHoldsEmailData {
+  to:         string
+  recipientName: string
+  holds:      ExpiringHoldSummary[]
+}
+
+/**
+ * Warn a user that reservations they placed are about to expire.
+ *
+ * One digest per user rather than one email per hold — a rep with five expiring
+ * reservations should get one message they can act on, not five they learn to
+ * ignore.
+ */
+export async function sendExpiringHoldsEmail(data: ExpiringHoldsEmailData): Promise<void> {
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+    console.log('[email] SMTP not configured — expiry warning not sent:', {
+      to: data.to,
+      holds: data.holds.length,
+    })
+    return
+  }
+
+  const nodemailer = (await import('nodemailer')).default
+  const transporter = nodemailer.createTransport({
+    host:   SMTP_HOST,
+    port:   Number(SMTP_PORT ?? 587),
+    secure: Number(SMTP_PORT ?? 587) === 465,
+    auth:   { user: SMTP_USER, pass: SMTP_PASS },
+  })
+
+  const n = data.holds.length
+  const subject = n === 1
+    ? `Reservation expires tomorrow — Truck ${data.holds[0].truckNumber} · ${data.holds[0].clientName}`
+    : `${n} reservations expire within 24 hours`
+
+  const lines = [
+    `${data.recipientName || 'Hi'},`,
+    ``,
+    n === 1
+      ? `A reservation you placed expires in ${data.holds[0].hoursLeft} hour${data.holds[0].hoursLeft === 1 ? '' : 's'}.`
+      : `${n} reservations you placed expire within the next 24 hours.`,
+    ``,
+  ]
+
+  for (const h of data.holds) {
+    lines.push(
+      `Truck ${h.truckNumber} — ${h.clientName}`,
+      `  Market:  ${h.market || 'Unknown'}`,
+      `  Dates:   ${h.startDate} → ${h.endDate}`,
+      `  Expires: ${h.expiresAt} (${h.hoursLeft}h)`,
+      ``,
+    )
+  }
+
+  lines.push(
+    `Commit or extend them at https://led.lime-media.com/hold-requests`,
+    ``,
+    `Anything not committed by its expiry is released automatically and the truck`,
+    `becomes available to everyone else.`,
+  )
+
+  await transporter.sendMail({
+    from:    SMTP_FROM ?? SMTP_USER,
+    to:      data.to,
+    subject,
+    text:    lines.join('\n'),
   })
 }

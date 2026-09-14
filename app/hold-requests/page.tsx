@@ -109,7 +109,20 @@ function PricingBadge({ tier, total }: { tier: string | null; total: number | nu
   )
 }
 
-type AvailableTruck = { truckNumber: string; currentMarket: string; distanceMiles: number; current: boolean }
+type AvailableTruck = {
+  truckNumber: string
+  current: boolean
+  /** Where the truck departs from for these dates — not where it is today. */
+  departsFrom: string
+  /** True when departsFrom is a commitment (projection), false when it is GPS. */
+  originIsCommitment: boolean
+  gpsMarket: string | null
+  distanceMiles: number
+  needsTransport: boolean
+  transportDays: number
+  transportCharge: number
+  requiresOverride: boolean
+}
 
 export default function HoldRequestsPage() {
   const [requests,     setRequests]     = useState<HoldRequest[]>([])
@@ -618,17 +631,61 @@ export default function HoldRequestsPage() {
                                   <div className="text-xs text-gray-500 mb-1">Truck {r.truck_number}</div>
                                 )}
                                 {available.length > 1 ? (
-                                  <select
-                                    value={selectedTrucks.get(r.id) ?? r.truck_number}
-                                    onChange={(e) => setSelectedTrucks(prev => new Map(prev).set(r.id, e.target.value))}
-                                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent bg-white"
-                                  >
-                                    {available.map(t => (
-                                      <option key={t.truckNumber} value={t.truckNumber}>
-                                        {t.truckNumber}{t.current ? ' (current)' : ''} — {t.currentMarket || 'Unknown'}{!t.current && t.distanceMiles > 0 ? ` (${Math.round(t.distanceMiles)} mi)` : ''}
-                                      </option>
-                                    ))}
-                                  </select>
+                                  <>
+                                  <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-72 overflow-y-auto bg-white">
+                                    {available.map(t => {
+                                      const chosen = (selectedTrucks.get(r.id) ?? r.truck_number) === t.truckNumber
+                                      return (
+                                        <label
+                                          key={t.truckNumber}
+                                          className={`flex items-start gap-3 px-3 py-2.5 cursor-pointer transition-colors ${chosen ? 'bg-green-50' : 'hover:bg-gray-50'}`}
+                                        >
+                                          <input
+                                            type="radio"
+                                            name={`truck-${r.id}`}
+                                            value={t.truckNumber}
+                                            checked={chosen}
+                                            onChange={() => setSelectedTrucks(prev => new Map(prev).set(r.id, t.truckNumber))}
+                                            className="mt-1 accent-green-600"
+                                          />
+                                          <span className="flex-1 min-w-0">
+                                            <span className="flex items-center gap-1.5 flex-wrap">
+                                              <span className="text-sm font-semibold text-gray-900">{t.truckNumber}</span>
+                                              {t.current && (
+                                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-gray-200 text-gray-700">CURRENT</span>
+                                              )}
+                                              {t.needsTransport ? (
+                                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
+                                                  TRANSPORT {t.transportDays}d · {fmtMoney(t.transportCharge)}
+                                                </span>
+                                              ) : (
+                                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-green-100 text-green-800">IN MARKET</span>
+                                              )}
+                                              {t.requiresOverride && (
+                                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-purple-100 text-purple-800">NEEDS SOFT-HOLD RELEASE</span>
+                                              )}
+                                            </span>
+                                            <span className="block text-xs text-gray-500 mt-0.5">
+                                              Departs {t.departsFrom}
+                                              {t.distanceMiles > 0 && ` · ${Math.round(t.distanceMiles)} mi out`}
+                                              {t.originIsCommitment
+                                                ? ' · from its prior booking'
+                                                : ' · current GPS position'}
+                                            </span>
+                                            {t.originIsCommitment && t.gpsMarket && (
+                                              <span className="block text-[11px] text-gray-400">
+                                                (parked in {t.gpsMarket} today)
+                                              </span>
+                                            )}
+                                          </span>
+                                        </label>
+                                      )
+                                    })}
+                                  </div>
+                                  <p className="text-[11px] text-gray-400 mt-1.5">
+                                    Distance and transport are measured from where each truck will actually be when this campaign starts.
+                                  </p>
+                                  </>
                                 ) : (
                                   <p className="text-sm text-gray-600 bg-gray-50 rounded-lg px-3 py-2.5">
                                     {r.truck_number}

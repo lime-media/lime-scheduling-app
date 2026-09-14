@@ -26,9 +26,9 @@ export type {
   MarginCheck,
 } from './transport'
 
-export { countActivationDays, countCalendarDays, defaultDaysPerWeek } from './schedule'
+export { countActivationDays, countCalendarDays, defaultDaysPerWeek, daysUntil } from './schedule'
 
-export { RATE_CARD, TRANSPORT_CONFIG, SERVICE_AREA_RADIUS_MILES, MARKET_SIZE_TIERS, VALID_STUDIES, SHADOW_FENCING_CPM, STUDY_PRICE, STUDY_MIN_IMPRESSIONS, marketSizeTierFromDmaCode } from './config'
+export { RATE_CARD, TRANSPORT_CONFIG, MIN_CLIENT_LEAD_DAYS, SERVICE_AREA_RADIUS_MILES, MARKET_SIZE_TIERS, VALID_STUDIES, SHADOW_FENCING_CPM, STUDY_PRICE, STUDY_MIN_IMPRESSIONS, marketSizeTierFromDmaCode } from './config'
 export type { RateOverrides, StudyType, MarketSizeTier } from './config'
 
 export { resolveMarketSizeTierId, resolveRateOverrides, resolveNearestAcceptedMarket, resolveCampaignCoords, businessDaysBetween } from './resolvers'

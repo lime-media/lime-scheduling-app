@@ -35,6 +35,7 @@ import {
 } from '@/lib/pricing/transport'
 import { checkChainFeasibility, type ChainResult } from '@/lib/chainFeasibility'
 import { loadFleetTimelines } from '@/lib/fleetTimelines'
+import { findWindowClash } from '@/lib/truckTimeline'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -127,6 +128,15 @@ export type AvailabilityInput = {
   endDate: string             // YYYY-MM-DD
   truckCount: number          // requested number of trucks
   serviceAreaMiles?: number   // override SERVICE_AREA_RADIUS_MILES (from rate card)
+  /**
+   * Ignore this hold when building timelines.
+   *
+   * For the truck-swap picker: the reservation being edited would otherwise
+   * block its own truck as BOOKED, so the truck currently assigned could never
+   * appear in its own alternatives list — and its origin and transport could not
+   * be computed on the same basis as the trucks offered beside it.
+   */
+  excludeHoldId?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +175,7 @@ export function legsFromTrucks(trucks: AvailableTruck[]): TruckLeg[] {
 // ---------------------------------------------------------------------------
 
 export async function checkAvailability(input: AvailabilityInput): Promise<AvailabilityResult> {
-  const { market, startDate, endDate, truckCount, serviceAreaMiles } = input
+  const { market, startDate, endDate, truckCount, serviceAreaMiles, excludeHoldId } = input
 
   // Resolve campaign market coordinates
   const campaignCoords = await resolveCampaignCoords(market)
@@ -173,7 +183,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
   // Fetch all data sources in parallel. Timelines come from the shared loader —
   // this module does not build its own, or the duplication starts again.
   const [fleet, contextRows, resolvedNearestMarket] = await Promise.all([
-    loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS }),
+    loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS, excludeHoldId }),
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
     campaignCoords
       ? resolveNearestAcceptedMarket(campaignCoords.lat, campaignCoords.lng)
@@ -398,7 +408,7 @@ export type TruckFeasibility = {
   ok: boolean
   /** True when the only blocker is a soft hold a rep may displace. */
   overridable: boolean
-  reason?: 'CANNOT_ARRIVE' | 'STRANDS_SUCCESSOR' | 'UNKNOWN_ORIGIN' | 'UNRESOLVED_MARKET'
+  reason?: 'BOOKED' | 'CANNOT_ARRIVE' | 'STRANDS_SUCCESSOR' | 'UNKNOWN_ORIGIN' | 'UNRESOLVED_MARKET'
   detail?: string
 }
 
@@ -439,11 +449,33 @@ export async function checkTruckFeasibility(params: {
     ? { lat: gps.latitude, lng: gps.longitude }
     : null
 
+  const jobs = timelines.get(truckNumber) ?? []
+
+  // Is the truck busy during the campaign itself?
+  //
+  // checkChainFeasibility() answers "can it get there" and "can it leave" — the
+  // campaign window itself is checked by the caller, which checkAvailability
+  // does inline. Callers that evaluate ONE truck had no such check, so the
+  // timeline's schedule blocks were loaded and then ignored: a truck already
+  // running a client program could be booked straight over it.
+  const clash = findWindowClash(jobs, startDate, endDate)
+  if (clash) {
+    const what = clash.source === 'SCHEDULE'
+      ? `scheduled for "${clash.program || 'a program'}" in ${clash.market || 'another market'}`
+      : `already held (${clash.status ?? 'HOLD'})`
+    return {
+      ok: false,
+      overridable: clash.yieldable,
+      reason: 'BOOKED',
+      detail: `Truck ${truckNumber} is ${what} from ${clash.start} to ${clash.end}.`,
+    }
+  }
+
   const chain = checkChainFeasibility({
     campaignStart: startDate,
     campaignEnd: endDate,
     campaignCoords,
-    jobs: timelines.get(truckNumber) ?? [],
+    jobs,
     currentCoords,
     today: new Date().toISOString().split('T')[0],
     serviceAreaMiles,

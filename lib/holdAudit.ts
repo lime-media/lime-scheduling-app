@@ -15,6 +15,7 @@
 import { resolveCampaignCoords } from '@/lib/pricing/resolvers'
 import { loadFleetTimelines } from '@/lib/fleetTimelines'
 import { checkChainFeasibility } from '@/lib/chainFeasibility'
+import { findWindowClash } from '@/lib/truckTimeline'
 import type { TruckJob } from '@/lib/truckTimeline'
 
 export type InfeasibleHold = {
@@ -82,6 +83,33 @@ export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
              && j.market === h.market && j.status === h.status),
     )
 
+    checked++
+
+    // Does this hold sit on top of another job? checkChainFeasibility() does not
+    // test the window — it treats a straddling job as neither predecessor nor
+    // successor — so an audit that only called it would miss the most direct
+    // conflict there is.
+    const clash = findWindowClash(jobs, h.start_date, h.end_date)
+    if (clash) {
+      infeasible.push({
+        holdId: h.id,
+        truckNumber: h.truck_number,
+        clientName: h.client_name,
+        market: h.market,
+        startDate: h.start_date,
+        endDate: h.end_date,
+        status: h.status,
+        origination: h.origination,
+        source: h.source,
+        reason: 'BOOKED',
+        detail: clash.source === 'SCHEDULE'
+          ? `Overlaps scheduled program "${clash.program || 'unnamed'}" in ${clash.market || 'another market'} from ${clash.start} to ${clash.end}.`
+          : `Overlaps another hold (${clash.status ?? 'HOLD'}) from ${clash.start} to ${clash.end}.`,
+        overridable: clash.yieldable,
+      })
+      continue
+    }
+
     const gps = gpsMap.get(h.truck_number)
     const chain = checkChainFeasibility({
       campaignStart: h.start_date,
@@ -91,8 +119,6 @@ export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
       currentCoords: gps?.latitude && gps?.longitude ? { lat: gps.latitude, lng: gps.longitude } : null,
       today,
     })
-
-    checked++
 
     if (chain.inbound.originFellBackToGps) {
       gpsFallbacks.push({ holdId: h.id, priorMarket: chain.inbound.originFellBackToGps })

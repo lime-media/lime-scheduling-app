@@ -100,6 +100,18 @@ export function marketSizeTierFromDmaCode(dmaCode: string): number {
   return 3  // all other top-50 DMAs
 }
 
+/**
+ * Tier for a market that is NOT one of the accepted top-50 DMAs.
+ *
+ * Tier 4 exists for exactly this — "Sub-DMA / small metro" — but nothing ever
+ * returned it: unmatched markets fell back to tier 3, which carries DOUBLE the
+ * daily impressions (40,000 vs 20,000). The old comment called tier 3 a "safe
+ * default that doesn't over-promise", which had it backwards. Every market
+ * outside the top 50 was credited with twice the reach it has, and that feeds
+ * the 1.2M threshold gating lift studies.
+ */
+export const NON_DMA_MARKET_TIER = 4
+
 // ---------------------------------------------------------------------------
 // Service area & transport pricing (from transport spec v1, 30 July 2026)
 // ---------------------------------------------------------------------------
@@ -161,6 +173,23 @@ export const TRANSPORT_CONFIG = {
   // ---- internal reference only, never buyer-facing
   baseCaseGcPct: 0.426,
 } as const
+
+// ---------------------------------------------------------------------------
+// Client self-serve booking policy
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimum calendar days between today and a campaign start for a CLIENT to
+ * self-serve a quote.
+ *
+ * Near-term campaigns need a human: trucks have to be physically moved, drivers
+ * scheduled, and the trade-offs are judgement calls a rep makes with context the
+ * quote engine does not have. Internal staff are deliberately NOT subject to
+ * this — they may have approval, or know something the system does not.
+ *
+ * 0 = starts today, 1 = tomorrow. Both blocked at a value of 2.
+ */
+export const MIN_CLIENT_LEAD_DAYS = 2
 
 // ---------------------------------------------------------------------------
 // Rate override shape (for Rate Agreements)

@@ -398,7 +398,7 @@ export type TruckFeasibility = {
   ok: boolean
   /** True when the only blocker is a soft hold a rep may displace. */
   overridable: boolean
-  reason?: 'CANNOT_ARRIVE' | 'STRANDS_SUCCESSOR' | 'UNKNOWN_ORIGIN' | 'UNRESOLVED_MARKET'
+  reason?: 'BOOKED' | 'CANNOT_ARRIVE' | 'STRANDS_SUCCESSOR' | 'UNKNOWN_ORIGIN' | 'UNRESOLVED_MARKET'
   detail?: string
 }
 
@@ -439,11 +439,33 @@ export async function checkTruckFeasibility(params: {
     ? { lat: gps.latitude, lng: gps.longitude }
     : null
 
+  const jobs = timelines.get(truckNumber) ?? []
+
+  // Is the truck busy during the campaign itself?
+  //
+  // checkChainFeasibility() answers "can it get there" and "can it leave" — the
+  // campaign window itself is checked by the caller, which checkAvailability
+  // does inline. Callers that evaluate ONE truck had no such check, so the
+  // timeline's schedule blocks were loaded and then ignored: a truck already
+  // running a client program could be booked straight over it.
+  const clash = jobs.find(j => j.start <= endDate && startDate <= j.end)
+  if (clash) {
+    const what = clash.source === 'SCHEDULE'
+      ? `scheduled for "${clash.program || 'a program'}" in ${clash.market || 'another market'}`
+      : `already held (${clash.status ?? 'HOLD'})`
+    return {
+      ok: false,
+      overridable: clash.yieldable,
+      reason: 'BOOKED',
+      detail: `Truck ${truckNumber} is ${what} from ${clash.start} to ${clash.end}.`,
+    }
+  }
+
   const chain = checkChainFeasibility({
     campaignStart: startDate,
     campaignEnd: endDate,
     campaignCoords,
-    jobs: timelines.get(truckNumber) ?? [],
+    jobs,
     currentCoords,
     today: new Date().toISOString().split('T')[0],
     serviceAreaMiles,

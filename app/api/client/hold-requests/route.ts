@@ -10,6 +10,8 @@ import {
   priceTransport,
   countActivationDays,
   countCalendarDays,
+  daysUntil,
+  MIN_CLIENT_LEAD_DAYS,
   defaultDaysPerWeek,
   VALID_STUDIES,
   type StudyType,
@@ -109,6 +111,18 @@ async function handleAutoSelectHold(
 
   if (truck_count < 1 || truck_count > 20) {
     return NextResponse.json({ error: 'truck_count must be between 1 and 20' }, { status: 400 })
+  }
+
+  // Same policy as the client quote route — enforced here too so the hold
+  // cannot be placed by calling this endpoint directly.
+  const leadDays = daysUntil(start_date)
+  if (leadDays < MIN_CLIENT_LEAD_DAYS) {
+    return NextResponse.json({
+      error: leadDays < 0
+        ? 'That start date has already passed.'
+        : `Campaigns starting within ${MIN_CLIENT_LEAD_DAYS} days can't be booked online. Submit a request and the Lime Media team will follow up.`,
+      rushBlocked: true,
+    }, { status: 409 })
   }
 
   // Resolved before selection: a custom service_area_miles changes WHICH trucks

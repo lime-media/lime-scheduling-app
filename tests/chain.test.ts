@@ -122,6 +122,23 @@ const softPlusReal = run('', {
 eq('real job wins over a later soft hold', softPlusReal.inbound.originLabel, 'Miami, FL')
 eq('departure not gated by the soft hold', softPlusReal.inbound.earliestDeparture, '2026-09-16')
 
+section('rule 2: the campaign window itself must be free')
+// checkChainFeasibility does NOT check this — the caller does. Single-truck
+// callers (chat, hold writes) had no such check, so a truck already running a
+// program could be booked over it. Asserted here as the contract.
+// A job straddling the campaign is neither a predecessor (it ends after the
+// campaign starts) nor a successor (it starts before the campaign ends), so the
+// chain check has nothing to say about it and reports FEASIBLE. That is correct
+// and is exactly why the caller must check the window separately — the bug was
+// a caller that never did.
+const overlapping = run('', {
+  start: '2026-09-21', end: '2026-09-25', gps: 'Oklahoma City, OK',
+  jobs: [job('2026-09-23', '2026-09-27', 'Dallas', 'TX')],
+})
+eq('overlapping job is not a predecessor', overlapping.inbound.originIsPriorJob, false)
+eq('overlapping job is not a successor', overlapping.successor, null)
+eq('chain check alone reports feasible', overlapping.feasible, true)
+
 section('rule 3: does not strand the next job')
 const strands = run('', {
   start: '2026-09-21', end: '2026-09-25',

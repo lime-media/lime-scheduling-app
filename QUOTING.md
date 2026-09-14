@@ -237,7 +237,7 @@ Pricing answers *what it costs*. Feasibility answers *whether it is possible*, a
 
 **Rule 1 — it can arrive.** Transport days from where the truck is *released* must fit in the time before the campaign starts. A truck in LA needs 3 days to reach Oklahoma City; if the campaign starts in 2 days, it is not an option, idle or not.
 
-**Rule 2 — it is free.** Nothing else is booked during the campaign itself.
+**Rule 2 — it is free.** Nothing else is booked during the campaign itself — holds *and* scheduled LED programs. `checkChainFeasibility()` does not test this itself; the caller does, and every caller now does.
 
 **Rule 3 — it does not strand its next job.** After the campaign, the truck must still reach whatever it is already committed to. If the next job is in Seattle starting the day after ours ends, and Seattle is 5 transport days away, taking this booking would break a job you have already sold.
 
@@ -369,13 +369,21 @@ The insurance and tech figures assume **$970/truck/month spread over 20 booked d
 
 Real observations from the current code. None break a quote, but each can produce a number you'll have to explain.
 
-1. **Market Tier 4 is unreachable.** The 20,000-impression tier exists in the config, but automatic market lookup only ever returns tiers 1, 2, or 3 — unmatched markets fall back to Tier 3 (40,000). Small markets are therefore credited with **double** the impressions their tier implies, which can push a campaign over the 1.2M lift-study threshold it shouldn't clear.
-
-2. **Lead time ignores holidays.** Only weekends are excluded, so a campaign booked over Thanksgiving or Christmas week gets credited with more lead time than operations actually has — and may be absorbed into free transport on that basis.
+1. **Lead time ignores holidays.** Only weekends are excluded, so a campaign booked over Thanksgiving or Christmas week gets credited with more lead time than operations actually has — and may be absorbed into free transport on that basis.
 
 3. **Rate agreement failures are silent** (§5). A lookup error downgrades a contract client to list pricing with no error surfaced on the quote.
 
 4. **A rush local campaign is still free.** A 2-day campaign booked tomorrow with a truck already in market carries real cost (driver, fuel, schedule disruption) but absorbs to $0, because no truck repositions. This is a deliberate consequence of the per-truck model, not a bug — but it is an open pricing question worth revisiting.
+
+### Resolved 2026-09-14
+
+Market Tier 4 is now reachable: a market that is not one of the accepted top-50 DMAs is classified **Sub-DMA / small metro (20,000/truck/day)** instead of falling back to Tier 3's 40,000. The DMA match is also stricter — it previously tested substrings in both directions, so "York, PA" matched the New York DMA and jumped from tier 4 to tier 1, a 4.5x reach error.
+
+**Lift studies will qualify less often in small markets.** That is the point: estimated reach was double the modelled figure for every market outside the top 50.
+
+Clients can no longer self-serve a quote for a campaign starting within **2 days** (`MIN_CLIENT_LEAD_DAYS`). Internal staff are deliberately exempt. Enforced on both the client quote and client hold routes, server-side.
+
+Single-truck feasibility now checks the campaign window, not just arrival and stranding — see §6b.
 
 ### Resolved 2026-09-11
 

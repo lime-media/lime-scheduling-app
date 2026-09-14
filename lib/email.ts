@@ -1,5 +1,20 @@
 // Email notifications — wire up SMTP credentials in .env when ready.
 // Required env vars: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
+//
+// Team notification recipients are env-configurable so the distribution list can
+// change without a deploy. They were previously hardcoded here, which is how the
+// inbound-reservation alert ended up pointed at a single person with the real
+// list commented out one line above it — a code change, a PR and a promotion is
+// too much friction for "add someone to an email".
+//
+//   HOLD_NOTIFY_EMAIL    inbound client reservations (portal and MCP)
+//   ASSIST_NOTIFY_EMAIL  client assistance / extension requests
+//
+// Comma-separated for multiple recipients. The defaults below preserve current
+// behavior when the vars are unset.
+
+const HOLD_NOTIFY_TO   = process.env.HOLD_NOTIFY_EMAIL   || 'andrew@lime-media.com'
+const ASSIST_NOTIFY_TO = process.env.ASSIST_NOTIFY_EMAIL || 'andrew@lime-media.com, bbenekos@lime-media.com'
 
 export interface HoldRequestEmailData {
   companyName:  string
@@ -40,8 +55,7 @@ export async function sendHoldRequestEmail(data: HoldRequestEmailData): Promise<
 
   await transporter.sendMail({
     from:    SMTP_FROM ?? SMTP_USER,
-    // to:      'andrew@lime-media.com, bbenekos@lime-media.com',
-    to:      'schaudhari@lime-media.com',
+    to:      HOLD_NOTIFY_TO,
     subject,
     text,
   })
@@ -84,7 +98,7 @@ export async function sendAssistanceRequestEmail(data: AssistanceRequestEmailDat
 
   await transporter.sendMail({
     from:    SMTP_FROM ?? SMTP_USER,
-    to:      'andrew@lime-media.com, bbenekos@lime-media.com',
+    to:      ASSIST_NOTIFY_TO,
     subject,
     text,
   })

@@ -169,11 +169,6 @@ function AvailabilitySummary({ data }: { data: QuoteResponse }) {
       )}
 
       {/* Transport summary */}
-      {transport.outcome === 'MANUAL_QUOTE' && (
-        <div className="mt-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800">
-          {transport.reason}
-        </div>
-      )}
       {transport.outcome === 'ABSORBED' && transport.repositioning && transport.repositioning.truckCount > 0 && (
         <div className="mt-2 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-800">
           <p className="font-medium">Transport included</p>

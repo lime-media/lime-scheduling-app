@@ -169,7 +169,6 @@ async function handleAutoSelectHold(
     activationDays,
     leadBusinessDays: availability.campaignFlags.leadBusinessDays,
     legs: legsFromTrucks(selectedTrucks),
-    baseConcurrency: availability.nearestAcceptedMarket?.baseConcurrency ?? null,
     transportIncluded: rateOverrides?.transport_included,
     overrides: {
       dayRate: rateOverrides?.transport_day_rate,
@@ -177,13 +176,6 @@ async function handleAutoSelectHold(
       hotelPerNight: rateOverrides?.transport_hotel_per_night,
     },
   })
-
-  if (transport.outcome === 'MANUAL_QUOTE') {
-    return NextResponse.json({
-      error: 'This configuration requires a custom quote. A rep will follow up.',
-      reason: transport.reason,
-    }, { status: 409 })
-  }
 
   const transportCharge = transport.charge
 

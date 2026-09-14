@@ -193,9 +193,20 @@ The 450-mile figure is **how far a truck drives in a day** — it is not the 250
 
 A **deposit** of one transport day (**$750 per repositioning truck**) is required whenever transport is billed.
 
-### Swarm gate
+### Truck count is not part of the model
 
-If a campaign requests **more trucks than the nearest market's base concurrency**, the quote exits automated pricing entirely and returns **manual quote** — "a rep will follow up." This applies on every surface, including client self-serve. The limit is per-market, read from the accepted-markets table; there is no global truck-count limit.
+Asking for more trucks than a market normally holds is **not** a reason to refuse or to re-price. The extra trucks come from wherever they are, and the distance they travel is billed as transport like any other repositioning. A four-truck campaign in a one-truck market is quotable; it is simply more expensive.
+
+There is no swarm rule, no concurrency cap, and no per-market truck limit anywhere in pricing.
+
+> **History.** A "swarm" trigger was intended to mean *more than three trucks concurrently in one market*. That was never implemented. On 2026-09-11 a gate keyed on each market's `base_concurrency` shipped instead — and since all 50 markets are seeded at `base_concurrency = 1`, it refused **every multi-truck request in every market**. Both the gate and the concurrency concept were removed on 2026-09-12. If a swarm rule is wanted, it needs deciding from scratch: what the threshold means, and whether it should gate a quote at all or simply flag one.
+
+### The only two reasons a quote is refused
+
+1. **Outside the service area** — the campaign market cannot be located. Lime Media serves the contiguous 48 states.
+2. **No reachable truck** — every truck is either booked, cannot arrive in time, or would strand a later commitment.
+
+Anything else gets a price, however large. A campaign needing trucks from 1,000 miles away is expensive, not impossible, and the buyer is entitled to see the number.
 
 ### One engine, two ways of measuring distance
 
@@ -358,7 +369,7 @@ The two-transport-engine split and the calendar-vs-activation-day mismatch descr
 | Hotel per overnight | $210 |
 | Deposit | 1 transport day ($750) / truck |
 | Standard lead time | 10 business days |
-| Swarm gate | > market base concurrency → manual quote |
+| Truck count | not part of the pricing model |
 | Transport absorption | 10+ activation days AND 10+ business days lead |
 | Billed trucks | only those > 250mi from campaign |
 | Margin review threshold | 42.6% gross contribution |

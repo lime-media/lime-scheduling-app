@@ -250,10 +250,14 @@ Distance is measured from where the truck **will actually be** when the campaign
 | Truck's situation | Origin used |
 |---|---|
 | Running a program **now** | that program's market |
-| Program **scheduled** before the campaign starts | that program's market |
+| Program or hold **scheduled** before the campaign starts | that market |
+| **Two or more** committed before the campaign | the **latest** one's market |
+| Only an `ATT_SOFT` placeholder | **live GPS** |
 | No current or upcoming commitment | **live GPS** |
 
 A truck working Miami through the 12th is a Miami truck for a campaign starting the 14th, wherever its GPS reads today — it is committed there.
+
+`ATT_SOFT` holds never set the origin. They are placeholders that may be voided, and they are written with an empty market, so treating one as an origin would gate the truck's departure behind a hold it may never serve.
 
 But a campaign that **already finished** is not evidence of position. Trucks are repositioned between jobs constantly, so a market a truck left three weeks ago says nothing about where it sits now. For an idle truck, GPS is the only thing that knows. Only jobs ending **on or after today** and before the campaign qualify as the origin.
 

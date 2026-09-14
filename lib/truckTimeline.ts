@@ -142,6 +142,14 @@ export function buildTruckTimelines(
  *
  * Concretely, a job qualifies when it ends on or after `today` (so it is either
  * in progress or still upcoming) and before the campaign begins.
+ *
+ * Yieldable (ATT_SOFT) holds never qualify. They are placeholders that may be
+ * voided, and they are written with an empty market anyway — treating one as an
+ * origin would gate the truck's departure behind a hold it may never serve, and
+ * raise a spurious "market could not be geocoded" warning on a blank string.
+ *
+ * When several jobs qualify, the LATEST one wins: two campaigns booked before
+ * the quoted dates means the truck ends up wherever the second one leaves it.
  */
 export function findPredecessor(
   jobs: TruckJob[],
@@ -150,6 +158,7 @@ export function findPredecessor(
 ): TruckJob | null {
   let best: TruckJob | null = null
   for (const j of jobs) {
+    if (j.yieldable) continue
     if (j.end >= today && j.end < campaignStart && (best === null || j.end > best.end)) {
       best = j
     }

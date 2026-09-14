@@ -89,6 +89,38 @@ const mixed = run('', {
 })
 eq('latest qualifying job wins, stale ignored', mixed.inbound.originLabel, 'Miami, FL')
 
+// Two commitments before the campaign: the truck ends up where the LAST one
+// leaves it.
+const twoJobs = run('', {
+  start: '2026-09-28', end: '2026-09-30', gps: 'Dallas, TX',
+  jobs: [
+    job('2026-09-13', '2026-09-15', 'Miami', 'FL'),
+    job('2026-09-18', '2026-09-20', 'Seattle', 'WA'),
+  ],
+})
+eq('latest of two upcoming jobs wins', twoJobs.inbound.originLabel, 'Seattle, WA')
+eq('departs after the later one', twoJobs.inbound.earliestDeparture, '2026-09-21')
+
+// ATT_SOFT is a placeholder with no market — never an origin.
+const softOnly = run('', {
+  start: '2026-09-28', end: '2026-09-30', gps: 'Dallas, TX',
+  jobs: [job('2026-10-01', '2026-10-31', '', '', { status: 'ATT_SOFT', yieldable: true })],
+})
+eq('soft hold is not an origin', softOnly.inbound.originIsPriorJob, false)
+eq('falls through to GPS', softOnly.inbound.originLabel, 'current position')
+eq('no spurious geocode warning', softOnly.inbound.originFellBackToGps, undefined)
+
+// A soft hold must not shadow a real commitment either.
+const softPlusReal = run('', {
+  start: '2026-09-28', end: '2026-09-30', gps: 'Dallas, TX',
+  jobs: [
+    job('2026-09-13', '2026-09-15', 'Miami', 'FL'),
+    job('2026-09-18', '2026-09-20', '', '', { status: 'ATT_SOFT', yieldable: true }),
+  ],
+})
+eq('real job wins over a later soft hold', softPlusReal.inbound.originLabel, 'Miami, FL')
+eq('departure not gated by the soft hold', softPlusReal.inbound.earliestDeparture, '2026-09-16')
+
 section('rule 3: does not strand the next job')
 const strands = run('', {
   start: '2026-09-21', end: '2026-09-25',

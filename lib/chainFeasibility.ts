@@ -63,8 +63,13 @@ export type InboundLeg = {
   /** False when neither a prior job nor a live position could be geocoded. */
   originResolved: boolean
   /**
-   * Set when a prior job EXISTS but its market could not be geocoded, so the
-   * truck silently fell back to live GPS — i.e. the old, wrong basis. Carries
+   * Set only when an UPCOMING job's market could not be geocoded.
+   *
+   * When the unmappable job is already RUNNING, the truck is physically in that
+   * market right now, so its live GPS reads the right place and the fallback is
+   * accurate — nothing to verify. It is only when the job has not started yet
+   * that GPS describes where the truck is instead of where it will depart from,
+   * and the transport distance is genuinely wrong. Carries
    * the market string that failed, so drift between program_schedule market
    * names and the coordinate map is visible instead of silent.
    */
@@ -118,10 +123,51 @@ function nextDay(dateStr: string): string {
   return d.toISOString().split('T')[0]
 }
 
-/** Resolve a job's market to coordinates, trying "city, st" then bare city. */
+/**
+ * Resolve a job's market to coordinates.
+ *
+ * Schedule rows usually carry the state INSIDE the market string already
+ * ("Doral, FL") while also exposing it separately, so naive concatenation
+ * produces "Doral, FL, FL" and misses. Try the market as written first, then
+ * append the state only when it is not already there, then the bare city.
+ */
 export function coordsForJob(market: string, state: string): Coords | null {
   if (!market) return null
-  return getMarketCoords(state ? `${market}, ${state}` : market) ?? getMarketCoords(market)
+
+  const direct = getMarketCoords(market)
+  if (direct) return direct
+
+  if (state && !market.toLowerCase().endsWith(`, ${state.toLowerCase()}`)) {
+    const withState = getMarketCoords(`${market}, ${state}`)
+    if (withState) return withState
+  }
+
+  // Last resort: the city alone, in case the map keys it without a state.
+  const city = market.split(',')[0].trim()
+  return city && city !== market ? getMarketCoords(city) ?? null : null
+}
+
+/**
+ * A job's coordinates, preferring the market's own geography over a name lookup.
+ *
+ * When standard_market_lookup carries bounding boxes, the centroid travels with
+ * the job and is authoritative — it is the market the team actually selected,
+ * not a guess from a 281-entry name file that covers 61% of them. The name
+ * lookup stays as the fallback for holds (which carry no market uid) and for
+ * databases where the bounds migration has not landed.
+ */
+export function jobCoords(job: { market: string; state: string; lat?: number; lng?: number }): Coords | null {
+  if (typeof job.lat === 'number' && typeof job.lng === 'number') {
+    return { lat: job.lat, lng: job.lng }
+  }
+  return coordsForJob(job.market, job.state)
+}
+
+/** Human label for a job's market, without duplicating the state. */
+export function jobMarketLabel(market: string, state: string): string {
+  if (!market) return state || 'unknown'
+  if (!state || market.toLowerCase().endsWith(`, ${state.toLowerCase()}`)) return market
+  return `${market}, ${state}`
 }
 
 /** Transport days for a leg — 0 when the distance is inside the service area. */
@@ -143,13 +189,26 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
     jobs, currentCoords, today, serviceAreaMiles,
   } = input
 
-  const predecessor = findPredecessor(jobs, campaignStart)
+  const predecessor = findPredecessor(jobs, campaignStart, today)
   const successor = findSuccessor(jobs, campaignEnd)
 
-  // --- Inbound leg: measured from where the truck is RELEASED, not where it
-  // happens to be sitting today. A truck working Miami until the 12th is a
-  // Miami truck for a campaign starting the 14th, wherever its GPS reads now.
-  const predCoords = predecessor ? coordsForJob(predecessor.market, predecessor.state) : null
+  // --- Inbound leg: measured from where the truck will actually BE.
+  //
+  // Two sources, and which one applies depends on whether the truck is
+  // committed between now and the campaign:
+  //
+  //   committed  — running a program now, or scheduled for one before the
+  //                campaign starts: use that program's market. A truck working
+  //                Miami until the 12th is a Miami truck for a campaign on the
+  //                14th, wherever its GPS reads today.
+  //
+  //   free       — no current or upcoming commitment before the campaign: use
+  //                live GPS. A campaign it finished weeks ago is not evidence
+  //                of position; trucks get repositioned between jobs.
+  //
+  // Using a past job's market was wrong in exactly the case that matters most:
+  // an idle truck that has since been moved.
+  const predCoords = predecessor ? jobCoords(predecessor) : null
   const originCoords = predCoords ?? currentCoords
   const originIsPriorJob = predCoords !== null
   const earliestDeparture = predecessor ? nextDay(predecessor.end) : today
@@ -162,7 +221,7 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
 
   const inbound: InboundLeg = {
     originLabel: predecessor
-      ? [predecessor.market, predecessor.state].filter(Boolean).join(', ')
+      ? jobMarketLabel(predecessor.market, predecessor.state)
       : 'current position',
     originIsPriorJob,
     distanceMiles: inboundDistance,
@@ -170,9 +229,10 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
     earliestDeparture,
     daysAvailable,
     originResolved: originCoords !== null,
+    // Upcoming (not yet started) unmappable job only — see the field docs.
     originFellBackToGps:
-      predecessor && !predCoords
-        ? ([predecessor.market, predecessor.state].filter(Boolean).join(', ') || 'unknown')
+      predecessor && !predCoords && predecessor.start > today
+        ? jobMarketLabel(predecessor.market, predecessor.state)
         : undefined,
   }
 
@@ -193,7 +253,7 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
   // added deadhead can be flagged.
   let successorImpact: SuccessorImpact | null = null
   if (successor) {
-    const succCoords = coordsForJob(successor.market, successor.state)
+    const succCoords = jobCoords(successor)
     // Symmetric with the inbound leg: the campaign's final day is occupied by
     // the campaign, exactly as the predecessor's final day is occupied by the
     // predecessor. Travel can only start the day AFTER. Counting from
@@ -203,7 +263,7 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
 
     if (!succCoords) {
       successorImpact = {
-        market: [successor.market, successor.state].filter(Boolean).join(', ') || 'unknown',
+        market: jobMarketLabel(successor.market, successor.state),
         startsOn: successor.start,
         status: successor.status ?? successor.source,
         yieldable: successor.yieldable,
@@ -224,7 +284,7 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
       const baseDays = originCoords ? legDays(baseDistance, serviceAreaMiles) : outDays
 
       successorImpact = {
-        market: [successor.market, successor.state].filter(Boolean).join(', '),
+        market: jobMarketLabel(successor.market, successor.state),
         startsOn: successor.start,
         status: successor.status ?? successor.source,
         yieldable: successor.yieldable,

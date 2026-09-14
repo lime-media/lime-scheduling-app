@@ -108,8 +108,10 @@ export function marketSizeTierFromDmaCode(dmaCode: string): number {
 // Beyond this distance, the truck incurs a billed transport charge.
 export const SERVICE_AREA_RADIUS_MILES = 250
 
-// Swarm is evaluated against each market's base_concurrency from the database,
-// not a global constant — see priceTransport() in transport.ts.
+// NOTE: there is no swarm/concurrency rule in the pricing model. The intended
+// meaning was "more than 3 trucks concurrently in one market", which was never
+// implemented; a base_concurrency-based gate was tried and removed (it refused
+// every multi-truck quote). Revisit deliberately if this is wanted.
 
 export const TRANSPORT_CONFIG = {
   // ---- revenue (reference only for margin check)

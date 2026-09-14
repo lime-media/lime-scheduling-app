@@ -25,6 +25,13 @@ export type TruckJob = {
   end: string            // YYYY-MM-DD, inclusive
   market: string
   state: string
+  /**
+   * The market's own coordinates, from standard_market_lookup. Present only
+   * where the LED schema carries bounding boxes. When set this is authoritative
+   * — it is the market the team selected, not a guess from its name.
+   */
+  lat?: number
+  lng?: number
   program?: string
   source: TruckJobSource
   status?: string
@@ -38,6 +45,8 @@ export type DayRow = {
   market: string
   state: string
   program?: string
+  lat?: number
+  lng?: number
 }
 
 function nextDayStr(dateStr: string): string {
@@ -81,6 +90,8 @@ export function groupDaysIntoJobs(rows: DayRow[]): Map<string, TruckJob[]> {
           market: day.market,
           state: day.state,
           program: day.program,
+          lat: day.lat,
+          lng: day.lng,
           source: 'SCHEDULE',
           yieldable: false,
         })
@@ -98,6 +109,8 @@ export type HoldLike = {
   market: string
   state: string
   status: string
+  lat?: number
+  lng?: number
 }
 
 /**
@@ -117,6 +130,8 @@ export function buildTruckTimelines(
       end: h.end_date,
       market: h.market ?? '',
       state: h.state ?? '',
+      lat: h.lat,
+      lng: h.lng,
       source: 'HOLD',
       status: h.status,
       yieldable: YIELDABLE_HOLD_STATUSES.has(h.status),
@@ -130,11 +145,38 @@ export function buildTruckTimelines(
   return timelines
 }
 
-/** Last job that finishes strictly before the campaign begins. */
-export function findPredecessor(jobs: TruckJob[], campaignStart: string): TruckJob | null {
+/**
+ * The job that determines where the truck will be when the campaign starts.
+ *
+ * Only a job that is RUNNING NOW or SCHEDULED between now and the campaign
+ * qualifies. A job that already finished says nothing about where the truck is
+ * — trucks are repositioned between campaigns all the time, so a market it left
+ * three weeks ago is not evidence of anything. In that case the caller should
+ * fall back to live GPS, which is the only thing that knows where it actually
+ * sits today.
+ *
+ * Concretely, a job qualifies when it ends on or after `today` (so it is either
+ * in progress or still upcoming) and before the campaign begins.
+ *
+ * Yieldable (ATT_SOFT) holds never qualify. They are placeholders that may be
+ * voided, and they are written with an empty market anyway — treating one as an
+ * origin would gate the truck's departure behind a hold it may never serve, and
+ * raise a spurious "market could not be geocoded" warning on a blank string.
+ *
+ * When several jobs qualify, the LATEST one wins: two campaigns booked before
+ * the quoted dates means the truck ends up wherever the second one leaves it.
+ */
+export function findPredecessor(
+  jobs: TruckJob[],
+  campaignStart: string,
+  today: string,
+): TruckJob | null {
   let best: TruckJob | null = null
   for (const j of jobs) {
-    if (j.end < campaignStart && (best === null || j.end > best.end)) best = j
+    if (j.yieldable) continue
+    if (j.end >= today && j.end < campaignStart && (best === null || j.end > best.end)) {
+      best = j
+    }
   }
   return best
 }

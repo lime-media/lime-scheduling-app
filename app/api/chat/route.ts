@@ -4,6 +4,7 @@ import { authOptions } from '@/lib/auth'
 import Anthropic from '@anthropic-ai/sdk'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
+import { canonicalMarketName } from '@/lib/marketBounds'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { CHAT_CONTEXT_QUERY, CHAT_SCHEDULE_WINDOW_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
@@ -171,11 +172,13 @@ async function executePlaceHold(
     console.error('[chat] FEASIBILITY_CHECK_FAILED (allowing hold):', err)
   }
 
+  const canonicalMarket = (await canonicalMarketName(market, state)) ?? market
+
   const hold = await prisma.hold.create({
     data: {
       truck_number: truck,
       client_name: client,
-      market,
+      market: canonicalMarket,
       state: state || '',
       start_date: new Date(start_date),
       end_date: new Date(end_date),

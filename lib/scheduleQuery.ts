@@ -128,3 +128,42 @@ WHERE COALESCE(t.is_deleted, 0) = 0
 GROUP BY t.truck_number
 ORDER BY t.truck_number
 `
+
+// ── Query A2: scheduled blocks WITH market geography ─────────────────────────
+// Same rows as SCHEDULED_QUERY, plus the market's centroid when this database
+// carries bounding boxes on standard_market_lookup.
+//
+// Kept separate from SCHEDULED_QUERY on purpose: seven other callers only need
+// dates and names, and should not pay for a join or be exposed to a schema
+// difference they do not care about.
+//
+// `withBounds` MUST come from hasMarketBounds(). Referencing bounds columns in
+// a database that lacks them is a hard SQL error, not a null.
+export function scheduledWithMarketQuery(withBounds: boolean): string {
+  return `
+SELECT
+    t.truck_number,
+    COALESCE(cpm.market,               '') AS market,
+    COALESCE(cpm.standard_market_name, '') AS standard_market_name,
+    COALESCE(cpm.state,   '') AS state,
+    COALESCE(cp.program,  '') AS program,
+    CAST(ps.start_time AS DATE) AS shift_start,
+    CAST(ps.start_time AS DATE) AS shift_end${withBounds ? ',' : ''}${withBounds ? `
+    CASE WHEN sml.bounds_ne_lat IS NOT NULL AND sml.bounds_sw_lat IS NOT NULL
+         THEN (sml.bounds_ne_lat + sml.bounds_sw_lat) / 2.0 END AS market_lat,
+    CASE WHEN sml.bounds_ne_lng IS NOT NULL AND sml.bounds_sw_lng IS NOT NULL
+         THEN (sml.bounds_ne_lng + sml.bounds_sw_lng) / 2.0 END AS market_lng` : ''}
+FROM dbo.program_schedule ps
+JOIN dbo.trucks t
+    ON  t.truck_uid = ps.truck_uid
+LEFT JOIN dbo.client_program_markets cpm
+    ON  cpm.client_program_market_uid = ps.client_program_market_uid
+LEFT JOIN dbo.client_programs cp
+    ON  cp.client_program_uid = ps.client_program_uid${withBounds ? `
+LEFT JOIN dbo.standard_market_lookup sml
+    ON  sml.standard_market_uid = cpm.standard_market_uid` : ''}
+WHERE CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
+  AND CAST(ps.start_time AS DATE) <= DATEADD(day,  63, CAST(GETDATE() AS DATE))
+ORDER BY t.truck_number, ps.start_time
+`
+}

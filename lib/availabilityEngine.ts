@@ -107,6 +107,12 @@ export type AvailabilityResult = {
   sufficient: boolean
   /** Nearest accepted market to the campaign location */
   nearestAcceptedMarket: NearestMarketResult | null
+  /**
+   * False when the campaign market could not be placed on a map at all — the
+   * only genuine "we cannot serve this" case besides having no reachable truck.
+   * Distances cannot be computed, so no truck can be offered.
+   */
+  marketResolved: boolean
   /** Campaign-level flags */
   campaignFlags: {
     shortFlight: boolean
@@ -361,6 +367,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     counts,
     sufficient: availableTrucks.filter(t => !t.requiresOverride).length >= truckCount,
     nearestAcceptedMarket,
+    marketResolved: campaignCoords !== null,
     campaignFlags: { shortFlight, rush, leadBusinessDays },
   }
 }

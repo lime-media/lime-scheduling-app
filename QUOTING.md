@@ -193,9 +193,20 @@ The 450-mile figure is **how far a truck drives in a day** — it is not the 250
 
 A **deposit** of one transport day (**$750 per repositioning truck**) is required whenever transport is billed.
 
-### Swarm gate
+### Truck count is not part of the model
 
-If a campaign requests **more trucks than the nearest market's base concurrency**, the quote exits automated pricing entirely and returns **manual quote** — "a rep will follow up." This applies on every surface, including client self-serve. The limit is per-market, read from the accepted-markets table; there is no global truck-count limit.
+Asking for more trucks than a market normally holds is **not** a reason to refuse or to re-price. The extra trucks come from wherever they are, and the distance they travel is billed as transport like any other repositioning. A four-truck campaign in a one-truck market is quotable; it is simply more expensive.
+
+There is no swarm rule, no concurrency cap, and no per-market truck limit anywhere in pricing.
+
+> **History.** A "swarm" trigger was intended to mean *more than three trucks concurrently in one market*. That was never implemented. On 2026-09-11 a gate keyed on each market's `base_concurrency` shipped instead — and since all 50 markets are seeded at `base_concurrency = 1`, it refused **every multi-truck request in every market**. Both the gate and the concurrency concept were removed on 2026-09-12. If a swarm rule is wanted, it needs deciding from scratch: what the threshold means, and whether it should gate a quote at all or simply flag one.
+
+### The only two reasons a quote is refused
+
+1. **Outside the service area** — the campaign market cannot be located. Lime Media serves the contiguous 48 states.
+2. **No reachable truck** — every truck is either booked, cannot arrive in time, or would strand a later commitment.
+
+Anything else gets a price, however large. A campaign needing trucks from 1,000 miles away is expensive, not impossible, and the buyer is entitled to see the number.
 
 ### One engine, two ways of measuring distance
 
@@ -234,15 +245,37 @@ Both travel rules count the **days actually free between jobs**. A campaign endi
 
 ### Where the truck departs from
 
-Distance is measured from the **release point** — where the truck will actually be when it becomes free — not from where its GPS reads today. A truck working Miami through the 12th is a Miami truck for a campaign starting the 14th, even if it is currently parked in Dallas. The same distance drives both the feasibility check and the transport charge, so they can never disagree.
+Distance is measured from where the truck **will actually be** when the campaign starts. Two sources, and which applies depends on whether the truck is committed between now and then:
 
-If there is no prior job, live GPS is used. If neither resolves, the truck is reported as `UNKNOWN_ORIGIN` rather than quietly dropped.
+| Truck's situation | Origin used |
+|---|---|
+| Running a program **now** | that program's market |
+| Program or hold **scheduled** before the campaign starts | that market |
+| **Two or more** committed before the campaign | the **latest** one's market |
+| Only an `ATT_SOFT` placeholder | **live GPS** |
+| No current or upcoming commitment | **live GPS** |
+
+A truck working Miami through the 12th is a Miami truck for a campaign starting the 14th, wherever its GPS reads today — it is committed there.
+
+`ATT_SOFT` holds never set the origin. They are placeholders that may be voided, and they are written with an empty market, so treating one as an origin would gate the truck's departure behind a hold it may never serve.
+
+But a campaign that **already finished** is not evidence of position. Trucks are repositioned between jobs constantly, so a market a truck left three weeks ago says nothing about where it sits now. For an idle truck, GPS is the only thing that knows. Only jobs ending **on or after today** and before the campaign qualify as the origin.
+
+The same distance drives both the feasibility check and the transport charge, so they can never disagree. If neither source resolves, the truck is reported as `UNKNOWN_ORIGIN` rather than quietly dropped.
 
 ### Overrides
 
 A **hard commitment** (`HOLD`, `COMMITTED`, or scheduled program work) can never be stranded — the truck is excluded, full stop.
 
 A **soft hold** (`ATT_SOFT`) may be displaced. Those trucks are returned flagged as `requiresOverride`: they are never auto-selected by a quote or hold flow, but a rep can see them and make the call.
+
+### What a refusal says
+
+A refused quote leads with the operative fact:
+
+> **Automatic quote not feasible without changing existing reservations or commitments.**
+
+On staff surfaces a second line adds the internal breakdown — how many trucks can reach the market, how many were excluded for not arriving in time, how many would strand a later booking. **Client surfaces get the headline only**; truck counts and exclusion reasons are fleet posture.
 
 ### Nothing disappears silently
 
@@ -285,11 +318,25 @@ If the feasibility lookup itself errors, the hold is allowed through and the err
 
 **A free calendar slot is not the same as a servable truck.** Callers that omit `market` get the old behavior, unchanged — and no feasibility guarantee.
 
+### Where market coordinates come from
+
+Every scheduled shift requires selecting a market, and that selection carries a `standard_market_uid`. Where the LED schema includes bounding boxes on `standard_market_lookup`, the market's centroid travels with the job — **the coordinates are the market the team chose**, not a guess from its name.
+
+The old path was a 281-entry hardcoded file (`lib/marketCoordinates.ts`), built in June 2026 for grid proximity filtering and never intended as an authoritative list. Measured against production's 355 standard markets it covers **61%**; 137 markets had no coordinates at all, and 63 file entries are not markets. It remains only as a first-pass shortcut and a fallback where the bounds migration has not landed.
+
+Records that carry no `standard_market_uid` — holds, and campaign markets typed by a rep — are matched **by name against the same 356-market list**, not the file. New holds are also **written with the canonical market name**, so a hold recorded as "dallas" is stored as "Dallas, TX" and can resolve its own coordinates later. An unrecognized market is stored as typed rather than rejected — it never blocks a booking.
+
+Market input on a quote resolves against **both** sources. `/api/markets` autocompletes from the 356-market list, so gating on the hardcoded file alone would have rejected markets a rep had just selected from the dropdown. So every market the team can schedule now resolves, whichever path it arrives by.
+
+The bounds columns reach environments at different times, and referencing a column SQL Server does not have is a hard error rather than a null — so capability is detected once per process (`hasMarketBounds()`) and the query is chosen accordingly. A market row with null bounds behaves exactly as if the columns were absent.
+
 ### When a market name does not resolve
 
-Distance depends on matching `program_schedule` market names against the coordinate map. When a prior job's market cannot be matched, the truck **falls back to live GPS** — the old, wrong basis — rather than failing.
+Where no source resolves a market, distance depends on matching names against the coordinate map. When a prior job's market cannot be matched, the truck **falls back to live GPS** — the old, wrong basis — rather than failing.
 
-That fallback is counted and reported, never silent:
+The fallback is only reported when the unmappable job **has not started yet**. If the job is already running, the truck is physically in that market, so its GPS reads the right place and the distance is correct — there is nothing to verify. Only an upcoming job makes GPS describe where the truck *is* rather than where it will *depart from*.
+
+When it does fire, it is counted and reported, never silent:
 
 - staff quote shows a red "priced from GPS, not their prior job" warning naming the markets
 - `/conflicts` shows a "Market names not recognized" banner
@@ -358,7 +405,7 @@ The two-transport-engine split and the calendar-vs-activation-day mismatch descr
 | Hotel per overnight | $210 |
 | Deposit | 1 transport day ($750) / truck |
 | Standard lead time | 10 business days |
-| Swarm gate | > market base concurrency → manual quote |
+| Truck count | not part of the pricing model |
 | Transport absorption | 10+ activation days AND 10+ business days lead |
 | Billed trucks | only those > 250mi from campaign |
 | Margin review threshold | 42.6% gross contribution |

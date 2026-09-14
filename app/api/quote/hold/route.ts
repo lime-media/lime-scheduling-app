@@ -9,6 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
+import { canonicalMarketName } from '@/lib/marketBounds'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { computeHoldExpiresAt } from '@/lib/holdRequestService'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
@@ -106,7 +107,6 @@ export async function POST(req: NextRequest) {
     activationDays,
     leadBusinessDays: availability.campaignFlags.leadBusinessDays,
     legs: legsFromTrucks(selectedTrucks),
-    baseConcurrency: availability.nearestAcceptedMarket?.baseConcurrency ?? null,
     transportIncluded: rateOverrides?.transport_included,
     overrides: {
       dayRate: rateOverrides?.transport_day_rate,
@@ -114,13 +114,6 @@ export async function POST(req: NextRequest) {
       hotelPerNight: rateOverrides?.transport_hotel_per_night,
     },
   })
-
-  if (transport.outcome === 'MANUAL_QUOTE') {
-    return NextResponse.json({
-      error: 'This configuration requires a custom quote. A rep will follow up.',
-      reason: transport.reason,
-    }, { status: 409 })
-  }
 
   const transportCharge = transport.charge
   const serverTotal = mediaTotal + transportCharge
@@ -173,6 +166,9 @@ export async function POST(req: NextRequest) {
   const createdBy = (token.id as string) || serviceUser?.id || 'system'
 
   // Create holds directly (unified — no more dual-write to HoldRequest)
+  // Canonical market name — see canonicalMarketName().
+  const canonicalMarket = (await canonicalMarketName(market, resolvedState ?? undefined)) ?? market
+
   const created: string[] = []
   for (const truck of selectedTrucks) {
     try {
@@ -180,7 +176,7 @@ export async function POST(req: NextRequest) {
         data: {
           truck_number:      truck.truckNumber,
           client_name:       sfdc_account_name || 'Unknown',
-          market,
+          market:            canonicalMarket,
           state:             resolvedState ?? '',
           start_date:        new Date(start_date),
           end_date:          new Date(end_date),

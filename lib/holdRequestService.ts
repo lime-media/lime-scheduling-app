@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { canonicalMarketName } from '@/lib/marketBounds'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { appendHoldRequestToSheet } from '@/lib/googleSheets'
@@ -91,11 +92,15 @@ export async function createClientHold(
     throw new Error(`Truck ${truck_number} already booked for "${c.client_name}" from ${c.start_date.toISOString().split('T')[0]} to ${c.end_date.toISOString().split('T')[0]}`)
   }
 
+  // Canonical market name — holds carry no standard_market_uid, so this string
+  // is what resolves the hold's coordinates later.
+  const canonicalMarket = (await canonicalMarketName(market ?? '', state ?? undefined)) ?? (market ?? '')
+
   const hold = await prisma.hold.create({
     data: {
       truck_number,
       client_name:       session.companyName,
-      market:            market ?? '',
+      market:            canonicalMarket,
       state:             state ?? '',
       start_date:        new Date(start_date),
       end_date:          new Date(end_date),

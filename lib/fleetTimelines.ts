@@ -14,7 +14,8 @@
 import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
 import { activeHoldWhere } from '@/lib/holdFilters'
-import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
+import { scheduledWithMarketQuery } from '@/lib/scheduleQuery'
+import { hasMarketBounds, loadStandardMarketCoords, normalizeMarketKey } from '@/lib/marketBounds'
 import { getLiveVehicleLocations, type SamsaraVehicleLocation } from '@/lib/samsaraService'
 import { buildTruckTimelines, type DayRow, type TruckJob } from '@/lib/truckTimeline'
 
@@ -29,6 +30,8 @@ export type FleetHold = {
   client_name: string
   origination: string
   source: string
+  lat?: number
+  lng?: number
 }
 
 export type FleetTimelines = {
@@ -56,10 +59,18 @@ export async function loadFleetTimelines(opts: {
 } = {}): Promise<FleetTimelines> {
   const hidden = opts.hiddenTrucks ?? new Set<string>()
 
-  const [scheduleRows, holds, gpsMap] = await Promise.all([
-    query<Record<string, unknown>[]>(SCHEDULED_QUERY),
+  // Ask the database what it can give us before asking for it.
+  const withBounds = await hasMarketBounds()
+
+  const [marketCoords, [scheduleRows, holds, gpsMap]] = await Promise.all([
+    // Holds carry no standard_market_uid, so their markets are matched by name
+    // against the authoritative list rather than the hardcoded file.
+    loadStandardMarketCoords(),
+    Promise.all([
+    query<Record<string, unknown>[]>(scheduledWithMarketQuery(withBounds)),
     prisma.hold.findMany({ where: activeHoldWhere(), orderBy: { start_date: 'asc' } }),
     getLiveVehicleLocations().catch(() => new Map<string, SamsaraVehicleLocation>()),
+    ] as const),
   ])
 
   const scheduleDays: DayRow[] = []
@@ -68,29 +79,46 @@ export async function loadFleetTimelines(opts: {
     if (!truckNumber || hidden.has(truckNumber)) continue
     const day = toDateStr(row.shift_start)
     if (!day) continue
+    const lat = Number(row.market_lat)
+    const lng = Number(row.market_lng)
     scheduleDays.push({
       truckNumber,
       date: day,
       market: normalizeMarket(row.standard_market_name || row.market),
       state: String(row.state ?? ''),
       program: String(row.program ?? ''),
+      // Only when the database supplied them AND they are real numbers; a
+      // market row with null bounds behaves exactly like the columns being absent.
+      lat: Number.isFinite(lat) && row.market_lat != null ? lat : undefined,
+      lng: Number.isFinite(lng) && row.market_lng != null ? lng : undefined,
     })
   }
 
   const fleetHolds: FleetHold[] = holds
     .filter(h => !hidden.has(h.truck_number))
-    .map(h => ({
-      id: h.id,
-      truck_number: h.truck_number,
-      start_date: toDateStr(h.start_date),
-      end_date: toDateStr(h.end_date),
-      market: normalizeMarket(h.market),
-      state: String(h.state ?? ''),
-      status: h.status,
-      client_name: h.client_name,
-      origination: h.origination,
-      source: h.source,
-    }))
+    .map(h => {
+      const market = normalizeMarket(h.market)
+      const state = String(h.state ?? '')
+      // Try "market, state" then the market alone — hold markets are free text
+      // and may or may not already carry the state.
+      const coords =
+        marketCoords.get(normalizeMarketKey(state && !market.toLowerCase().endsWith(`, ${state.toLowerCase()}`) ? `${market}, ${state}` : market))
+        ?? marketCoords.get(normalizeMarketKey(market))
+      return {
+        id: h.id,
+        truck_number: h.truck_number,
+        start_date: toDateStr(h.start_date),
+        end_date: toDateStr(h.end_date),
+        market,
+        state,
+        status: h.status,
+        client_name: h.client_name,
+        origination: h.origination,
+        source: h.source,
+        lat: coords?.lat,
+        lng: coords?.lng,
+      }
+    })
 
   const timelines = buildTruckTimelines(
     scheduleDays,

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { validateInternalApiKey } from '@/lib/internalAuth'
 import { prisma } from '@/lib/prisma'
+import { canonicalMarketName } from '@/lib/marketBounds'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { createHold } from '@/lib/holdService'
 import { checkTruckFeasibility } from '@/lib/availabilityEngine'
@@ -87,7 +88,7 @@ export async function POST(req: NextRequest) {
       data: {
         truck_number,
         client_name:    clientUser.company_name,
-        market:         market ?? '',
+        market:         (await canonicalMarketName(market ?? '', state ?? undefined)) ?? (market ?? ''),
         state:          state  ?? '',
         start_date:     new Date(start_date),
         end_date:       new Date(end_date),

@@ -5,6 +5,7 @@
  */
 import './transport.test'
 import './chain.test'
+import './markets.test'
 import { report } from './harness'
 
 process.exit(report())

@@ -5,8 +5,9 @@
  */
 
 import { prisma } from '@/lib/prisma'
-import { haversineDistance, getMarketCoords } from '@/lib/marketCoordinates'
+import { haversineDistance, getMarketCoords, resolveMarketInput, type MarketMatch } from '@/lib/marketCoordinates'
 import { marketSizeTierFromDmaCode, type RateOverrides } from './config'
+import { loadStandardMarketCoords, normalizeMarketKey, titleCaseMarket } from '@/lib/marketBounds'
 import type { ClientSession } from '@/lib/clientAuth'
 
 // ---------------------------------------------------------------------------
@@ -144,21 +145,46 @@ export async function resolveRateOverridesBySfdcAccount(sfdcAccountId: string): 
 // Campaign coordinate resolution
 // ---------------------------------------------------------------------------
 
-export type CampaignCoords = { lat: number; lng: number; source: 'coords_map' | 'accepted_market' }
+export type CampaignCoords = { lat: number; lng: number; source: 'coords_map' | 'standard_market' | 'accepted_market' }
 
 /**
  * Resolve a campaign market string to lat/lng coordinates.
  *
  * Tries in order:
- * 1. Hardcoded COORDS map (282 US cities) via getMarketCoords()
- * 2. AcceptedMarket table (50 DMAs) — fuzzy city-name match
+ * 1. Hardcoded COORDS map (281 US cities) via getMarketCoords()
+ * 2. standard_market_lookup (356 markets) — the list the team maintains, and
+ *    the only one that covers what they can actually schedule. The hardcoded
+ *    map covers 61% of it.
+ * 3. AcceptedMarket table (50 DMAs) — fuzzy city-name match
  *
- * Returns null only if neither source recognizes the market.
+ * Returns null only if no source recognizes the market.
  */
 export async function resolveCampaignCoords(market: string): Promise<CampaignCoords | null> {
-  // Try the hardcoded 282-city map first
+  // Try the hardcoded city map first — no query, and it covers the common cases
   const fromMap = getMarketCoords(market)
   if (fromMap) return { ...fromMap, source: 'coords_map' }
+
+  // Then the authoritative market list, which covers everything schedulable
+  try {
+    const standardMarkets = await loadStandardMarketCoords()
+    const key = normalizeMarketKey(market)
+    const exact = standardMarkets.get(key)
+    if (exact) return { ...exact, source: 'standard_market' }
+
+    // City-only match, for "Allentown" against "Allentown, PA"
+    // City-only, e.g. "Allentown" against "Allentown, PA". Sorted so an
+    // ambiguous city resolves the same way every time rather than following
+    // Map insertion order.
+    const city = key.split(',')[0].trim()
+    if (city) {
+      const hits = [...standardMarkets.entries()]
+        .filter(([name]) => name.split(',')[0].trim() === city)
+        .sort(([a], [b]) => a.localeCompare(b))
+      if (hits.length > 0) return { ...hits[0][1], source: 'standard_market' }
+    }
+  } catch (err) {
+    console.error('[resolvers] standard market coord lookup failed:', err)
+  }
 
   // Fall back to accepted markets table (fuzzy city match)
   try {
@@ -263,3 +289,59 @@ export function businessDaysBetween(from: Date, to: Date): number {
   }
   return count
 }
+
+// ---------------------------------------------------------------------------
+// Market input resolution across BOTH sources
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve typed/selected market text against everything we know.
+ *
+ * resolveMarketInput() alone searches the 281-entry hardcoded file, which is
+ * the gate both quote routes run before anything else. /api/markets, meanwhile,
+ * autocompletes from the real 356-market list — so a rep could pick a valid
+ * market from the dropdown and be told it does not exist. This closes that.
+ *
+ * The standard market list wins on ties: it is the list the team maintains and
+ * the one every scheduled shift is selected from, so its spelling is canonical.
+ */
+export async function resolveMarketInputAll(input: string): Promise<MarketMatch[]> {
+  const fromFile = resolveMarketInput(input)
+
+  let standard: Map<string, { lat: number; lng: number }>
+  try {
+    standard = await loadStandardMarketCoords()
+  } catch (err) {
+    console.error('[resolvers] standard market list unavailable, file only:', err)
+    return fromFile
+  }
+  if (standard.size === 0) return fromFile
+
+  const key = normalizeMarketKey(input)
+  const city = key.split(',')[0].trim()
+  const state = key.split(',')[1]?.trim()
+
+  const exact: MarketMatch[] = []
+  const cityMatches: MarketMatch[] = []
+  const prefixMatches: MarketMatch[] = []
+
+  for (const [name, coords] of standard) {
+    const nameCity = name.split(',')[0].trim()
+    const nameState = name.split(',')[1]?.trim()
+    const match: MarketMatch = { key: name, formal: titleCaseMarket(name), ...coords }
+
+    if (name === key) exact.push(match)
+    else if (city && nameCity === city && (!state || nameState === state)) cityMatches.push(match)
+    else if (city && nameCity.startsWith(city) && (!state || nameState === state)) prefixMatches.push(match)
+  }
+
+  const tier = exact.length ? exact : cityMatches.length ? cityMatches : prefixMatches
+
+  // Merge, preferring the standard market list where both know a market.
+  const byKey = new Map<string, MarketMatch>()
+  for (const m of tier) byKey.set(m.key, m)
+  for (const m of fromFile) if (!byKey.has(m.key)) byKey.set(m.key, m)
+
+  return [...byKey.values()].sort((a, b) => a.formal.localeCompare(b.formal))
+}
+

@@ -1,3 +1,5 @@
+import { getSetting } from '@/lib/appSettings'
+
 // Email notifications — wire up SMTP credentials in .env when ready.
 // Required env vars: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
 //
@@ -7,13 +9,13 @@
 // list commented out one line above it — a code change, a PR and a promotion is
 // too much friction for "add someone to an email".
 //
-//   HOLD_NOTIFY_EMAIL    inbound client reservations (portal and MCP)
-//   ASSIST_NOTIFY_EMAIL  client assistance / extension requests
+// Recipients are resolved at SEND time via lib/appSettings: the row edited on
+// the Settings page wins, the env var is still honoured as a deploy-level
+// override, and a compiled default guarantees a notification is never addressed
+// to nothing.
 //
-// Comma-separated for multiple recipients.
-
-const HOLD_NOTIFY_TO   = process.env.HOLD_NOTIFY_EMAIL   || 'andrew@lime-media.com'
-const ASSIST_NOTIFY_TO = process.env.ASSIST_NOTIFY_EMAIL || 'andrew@lime-media.com'
+//   notify.holds   / HOLD_NOTIFY_EMAIL    a client booked
+//   notify.assist  / ASSIST_NOTIFY_EMAIL  a client needs a human
 
 export interface HoldRequestEmailData {
   companyName:  string
@@ -54,7 +56,7 @@ export async function sendHoldRequestEmail(data: HoldRequestEmailData): Promise<
 
   await transporter.sendMail({
     from:    SMTP_FROM ?? SMTP_USER,
-    to:      HOLD_NOTIFY_TO,
+    to:      await getSetting('notify.holds'),
     subject,
     text,
   })
@@ -97,7 +99,7 @@ export async function sendAssistanceRequestEmail(data: AssistanceRequestEmailDat
 
   await transporter.sendMail({
     from:    SMTP_FROM ?? SMTP_USER,
-    to:      ASSIST_NOTIFY_TO,
+    to:      await getSetting('notify.assist'),
     subject,
     text,
   })

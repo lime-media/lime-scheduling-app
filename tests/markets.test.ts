@@ -11,6 +11,7 @@
 import { eq, section } from './harness'
 import { matchMarketKey, titleCaseMarket, normalizeMarketKey } from '@/lib/marketBounds'
 import { matchAcceptedDma } from '@/lib/pricing/resolvers'
+import { validateEmailList } from '@/lib/appSettings'
 import { marketSizeTierFromDmaCode, NON_DMA_MARKET_TIER, MARKET_SIZE_TIERS } from '@/lib/pricing/config'
 
 // A stand-in for standard_market_lookup, including the shapes that caused bugs:
@@ -85,3 +86,13 @@ eq('non-DMA markets are tier 4, not tier 3', NON_DMA_MARKET_TIER, 4)
 const t3 = MARKET_SIZE_TIERS.find(t => t.id === 3)!.dailyA18
 const t4 = MARKET_SIZE_TIERS.find(t => t.id === 4)!.dailyA18
 eq('tier 3 is double tier 4', t3, t4 * 2)
+
+section('notification recipient validation')
+eq('single address', validateEmailList('andrew@lime-media.com'), null)
+eq('several addresses', validateEmailList('a@lime-media.com, b@lime-media.com'), null)
+eq('tolerates loose spacing', validateEmailList('  a@lime-media.com ,b@lime-media.com  '), null)
+eq('empty is rejected', validateEmailList(''), 'At least one email address is required')
+eq('commas only is rejected', validateEmailList(' , , '), 'At least one email address is required')
+eq('names one bad address', validateEmailList('a@lime-media.com, nope'), 'Not a valid email address: nope')
+eq('rejects a missing domain', validateEmailList('andrew@'), 'Not a valid email address: andrew@')
+eq('rejects whitespace inside an address', validateEmailList('an drew@lime-media.com'), 'Not a valid email address: an drew@lime-media.com')

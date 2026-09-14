@@ -84,6 +84,7 @@ export function Navbar() {
     { href: '/saturation-calculator',  label: 'Saturation' },
     { href: '/rate-cards', label: 'Rate Cards' },
     { href: '/users', label: 'Users' },
+    { href: '/settings', label: 'Settings' },
   ]
 
   const linkClass = (href: string) =>

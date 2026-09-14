@@ -237,7 +237,11 @@ Pricing answers *what it costs*. Feasibility answers *whether it is possible*, a
 
 **Rule 1 — it can arrive.** Transport days from where the truck is *released* must fit in the time before the campaign starts. A truck in LA needs 3 days to reach Oklahoma City; if the campaign starts in 2 days, it is not an option, idle or not.
 
-**Rule 2 — it is free.** Nothing else is booked during the campaign itself — holds *and* scheduled LED programs. `checkChainFeasibility()` does not test this itself; the caller does, and every caller now does.
+**Rule 2 — it is free.** Nothing else is booked during the campaign itself — holds *and* scheduled LED programs.
+
+`checkChainFeasibility()` deliberately does **not** test this: a job straddling the campaign is neither a predecessor nor a successor, so the chain check has nothing to say about it. The window is the caller's job, and the shared `findWindowClash()` is what every caller runs — the quote path, the single-truck check behind the hold writes, the infeasible-hold audit, and the MCP availability endpoint. A caller that skips it loads the truck's schedule blocks and then books straight over them, which is exactly what happened on the chat route.
+
+> **Known limitation.** Schedule data is windowed to roughly today −30 to +63 days, so a program booked further out than about two months is not visible to this check. Pre-existing across the codebase, not specific to feasibility.
 
 **Rule 3 — it does not strand its next job.** After the campaign, the truck must still reach whatever it is already committed to. If the next job is in Seattle starting the day after ours ends, and Seattle is 5 transport days away, taking this booking would break a job you have already sold.
 

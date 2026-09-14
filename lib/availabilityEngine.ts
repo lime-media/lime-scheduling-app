@@ -35,6 +35,7 @@ import {
 } from '@/lib/pricing/transport'
 import { checkChainFeasibility, type ChainResult } from '@/lib/chainFeasibility'
 import { loadFleetTimelines } from '@/lib/fleetTimelines'
+import { findWindowClash } from '@/lib/truckTimeline'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -457,7 +458,7 @@ export async function checkTruckFeasibility(params: {
   // does inline. Callers that evaluate ONE truck had no such check, so the
   // timeline's schedule blocks were loaded and then ignored: a truck already
   // running a client program could be booked straight over it.
-  const clash = jobs.find(j => j.start <= endDate && startDate <= j.end)
+  const clash = findWindowClash(jobs, startDate, endDate)
   if (clash) {
     const what = clash.source === 'SCHEDULE'
       ? `scheduled for "${clash.program || 'a program'}" in ${clash.market || 'another market'}`

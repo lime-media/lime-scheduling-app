@@ -7,6 +7,7 @@ import { ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { loadFleetTimelines } from '@/lib/fleetTimelines'
 import { checkChainFeasibility } from '@/lib/chainFeasibility'
+import { findWindowClash } from '@/lib/truckTimeline'
 import { resolveCampaignCoords } from '@/lib/pricing/resolvers'
 
 const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
@@ -185,12 +186,31 @@ export async function GET(request: Request) {
           if (!num || HIDDEN_TRUCKS.has(num)) continue
           if (unitIdFilter && !unitIdFilter.has(num)) continue
 
+          const truckJobs = timelines.get(num) ?? []
+
+          // The window itself — checkChainFeasibility does not test it.
+          const clash = findWindowClash(truckJobs, startDate, endDate)
+          if (clash) {
+            feasibilityByTruck.set(num, {
+              can_serve: false,
+              reason: 'BOOKED',
+              detail: clash.source === 'SCHEDULE'
+                ? `Scheduled for "${clash.program || 'a program'}" in ${clash.market || 'another market'} from ${clash.start} to ${clash.end}.`
+                : `Already held (${clash.status ?? 'HOLD'}) from ${clash.start} to ${clash.end}.`,
+              requires_soft_hold_override: clash.yieldable,
+              departs_from: 'n/a',
+              transport_days: 0,
+              distance_miles: 0,
+            })
+            continue
+          }
+
           const truckGps = fleetGps.get(num)
           const chain = checkChainFeasibility({
             campaignStart: startDate,
             campaignEnd: endDate,
             campaignCoords,
-            jobs: timelines.get(num) ?? [],
+            jobs: truckJobs,
             currentCoords: truckGps?.latitude && truckGps?.longitude
               ? { lat: truckGps.latitude, lng: truckGps.longitude }
               : null,

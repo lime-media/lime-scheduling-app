@@ -146,6 +146,23 @@ export function buildTruckTimelines(
 }
 
 /**
+ * The first job overlapping a campaign window, or null.
+ *
+ * checkChainFeasibility() deliberately does NOT test this — it answers "can it
+ * get there" and "can it leave", and treats a straddling job as neither a
+ * predecessor nor a successor. The window is the caller's responsibility, and a
+ * caller that forgets loads the truck's schedule blocks and then books straight
+ * over them. Kept here, pure and shared, so no caller writes it again.
+ */
+export function findWindowClash(
+  jobs: TruckJob[],
+  campaignStart: string,
+  campaignEnd: string,
+): TruckJob | null {
+  return jobs.find(j => j.start <= campaignEnd && campaignStart <= j.end) ?? null
+}
+
+/**
  * The job that determines where the truck will be when the campaign starts.
  *
  * Only a job that is RUNNING NOW or SCHEDULED between now and the campaign

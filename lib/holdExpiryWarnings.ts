@@ -11,8 +11,13 @@
  * The cron runs hourly, so "expires within 24h" matches for 24 consecutive runs.
  * Rather than add a warned_at column, a WARN_HOLD_EXPIRY audit row per hold is
  * the record — the same table already carries EXPIRE_HOLD and CREATE_HOLD, and
- * it survives redeploys and reruns. A hold warned once is never warned again,
- * even if the window is re-evaluated.
+ * it survives redeploys and reruns.
+ *
+ * The record is keyed on the hold AND the expiry it warned about. Keying on the
+ * hold alone silences it permanently after one warning, which breaks precisely
+ * the workflow this exists to support: warn -> user extends -> the new expiry
+ * arrives with no warning and the hold lapses silently. A new expires_at is a
+ * new deadline and gets its own warning.
  */
 
 import { prisma } from '@/lib/prisma'
@@ -60,14 +65,26 @@ export async function warnExpiringHolds(now = new Date()): Promise<ExpiryWarning
   }
   if (candidates.length === 0) return result
 
-  const alreadyWarned = new Set(
-    (await prisma.auditLog.findMany({
-      where: { action: WARN_ACTION, hold_id: { in: candidates.map(h => h.id) } },
-      select: { hold_id: true },
-    })).map(r => r.hold_id).filter((id): id is string => id !== null),
-  )
+  const warnRows = await prisma.auditLog.findMany({
+    where: { action: WARN_ACTION, hold_id: { in: candidates.map(h => h.id) } },
+    select: { hold_id: true, details: true },
+  })
 
-  const pending = candidates.filter(h => !alreadyWarned.has(h.id))
+  // "hold X, for expiry T" — extending a hold changes T, so the new deadline is
+  // unwarned and will be warned about on the next sweep.
+  const warnedFor = new Set<string>()
+  for (const row of warnRows) {
+    if (!row.hold_id) continue
+    let warnedExpiry: string | null = null
+    try {
+      warnedExpiry = JSON.parse(row.details ?? '{}').expires_at ?? null
+    } catch { /* unparseable detail — treat as a warning for an unknown expiry */ }
+    warnedFor.add(`${row.hold_id}|${warnedExpiry ? new Date(warnedExpiry).toISOString() : 'unknown'}`)
+  }
+
+  const pending = candidates.filter(
+    h => !warnedFor.has(`${h.id}|${h.expires_at ? h.expires_at.toISOString() : 'unknown'}`),
+  )
   result.skipped_already_warned = candidates.length - pending.length
   if (pending.length === 0) return result
 

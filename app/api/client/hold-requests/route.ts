@@ -252,6 +252,9 @@ async function handleAutoSelectHold(
   for (const truck of selectedTrucks) {
     try {
       await createClientHold(session, {
+        // Already vetted by selectTrucksForHold above — re-checking would reload
+        // the fleet timelines once per truck.
+        skipFeasibilityCheck: true,
         truck_number: truck.truckNumber,
         market,
         state: resolvedState,

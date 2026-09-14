@@ -19,6 +19,12 @@
 
 import { prisma } from '@/lib/prisma'
 
+/** Prisma P2021 — the table does not exist in the current database. */
+function isMissingTableError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'code' in err
+    && (err as { code?: unknown }).code === 'P2021'
+}
+
 export type SettingKey =
   | 'notify.holds'
   | 'notify.assist'
@@ -71,8 +77,16 @@ async function loadAll(): Promise<Map<string, string>> {
     cache = { at: Date.now(), values }
     return values
   } catch (err) {
-    // A settings-table problem must never stop a notification going out.
-    console.error('[appSettings] load failed, using env/defaults:', err)
+    // Either way the caller falls through to env/defaults so a notification
+    // still goes out — but these are very different situations and must not
+    // look identical in the logs. P2021 is "the migration has not run here",
+    // which is expected and benign. Anything else is a real database problem
+    // masquerading as one.
+    if (isMissingTableError(err)) {
+      console.warn('[appSettings] app_settings not present yet — using env/defaults')
+    } else {
+      console.error('[appSettings] DATABASE ERROR reading settings, using env/defaults:', err)
+    }
     return cache?.values ?? new Map()
   }
 }
@@ -109,7 +123,11 @@ export async function getAllSettings(): Promise<ResolvedSetting[]> {
   try {
     rows = await prisma.appSetting.findMany()
   } catch (err) {
-    console.error('[appSettings] load failed:', err)
+    if (isMissingTableError(err)) {
+      console.warn('[appSettings] app_settings not present yet — showing env/defaults')
+    } else {
+      console.error('[appSettings] DATABASE ERROR reading settings:', err)
+    }
   }
   const byKey = new Map(rows.map(r => [r.key, r]))
 

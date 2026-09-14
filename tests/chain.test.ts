@@ -210,7 +210,7 @@ const fellBack = run('', {
   start: '2026-09-21', end: '2026-09-25', gps: 'Los Angeles, CA',
   jobs: [job('2026-09-14', '2026-09-16', 'Nowheresville', 'ZZ')],
 })
-eq('flagged as GPS fallback', fellBack.inbound.originFellBackToGps, 'Nowheresville, ZZ')
+eq('upcoming unmappable job -> flagged', fellBack.inbound.originFellBackToGps, 'Nowheresville, ZZ')
 eq('origin is NOT treated as the prior job', fellBack.inbound.originIsPriorJob, false)
 eq('still resolves via GPS', fellBack.inbound.originResolved, true)
 eq('departure still gated by the prior job', fellBack.inbound.earliestDeparture, '2026-09-17')
@@ -218,6 +218,15 @@ eq('departure still gated by the prior job', fellBack.inbound.earliestDeparture,
 eq('no flag when prior market resolves',
    run('', { start: '2026-09-21', end: '2026-09-25', jobs: [job('2026-09-14','2026-09-16','Miami','FL')] })
      .inbound.originFellBackToGps, undefined)
+// A job RUNNING NOW with an unmappable market: the truck is physically there,
+// so GPS reads the right place. Accurate, not a problem — do not warn.
+const runningUnmappable = run('', {
+  start: '2026-09-21', end: '2026-09-25', gps: 'Los Angeles, CA',
+  jobs: [job('2026-09-08', '2026-09-14', 'Nowheresville', 'ZZ')],  // started before today
+})
+eq('running unmappable job raises no warning', runningUnmappable.inbound.originFellBackToGps, undefined)
+eq('still departs after that job ends', runningUnmappable.inbound.earliestDeparture, '2026-09-15')
+
 // A finished job with an unmappable market is not a fallback — it is ignored.
 eq('stale unmappable job raises no flag',
    run('', { start: '2026-09-21', end: '2026-09-25', jobs: [job('2026-08-01','2026-08-05','Nowheresville','ZZ')] })

@@ -63,8 +63,13 @@ export type InboundLeg = {
   /** False when neither a prior job nor a live position could be geocoded. */
   originResolved: boolean
   /**
-   * Set when a QUALIFYING prior job (current or upcoming) exists but its market
-   * could not be geocoded, so the truck fell back to live GPS. Carries
+   * Set only when an UPCOMING job's market could not be geocoded.
+   *
+   * When the unmappable job is already RUNNING, the truck is physically in that
+   * market right now, so its live GPS reads the right place and the fallback is
+   * accurate — nothing to verify. It is only when the job has not started yet
+   * that GPS describes where the truck is instead of where it will depart from,
+   * and the transport distance is genuinely wrong. Carries
    * the market string that failed, so drift between program_schedule market
    * names and the coordinate map is visible instead of silent.
    */
@@ -208,8 +213,9 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
     earliestDeparture,
     daysAvailable,
     originResolved: originCoords !== null,
+    // Upcoming (not yet started) unmappable job only — see the field docs.
     originFellBackToGps:
-      predecessor && !predCoords
+      predecessor && !predCoords && predecessor.start > today
         ? jobMarketLabel(predecessor.market, predecessor.state)
         : undefined,
   }

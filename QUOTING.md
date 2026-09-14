@@ -322,7 +322,9 @@ If the feasibility lookup itself errors, the hold is allowed through and the err
 
 Distance depends on matching `program_schedule` market names against the coordinate map. When a prior job's market cannot be matched, the truck **falls back to live GPS** — the old, wrong basis — rather than failing.
 
-That fallback is counted and reported, never silent:
+The fallback is only reported when the unmappable job **has not started yet**. If the job is already running, the truck is physically in that market, so its GPS reads the right place and the distance is correct — there is nothing to verify. Only an upcoming job makes GPS describe where the truck *is* rather than where it will *depart from*.
+
+When it does fire, it is counted and reported, never silent:
 
 - staff quote shows a red "priced from GPS, not their prior job" warning naming the markets
 - `/conflicts` shows a "Market names not recognized" banner

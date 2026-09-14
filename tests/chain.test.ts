@@ -9,7 +9,7 @@
  */
 import { eq, section } from './harness'
 import { getMarketCoords } from '@/lib/marketCoordinates'
-import { checkChainFeasibility } from '@/lib/chainFeasibility'
+import { checkChainFeasibility, coordsForJob, jobMarketLabel } from '@/lib/chainFeasibility'
 import { buildTruckTimelines, groupDaysIntoJobs, type TruckJob } from '@/lib/truckTimeline'
 
 
@@ -222,6 +222,18 @@ eq('no flag when prior market resolves',
 eq('stale unmappable job raises no flag',
    run('', { start: '2026-09-21', end: '2026-09-25', jobs: [job('2026-08-01','2026-08-05','Nowheresville','ZZ')] })
      .inbound.originFellBackToGps, undefined)
+
+section('market strings that already contain their state')
+// Schedule rows carry the state inside `market` AND separately, so naive
+// concatenation produced "Doral, FL, FL" — a miss, and an ugly warning label.
+eq('market already ending in state resolves', coordsForJob('Dallas, TX', 'TX') !== null, true)
+eq('bare city + separate state resolves', coordsForJob('Dallas', 'TX') !== null, true)
+eq('label does not double the state', jobMarketLabel('Doral, FL', 'FL'), 'Doral, FL')
+eq('label appends a missing state', jobMarketLabel('Doral', 'FL'), 'Doral, FL')
+// The municipalities that surfaced in UAT are now mapped.
+eq('Doral resolves', coordsForJob('Doral, FL', 'FL') !== null, true)
+eq('North Palm Beach resolves', coordsForJob('North Palm Beach, FL', 'FL') !== null, true)
+eq('Elizabeth resolves', coordsForJob('Elizabeth, NJ', 'NJ') !== null, true)
 
 section('timeline grouping')
 const grouped = groupDaysIntoJobs([

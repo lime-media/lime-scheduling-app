@@ -118,10 +118,35 @@ function nextDay(dateStr: string): string {
   return d.toISOString().split('T')[0]
 }
 
-/** Resolve a job's market to coordinates, trying "city, st" then bare city. */
+/**
+ * Resolve a job's market to coordinates.
+ *
+ * Schedule rows usually carry the state INSIDE the market string already
+ * ("Doral, FL") while also exposing it separately, so naive concatenation
+ * produces "Doral, FL, FL" and misses. Try the market as written first, then
+ * append the state only when it is not already there, then the bare city.
+ */
 export function coordsForJob(market: string, state: string): Coords | null {
   if (!market) return null
-  return getMarketCoords(state ? `${market}, ${state}` : market) ?? getMarketCoords(market)
+
+  const direct = getMarketCoords(market)
+  if (direct) return direct
+
+  if (state && !market.toLowerCase().endsWith(`, ${state.toLowerCase()}`)) {
+    const withState = getMarketCoords(`${market}, ${state}`)
+    if (withState) return withState
+  }
+
+  // Last resort: the city alone, in case the map keys it without a state.
+  const city = market.split(',')[0].trim()
+  return city && city !== market ? getMarketCoords(city) ?? null : null
+}
+
+/** Human label for a job's market, without duplicating the state. */
+export function jobMarketLabel(market: string, state: string): string {
+  if (!market) return state || 'unknown'
+  if (!state || market.toLowerCase().endsWith(`, ${state.toLowerCase()}`)) return market
+  return `${market}, ${state}`
 }
 
 /** Transport days for a leg — 0 when the distance is inside the service area. */
@@ -175,7 +200,7 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
 
   const inbound: InboundLeg = {
     originLabel: predecessor
-      ? [predecessor.market, predecessor.state].filter(Boolean).join(', ')
+      ? jobMarketLabel(predecessor.market, predecessor.state)
       : 'current position',
     originIsPriorJob,
     distanceMiles: inboundDistance,
@@ -185,7 +210,7 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
     originResolved: originCoords !== null,
     originFellBackToGps:
       predecessor && !predCoords
-        ? ([predecessor.market, predecessor.state].filter(Boolean).join(', ') || 'unknown')
+        ? jobMarketLabel(predecessor.market, predecessor.state)
         : undefined,
   }
 
@@ -216,7 +241,7 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
 
     if (!succCoords) {
       successorImpact = {
-        market: [successor.market, successor.state].filter(Boolean).join(', ') || 'unknown',
+        market: jobMarketLabel(successor.market, successor.state),
         startsOn: successor.start,
         status: successor.status ?? successor.source,
         yieldable: successor.yieldable,
@@ -237,7 +262,7 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
       const baseDays = originCoords ? legDays(baseDistance, serviceAreaMiles) : outDays
 
       successorImpact = {
-        market: [successor.market, successor.state].filter(Boolean).join(', '),
+        market: jobMarketLabel(successor.market, successor.state),
         startsOn: successor.start,
         status: successor.status ?? successor.source,
         yieldable: successor.yieldable,

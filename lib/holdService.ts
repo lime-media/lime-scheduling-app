@@ -2,6 +2,7 @@ import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { query } from '@/lib/mssql'
 import { checkTruckFeasibility } from '@/lib/availabilityEngine'
+import { canonicalMarketName } from '@/lib/marketBounds'
 
 export interface CreateHoldParams {
   truck_number: string
@@ -118,10 +119,14 @@ export async function createHold(params: CreateHoldParams): Promise<CreateHoldRe
     }
   }
 
+  // Store the canonical market name so this hold can resolve its own
+  // coordinates later — holds carry no standard_market_uid.
+  const canonicalMarket = (await canonicalMarketName(market, state)) ?? market
+
   const hold = await prisma.hold.create({
     data: {
       truck_number,
-      market,
+      market: canonicalMarket,
       state,
       client_name,
       start_date: new Date(start_date),

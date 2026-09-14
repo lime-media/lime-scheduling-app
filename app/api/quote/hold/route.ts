@@ -9,6 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
+import { canonicalMarketName } from '@/lib/marketBounds'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { computeHoldExpiresAt } from '@/lib/holdRequestService'
 import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
@@ -165,6 +166,9 @@ export async function POST(req: NextRequest) {
   const createdBy = (token.id as string) || serviceUser?.id || 'system'
 
   // Create holds directly (unified — no more dual-write to HoldRequest)
+  // Canonical market name — see canonicalMarketName().
+  const canonicalMarket = (await canonicalMarketName(market, resolvedState ?? undefined)) ?? market
+
   const created: string[] = []
   for (const truck of selectedTrucks) {
     try {
@@ -172,7 +176,7 @@ export async function POST(req: NextRequest) {
         data: {
           truck_number:      truck.truckNumber,
           client_name:       sfdc_account_name || 'Unknown',
-          market,
+          market:            canonicalMarket,
           state:             resolvedState ?? '',
           start_date:        new Date(start_date),
           end_date:          new Date(end_date),

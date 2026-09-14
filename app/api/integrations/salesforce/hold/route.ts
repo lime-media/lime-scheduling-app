@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { canonicalMarketName } from '@/lib/marketBounds'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { endOfDayUtc } from '@/lib/dateOnly'
@@ -104,8 +105,17 @@ export async function POST(req: NextRequest) {
 
   for (const truck_number of truckNumbers) {
     const gps    = gpsMap.get(truck_number)
-    const market = gps ? `${gps.city}, ${gps.state}` : ''
     const state  = gps?.state ?? ''
+    // This route DERIVES a market from Samsara reverse-geocoding rather than
+    // mirroring one from Salesforce, and reverse-geocoded city names are exactly
+    // the suburbs that do not match canonical spellings ("Doral", not "Miami").
+    // Canonicalize like every other path that invents a market string, so this
+    // hold can resolve its own coordinates later. Runs on create AND on every
+    // re-push update, since the market is recomputed each time.
+    const rawMarket = gps ? `${gps.city}, ${gps.state}` : ''
+    const market = rawMarket
+      ? (await canonicalMarketName(rawMarket, state)) ?? rawMarket
+      : ''
 
     const existing = await prisma.hold.findFirst({
       where: { sfdc_opportunity_id: opportunityId, source: 'SALESFORCE', truck_number },

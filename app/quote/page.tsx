@@ -145,6 +145,8 @@ export default function InternalQuotePage() {
   const [quoteLoading, setQuoteLoading] = useState(false)
   const [quoteResult, setQuoteResult] = useState<QuoteResponse | null>(null)
   const [quoteError, setQuoteError] = useState<string | null>(null)
+  // Internal-only breakdown shown under the headline. Never sent to clients.
+  const [quoteErrorDetail, setQuoteErrorDetail] = useState<string | null>(null)
   const [marketCandidates, setMarketCandidates] = useState<string[] | null>(null)
 
   // Features
@@ -164,6 +166,7 @@ export default function InternalQuotePage() {
     if (marketOverride) setForm(prev => ({ ...prev, market: marketOverride }))
     setQuoteLoading(true)
     setQuoteError(null)
+    setQuoteErrorDetail(null)
     setQuoteResult(null)
     setHoldResult(null)
     setMarketCandidates(null)
@@ -178,6 +181,7 @@ export default function InternalQuotePage() {
 
       if (res.ok && data.insufficient) {
         setQuoteError(data.message)
+        setQuoteErrorDetail(data.detail ?? null)
       } else if (res.ok) {
         setQuoteResult(data)
         if (data.market) setForm(prev => ({ ...prev, market: data.market }))
@@ -328,8 +332,15 @@ export default function InternalQuotePage() {
           </button>
         </div>
 
-        {/* Error */}
-        {quoteError && <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-800 mb-4">{quoteError}</div>}
+        {/* Error — headline first, internal detail underneath (staff view only) */}
+        {quoteError && (
+          <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 mb-4">
+            <p className="text-sm font-medium text-red-900">{quoteError}</p>
+            {quoteErrorDetail && (
+              <p className="text-xs text-red-700 mt-1">{quoteErrorDetail}</p>
+            )}
+          </div>
+        )}
 
         {/* Disambiguation */}
         {marketCandidates && (

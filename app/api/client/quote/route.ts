@@ -11,7 +11,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getClientSession } from '@/lib/clientAuth'
 import { checkAvailability, legsFromTrucks } from '@/lib/availabilityEngine'
-import { resolveMarketInput } from '@/lib/marketCoordinates'
+
 import {
   computeQuote,
   priceTransport,
@@ -21,6 +21,7 @@ import {
   type StudyType,
 } from '@/lib/pricing'
 import {
+  resolveMarketInputAll,
   resolveMarketSizeTierId,
   resolveRateOverrides,
   resolveDefaultRateOverrides,
@@ -57,7 +58,10 @@ export async function POST(req: NextRequest) {
   }
 
   // Resolve the market input — handles disambiguation and formalization
-  const marketMatches = resolveMarketInput(market)
+  // Resolve against the hardcoded map AND the 356-market list the team
+  // maintains — /api/markets autocompletes from the latter, so gating on the
+  // former would reject markets the rep just picked from the dropdown.
+  const marketMatches = await resolveMarketInputAll(market)
 
   if (marketMatches.length === 0) {
     return NextResponse.json({
@@ -159,7 +163,9 @@ export async function POST(req: NextRequest) {
         sufficient: false,
       },
       insufficient: true,
-      message: `We have ${availability.counts.total} truck${availability.counts.total !== 1 ? 's' : ''} that can reach your market for these dates, but you need ${truck_count}. Submit a request and the Lime Media team will work on a solution.`,
+      // Client-facing: the headline only. Truck counts and exclusion reasons are
+      // fleet posture and stay on the staff route.
+      message: 'Automatic quote not feasible without changing existing reservations or commitments. Submit a request and the Lime Media team will work on a solution.',
     })
   }
 

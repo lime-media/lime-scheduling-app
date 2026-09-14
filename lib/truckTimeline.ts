@@ -109,6 +109,8 @@ export type HoldLike = {
   market: string
   state: string
   status: string
+  lat?: number
+  lng?: number
 }
 
 /**
@@ -128,6 +130,8 @@ export function buildTruckTimelines(
       end: h.end_date,
       market: h.market ?? '',
       state: h.state ?? '',
+      lat: h.lat,
+      lng: h.lng,
       source: 'HOLD',
       status: h.status,
       yieldable: YIELDABLE_HOLD_STATUSES.has(h.status),

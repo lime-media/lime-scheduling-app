@@ -7,6 +7,7 @@
 import { prisma } from '@/lib/prisma'
 import { haversineDistance, getMarketCoords } from '@/lib/marketCoordinates'
 import { marketSizeTierFromDmaCode, type RateOverrides } from './config'
+import { loadStandardMarketCoords, normalizeMarketKey } from '@/lib/marketBounds'
 import type { ClientSession } from '@/lib/clientAuth'
 
 // ---------------------------------------------------------------------------
@@ -144,21 +145,44 @@ export async function resolveRateOverridesBySfdcAccount(sfdcAccountId: string): 
 // Campaign coordinate resolution
 // ---------------------------------------------------------------------------
 
-export type CampaignCoords = { lat: number; lng: number; source: 'coords_map' | 'accepted_market' }
+export type CampaignCoords = { lat: number; lng: number; source: 'coords_map' | 'standard_market' | 'accepted_market' }
 
 /**
  * Resolve a campaign market string to lat/lng coordinates.
  *
  * Tries in order:
- * 1. Hardcoded COORDS map (282 US cities) via getMarketCoords()
- * 2. AcceptedMarket table (50 DMAs) — fuzzy city-name match
+ * 1. Hardcoded COORDS map (281 US cities) via getMarketCoords()
+ * 2. standard_market_lookup (356 markets) — the list the team maintains, and
+ *    the only one that covers what they can actually schedule. The hardcoded
+ *    map covers 61% of it.
+ * 3. AcceptedMarket table (50 DMAs) — fuzzy city-name match
  *
- * Returns null only if neither source recognizes the market.
+ * Returns null only if no source recognizes the market.
  */
 export async function resolveCampaignCoords(market: string): Promise<CampaignCoords | null> {
-  // Try the hardcoded 282-city map first
+  // Try the hardcoded city map first — no query, and it covers the common cases
   const fromMap = getMarketCoords(market)
   if (fromMap) return { ...fromMap, source: 'coords_map' }
+
+  // Then the authoritative market list, which covers everything schedulable
+  try {
+    const standardMarkets = await loadStandardMarketCoords()
+    const key = normalizeMarketKey(market)
+    const exact = standardMarkets.get(key)
+    if (exact) return { ...exact, source: 'standard_market' }
+
+    // City-only match, for "Allentown" against "Allentown, PA"
+    const city = key.split(',')[0].trim()
+    if (city) {
+      for (const [name, coords] of standardMarkets) {
+        if (name.split(',')[0].trim() === city) {
+          return { ...coords, source: 'standard_market' }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[resolvers] standard market coord lookup failed:', err)
+  }
 
   // Fall back to accepted markets table (fuzzy city match)
   try {

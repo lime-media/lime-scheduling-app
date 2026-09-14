@@ -76,3 +76,70 @@ export const MARKET_CENTROID_SELECT = `
 export const MARKET_CENTROID_JOIN = `
 LEFT JOIN dbo.standard_market_lookup sml
     ON  sml.standard_market_uid = cpm.standard_market_uid`
+
+// ---------------------------------------------------------------------------
+// Name-keyed lookup, for records that carry no standard_market_uid
+// ---------------------------------------------------------------------------
+
+export type MarketCoords = { lat: number; lng: number }
+
+/**
+ * Normalize a market name for comparison.
+ * standard_market values carry stray leading spaces (" Boston, MA"), and hold
+ * markets are free text, so both sides are squashed to the same shape.
+ */
+export function normalizeMarketKey(name: string): string {
+  return (name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s*,\s*/g, ', ')
+    .replace(/\s+/g, ' ')
+}
+
+let marketCoordsCache: Map<string, MarketCoords> | null = null
+
+/**
+ * Every standard market's centroid, keyed by normalized name.
+ *
+ * Holds and typed campaign markets have no standard_market_uid to join on, so
+ * they are matched by name instead — but against the authoritative 356-market
+ * list rather than the 281-entry hardcoded file, which covers 61% of it.
+ *
+ * Loaded once per process (356 rows), and empty when the bounds columns are
+ * absent so callers fall through to their existing behavior.
+ */
+export async function loadStandardMarketCoords(): Promise<Map<string, MarketCoords>> {
+  if (marketCoordsCache) return marketCoordsCache
+  if (!(await hasMarketBounds())) {
+    marketCoordsCache = new Map()
+    return marketCoordsCache
+  }
+  try {
+    const rows = await query<{ standard_market: string; lat: number; lng: number }[]>(`
+      SELECT standard_market,
+             (bounds_ne_lat + bounds_sw_lat) / 2.0 AS lat,
+             (bounds_ne_lng + bounds_sw_lng) / 2.0 AS lng
+      FROM dbo.standard_market_lookup
+      WHERE bounds_ne_lat IS NOT NULL AND bounds_sw_lat IS NOT NULL
+        AND bounds_ne_lng IS NOT NULL AND bounds_sw_lng IS NOT NULL
+    `)
+    const map = new Map<string, MarketCoords>()
+    for (const r of rows) {
+      const key = normalizeMarketKey(r.standard_market)
+      if (!key) continue
+      const lat = Number(r.lat)
+      const lng = Number(r.lng)
+      if (Number.isFinite(lat) && Number.isFinite(lng)) map.set(key, { lat, lng })
+    }
+    marketCoordsCache = map
+  } catch (err) {
+    console.error('[marketBounds] standard market coord load failed:', err)
+    marketCoordsCache = new Map()
+  }
+  return marketCoordsCache
+}
+
+/** Test seam — forget the cached market coordinates. */
+export function resetStandardMarketCoordsCache(): void {
+  marketCoordsCache = null
+}

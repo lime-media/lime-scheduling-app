@@ -11,6 +11,7 @@ import { eq, section } from './harness'
 import { getMarketCoords } from '@/lib/marketCoordinates'
 import { checkChainFeasibility, coordsForJob, jobMarketLabel, jobCoords } from '@/lib/chainFeasibility'
 import { buildTruckTimelines, groupDaysIntoJobs, type TruckJob } from '@/lib/truckTimeline'
+import { normalizeMarketKey } from '@/lib/marketBounds'
 
 
 const TODAY = '2026-09-11'
@@ -262,6 +263,15 @@ eq('unmapped market still null without them',
 eq('partial coordinates are ignored',
    jobCoords({ market: 'Allentown, PA', state: 'PA', lat: 40.6 }), null)
 
+section('market name normalization (standard_market_lookup keys)')
+// standard_market values carry stray leading spaces (" Boston, MA") and hold
+// markets are free text — both sides must squash to the same key.
+eq('leading space stripped', normalizeMarketKey(' Boston, MA'), 'boston, ma')
+eq('comma spacing normalized', normalizeMarketKey('Boston,MA'), 'boston, ma')
+eq('case normalized', normalizeMarketKey('BOSTON, MA'), 'boston, ma')
+eq('inner whitespace collapsed', normalizeMarketKey('  North   Palm Beach ,  FL '), 'north palm beach, fl')
+eq('empty stays empty', normalizeMarketKey(''), '')
+
 section('timeline grouping')
 const grouped = groupDaysIntoJobs([
   { truckNumber: '100', date: '2026-09-01', market: 'Dallas', state: 'TX', program: 'A' },
@@ -282,4 +292,11 @@ const merged = buildTruckTimelines(
 eq('schedule + holds merged in order', merged.map(j => j.source), ['SCHEDULE', 'HOLD'])
 eq('schedule jobs never yieldable', merged[0].yieldable, false)
 eq('ATT_SOFT hold is yieldable', merged[1].yieldable, true)
+
+const withCoords = buildTruckTimelines(
+  [],
+  [{ truck_number: '100', start_date: '2026-09-10', end_date: '2026-09-12', market: 'Allentown, PA', state: 'PA', status: 'HOLD', lat: 40.6, lng: -75.5 }],
+).get('100')!
+eq('hold coordinates survive into the timeline', [withCoords[0].lat, withCoords[0].lng], [40.6, -75.5])
+eq('and are used as the origin', jobCoords(withCoords[0]), { lat: 40.6, lng: -75.5 })
 

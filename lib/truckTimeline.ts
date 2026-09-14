@@ -130,11 +130,29 @@ export function buildTruckTimelines(
   return timelines
 }
 
-/** Last job that finishes strictly before the campaign begins. */
-export function findPredecessor(jobs: TruckJob[], campaignStart: string): TruckJob | null {
+/**
+ * The job that determines where the truck will be when the campaign starts.
+ *
+ * Only a job that is RUNNING NOW or SCHEDULED between now and the campaign
+ * qualifies. A job that already finished says nothing about where the truck is
+ * — trucks are repositioned between campaigns all the time, so a market it left
+ * three weeks ago is not evidence of anything. In that case the caller should
+ * fall back to live GPS, which is the only thing that knows where it actually
+ * sits today.
+ *
+ * Concretely, a job qualifies when it ends on or after `today` (so it is either
+ * in progress or still upcoming) and before the campaign begins.
+ */
+export function findPredecessor(
+  jobs: TruckJob[],
+  campaignStart: string,
+  today: string,
+): TruckJob | null {
   let best: TruckJob | null = null
   for (const j of jobs) {
-    if (j.end < campaignStart && (best === null || j.end > best.end)) best = j
+    if (j.end >= today && j.end < campaignStart && (best === null || j.end > best.end)) {
+      best = j
+    }
   }
   return best
 }

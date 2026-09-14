@@ -138,6 +138,7 @@ export async function POST(req: NextRequest) {
       insufficient: true,
       outOfServiceArea: true,
       message: `Could not locate "${formalMarket}" — Lime Media serves the contiguous 48 states.`,
+      detail: 'No coordinates could be resolved for this market, so no truck distance could be computed.',
     })
   }
 
@@ -152,7 +153,9 @@ export async function POST(req: NextRequest) {
         sufficient: false,
       },
       insufficient: true,
-      message: `${availability.counts.total} truck${availability.counts.total !== 1 ? 's' : ''} can reach this market for these dates, but ${truck_count} requested.`
+      // Headline is the operative fact; the counts below are internal detail.
+      message: 'Automatic quote not feasible without changing existing reservations or commitments.',
+      detail: `${availability.counts.total} truck${availability.counts.total !== 1 ? 's' : ''} can reach this market for these dates, but ${truck_count} requested.`
         + (availability.counts.cannotArrive > 0 ? ` ${availability.counts.cannotArrive} excluded: cannot arrive in time.` : '')
         + (availability.counts.wouldStrandSuccessor > 0 ? ` ${availability.counts.wouldStrandSuccessor} excluded: would strand a later booking.` : ''),
     })

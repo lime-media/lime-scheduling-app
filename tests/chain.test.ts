@@ -39,7 +39,7 @@ eq('3 transport days needed', soon.inbound.transportDays, 3)
 eq('2 days available', soon.inbound.daysAvailable, 2)
 eq('idle LA -> OKC in 10 days: feasible', run('', { start: '2026-09-21', end: '2026-09-25' }).feasible, true)
 
-section('release point beats live GPS')
+section('origin: current/upcoming commitment beats GPS; past job does not')
 // GPS says Dallas (local to OKC), but the truck works Miami until the 12th.
 const fromMiami = run('', {
   start: '2026-09-14', end: '2026-09-18', gps: 'Dallas, TX',
@@ -51,6 +51,43 @@ eq('departs day after prior job', fromMiami.inbound.earliestDeparture, '2026-09-
 eq('Miami->OKC needs repositioning', fromMiami.inbound.transportDays > 0, true)
 // Same truck, no prior job: GPS Dallas is local, so no transport at all.
 eq('no prior job -> uses GPS', run('', { start: '2026-09-14', end: '2026-09-18', gps: 'Dallas, TX' }).inbound.transportDays, 0)
+
+// A job that already ENDED tells us nothing — the truck has been repositioned
+// since. GPS is the only evidence of where it actually is.
+const pastJobOnly = run('', {
+  start: '2026-09-21', end: '2026-09-25', gps: 'Dallas, TX',
+  jobs: [job('2026-08-01', '2026-08-10', 'Miami', 'FL')],   // ended weeks ago
+})
+eq('past job ignored as origin', pastJobOnly.inbound.originIsPriorJob, false)
+eq('falls back to GPS', pastJobOnly.inbound.originLabel, 'current position')
+eq('Dallas GPS -> OKC is local, no transport', pastJobOnly.inbound.transportDays, 0)
+eq('can depart today', pastJobOnly.inbound.earliestDeparture, TODAY)
+
+// A job running RIGHT NOW does determine position.
+const runningNow = run('', {
+  start: '2026-09-21', end: '2026-09-25', gps: 'Dallas, TX',
+  jobs: [job('2026-09-08', '2026-09-14', 'Miami', 'FL')],   // started before today, ends after
+})
+eq('current job is the origin', runningNow.inbound.originLabel, 'Miami, FL')
+eq('departs after it ends', runningNow.inbound.earliestDeparture, '2026-09-15')
+
+// A job scheduled BETWEEN now and the campaign also determines position.
+const upcoming = run('', {
+  start: '2026-09-25', end: '2026-09-30', gps: 'Dallas, TX',
+  jobs: [job('2026-09-16', '2026-09-20', 'Miami', 'FL')],
+})
+eq('upcoming job is the origin', upcoming.inbound.originLabel, 'Miami, FL')
+eq('departs after it ends', upcoming.inbound.earliestDeparture, '2026-09-21')
+
+// Both a stale past job and a real upcoming one: the upcoming one wins.
+const mixed = run('', {
+  start: '2026-09-25', end: '2026-09-30', gps: 'Dallas, TX',
+  jobs: [
+    job('2026-08-01', '2026-08-10', 'Seattle', 'WA'),  // stale, ignore
+    job('2026-09-16', '2026-09-20', 'Miami', 'FL'),    // upcoming, use this
+  ],
+})
+eq('latest qualifying job wins, stale ignored', mixed.inbound.originLabel, 'Miami, FL')
 
 section('rule 3: does not strand the next job')
 const strands = run('', {
@@ -135,17 +172,23 @@ eq('unresolvable successor: flagged', badSucc.successor!.unresolvedMarket, true)
 section('prior-job market that will not geocode')
 // Predecessor in an unrecognized market: falls back to GPS (old behavior) but
 // must SAY SO, otherwise the regression is invisible.
+// Must be a QUALIFYING job (ends on/after today, before the campaign) —
+// a job already finished is ignored outright now, geocodable or not.
 const fellBack = run('', {
   start: '2026-09-21', end: '2026-09-25', gps: 'Los Angeles, CA',
-  jobs: [job('2026-09-01', '2026-09-05', 'Nowheresville', 'ZZ')],
+  jobs: [job('2026-09-14', '2026-09-16', 'Nowheresville', 'ZZ')],
 })
 eq('flagged as GPS fallback', fellBack.inbound.originFellBackToGps, 'Nowheresville, ZZ')
 eq('origin is NOT treated as the prior job', fellBack.inbound.originIsPriorJob, false)
 eq('still resolves via GPS', fellBack.inbound.originResolved, true)
-eq('departure still gated by the prior job', fellBack.inbound.earliestDeparture, '2026-09-06')
+eq('departure still gated by the prior job', fellBack.inbound.earliestDeparture, '2026-09-17')
 // A resolvable predecessor must NOT set the flag.
 eq('no flag when prior market resolves',
-   run('', { start: '2026-09-21', end: '2026-09-25', jobs: [job('2026-09-01','2026-09-05','Miami','FL')] })
+   run('', { start: '2026-09-21', end: '2026-09-25', jobs: [job('2026-09-14','2026-09-16','Miami','FL')] })
+     .inbound.originFellBackToGps, undefined)
+// A finished job with an unmappable market is not a fallback — it is ignored.
+eq('stale unmappable job raises no flag',
+   run('', { start: '2026-09-21', end: '2026-09-25', jobs: [job('2026-08-01','2026-08-05','Nowheresville','ZZ')] })
      .inbound.originFellBackToGps, undefined)
 
 section('timeline grouping')

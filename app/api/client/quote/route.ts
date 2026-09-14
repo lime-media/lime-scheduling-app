@@ -159,7 +159,9 @@ export async function POST(req: NextRequest) {
         sufficient: false,
       },
       insufficient: true,
-      message: `We have ${availability.counts.total} truck${availability.counts.total !== 1 ? 's' : ''} that can reach your market for these dates, but you need ${truck_count}. Submit a request and the Lime Media team will work on a solution.`,
+      // Client-facing: the headline only. Truck counts and exclusion reasons are
+      // fleet posture and stay on the staff route.
+      message: 'Automatic quote not feasible without changing existing reservations or commitments. Submit a request and the Lime Media team will work on a solution.',
     })
   }
 

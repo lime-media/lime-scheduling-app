@@ -63,8 +63,8 @@ export type InboundLeg = {
   /** False when neither a prior job nor a live position could be geocoded. */
   originResolved: boolean
   /**
-   * Set when a prior job EXISTS but its market could not be geocoded, so the
-   * truck silently fell back to live GPS — i.e. the old, wrong basis. Carries
+   * Set when a QUALIFYING prior job (current or upcoming) exists but its market
+   * could not be geocoded, so the truck fell back to live GPS. Carries
    * the market string that failed, so drift between program_schedule market
    * names and the coordinate map is visible instead of silent.
    */
@@ -143,12 +143,25 @@ export function checkChainFeasibility(input: ChainInput): ChainResult {
     jobs, currentCoords, today, serviceAreaMiles,
   } = input
 
-  const predecessor = findPredecessor(jobs, campaignStart)
+  const predecessor = findPredecessor(jobs, campaignStart, today)
   const successor = findSuccessor(jobs, campaignEnd)
 
-  // --- Inbound leg: measured from where the truck is RELEASED, not where it
-  // happens to be sitting today. A truck working Miami until the 12th is a
-  // Miami truck for a campaign starting the 14th, wherever its GPS reads now.
+  // --- Inbound leg: measured from where the truck will actually BE.
+  //
+  // Two sources, and which one applies depends on whether the truck is
+  // committed between now and the campaign:
+  //
+  //   committed  — running a program now, or scheduled for one before the
+  //                campaign starts: use that program's market. A truck working
+  //                Miami until the 12th is a Miami truck for a campaign on the
+  //                14th, wherever its GPS reads today.
+  //
+  //   free       — no current or upcoming commitment before the campaign: use
+  //                live GPS. A campaign it finished weeks ago is not evidence
+  //                of position; trucks get repositioned between jobs.
+  //
+  // Using a past job's market was wrong in exactly the case that matters most:
+  // an idle truck that has since been moved.
   const predCoords = predecessor ? coordsForJob(predecessor.market, predecessor.state) : null
   const originCoords = predCoords ?? currentCoords
   const originIsPriorJob = predCoords !== null

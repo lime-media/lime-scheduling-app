@@ -245,15 +245,33 @@ Both travel rules count the **days actually free between jobs**. A campaign endi
 
 ### Where the truck departs from
 
-Distance is measured from the **release point** — where the truck will actually be when it becomes free — not from where its GPS reads today. A truck working Miami through the 12th is a Miami truck for a campaign starting the 14th, even if it is currently parked in Dallas. The same distance drives both the feasibility check and the transport charge, so they can never disagree.
+Distance is measured from where the truck **will actually be** when the campaign starts. Two sources, and which applies depends on whether the truck is committed between now and then:
 
-If there is no prior job, live GPS is used. If neither resolves, the truck is reported as `UNKNOWN_ORIGIN` rather than quietly dropped.
+| Truck's situation | Origin used |
+|---|---|
+| Running a program **now** | that program's market |
+| Program **scheduled** before the campaign starts | that program's market |
+| No current or upcoming commitment | **live GPS** |
+
+A truck working Miami through the 12th is a Miami truck for a campaign starting the 14th, wherever its GPS reads today — it is committed there.
+
+But a campaign that **already finished** is not evidence of position. Trucks are repositioned between jobs constantly, so a market a truck left three weeks ago says nothing about where it sits now. For an idle truck, GPS is the only thing that knows. Only jobs ending **on or after today** and before the campaign qualify as the origin.
+
+The same distance drives both the feasibility check and the transport charge, so they can never disagree. If neither source resolves, the truck is reported as `UNKNOWN_ORIGIN` rather than quietly dropped.
 
 ### Overrides
 
 A **hard commitment** (`HOLD`, `COMMITTED`, or scheduled program work) can never be stranded — the truck is excluded, full stop.
 
 A **soft hold** (`ATT_SOFT`) may be displaced. Those trucks are returned flagged as `requiresOverride`: they are never auto-selected by a quote or hold flow, but a rep can see them and make the call.
+
+### What a refusal says
+
+A refused quote leads with the operative fact:
+
+> **Automatic quote not feasible without changing existing reservations or commitments.**
+
+On staff surfaces a second line adds the internal breakdown — how many trucks can reach the market, how many were excluded for not arriving in time, how many would strand a later booking. **Client surfaces get the headline only**; truck counts and exclusion reasons are fleet posture.
 
 ### Nothing disappears silently
 

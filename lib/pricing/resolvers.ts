@@ -5,7 +5,7 @@
  */
 
 import { prisma } from '@/lib/prisma'
-import { haversineDistance, getMarketCoords } from '@/lib/marketCoordinates'
+import { haversineDistance, getMarketCoords, resolveMarketInput, type MarketMatch } from '@/lib/marketCoordinates'
 import { marketSizeTierFromDmaCode, type RateOverrides } from './config'
 import { loadStandardMarketCoords, normalizeMarketKey } from '@/lib/marketBounds'
 import type { ClientSession } from '@/lib/clientAuth'
@@ -286,4 +286,66 @@ export function businessDaysBetween(from: Date, to: Date): number {
     current.setUTCDate(current.getUTCDate() + 1)
   }
   return count
+}
+
+// ---------------------------------------------------------------------------
+// Market input resolution across BOTH sources
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve typed/selected market text against everything we know.
+ *
+ * resolveMarketInput() alone searches the 281-entry hardcoded file, which is
+ * the gate both quote routes run before anything else. /api/markets, meanwhile,
+ * autocompletes from the real 356-market list — so a rep could pick a valid
+ * market from the dropdown and be told it does not exist. This closes that.
+ *
+ * The standard market list wins on ties: it is the list the team maintains and
+ * the one every scheduled shift is selected from, so its spelling is canonical.
+ */
+export async function resolveMarketInputAll(input: string): Promise<MarketMatch[]> {
+  const fromFile = resolveMarketInput(input)
+
+  let standard: Map<string, { lat: number; lng: number }>
+  try {
+    standard = await loadStandardMarketCoords()
+  } catch (err) {
+    console.error('[resolvers] standard market list unavailable, file only:', err)
+    return fromFile
+  }
+  if (standard.size === 0) return fromFile
+
+  const key = normalizeMarketKey(input)
+  const city = key.split(',')[0].trim()
+  const state = key.split(',')[1]?.trim()
+
+  const exact: MarketMatch[] = []
+  const cityMatches: MarketMatch[] = []
+  const prefixMatches: MarketMatch[] = []
+
+  for (const [name, coords] of standard) {
+    const nameCity = name.split(',')[0].trim()
+    const nameState = name.split(',')[1]?.trim()
+    const match: MarketMatch = { key: name, formal: formalizeMarketName(name), ...coords }
+
+    if (name === key) exact.push(match)
+    else if (city && nameCity === city && (!state || nameState === state)) cityMatches.push(match)
+    else if (city && nameCity.startsWith(city) && (!state || nameState === state)) prefixMatches.push(match)
+  }
+
+  const tier = exact.length ? exact : cityMatches.length ? cityMatches : prefixMatches
+
+  // Merge, preferring the standard market list where both know a market.
+  const byKey = new Map<string, MarketMatch>()
+  for (const m of tier) byKey.set(m.key, m)
+  for (const m of fromFile) if (!byKey.has(m.key)) byKey.set(m.key, m)
+
+  return [...byKey.values()].sort((a, b) => a.formal.localeCompare(b.formal))
+}
+
+/** Title-case a "city, st" key for display: "allentown, pa" -> "Allentown, PA". */
+function formalizeMarketName(key: string): string {
+  const [city, state] = key.split(',').map(p => p.trim())
+  const titled = city.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+  return state ? `${titled}, ${state.toUpperCase()}` : titled
 }

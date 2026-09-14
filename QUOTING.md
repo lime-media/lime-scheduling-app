@@ -324,7 +324,9 @@ Every scheduled shift requires selecting a market, and that selection carries a 
 
 The old path was a 281-entry hardcoded file (`lib/marketCoordinates.ts`), built in June 2026 for grid proximity filtering and never intended as an authoritative list. Measured against production's 355 standard markets it covers **61%**; 137 markets had no coordinates at all, and 63 file entries are not markets. It remains only as a first-pass shortcut and a fallback where the bounds migration has not landed.
 
-Records that carry no `standard_market_uid` — holds, and campaign markets typed by a rep — are matched **by name against the same 356-market list**, not the file. So every market the team can schedule now resolves, whichever path it arrives by.
+Records that carry no `standard_market_uid` — holds, and campaign markets typed by a rep — are matched **by name against the same 356-market list**, not the file. New holds are also **written with the canonical market name**, so a hold recorded as "dallas" is stored as "Dallas, TX" and can resolve its own coordinates later. An unrecognized market is stored as typed rather than rejected — it never blocks a booking.
+
+Market input on a quote resolves against **both** sources. `/api/markets` autocompletes from the 356-market list, so gating on the hardcoded file alone would have rejected markets a rep had just selected from the dropdown. So every market the team can schedule now resolves, whichever path it arrives by.
 
 The bounds columns reach environments at different times, and referencing a column SQL Server does not have is a hard error rather than a null — so capability is detected once per process (`hasMarketBounds()`) and the query is chosen accordingly. A market row with null bounds behaves exactly as if the columns were absent.
 

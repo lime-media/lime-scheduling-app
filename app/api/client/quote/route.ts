@@ -11,7 +11,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getClientSession } from '@/lib/clientAuth'
 import { checkAvailability, legsFromTrucks } from '@/lib/availabilityEngine'
-import { resolveMarketInput } from '@/lib/marketCoordinates'
+
 import {
   computeQuote,
   priceTransport,
@@ -21,6 +21,7 @@ import {
   type StudyType,
 } from '@/lib/pricing'
 import {
+  resolveMarketInputAll,
   resolveMarketSizeTierId,
   resolveRateOverrides,
   resolveDefaultRateOverrides,
@@ -57,7 +58,10 @@ export async function POST(req: NextRequest) {
   }
 
   // Resolve the market input — handles disambiguation and formalization
-  const marketMatches = resolveMarketInput(market)
+  // Resolve against the hardcoded map AND the 356-market list the team
+  // maintains — /api/markets autocompletes from the latter, so gating on the
+  // former would reject markets the rep just picked from the dropdown.
+  const marketMatches = await resolveMarketInputAll(market)
 
   if (marketMatches.length === 0) {
     return NextResponse.json({

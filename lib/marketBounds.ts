@@ -143,3 +143,52 @@ export async function loadStandardMarketCoords(): Promise<Map<string, MarketCoor
 export function resetStandardMarketCoordsCache(): void {
   marketCoordsCache = null
 }
+
+/**
+ * The canonical standard-market name for a free-text market, or null.
+ *
+ * Holds are written from several paths with whatever market text the caller
+ * had, so the same place ends up stored as "Dallas", "dallas, tx" and
+ * "Dallas, TX". Those strings are what later resolve a hold's coordinates —
+ * there is no standard_market_uid on a hold — so canonicalizing on write is
+ * what keeps a hold usable as a transport origin later.
+ *
+ * Returns null when nothing matches; callers keep the caller's text rather than
+ * rejecting, so an unrecognized market never blocks a booking.
+ */
+export async function canonicalMarketName(market: string, state?: string): Promise<string | null> {
+  const raw = (market || '').trim()
+  if (!raw) return null
+
+  let coords: Map<string, MarketCoords>
+  try {
+    coords = await loadStandardMarketCoords()
+  } catch {
+    return null
+  }
+  if (coords.size === 0) return null
+
+  // Build the reverse map once per call from the cached list — small (356) and
+  // avoids holding a second copy.
+  const key = normalizeMarketKey(raw)
+  const withState =
+    state && !key.endsWith(`, ${state.trim().toLowerCase()}`)
+      ? normalizeMarketKey(`${raw}, ${state}`)
+      : key
+
+  for (const candidate of [withState, key]) {
+    if (coords.has(candidate)) return titleCaseMarket(candidate)
+  }
+
+  // City-only match, so "Dallas" resolves to "Dallas, TX" when unambiguous.
+  const city = key.split(',')[0].trim()
+  if (!city) return null
+  const cityHits = [...coords.keys()].filter(k => k.split(',')[0].trim() === city)
+  return cityHits.length === 1 ? titleCaseMarket(cityHits[0]) : null
+}
+
+function titleCaseMarket(key: string): string {
+  const [city, st] = key.split(',').map(p => p.trim())
+  const titled = city.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+  return st ? `${titled}, ${st.toUpperCase()}` : titled
+}

@@ -18,11 +18,12 @@ import {
   type StudyType,
 } from '@/lib/pricing'
 import {
+  resolveMarketInputAll,
   resolveMarketSizeTierId,
   resolveRateOverridesBySfdcAccount,
   resolveDefaultRateOverrides,
 } from '@/lib/pricing/resolvers'
-import { resolveMarketInput } from '@/lib/marketCoordinates'
+
 import type { RateOverrides } from '@/lib/pricing/config'
 
 export async function POST(req: NextRequest) {
@@ -56,7 +57,10 @@ export async function POST(req: NextRequest) {
   }
 
   // Market resolution
-  const marketMatches = resolveMarketInput(market)
+  // Resolve against the hardcoded map AND the 356-market list the team
+  // maintains — /api/markets autocompletes from the latter, so gating on the
+  // former would reject markets the rep just picked from the dropdown.
+  const marketMatches = await resolveMarketInputAll(market)
   if (marketMatches.length === 0) {
     return NextResponse.json({
       error: `We couldn't find "${market}" in our market database. Please include the state abbreviation (e.g. "Portland, OR").`,

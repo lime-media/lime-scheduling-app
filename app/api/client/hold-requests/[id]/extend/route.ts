@@ -4,6 +4,18 @@ import { getClientSession } from '@/lib/clientAuth'
 import { sendAssistanceRequestEmail } from '@/lib/email'
 
 /**
+ * Reads the client session cookie, so it can never be statically prerendered.
+ *
+ * Declared explicitly because without it Next attempts a static render at build
+ * time, hits request.cookies, and throws DYNAMIC_SERVER_USAGE to bail out — which
+ * these routes' own try/catch then swallows and logs as a query failure. The
+ * route still ends up dynamic, but the build log fills with errors that are not
+ * errors, and a genuine fault looks exactly the same.
+ */
+export const dynamic = 'force-dynamic'
+
+
+/**
  * POST /api/client/hold-requests/[id]/extend
  *
  * Client requests an extension on a hold with a specific date.

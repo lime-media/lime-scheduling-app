@@ -7,7 +7,8 @@ import { createHold } from '@/lib/holdService'
 import { checkTruckFeasibility } from '@/lib/availabilityEngine'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { appendHoldRequestToSheet } from '@/lib/googleSheets'
-import { computeHoldExpiresAt } from '@/lib/holdRequestService'
+import { computeHoldExpiresAt } from '@/lib/holdExpiry'
+import { daysUntil, MIN_CLIENT_LEAD_DAYS } from '@/lib/pricing'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
 export async function POST(req: NextRequest) {
@@ -36,6 +37,21 @@ export async function POST(req: NextRequest) {
     const clientUser = await prisma.clientUser.findUnique({ where: { id: actingUserId } })
     if (!clientUser) {
       return NextResponse.json({ error: 'Acting client user not found' }, { status: 404 })
+    }
+
+    // Same rush policy the client portal enforces on its own quote and hold routes. Without it
+    // this endpoint was the one client-facing write with no lead-time floor: a partner's assistant
+    // got a 201 for a campaign starting tomorrow, and the team met the booking with no runway to
+    // position a truck. A refusal the partner can act on beats a hold nobody can honour.
+    const leadDays = daysUntil(start_date)
+    if (leadDays < MIN_CLIENT_LEAD_DAYS) {
+      return NextResponse.json({
+        error: leadDays < 0
+          ? 'That start date has already passed.'
+          : `Campaigns starting within ${MIN_CLIENT_LEAD_DAYS} days can't be booked automatically. ` +
+            `Contact the Lime Media team and they will see what's possible.`,
+        rushBlocked: true,
+      }, { status: 409 })
     }
 
     const serviceUser = await prisma.user.findFirst({

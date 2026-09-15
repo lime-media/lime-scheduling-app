@@ -21,7 +21,10 @@ export async function PATCH(
     .request()
     .input('id', params.id)
     .query(`
-      SELECT id, hold_id, truck_number, scheduled_program
+      SELECT
+        id, hold_id, truck_number, scheduled_program,
+        CONVERT(varchar(10), conflict_start, 120) AS conflict_start,
+        CONVERT(varchar(10), conflict_end,   120) AS conflict_end
       FROM dbo.schedule_conflicts
       WHERE id = @id
     `)
@@ -32,6 +35,7 @@ export async function PATCH(
 
   const conflict = lookup.recordset[0] as {
     id: string; hold_id: string; truck_number: string; scheduled_program: string
+    conflict_start: string; conflict_end: string
   }
 
   // ── Resolve: mark conflict RESOLVED, keep hold intact ─────────────────────
@@ -63,6 +67,28 @@ export async function PATCH(
           WHERE id = @id
         `)
       return NextResponse.json({ success: true })
+    }
+
+    // The conflict row is a snapshot taken when it was detected, and nothing about editing a
+    // reservation updates it. If the hold has since moved to another truck or off these dates,
+    // this row describes a conflict that no longer exists — and deleting the hold would destroy
+    // a reservation that is now perfectly fine. Resolve is the right action on a stale row.
+    const holdStart = hold.start_date.toISOString().split('T')[0]
+    const holdEnd   = hold.end_date.toISOString().split('T')[0]
+    const stale =
+      hold.truck_number !== conflict.truck_number ||
+      holdStart > conflict.conflict_end ||
+      holdEnd   < conflict.conflict_start
+
+    if (stale) {
+      return NextResponse.json({
+        error:
+          `This conflict is out of date — it was raised against truck ${conflict.truck_number} ` +
+          `for ${conflict.conflict_start}–${conflict.conflict_end}, but the reservation now uses ` +
+          `truck ${hold.truck_number} for ${holdStart}–${holdEnd}. Resolve it instead; releasing ` +
+          `would delete a reservation that is no longer in conflict.`,
+        stale: true,
+      }, { status: 409 })
     }
 
     // Audit log before deletion

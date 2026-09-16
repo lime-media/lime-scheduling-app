@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { computeHoldExpiresAt } from '@/lib/holdExpiry'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { checkTruckFeasibility } from '@/lib/availabilityEngine'
 import { daysUntil, MIN_CLIENT_LEAD_DAYS } from '@/lib/pricing'
@@ -7,35 +8,6 @@ import { sendHoldRequestEmail } from '@/lib/email'
 import { appendHoldRequestToSheet } from '@/lib/googleSheets'
 import type { ClientSession } from '@/lib/clientAuth'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
-
-// Standard review SLA — 72 hours (3 days) from submission.
-// Exported so the Salesforce webhook can fall back to the same window when an
-// Opportunity arrives with trucks/start/stop but no Hold Exp date.
-export const HOLD_EXPIRATION_HOURS = 72
-// The team needs this many full days of runway before a campaign starts to actually process an
-// approved hold (route the truck, confirm logistics, etc.) — the same 3-day figure as the
-// standard SLA above, but anchored to the campaign's start date instead of the submission time.
-const MIN_PROCESSING_DAYS_BEFORE_START = 3
-
-/**
- * A hold's expiration is the EARLIER of the standard 72h review SLA and the latest moment that
- * still leaves MIN_PROCESSING_DAYS_BEFORE_START full days before the campaign starts.
- *
- * Exported so the staff-side "approve extension" action can grant an extension using the exact
- * same rule — a fresh 72h SLA from the moment of approval, still capped by the campaign start.
- */
-export function computeHoldExpiresAt(startDate: string): Date {
-  const now = new Date()
-
-  const standardExpiry = new Date(now)
-  standardExpiry.setHours(standardExpiry.getHours() + HOLD_EXPIRATION_HOURS)
-
-  const latestByStart = new Date(startDate + 'T00:00:00Z')
-  latestByStart.setUTCDate(latestByStart.getUTCDate() - MIN_PROCESSING_DAYS_BEFORE_START)
-  const cappedByStart = latestByStart < now ? now : latestByStart
-
-  return standardExpiry < cappedByStart ? standardExpiry : cappedByStart
-}
 
 export interface CreateClientHoldParams {
   truck_number: string

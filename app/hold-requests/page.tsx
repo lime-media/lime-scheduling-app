@@ -163,7 +163,7 @@ export default function HoldRequestsPage() {
   // Runs `action` against every id (a whole campaign group at once, or a single ungrouped row),
   // reports partial failures individually since one truck in a group can fail (e.g. a conflict)
   // while the rest succeed, and refetches once regardless so the list reflects whatever did land.
-  const runAction = useCallback(async (ids: string[], action: 'approve' | 'reject' | 'approve_extension' | 'deny_extension', groupKey: string) => {
+  const runAction = useCallback(async (ids: string[], action: 'approve' | 'reject' | 'approve_extension' | 'deny_extension' | 'reinstate', groupKey: string) => {
     setActing(groupKey)
     try {
       const results = await Promise.all(ids.map(async (id) => {
@@ -183,6 +183,9 @@ export default function HoldRequestsPage() {
       const succeeded = results.length - failed.length
       const actionLabel = action.replace('_', ' ')
       if (failed.length === 0) {
+        // A reinstated hold is no longer EXPIRED, so it leaves whichever expired view the
+        // button was clicked from. Follow it to Active rather than letting the row vanish.
+        if (action === 'reinstate') setFilterStatus('HOLD')
         toast.success(`${actionLabel} — ${succeeded} truck${succeeded === 1 ? '' : 's'}`)
       } else if (succeeded > 0) {
         toast.error(`${actionLabel}: ${succeeded} succeeded, ${failed.length} failed — ${failed[0].error}`)
@@ -380,6 +383,17 @@ export default function HoldRequestsPage() {
         </div>
       )
     }
+    if (status === 'EXPIRED') {
+      return (
+        <button
+          disabled={busy}
+          onClick={() => runAction(ids, 'reinstate', groupKey)}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+        >
+          Reinstate
+        </button>
+      )
+    }
     if (['HOLD', 'COMMITTED'].includes(status)) {
       return (
         <div className="flex items-center gap-2">
@@ -511,9 +525,9 @@ export default function HoldRequestsPage() {
                       Reason: {first.extension_reason}
                     </div>
                   )}
-                  {(first.status === 'HOLD' || first.status === 'COMMITTED' || first.status === 'EXTENSION_REQUESTED') && (
+                  {(first.status === 'HOLD' || first.status === 'COMMITTED' || first.status === 'EXTENSION_REQUESTED' || first.status === 'EXPIRED') && (
                     <div className="px-4 py-3 border-t border-gray-100 bg-gray-50/80 flex items-center gap-2">
-                      {first.status === 'EXTENSION_REQUESTED' ? (
+                      {first.status === 'EXTENSION_REQUESTED' || first.status === 'EXPIRED' ? (
                         <Actions ids={ids} status={first.status} groupKey={groupId} />
                       ) : (
                         <button

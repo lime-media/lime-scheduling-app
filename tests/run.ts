@@ -6,6 +6,8 @@
 import './transport.test'
 import './chain.test'
 import './markets.test'
+import './holdExpiry.test'
+import './conflicts.test'
 import { report } from './harness'
 
 process.exit(report())

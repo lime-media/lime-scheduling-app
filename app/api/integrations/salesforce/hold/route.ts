@@ -4,7 +4,7 @@ import { canonicalMarketName } from '@/lib/marketBounds'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { endOfDayUtc } from '@/lib/dateOnly'
-import { HOLD_EXPIRATION_HOURS } from '@/lib/holdRequestService'
+import { HOLD_EXPIRATION_HOURS } from '@/lib/holdExpiry'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 
 interface SfdcHoldPayload {

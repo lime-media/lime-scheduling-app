@@ -34,6 +34,7 @@ export interface RefreshSummary {
   opportunities_would_close:  number
   expiry_warnings_sent:       number
   expiry_warning_recipients:  number
+  conflicts_auto_resolved:    number
 }
 
 /**
@@ -117,6 +118,13 @@ export async function refreshCache(): Promise<RefreshSummary> {
     sfdc_opportunity_id: h.sfdc_opportunity_id,
   }))
 
+  // Before detection: a conflict whose window merely shifted is closed here and re-raised
+  // against its new dates in the same pass.
+  const reconciled = await reconcileConflicts(schedules, holds).catch((err) => {
+    console.error('[scheduleCache] conflict reconcile failed:', err)
+    return { resolved: 0 }
+  })
+
   await detectConflicts(schedules, holds)
   console.log(
     `[scheduleCache] refresh complete — ${expiry.expired} hold(s) expired ` +
@@ -124,7 +132,8 @@ export async function refreshCache(): Promise<RefreshSummary> {
     `${expiry.opportunities_would_close} would close in dry run), ` +
     `${att_soft_released} ATT_SOFT hold(s) released, ` +
     `${sfdc.committed} committed / ${sfdc.released} released from ${sfdc.checked} SFDC opportunit${sfdc.checked === 1 ? 'y' : 'ies'}, ` +
-    `${warnings.warned} expiry warning(s) to ${warnings.recipients} user(s)` +
+    `${warnings.warned} expiry warning(s) to ${warnings.recipients} user(s), ` +
+    `${reconciled.resolved} conflict(s) auto-resolved` +
     (warnings.skipped_no_email > 0 ? ` (${warnings.skipped_no_email} unwarned — no email)` : '')
   )
 
@@ -138,6 +147,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     opportunities_would_close: expiry.opportunities_would_close,
     expiry_warnings_sent:      warnings.warned,
     expiry_warning_recipients: warnings.recipients,
+    conflicts_auto_resolved:   reconciled.resolved,
   }
 }
 
@@ -340,16 +350,39 @@ export interface ConflictSchedule {
 
 // ── Conflict detection ────────────────────────────────────────────────────────
 
-export async function detectConflicts(
+/** One (hold × schedule block) overlap, keyed the way dbo.schedule_conflicts rows are. */
+export interface DetectedConflict {
+  key:           string
+  hold:          ConflictHold
+  program:       string
+  conflictStart: string  // YYYY-MM-DD
+  conflictEnd:   string  // YYYY-MM-DD
+}
+
+/**
+ * Identity of a conflict: which hold, on which truck, over which window. Deliberately not
+ * the program name — the same schedule block comes back under slightly different program
+ * strings across runs, which would make an unchanged conflict look new every hour.
+ */
+function conflictKey(holdId: string, truckNumber: string, start: string, end: string): string {
+  return `${holdId}|${truckNumber}|${start}|${end}`
+}
+
+/**
+ * Every overlap present in the CURRENT data — the single definition of "this conflict is
+ * real", shared by the two passes below so they can never drift apart. detectConflicts()
+ * inserts what is here and missing from the table; reconcileConflicts() resolves what is in
+ * the table and missing from here.
+ *
+ * Pure: no database, no clock. Covered by tests/conflicts.test.ts.
+ */
+export function findConflicts(
   schedules: ConflictSchedule[],
   holds:     ConflictHold[]
-): Promise<void> {
-  if (holds.length === 0 || schedules.length === 0) return
-
-  const pool = await getPool()
+): DetectedConflict[] {
+  const found: DetectedConflict[] = []
 
   for (const hold of holds) {
-    // Find schedule blocks that overlap this hold's date range on the same truck
     const overlapping = schedules.filter(
       (s) =>
         s.truck_number === hold.truck_number &&
@@ -358,62 +391,147 @@ export async function detectConflicts(
     )
 
     for (const sched of overlapping) {
-      // Compute overlap window first — the duplicate check uses these values
       const conflictStart = hold.start_date > sched.shift_start ? hold.start_date : sched.shift_start
       const conflictEnd   = hold.end_date   < sched.shift_end   ? hold.end_date   : sched.shift_end
 
-      // Skip if a conflict for this truck+hold+date window is already recorded.
-      // Keying on dates (not program name) handles cases where the same schedule
-      // block appears under slightly different program strings across runs.
-      const existing = await pool
-        .request()
-        .input('holdId',        hold.id)
-        .input('truckNumber',   hold.truck_number)
-        .input('conflictStart', conflictStart)
-        .input('conflictEnd',   conflictEnd)
-        .query(`
-          SELECT id FROM dbo.schedule_conflicts
-          WHERE hold_id        = @holdId
-            AND truck_number   = @truckNumber
-            AND conflict_start = @conflictStart
-            AND conflict_end   = @conflictEnd
-            AND status         = 'ACTIVE'
-        `)
-
-      if (existing.recordset.length > 0) continue
-
-      await pool
-        .request()
-        .input('holdId',           hold.id)
-        .input('truckNumber',      hold.truck_number)
-        .input('conflictStart',    conflictStart)
-        .input('conflictEnd',      conflictEnd)
-        .input('holdClient',       hold.client_name)
-        .input('holdMarket',       hold.market)
-        .input('scheduledProgram', sched.program)
-        .query(`
-          INSERT INTO dbo.schedule_conflicts
-            (id, hold_id, truck_number, conflict_start, conflict_end,
-             hold_client, hold_market, scheduled_program)
-          VALUES
-            (NEWID(), @holdId, @truckNumber, @conflictStart, @conflictEnd,
-             @holdClient, @holdMarket, @scheduledProgram)
-        `)
-
-      console.log(
-        `[conflicts] new conflict: truck ${hold.truck_number} | hold "${hold.client_name}" ↔ schedule "${sched.program}" (${conflictStart}–${conflictEnd})`
-      )
-
-      // Fire-and-forget email — don't let email failure break the detection loop
-      sendConflictEmail({
-        truck_number:      hold.truck_number,
-        hold_client:       hold.client_name,
-        hold_market:       hold.market,
-        scheduled_program: sched.program,
-        conflict_start:    conflictStart,
-        conflict_end:      conflictEnd,
-        hold_id:           hold.id,
-      }).catch((err) => console.error('[conflicts] email failed:', err))
+      found.push({
+        key:           conflictKey(hold.id, hold.truck_number, conflictStart, conflictEnd),
+        hold,
+        program:       sched.program,
+        conflictStart,
+        conflictEnd,
+      })
     }
+  }
+
+  return found
+}
+
+/**
+ * Closes out ACTIVE conflicts that reality has already settled — the hold was moved to
+ * another truck, re-dated, expired or deleted, or the LED program itself moved or was
+ * cancelled upstream.
+ *
+ * Detection alone only ever inserted, so every conflict ever raised stayed ACTIVE until a
+ * human clicked Resolve. A swapped truck left a row citing a truck the reservation no longer
+ * used, and the Conflicts badge counted it forever — which is what erodes trust in the ones
+ * that are real.
+ *
+ * Resolved rows are written with `resolved_by = NULL`, distinguishing an automatic
+ * resolution from a person's judgement call (the column is nullable for exactly this).
+ *
+ * Runs before detectConflicts() so a conflict whose window merely shifted is closed and
+ * re-raised against its new dates in the same sweep.
+ */
+export async function reconcileConflicts(
+  schedules: ConflictSchedule[],
+  holds:     ConflictHold[]
+): Promise<{ resolved: number }> {
+  // An empty schedule set means the upstream LED query returned nothing. That is far more
+  // likely to be an outage than every program in the fleet being cancelled at once, and
+  // acting on it would auto-resolve the entire board. Detection sits out the same case.
+  if (schedules.length === 0) return { resolved: 0 }
+
+  const pool = await getPool()
+
+  const live = new Set(findConflicts(schedules, holds).map((c) => c.key))
+
+  const active = await pool.request().query(`
+    SELECT
+      id, hold_id, truck_number,
+      CONVERT(varchar(10), conflict_start, 120) AS conflict_start,
+      CONVERT(varchar(10), conflict_end,   120) AS conflict_end
+    FROM dbo.schedule_conflicts
+    WHERE status = 'ACTIVE'
+  `)
+
+  let resolved = 0
+
+  for (const row of active.recordset as {
+    id: string; hold_id: string; truck_number: string; conflict_start: string; conflict_end: string
+  }[]) {
+    if (live.has(conflictKey(row.hold_id, row.truck_number, row.conflict_start, row.conflict_end))) continue
+
+    // Guarded on status so a human resolving the same row mid-sweep is not overwritten.
+    await pool
+      .request()
+      .input('id', row.id)
+      .query(`
+        UPDATE dbo.schedule_conflicts
+        SET status = 'RESOLVED', resolved_at = GETUTCDATE(), resolved_by = NULL
+        WHERE id = @id AND status = 'ACTIVE'
+      `)
+
+    resolved++
+    console.log(
+      `[conflicts] auto-resolved: truck ${row.truck_number} | hold ${row.hold_id} ` +
+      `(${row.conflict_start}–${row.conflict_end}) — overlap no longer present`
+    )
+  }
+
+  return { resolved }
+}
+
+export async function detectConflicts(
+  schedules: ConflictSchedule[],
+  holds:     ConflictHold[]
+): Promise<void> {
+  if (holds.length === 0 || schedules.length === 0) return
+
+  const pool = await getPool()
+
+  for (const conflict of findConflicts(schedules, holds)) {
+    const { hold, program, conflictStart, conflictEnd } = conflict
+
+    // Skip if this truck+hold+date window is already recorded.
+    const existing = await pool
+      .request()
+      .input('holdId',        hold.id)
+      .input('truckNumber',   hold.truck_number)
+      .input('conflictStart', conflictStart)
+      .input('conflictEnd',   conflictEnd)
+      .query(`
+        SELECT id FROM dbo.schedule_conflicts
+        WHERE hold_id        = @holdId
+          AND truck_number   = @truckNumber
+          AND conflict_start = @conflictStart
+          AND conflict_end   = @conflictEnd
+          AND status         = 'ACTIVE'
+      `)
+
+    if (existing.recordset.length > 0) continue
+
+    await pool
+      .request()
+      .input('holdId',           hold.id)
+      .input('truckNumber',      hold.truck_number)
+      .input('conflictStart',    conflictStart)
+      .input('conflictEnd',      conflictEnd)
+      .input('holdClient',       hold.client_name)
+      .input('holdMarket',       hold.market)
+      .input('scheduledProgram', program)
+      .query(`
+        INSERT INTO dbo.schedule_conflicts
+          (id, hold_id, truck_number, conflict_start, conflict_end,
+           hold_client, hold_market, scheduled_program)
+        VALUES
+          (NEWID(), @holdId, @truckNumber, @conflictStart, @conflictEnd,
+           @holdClient, @holdMarket, @scheduledProgram)
+      `)
+
+    console.log(
+      `[conflicts] new conflict: truck ${hold.truck_number} | hold "${hold.client_name}" ↔ schedule "${program}" (${conflictStart}–${conflictEnd})`
+    )
+
+    // Fire-and-forget email — don't let email failure break the detection loop
+    sendConflictEmail({
+      truck_number:      hold.truck_number,
+      hold_client:       hold.client_name,
+      hold_market:       hold.market,
+      scheduled_program: program,
+      conflict_start:    conflictStart,
+      conflict_end:      conflictEnd,
+      hold_id:           hold.id,
+    }).catch((err) => console.error('[conflicts] email failed:', err))
   }
 }

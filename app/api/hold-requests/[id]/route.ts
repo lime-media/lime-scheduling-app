@@ -3,11 +3,11 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
-import { computeHoldExpiresAt } from '@/lib/holdRequestService'
+import { computeHoldExpiresAt } from '@/lib/holdExpiry'
 import { closeOpportunityAsLost } from '@/lib/sfdcOpportunityReconcile'
 import { sendCancellationEmail } from '@/lib/email'
 
-type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration'
+type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration' | 'reinstate'
 
 const VALID_FROM: Record<Action, string[]> = {
   swap_truck:         ['HOLD', 'COMMITTED'],
@@ -15,13 +15,15 @@ const VALID_FROM: Record<Action, string[]> = {
   approve_extension:  ['EXTENSION_REQUESTED'],
   deny_extension:     ['EXTENSION_REQUESTED'],
   update_expiration:  ['HOLD', 'COMMITTED', 'EXTENSION_REQUESTED'],
+  reinstate:          ['EXPIRED'],
 }
 
 /**
  * PATCH /api/hold-requests/[id]
  *
  * Staff actions on a Hold record from the unified Reservations page.
- * Actions: swap_truck, cancel_notify, approve_extension, deny_extension.
+ * Actions: swap_truck, cancel_notify, approve_extension, deny_extension,
+ * update_expiration, reinstate.
  */
 export async function PATCH(
   req: NextRequest,
@@ -135,6 +137,57 @@ export async function PATCH(
     }
 
     return NextResponse.json({ ok: true, emailed })
+  }
+
+  // ── reinstate ───────────────────────────────────────────────────────────
+  // Puts an expired hold back in play with a fresh window. The expiry is recomputed rather than
+  // restored: the old value is what lapsed, and for the short-lead holds this exists to rescue it
+  // was already in the past at creation.
+  //
+  // Not undone here: a SALESFORCE hold whose Opportunity expireHolds() closed as lost stays
+  // closed. Only Salesforce-originated holds carrying their own Hold Exp date are ever closed
+  // that way, and reopening a deal is a CRM decision, not a side effect of blocking a truck.
+  if (action === 'reinstate') {
+    // While the hold sat expired its truck read as free to every availability path, so the
+    // window may have been taken in the meantime — check before blocking it again.
+    const conflicts = await prisma.hold.findMany({
+      where: {
+        truck_number: hold.truck_number,
+        id:           { not: hold.id },
+        ...activeHoldWhere(),
+        start_date:   { lte: hold.end_date },
+        end_date:     { gte: hold.start_date },
+      },
+    })
+    if (conflicts.length > 0) {
+      const c = conflicts[0]
+      return NextResponse.json({
+        error: `Truck ${hold.truck_number} already has a ${c.status} for "${c.client_name}" ` +
+               `from ${c.start_date.toISOString().split('T')[0]} to ${c.end_date.toISOString().split('T')[0]}.`,
+      }, { status: 409 })
+    }
+
+    const newExpiresAt = computeHoldExpiresAt(hold.start_date.toISOString().split('T')[0])
+
+    await prisma.hold.update({
+      where: { id: hold.id },
+      data:  { status: 'HOLD', expires_at: newExpiresAt, extension_until: null, extension_reason: null },
+    })
+
+    await prisma.auditLog.create({
+      data: {
+        action:       'REINSTATE_HOLD',
+        truck_number: hold.truck_number,
+        user_id:      session.user.id,
+        hold_id:      hold.id,
+        details:      JSON.stringify({
+          lapsed_expires_at: hold.expires_at,
+          new_expires_at:    newExpiresAt.toISOString(),
+        }),
+      },
+    })
+
+    return NextResponse.json({ ok: true, status: 'HOLD', expires_at: newExpiresAt.toISOString() })
   }
 
   // ── approve_extension ───────────────────────────────────────────────────

@@ -35,16 +35,13 @@ ORDER BY t.truck_number, ps.start_time
 
 // ── Query B: all active trucks ────────────────────────────────────────────────
 // Minimal — just what we need to build the truck list.
+// Archived trucks (is_deleted = 1 in the LED app) are excluded outright. An
+// earlier version also kept archived trucks that had any schedule row in the
+// -30/+63 day window, which resurfaced trucks long after they were archived.
 export const ALL_TRUCKS_QUERY = `
 SELECT truck_number, samsara_id
 FROM dbo.trucks t
 WHERE COALESCE(t.is_deleted, 0) = 0
-   OR EXISTS (
-     SELECT 1 FROM dbo.program_schedule ps
-     WHERE ps.truck_uid = t.truck_uid
-       AND CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
-       AND CAST(ps.start_time AS DATE) <= DATEADD(day,  63, CAST(GETDATE() AS DATE))
-   )
 ORDER BY truck_number
 `
 

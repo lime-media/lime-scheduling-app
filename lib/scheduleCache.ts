@@ -11,6 +11,7 @@ import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { reconcileSfdcOpportunities, closeOpportunityAsLost } from '@/lib/sfdcOpportunityReconcile'
 import { warnExpiringHolds } from '@/lib/holdExpiryWarnings'
+import { detectOrphanHolds } from '@/lib/orphanHolds'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 
@@ -35,6 +36,8 @@ export interface RefreshSummary {
   expiry_warnings_sent:       number
   expiry_warning_recipients:  number
   conflicts_auto_resolved:    number
+  orphan_holds:               number
+  orphan_hold_trucks:         string[]
 }
 
 /**
@@ -76,6 +79,13 @@ export async function refreshCache(): Promise<RefreshSummary> {
   const warnings = await warnExpiringHolds().catch((err) => {
     console.error('[scheduleCache] expiry warnings failed:', err)
     return { candidates: 0, warned: 0, recipients: 0, skipped_already_warned: 0, skipped_no_email: 0 }
+  })
+
+  // Reporting only — nothing downstream depends on it, and an orphan is worth
+  // less than the expiry and conflict work running alongside it.
+  const orphans = await detectOrphanHolds().catch((err) => {
+    console.error('[scheduleCache] orphan hold check failed:', err)
+    return { holds_checked: 0, orphans: 0, newly_flagged: 0, already_flagged: 0, truck_numbers: [] as string[], skipped: true }
   })
 
   const [schedulesRaw, holdsRaw] = await Promise.all([
@@ -134,7 +144,8 @@ export async function refreshCache(): Promise<RefreshSummary> {
     `${sfdc.committed} committed / ${sfdc.released} released from ${sfdc.checked} SFDC opportunit${sfdc.checked === 1 ? 'y' : 'ies'}, ` +
     `${warnings.warned} expiry warning(s) to ${warnings.recipients} user(s), ` +
     `${reconciled.resolved} conflict(s) auto-resolved` +
-    (warnings.skipped_no_email > 0 ? ` (${warnings.skipped_no_email} unwarned — no email)` : '')
+    (warnings.skipped_no_email > 0 ? ` (${warnings.skipped_no_email} unwarned — no email)` : '') +
+    (orphans.orphans > 0 ? `, ${orphans.orphans} orphan hold(s) on ${orphans.truck_numbers.join(', ')}` : '')
   )
 
   return {
@@ -148,6 +159,8 @@ export async function refreshCache(): Promise<RefreshSummary> {
     expiry_warnings_sent:      warnings.warned,
     expiry_warning_recipients: warnings.recipients,
     conflicts_auto_resolved:   reconciled.resolved,
+    orphan_holds:              orphans.orphans,
+    orphan_hold_trucks:        orphans.truck_numbers,
   }
 }
 

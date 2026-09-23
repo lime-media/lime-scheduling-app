@@ -23,7 +23,6 @@ import { prisma } from '@/lib/prisma'
 import { loadFleetTimelines } from '@/lib/fleetTimelines'
 import { ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
 import { HIDDEN_TRUCKS } from '@/lib/availabilityEngine'
-import { getVehicleVins } from '@/lib/samsaraService'
 import { addDays, latestSoftHoldTrucks, type PlanTruck } from './planner'
 
 export type ReservationRules = {
@@ -47,8 +46,6 @@ export type PlanningFleet = {
   reserved: ReservedTruck[]
   /** Active, bookable trucks in the fleet (not archived, not hidden). */
   activeTrucks: number
-  /** False when Samsara could not be reached for VINs. */
-  vinsLoaded: boolean
 }
 
 const lower = (s: string) => s.trim().toLowerCase()
@@ -62,22 +59,15 @@ export async function loadPlanningFleet(opts: {
   rules: ReservationRules
 }): Promise<PlanningFleet> {
   const { today, planThrough, rules } = opts
-  let vinsLoaded = true
-  const [fleet, truckRows, softHolds, vins] = await Promise.all([
+  const [fleet, truckRows, softHolds] = await Promise.all([
     // Look back far enough to see the job a truck is on today.
     loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS, window: { start: addDays(today, -30), end: planThrough } }),
-    query<{ truck_number: string; samsara_id: string | null }[]>(ALL_TRUCKS_QUERY),
+    query<{ truck_number: string }[]>(ALL_TRUCKS_QUERY),
     prisma.hold.findMany({
       where: { status: 'ATT_SOFT', end_date: { gte: new Date(addDays(today, -SOFT_HOLD_LOOKBACK_DAYS) + 'T00:00:00Z') } },
       select: { truck_number: true, start_date: true },
     }),
-    getVehicleVins().catch(err => {
-      console.error('[planning] Samsara VIN lookup failed:', err)
-      vinsLoaded = false
-      return new Map<string, string>()
-    }),
   ])
-  const samsaraId = new Map(truckRows.map(r => [String(r.truck_number), r.samsara_id ? String(r.samsara_id) : '']))
   const softHeld = latestSoftHoldTrucks(softHolds)
 
   const active = truckRows.map(r => String(r.truck_number)).filter(t => t && !HIDDEN_TRUCKS.has(t))
@@ -105,11 +95,10 @@ export async function loadPlanningFleet(opts: {
     const gps = fleet.gpsMap.get(truckNumber)
     trucks.push({
       truckNumber,
-      vin: vins.get(samsaraId.get(truckNumber) ?? '') ?? null,
       jobs: rules.reserveSoftHolds ? jobs : jobs.filter(j => !j.yieldable),
       gps: gps?.latitude && gps?.longitude ? { lat: gps.latitude, lng: gps.longitude } : null,
       gpsLabel: gps ? [gps.city, gps.state].filter(Boolean).join(', ') : '',
     })
   }
-  return { trucks, reserved, activeTrucks: active.length, vinsLoaded }
+  return { trucks, reserved, activeTrucks: active.length }
 }

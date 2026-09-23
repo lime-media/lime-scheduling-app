@@ -186,13 +186,13 @@ eq('free from after the last clash', freeFrom([job('2026-10-01', '2026-10-20', '
 eq('never free if booked past plan-through', freeFrom([job('2026-10-01', '2027-06-01', 'Denver', 'CO', 39.74, -104.99)], '2026-10-12', '2027-03-31'), null)
 
 // Truck finishing in Denver on 20 Oct, route in Dallas (~660 mi): 2 transport days.
-const denverTruck: PlanTruck = { truckNumber: 'T1', vin: null, jobs: [job('2026-10-01', '2026-10-20', 'Denver', 'CO', 39.74, -104.99)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
+const denverTruck: PlanTruck = { truckNumber: 'T1', jobs: [job('2026-10-01', '2026-10-20', 'Denver', 'CO', 39.74, -104.99)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
 const cand = earliestStart(denverTruck, solo('dal'), byId, S)!
 eq('origin is the release point, not GPS', cand.originLabel, 'Denver, CO')
 eq('start = release + transport days', cand.start, addDays('2026-10-21', 2))
 eq('reposition cost charged beyond the service area', cand.repositionCost > 0, true)
 
-const localTruck: PlanTruck = { truckNumber: 'T2', vin: null, jobs: [], gps: { lat: 32.8, lng: -96.9 }, gpsLabel: 'Dallas, TX' }
+const localTruck: PlanTruck = { truckNumber: 'T2', jobs: [], gps: { lat: 32.8, lng: -96.9 }, gpsLabel: 'Dallas, TX' }
 const local = earliestStart(localTruck, solo('dal'), byId, S)!
 eq('idle local truck starts on day one, no cost', [local.start, local.repositionCost], ['2026-10-12', 0])
 
@@ -207,8 +207,8 @@ section('start date vs. transport we absorb')
 {
   // One Dallas route. A truck idle in Denver today (costs transport), and a
   // Dallas truck that is busy until 18 Oct (free, local).
-  const far: PlanTruck = { truckNumber: 'FAR', vin: null, jobs: [], gps: { lat: 39.74, lng: -104.99 }, gpsLabel: 'Denver, CO' }
-  const near: PlanTruck = { truckNumber: 'NEAR', vin: null, jobs: [job('2026-10-01', '2026-10-17', 'Dallas', 'TX', 32.78, -96.80)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
+  const far: PlanTruck = { truckNumber: 'FAR', jobs: [], gps: { lat: 39.74, lng: -104.99 }, gpsLabel: 'Denver, CO' }
+  const near: PlanTruck = { truckNumber: 'NEAR', jobs: [job('2026-10-01', '2026-10-17', 'Dallas', 'TX', 32.78, -96.80)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
   const r = [solo('dal')]
   const t = [far, near]
   const m = candidateMatrix(r, t, byId, S)
@@ -222,12 +222,11 @@ section('start date vs. transport we absorb')
 
   // Two free local trucks, one ready now and one next week: same $0, so the
   // earlier start wins even though it is a few miles further away.
-  const nowT: PlanTruck = { truckNumber: 'NOW', vin: null, jobs: [], gps: { lat: 32.9, lng: -96.9 }, gpsLabel: 'Dallas, TX' }
-  const laterT: PlanTruck = { truckNumber: 'LATER', vin: null, jobs: [job('2026-10-01', '2026-10-15', 'Dallas', 'TX', 32.78, -96.80)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
+  const nowT: PlanTruck = { truckNumber: 'NOW', jobs: [], gps: { lat: 32.9, lng: -96.9 }, gpsLabel: 'Dallas, TX' }
+  const laterT: PlanTruck = { truckNumber: 'LATER', jobs: [job('2026-10-01', '2026-10-15', 'Dallas', 'TX', 32.78, -96.80)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
   const m3 = candidateMatrix(r, [laterT, nowT], byId, S)
   eq('equal cost: earlier start wins', assign(r, [laterT, nowT], m3, '2026-10-30', S.planStart).assignments[0].truckNumber, 'NOW')
-  const withVin: PlanTruck = { ...nowT, vin: '1FVACWDT0HHJK1234' }
-  eq('the assigned truck carries its VIN', assign(r, [withVin], candidateMatrix(r, [withVin], byId, S), '2026-10-30', S.planStart).assignments[0].vin, '1FVACWDT0HHJK1234')
+  eq('each route names the truck that serves it', assign(r, [nowT], candidateMatrix(r, [nowT], byId, S), '2026-10-30', S.planStart).assignments[0].truckNumber, 'NOW')
 }
 
 // ---------------------------------------------------------------------------

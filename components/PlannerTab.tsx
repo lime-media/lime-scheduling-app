@@ -423,9 +423,9 @@ function PlanResults({ plan, areas, selected, onSelect }: {
 
   const downloadCsv = () => {
     if (!outcome) return
-    const rows = [['Route', 'Hop (road mi)', 'Truck', 'VIN', 'Starts', 'Drives to first', 'Coming from', 'Deadhead (mi)', 'Transport absorbed ($)']]
+    const rows = [['Route', 'Hop (road mi)', 'Truck', 'Starts', 'Drives to first', 'Coming from', 'Deadhead (mi)', 'Transport absorbed ($)']]
     for (const a of outcome.assignments) {
-      rows.push([a.routeName, String(a.hopRoadMiles || ''), a.truckNumber ?? `NOT LIVE BY ${option.date}`, a.vin ?? '', a.start ?? '', a.firstAreaId ? areaName.get(a.firstAreaId) ?? '' : '', a.originLabel ?? '', String(a.distanceMiles), String(Math.round(a.repositionCost))])
+      rows.push([a.routeName, String(a.hopRoadMiles || ''), a.truckNumber ?? `NOT LIVE BY ${option.date}`, a.start ?? '', a.firstAreaId ? areaName.get(a.firstAreaId) ?? '' : '', a.originLabel ?? '', String(a.distanceMiles), String(Math.round(a.repositionCost))])
     }
     const csv = rows.map(r => r.map(c => (/[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c)).join(',')).join('\n')
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
@@ -534,14 +534,13 @@ function PlanResults({ plan, areas, selected, onSelect }: {
         </div>
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead><tr><th className={th}>Route</th><th className={th + ' text-right'}>Hop</th><th className={th}>Truck</th><th className={th}>VIN</th><th className={th}>Coming from</th><th className={th + ' text-right'}>Deadhead</th><th className={th + ' text-right'}>Absorbed</th><th className={th}>Starts</th></tr></thead>
+            <thead><tr><th className={th}>Route</th><th className={th + ' text-right'}>Hop</th><th className={th}>Truck</th><th className={th}>Coming from</th><th className={th + ' text-right'}>Deadhead</th><th className={th + ' text-right'}>Absorbed</th><th className={th}>Starts</th></tr></thead>
             <tbody>
               {(outcome?.assignments ?? []).map(a => (
                 <tr key={a.routeId}>
                   <td className={td}>{a.routeName}</td>
                   <td className={tdNum}>{a.hopRoadMiles ? `${a.hopRoadMiles} mi` : '—'}</td>
                   <td className={td}>{a.truckNumber ?? <span className="text-red-700">not live by {fmtDate(option.date)}</span>}</td>
-                  <td className={td + ' font-mono text-xs'}>{a.vin ?? '—'}</td>
                   <td className={td}>{a.originLabel ?? '—'}</td>
                   <td className={tdNum}>{a.truckNumber ? `${fmtNum(a.distanceMiles)} mi` : '—'}</td>
                   <td className={tdNum}>{a.truckNumber ? (a.repositionCost ? fmtMoney(a.repositionCost) : '—') : '—'}</td>

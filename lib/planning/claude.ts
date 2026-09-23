@@ -251,10 +251,10 @@ Use only the numbers in the plan you are given. Do not compute new ones: no sums
 Write two sections in Markdown:
 
 ## For the client
-A short proposal the rep can adapt. Say what we can offer: how many areas, how many hours each week, starting when (from the chosen plan), and at what weekly price. If the plan's model differs from what the client asked for, say so plainly and why, in one or two sentences. Mention any list corrections they need to confirm. Nothing internal: no truck numbers or VINs, repositioning cost, capacity, other clients or AT&T.
+A short proposal the rep can adapt. Say what we can offer: how many areas, how many hours each week, starting when (from the chosen plan), and at what weekly price. If the plan's model differs from what the client asked for, say so plainly and why, in one or two sentences. Mention any list corrections they need to confirm. Nothing internal: no truck numbers, repositioning cost, capacity, other clients or AT&T.
 
 ## Internal
-For the sales lead. Cover the chosen start date and the transport we absorb for it, what an earlier or later date would cost (from the start-date options), what it leaves for other clients, the reservations assumed (AT&T, Alloy Build), the warnings, and the decisions that are still open. End with a table of the assigned trucks: route, truck, VIN, start date. Short paragraphs and a few bullets.
+For the sales lead. Cover the chosen start date and the transport we absorb for it, what an earlier or later date would cost (from the start-date options), what it leaves for other clients, the reservations assumed (AT&T, Alloy Build), the warnings, and the decisions that are still open. End with a table of the assigned trucks: route, truck number, start date. Short paragraphs and a few bullets.
 
 Plain, specific sentences. No filler, no exclamation marks.`
 
@@ -307,7 +307,7 @@ export function planFacts(opts: { plan: PlanResponse; areaCount: number; zipCoun
       transport_absorbed: chosen.liveBy.repositionCost,
       moves_beyond_service_area: chosen.liveBy.movesOverServiceArea,
       // Internal only — the client section must not list trucks.
-      assigned_trucks: chosen.liveBy.assignments.map(a => ({ route: a.routeName, truck: a.truckNumber, vin: a.vin, starts: a.start, coming_from: a.originLabel })),
+      assigned_trucks: chosen.liveBy.assignments.map(a => ({ route: a.routeName, truck: a.truckNumber, starts: a.start, coming_from: a.originLabel })),
     } : null,
     price_per_week: plan.pricing.chosen.totalPerWeek,
     price_per_quarter: plan.pricing.chosen.totalPerQuarter,

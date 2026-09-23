@@ -389,7 +389,7 @@ Every assumption and correction is reported, not absorbed:
 
 **The start-date decision.** Nothing here trades days against miles. For each date (weekly from the earliest start, plus the first date full coverage is possible), trucks are assigned so every route is live by that date at the **lowest transport we absorb**, and each route starts as soon as its truck is ready. Earlier dates mean pulling trucks from further away. The table stops once waiting another week no longer lowers the cost. The rep picks the row that is worth it, and the route table follows. Among trucks that cost the same, the earlier start wins, then the shorter drive. Holding every route back to launch on one day would use the same trucks at the same cost, so it is not shown as a separate option.
 
-**Each assignment names the truck**: truck number, VIN, where it is coming from, its start date, and what we absorb to move it. VINs come from Samsara (`GET /fleet/vehicles`, matched on `dbo.trucks.samsara_id`), because the database does not store them. If Samsara cannot be reached, the VIN column is blank and a warning says so; the plan is unaffected.
+**Each assignment names the truck** by truck number (e.g. 1261), with where it is coming from, its start date, and what we absorb to move it.
 
 **Repositioning** is `absorbedLegCost()` for legs beyond the service area, and zero inside it. It is our cost, not a client charge, because a program this size clears both absorption tests. A warning appears if the first start is under 10 business days out.
 

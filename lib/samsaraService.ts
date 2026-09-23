@@ -59,32 +59,3 @@ export async function getLiveVehicleLocations(): Promise<Map<string, SamsaraVehi
 
   return locationMap
 }
-
-const SAMSARA_VEHICLES_URL = 'https://api.samsara.com/fleet/vehicles'
-
-/**
- * VIN for every vehicle in Samsara, keyed by Samsara vehicle id (the value
- * stored in dbo.trucks.samsara_id). The database carries no VIN, so Samsara
- * is the source. Paged 512 at a time.
- */
-export async function getVehicleVins(): Promise<Map<string, string>> {
-  const vins = new Map<string, string>()
-  let after: string | undefined
-  for (let page = 0; page < 20; page++) {
-    const url = new URL(SAMSARA_VEHICLES_URL)
-    url.searchParams.set('limit', '512')
-    if (after) url.searchParams.set('after', after)
-    const response = await fetch(url, {
-      headers: { 'Authorization': `Bearer ${process.env.SAMSARA_API_TOKEN}` },
-      next: { revalidate: 0 },
-    })
-    if (!response.ok) throw new Error(`Samsara API error: ${response.status}`)
-    const data = await response.json()
-    for (const v of data.data || []) {
-      if (v?.id && typeof v.vin === 'string' && v.vin.trim()) vins.set(String(v.id), v.vin.trim())
-    }
-    if (!data.pagination?.hasNextPage || !data.pagination?.endCursor) break
-    after = data.pagination.endCursor
-  }
-  return vins
-}

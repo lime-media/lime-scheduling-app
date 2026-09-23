@@ -33,6 +33,8 @@ export type TruckJob = {
   lat?: number
   lng?: number
   program?: string
+  /** Booking client, when the loader was asked for it (windowed loads only). */
+  client?: string
   source: TruckJobSource
   status?: string
   /** True when this job may be displaced by a new booking (soft holds only). */
@@ -45,6 +47,7 @@ export type DayRow = {
   market: string
   state: string
   program?: string
+  client?: string
   lat?: number
   lng?: number
 }
@@ -90,6 +93,7 @@ export function groupDaysIntoJobs(rows: DayRow[]): Map<string, TruckJob[]> {
           market: day.market,
           state: day.state,
           program: day.program,
+          client: day.client,
           lat: day.lat,
           lng: day.lng,
           source: 'SCHEDULE',

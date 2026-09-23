@@ -136,14 +136,32 @@ ORDER BY t.truck_number
 //
 // `withBounds` MUST come from hasMarketBounds(). Referencing bounds columns in
 // a database that lacks them is a hard SQL error, not a null.
-export function scheduledWithMarketQuery(withBounds: boolean): string {
+//
+// `windowed` swaps the rolling -30/+63 day window for explicit @windowStart /
+// @windowEnd parameters. The rolling window is right for quoting a campaign in
+// the next two months, and blind to anything later: a weekly program starting
+// next month runs straight past it. The multi-market planner passes its own
+// range; every other caller keeps the rolling window.
+//
+// The windowed form also carries the client name, so the planner can reserve a
+// client's trucks by who booked them rather than by matching program names —
+// which misses programs named after the product (AT&T's "Alloy Build" is
+// booked under 160over90). Only the windowed form joins dbo.clients, so the
+// rolling-window query every existing caller runs is unchanged.
+export function scheduledWithMarketQuery(withBounds: boolean, windowed = false): string {
+  const windowClause = windowed
+    ? `WHERE CAST(ps.end_time   AS DATE) >= @windowStart
+  AND CAST(ps.start_time AS DATE) <= @windowEnd`
+    : `WHERE CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
+  AND CAST(ps.start_time AS DATE) <= DATEADD(day,  63, CAST(GETDATE() AS DATE))`
   return `
 SELECT
     t.truck_number,
     COALESCE(cpm.market,               '') AS market,
     COALESCE(cpm.standard_market_name, '') AS standard_market_name,
     COALESCE(cpm.state,   '') AS state,
-    COALESCE(cp.program,  '') AS program,
+    COALESCE(cp.program,  '') AS program,${windowed ? `
+    COALESCE(cl.client,   '') AS client,` : ''}
     CAST(ps.start_time AS DATE) AS shift_start,
     CAST(ps.start_time AS DATE) AS shift_end${withBounds ? ',' : ''}${withBounds ? `
     CASE WHEN sml.bounds_ne_lat IS NOT NULL AND sml.bounds_sw_lat IS NOT NULL
@@ -156,11 +174,12 @@ JOIN dbo.trucks t
 LEFT JOIN dbo.client_program_markets cpm
     ON  cpm.client_program_market_uid = ps.client_program_market_uid
 LEFT JOIN dbo.client_programs cp
-    ON  cp.client_program_uid = ps.client_program_uid${withBounds ? `
+    ON  cp.client_program_uid = ps.client_program_uid${windowed ? `
+LEFT JOIN dbo.clients cl
+    ON  cl.client_uid = cp.client_uid` : ''}${withBounds ? `
 LEFT JOIN dbo.standard_market_lookup sml
     ON  sml.standard_market_uid = cpm.standard_market_uid` : ''}
-WHERE CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
-  AND CAST(ps.start_time AS DATE) <= DATEADD(day,  63, CAST(GETDATE() AS DATE))
+${windowClause}
 ORDER BY t.truck_number, ps.start_time
 `
 }

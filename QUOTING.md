@@ -365,6 +365,29 @@ A non-zero count means market names are drifting from the coordinate map and som
 
 Feasibility is recomputed from the stored job chain every time, so a second campaign evaluating the same truck sees the first campaign as a job and has to route around it. Writing transit days into the calendar would be **derived data** — correct only for the chain that existed when it was written, and stale the moment a job moves or cancels. Blocking transit on the grid is a display question, not a correctness one.
 
+## 6c. Multi-market planning (LED Quote → Multi-market Plan)
+
+For programs that cover many areas every week, where the question is fleet-wide rather than one market at a time. Internal only; nothing here is exposed on a client route.
+
+**Input.** A client ZIP list (CSV). ZIPs are geocoded against the Census ZIP centroids in `lib/planning/data/`, and grouped into areas by the client's DMA names. DMAs whose centres are within 30 miles are worked as one area. Every correction is reported, not absorbed: duplicates, rows with no DMA (placed with the nearest area), ZIPs with no households (PO-box and unique ZIPs are not Census ZCTAs), and ZIPs more than 150 miles from the rest of their DMA (almost always typos).
+
+**Coverage models.** 5 × 8 puts one truck on each area. 3 × 12 pairs areas within a road-mile hop limit (default 250, straight line × 1.25) onto one truck. The truck alternates A Mon–Wed / travel Thu / B Fri–Sun, then the reverse, so each area gets three 12-hour days every calendar week. Pairing maximises the number of pairs first, then minimises hop miles.
+
+**Which trucks.** The same bookable fleet as quoting (`HIDDEN_TRUCKS` excluded), with jobs loaded through the plan-through date rather than the rolling −30/+63 window. Two reservation rules apply:
+
+- **AT&T soft holds are permanent.** Trucks on the latest month of `ATT_SOFT` holds are held back for the whole plan, and stay held back after that month lapses. Only the latest month counts, because older months are rarely expired and the roster rotates.
+- **Renewing programs keep their trucks** (optional). AT&T's Alloy Build is booked under 160over90, so it is matched by program under the client, not by name alone.
+
+**When each truck can start.** From the first date it has nothing booked through plan-through, run through the same chain check as every quote (§6b): the release-point origin, transport days to arrive, and no stranded successor. A truck that needs travel days starts that many days later.
+
+**Start options.** Every route starting on one date (only trucks that can make that date qualify), versus phased, where each route starts when its best-placed truck is free. Trucks are matched to routes by minimum-cost assignment on deadhead miles, plus 40 miles-equivalent per day of delay in phased mode.
+
+**Repositioning** is `absorbedLegCost()` for legs beyond the service area, and zero inside it. It is our cost, not a client charge, because a program this size clears both absorption tests. A warning appears if the first start is under 10 business days out.
+
+**Pricing** runs through `computeQuote()` on the 20+ day tier over a 13-week quarter, with shadow fencing, expressed per week. At the rate card, 3 × 12 is $1,800 per truck-day and 5 × 8 is $1,200. Both come to $150 per truck-hour.
+
+**Capacity** is what the commitment leaves for other clients: active fleet, less the maintenance reserve, less AT&T's weekly range (its soft-hold trucks are inside that range, not added to it), less renewing programs, less this program. Alongside it the tab shows the last 52 weeks of usage, split by booking client.
+
 ## 7. What the client sees vs. what's internal
 
 Nothing under an `_internal` key is returned on a client-authenticated route — not the margin check, and not the downstream deadhead flags. Those appear only on the staff routes (`/api/quote`, `/api/quote/hold`) and the MCP endpoint; on the client routes the same values are logged server-side instead. A client-facing response is visible in the browser network tab whether or not the UI renders it.

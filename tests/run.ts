@@ -8,6 +8,7 @@ import './chain.test'
 import './markets.test'
 import './holdExpiry.test'
 import './conflicts.test'
+import './planning.test'
 import { report } from './harness'
 
 process.exit(report())

@@ -13,7 +13,7 @@ import { maxPairing, type MatchEdge } from '@/lib/planning/matching'
 import { minCostAssignment } from '@/lib/planning/assignment'
 import { parseZipRows, buildAreas, type Area, type Centroids } from '@/lib/planning/areas'
 import {
-  addDays, freeFrom, earliestStart, latestSoftHoldTrucks, buildRoutes, priceProgram, capacityLeft, assign, candidateMatrix,
+  addDays, freeFrom, earliestStart, latestSoftHoldTrucks, dateOptions, buildRoutes, priceProgram, capacityLeft, assign, candidateMatrix,
   DEFAULT_SETTINGS, type PlanSettings, type PlanTruck, type Route,
 } from '@/lib/planning/planner'
 import type { TruckJob } from '@/lib/truckTimeline'
@@ -153,6 +153,17 @@ const gamma = built.areas.find(a => a.name === 'Gamma')!
 eq('unlabeled ZIP joins the nearest area', gamma.zips.includes('40001'), true)
 eq('outlier kept in the list but not the centre', [gamma.zips.includes('30009'), gamma.lat < 41], [true, true])
 eq('nearest standard market', gamma.nearestMarket?.name, 'Gamma Town, IL')
+{
+  // A ZIP 75 mi out, and an area with no market within an hour.
+  const far = buildAreas(
+    [{ label: 'Delta', zip: '50001', city: '', state: '' }, { label: 'Delta', zip: '50002', city: '', state: '' }, { label: 'Delta', zip: '50003', city: '', state: '' }],
+    { '50001': [44.0, -100.0], '50002': [44.02, -100.0], '50003': [45.5, -100.0] },
+    new Map([['Faraway, SD', { lat: 46.5, lng: -100.0 }]]),
+  )
+  eq('over an hour out: flagged as an assumption', far.flags.filter(f => f.kind === 'BEYOND_REACH').map(f => f.zip), ['50003'])
+  eq('no market within an hour: flagged', far.flags.some(f => f.kind === 'FAR_FROM_MARKET'), true)
+  eq('still in the area', far.areas[0].zips.length, 3)
+}
 
 // ---------------------------------------------------------------------------
 section('routes')
@@ -193,8 +204,33 @@ eq('idle local truck starts on day one, no cost', [local.start, local.reposition
 const routes2 = [solo('dal'), solo('ftw')]
 const trucks2 = [denverTruck, localTruck]
 const m2 = candidateMatrix(routes2, trucks2, byId, S)
-eq('uniform 12 Oct: short by one', assign(routes2, trucks2, m2, S, { kind: 'uniform', startDate: '2026-10-12' }).shortBy, 1)
-eq('phased: both served', assign(routes2, trucks2, m2, S, { kind: 'phased' }).shortBy, 0)
+eq('live by 12 Oct: short by one', assign(routes2, trucks2, m2, '2026-10-12', S.planStart).shortBy, 1)
+eq('live by 30 Oct: both served', assign(routes2, trucks2, m2, '2026-10-30', S.planStart).shortBy, 0)
+
+section('start date vs. transport we absorb')
+{
+  // One Dallas route. A truck idle in Denver today (costs transport), and a
+  // Dallas truck that is busy until 18 Oct (free, local).
+  const far: PlanTruck = { truckNumber: 'FAR', jobs: [], gps: { lat: 39.74, lng: -104.99 }, gpsLabel: 'Denver, CO' }
+  const near: PlanTruck = { truckNumber: 'NEAR', jobs: [job('2026-10-01', '2026-10-17', 'Dallas', 'TX', 32.78, -96.80)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
+  const r = [solo('dal')]
+  const t = [far, near]
+  const m = candidateMatrix(r, t, byId, S)
+  const early = assign(r, t, m, '2026-10-14', S.planStart)
+  const later = assign(r, t, m, '2026-10-19', S.planStart)
+  eq('early date: only the far truck makes it, and we absorb its transport', [early.assignments[0].truckNumber, early.repositionCost > 0], ['FAR', true])
+  eq('a week later: the local truck, nothing absorbed', [later.assignments[0].truckNumber, later.repositionCost], ['NEAR', 0])
+  const table = dateOptions(r, t, m, S)
+  eq('the table shows the cost falling as the date moves out', table.options[0].liveBy.repositionCost > table.options[table.options.length - 1].liveBy.repositionCost, true)
+  eq('first date everything is live', table.firstFullLiveBy, early.assignments[0].start)
+
+  // Two free local trucks, one ready now and one next week: same $0, so the
+  // earlier start wins even though it is a few miles further away.
+  const nowT: PlanTruck = { truckNumber: 'NOW', jobs: [], gps: { lat: 32.9, lng: -96.9 }, gpsLabel: 'Dallas, TX' }
+  const laterT: PlanTruck = { truckNumber: 'LATER', jobs: [job('2026-10-01', '2026-10-15', 'Dallas', 'TX', 32.78, -96.80)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
+  const m3 = candidateMatrix(r, [laterT, nowT], byId, S)
+  eq('equal cost: earlier start wins', assign(r, [laterT, nowT], m3, '2026-10-30', S.planStart).assignments[0].truckNumber, 'NOW')
+}
 
 // ---------------------------------------------------------------------------
 section('pricing (rate card, no agreement)')

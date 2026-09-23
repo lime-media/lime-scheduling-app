@@ -53,6 +53,8 @@ function plusWeeks(date: string, weeks: number): string {
 const FLAG_LABELS: Record<AreaFlag['kind'], string> = {
   NOT_GEOCODED: 'No households (PO box or unique ZIP)',
   OUTLIER: 'Probable typo — far from the rest of its DMA',
+  BEYOND_REACH: 'Over an hour from the area centre (assumed covered)',
+  FAR_FROM_MARKET: 'No standard market within an hour',
   DUPLICATE: 'Listed twice',
   NO_LABEL: 'No DMA given',
   OUTSIDE_48: 'Outside the contiguous 48',
@@ -90,6 +92,7 @@ export function PlannerTab() {
   const [planLoading, setPlanLoading] = useState(false)
   const [planError, setPlanError] = useState<string | null>(null)
   const [plan, setPlan] = useState<PlanResponse | null>(null)
+  const [selected, setSelected] = useState(0)
 
   const onFile = async (f: File | undefined) => {
     if (!f) return
@@ -166,6 +169,7 @@ export function PlannerTab() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'The plan could not be run')
       setPlan(data)
+      setSelected(data.defaultOption ?? 0)
     } catch (e) {
       setPlanError(e instanceof Error ? e.message : 'The plan could not be run')
     } finally {
@@ -281,8 +285,8 @@ export function PlannerTab() {
         </div>
       )}
 
-      {plan && built && <PlanResults plan={plan} areas={built.areas} />}
-      {plan && built && <WriteUpPanel plan={plan} built={built} />}
+      {plan && built && <PlanResults plan={plan} areas={built.areas} selected={selected} onSelect={setSelected} />}
+      {plan && built && <WriteUpPanel plan={plan} built={built} selected={selected} />}
     </div>
   )
 }
@@ -405,23 +409,31 @@ function AreasPanel({ built, review, onApply, onRecheck }: {
 
 // ---------------------------------------------------------------------------
 
-function PlanResults({ plan, areas }: { plan: PlanResponse; areas: Area[] }) {
-  const { pricing, phased, milestones, capacity } = plan
+function PlanResults({ plan, areas, selected, onSelect }: {
+  plan: PlanResponse
+  areas: Area[]
+  selected: number
+  onSelect: (i: number) => void
+}) {
+  const { pricing, capacity } = plan
   const chosen = pricing.chosen
-  const lastLive = milestones[milestones.length - 1]
+  const option = plan.dateOptions[selected] ?? plan.dateOptions[0]
+  const outcome = option?.liveBy
+  const milestones = outcome?.milestones ?? []
   const firstLive = milestones[0]
   const areaName = new Map(areas.map(a => [a.id, a.name]))
 
   const downloadCsv = () => {
-    const rows = [['Route', 'Hop (road mi)', 'Truck', 'Starts', 'Drives to first', 'Coming from', 'Deadhead (mi)', 'Repositioning ($)']]
-    for (const a of phased.assignments) {
-      rows.push([a.routeName, String(a.hopRoadMiles || ''), a.truckNumber ?? 'UNSERVED', a.start ?? '', a.firstAreaId ? areaName.get(a.firstAreaId) ?? '' : '', a.originLabel ?? '', String(a.distanceMiles), String(Math.round(a.repositionCost))])
+    if (!outcome) return
+    const rows = [['Route', 'Hop (road mi)', 'Truck', 'Starts', 'Drives to first', 'Coming from', 'Deadhead (mi)', 'Transport absorbed ($)']]
+    for (const a of outcome.assignments) {
+      rows.push([a.routeName, String(a.hopRoadMiles || ''), a.truckNumber ?? `NOT LIVE BY ${option.date}`, a.start ?? '', a.firstAreaId ? areaName.get(a.firstAreaId) ?? '' : '', a.originLabel ?? '', String(a.distanceMiles), String(Math.round(a.repositionCost))])
     }
     const csv = rows.map(r => r.map(c => (/[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c)).join(',')).join('\n')
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
     const link = document.createElement('a')
     link.href = url
-    link.download = `plan-${plan.settings.model}-${plan.settings.planStart}.csv`
+    link.download = `plan-${plan.settings.model}-live-by-${option.date}.csv`
     link.click()
     URL.revokeObjectURL(url)
   }
@@ -434,13 +446,54 @@ function PlanResults({ plan, areas }: { plan: PlanResponse; areas: Area[] }) {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <Stat label="Trucks" value={String(plan.routes.length)} sub={`${plan.routes.filter(r => r.areaIds.length === 2).length} paired, ${plan.routes.filter(r => r.areaIds.length === 1).length} single`} />
           <Stat label="Per week" value={fmtMoney(chosen.totalPerWeek)} sub={`${fmtMoney(chosen.totalPerQuarter)} per quarter`} />
-          <Stat label="Coverage" value={`${fmtDate(firstLive?.date)} → ${fmtDate(lastLive?.date)}`} sub={`${firstLive?.routesLive ?? 0} routes first day, all ${lastLive?.routesLive ?? 0} by the last`} />
-          <Stat label="Repositioning (absorbed)" value={fmtMoney(phased.repositionCost)} sub={`${phased.movesOverServiceArea} moves beyond the service area`} />
+          <Stat
+            label="Everything live by"
+            value={option ? fmtDate(option.date) : '—'}
+            sub={outcome?.feasible ? `${firstLive?.routesLive ?? 0} routes live ${fmtDate(firstLive?.date)}` : `short by ${outcome?.shortBy ?? 0} routes`}
+          />
+          <Stat label="Transport we absorb" value={outcome ? fmtMoney(outcome.repositionCost) : '—'} sub={`${outcome?.movesOverServiceArea ?? 0} moves beyond the service area`} />
         </div>
         {plan.warnings.length > 0 && (
           <ul className="mt-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 text-sm text-amber-900 list-disc list-inside">
             {plan.warnings.map((w, i) => <li key={i}>{w}</li>)}
           </ul>
+        )}
+      </div>
+
+      {/* The decision */}
+      <div className={card}>
+        <h3 className="text-sm font-semibold text-gray-900 mb-1">Start date vs. transport we absorb</h3>
+        <p className="text-xs text-gray-500 mb-2">
+          Earlier dates mean bringing trucks from further away. For each date, trucks are chosen to keep the transport we absorb as low as possible, and each route starts as soon as its truck is ready. Pick the row that is worth it; the routes below follow your choice.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr>
+                <th className={th}></th>
+                <th className={th}>Everything live by</th>
+                <th className={th + ' text-right'}>Transport we absorb</th>
+                <th className={th + ' text-right'}>Routes live {fmtDate(plan.settings.planStart)}</th>
+                <th className={th + ' text-right'}>Trucks free</th>
+              </tr>
+            </thead>
+            <tbody>
+              {plan.dateOptions.map((o, i) => (
+                <tr key={o.date} onClick={() => onSelect(i)} className={`cursor-pointer ${i === selected ? 'bg-green-50 font-semibold' : 'hover:bg-gray-50'}`}>
+                  <td className={td}><input type="radio" readOnly checked={i === selected} /></td>
+                  <td className={td}>{fmtDate(o.date)}</td>
+                  <td className={tdNum}>{o.liveBy.feasible ? fmtMoney(o.liveBy.repositionCost) : <span className="text-gray-500">not possible — short by {o.liveBy.shortBy} route{o.liveBy.shortBy === 1 ? '' : 's'}</span>}</td>
+                  <td className={tdNum}>{o.liveBy.milestones[0]?.date === plan.settings.planStart ? o.liveBy.milestones[0].routesLive : 0} of {plan.routes.length}</td>
+                  <td className={tdNum}>{o.trucksClear}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {milestones.length > 1 && (
+          <p className="text-xs text-gray-600 mt-2">
+            Live by {fmtDate(option.date)}: {milestones.map(m => `${m.routesLive} by ${fmtDate(m.date)}`).join(', ')}.
+          </p>
         )}
       </div>
 
@@ -475,51 +528,24 @@ function PlanResults({ plan, areas }: { plan: PlanResponse; areas: Area[] }) {
         </table>
       </div>
 
-      {/* Start options */}
-      <div className={card}>
-        <h3 className="text-sm font-semibold text-gray-900 mb-1">Start options</h3>
-        <p className="text-xs text-gray-500 mb-2">Every route starting together, versus each route starting as soon as its best-placed truck is free.</p>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead><tr><th className={th}>Start</th><th className={th}>Date</th><th className={th + ' text-right'}>Trucks clear</th><th className={th + ' text-right'}>Spare</th><th className={th + ' text-right'}>Deadhead (mi)</th><th className={th + ' text-right'}>Repositioning</th></tr></thead>
-            <tbody>
-              {plan.startOptions.map((o, i) => (
-                <tr key={i} className={o.label === 'Phased' ? 'font-semibold bg-green-50' : ''}>
-                  <td className={td}>{o.label}</td>
-                  <td className={td}>{o.label === 'Phased' ? `${fmtDate(firstLive?.date)} → ${fmtDate(lastLive?.date)}` : fmtDate(o.startDate)}</td>
-                  <td className={tdNum}>{o.label === 'Phased' ? '—' : o.trucksClear}</td>
-                  <td className={tdNum}>{o.label === 'Phased' ? '—' : o.outcome.feasible ? o.spare : `short by ${o.outcome.shortBy}`}</td>
-                  <td className={tdNum}>{o.outcome.feasible ? fmtNum(o.outcome.deadheadMiles) : '—'}</td>
-                  <td className={tdNum}>{o.outcome.feasible ? fmtMoney(o.outcome.repositionCost) : 'not possible'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {milestones.length > 1 && (
-          <p className="text-xs text-gray-600 mt-2">
-            Phased: {milestones.map(m => `${m.routesLive} by ${fmtDate(m.date)}`).join(', ')}.
-          </p>
-        )}
-      </div>
-
       {/* Routes */}
       <div className={card}>
         <div className="flex items-center mb-2">
-          <h3 className="text-sm font-semibold text-gray-900">Routes (phased start)</h3>
+          <h3 className="text-sm font-semibold text-gray-900">Routes — everything live by {option ? fmtDate(option.date) : '—'}</h3>
           <button onClick={downloadCsv} className="ml-auto text-sm text-green-700 hover:text-green-800">Download CSV</button>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead><tr><th className={th}>Route</th><th className={th + ' text-right'}>Hop</th><th className={th}>Truck</th><th className={th}>Coming from</th><th className={th + ' text-right'}>Deadhead</th><th className={th}>Starts</th></tr></thead>
+            <thead><tr><th className={th}>Route</th><th className={th + ' text-right'}>Hop</th><th className={th}>Truck</th><th className={th}>Coming from</th><th className={th + ' text-right'}>Deadhead</th><th className={th + ' text-right'}>Absorbed</th><th className={th}>Starts</th></tr></thead>
             <tbody>
-              {phased.assignments.map(a => (
+              {(outcome?.assignments ?? []).map(a => (
                 <tr key={a.routeId}>
                   <td className={td}>{a.routeName}</td>
                   <td className={tdNum}>{a.hopRoadMiles ? `${a.hopRoadMiles} mi` : '—'}</td>
-                  <td className={td}>{a.truckNumber ?? <span className="text-red-700">no truck</span>}</td>
+                  <td className={td}>{a.truckNumber ?? <span className="text-red-700">not live by {fmtDate(option.date)}</span>}</td>
                   <td className={td}>{a.originLabel ?? '—'}</td>
                   <td className={tdNum}>{a.truckNumber ? `${fmtNum(a.distanceMiles)} mi` : '—'}</td>
+                  <td className={tdNum}>{a.truckNumber ? (a.repositionCost ? fmtMoney(a.repositionCost) : '—') : '—'}</td>
                   <td className={td}>{fmtDate(a.start)}</td>
                 </tr>
               ))}
@@ -561,7 +587,7 @@ function PlanResults({ plan, areas }: { plan: PlanResponse; areas: Area[] }) {
   )
 }
 
-function WriteUpPanel({ plan, built }: { plan: PlanResponse; built: BuiltAreas }) {
+function WriteUpPanel({ plan, built, selected }: { plan: PlanResponse; built: BuiltAreas; selected: number }) {
   const [state, setState] = useState<{ loading: boolean; error: string | null; result: WriteUp | null }>({ loading: false, error: null, result: null })
   const [copied, setCopied] = useState(false)
 
@@ -578,6 +604,7 @@ function WriteUpPanel({ plan, built }: { plan: PlanResponse; built: BuiltAreas }
           zipCount: built.uniqueZips,
           flagsSummary: [...counts].map(([k, n]) => `${k}: ${n}`),
           clientRequest: built.request?.summary,
+          selectedOption: selected,
         }),
       })
       const data = await res.json()

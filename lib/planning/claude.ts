@@ -265,10 +265,10 @@ Use only the numbers in the plan you are given. Do not compute new ones: no sums
 Write two sections in Markdown:
 
 ## For the client
-A short proposal the rep can adapt. Say what we can offer: how many areas, how many hours each week, starting when, and at what weekly price. If the plan's model differs from what the client asked for, say so plainly and why, in one or two sentences. Mention any list corrections they need to confirm. Nothing internal: no truck numbers, repositioning cost, capacity, other clients or AT&T.
+A short proposal the rep can adapt. Say what we can offer: how many areas, how many hours each week, starting when (from the chosen plan), and at what weekly price. If the plan's model differs from what the client asked for, say so plainly and why, in one or two sentences. Mention any list corrections they need to confirm. Nothing internal: no truck numbers, repositioning cost, capacity, other clients or AT&T.
 
 ## Internal
-For the sales lead. Cover the recommendation and its start, what it leaves for other clients, the reservations assumed (AT&T, Alloy Build), the warnings, and the decisions that are still open. Short paragraphs and a few bullets.
+For the sales lead. Cover the chosen start date and the transport we absorb for it, what an earlier or later date would cost (from the start-date options), what it leaves for other clients, the reservations assumed (AT&T, Alloy Build), the warnings, and the decisions that are still open. Short paragraphs and a few bullets.
 
 Plain, specific sentences. No filler, no exclamation marks.`
 
@@ -280,6 +280,8 @@ export async function writePlanSummary(opts: {
   zipCount: number
   flagsSummary: string[]
   clientRequest?: string
+  /** The start-date row the rep chose. */
+  selectedOption?: number
 }): Promise<WriteUp> {
   const facts = planFacts(opts)
   const msg = await anthropic().messages
@@ -297,9 +299,10 @@ export async function writePlanSummary(opts: {
 }
 
 /** The plan reduced to what a write-up may cite — already rounded and labelled. */
-export function planFacts(opts: { plan: PlanResponse; areaCount: number; zipCount: number; flagsSummary: string[]; clientRequest?: string }) {
+export function planFacts(opts: { plan: PlanResponse; areaCount: number; zipCount: number; flagsSummary: string[]; clientRequest?: string; selectedOption?: number }) {
   const { plan } = opts
-  const ms = plan.milestones
+  const chosen = plan.dateOptions[opts.selectedOption ?? plan.defaultOption] ?? plan.dateOptions[0]
+  const ms = chosen?.liveBy.milestones ?? []
   return {
     client_request: opts.clientRequest ?? null,
     areas: opts.areaCount,
@@ -309,10 +312,15 @@ export function planFacts(opts: { plan: PlanResponse; areaCount: number; zipCoun
     trucks: plan.routes.length,
     paired_routes: plan.routes.filter(r => r.areaIds.length === 2).length,
     single_area_routes: plan.routes.filter(r => r.areaIds.length === 1).length,
-    first_start: ms[0]?.date ?? null,
-    routes_live_on_first_start: ms[0]?.routesLive ?? 0,
-    all_routes_live_by: ms[ms.length - 1]?.date ?? null,
-    phased_milestones: ms,
+    chosen_plan: chosen ? {
+      everything_live_by: chosen.date,
+      fully_live: chosen.liveBy.feasible,
+      first_start: ms[0]?.date ?? null,
+      routes_live_on_first_start: ms[0]?.routesLive ?? 0,
+      milestones: ms,
+      transport_absorbed: chosen.liveBy.repositionCost,
+      moves_beyond_service_area: chosen.liveBy.movesOverServiceArea,
+    } : null,
     price_per_week: plan.pricing.chosen.totalPerWeek,
     price_per_quarter: plan.pricing.chosen.totalPerQuarter,
     rate_per_truck_day: plan.pricing.chosen.effectiveDailyRate,
@@ -323,10 +331,12 @@ export function planFacts(opts: { plan: PlanResponse; areaCount: number; zipCoun
       trucks: plan.capacity.rows[1]?.programTrucks,
       price_per_week: plan.pricing.other.totalPerWeek,
     },
-    repositioning_cost_absorbed: plan.phased.repositionCost,
-    moves_beyond_service_area: plan.phased.movesOverServiceArea,
-    start_options: plan.startOptions.map(o => ({
-      option: o.label, date: o.startDate, feasible: o.outcome.feasible, short_by: o.outcome.shortBy, repositioning_cost: o.outcome.repositionCost,
+    start_date_options: plan.dateOptions.map(o => ({
+      everything_live_by: o.date,
+      possible: o.liveBy.feasible,
+      transport_absorbed: o.liveBy.feasible ? o.liveBy.repositionCost : null,
+      short_by_routes: o.liveBy.feasible ? 0 : o.liveBy.shortBy,
+      routes_live_on_first_day: o.liveBy.milestones[0]?.routesLive ?? 0,
     })),
     capacity: {
       active_trucks: plan.capacity.activeTrucks,

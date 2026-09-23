@@ -6,7 +6,8 @@
  *
  *   areas ──pair (3x12) or not (5x8)──► routes
  *   routes × trucks ──chain rules──► earliest workable start per pair
- *   earliest starts ──assignment──► start options (uniform dates, phased)
+ *   earliest starts ──assignment──► the start-date decision: for each date,
+ *                                   the transport we absorb to be live by then
  *
  * Feasibility is the same chain check every quote uses (lib/chainFeasibility):
  * a truck starts from its release point — the market of its last job before the
@@ -51,8 +52,6 @@ export type PlanSettings = {
   roadFactor: number
   /** How far past planStart a route may slip waiting for a truck. */
   maxSlipDays: number
-  /** Assignment trade-off: one day of delay is worth this many deadhead miles. */
-  latePenaltyMilesPerDay: number
   serviceAreaMiles?: number
 }
 
@@ -61,7 +60,6 @@ export const DEFAULT_SETTINGS: Omit<PlanSettings, 'planStart' | 'planThrough' | 
   hopLimitRoadMiles: 250,
   roadFactor: 1.25,
   maxSlipDays: 60,
-  latePenaltyMilesPerDay: 40,
 }
 
 export type PlanTruck = {
@@ -223,8 +221,22 @@ export function earliestStart(
 }
 
 // ---------------------------------------------------------------------------
-// Assignment and start options
+// Assignment and the start-date decision
 // ---------------------------------------------------------------------------
+//
+// The business question is not "how far should a truck drive to save a day".
+// It is "how much transport are we willing to absorb to have this live by a
+// given date". So nothing here trades days against miles. For each date, the
+// assignment serves as many routes as that date allows at the lowest absorbed
+// transport cost, and the table of dates is the decision.
+
+/**
+ * Dollars decide. Among trucks that cost the same (typically several inside
+ * the service area, at $0), the earlier start wins, then the shorter drive.
+ * The weights are far too small to ever outweigh a dollar.
+ */
+const DAY_TIEBREAK = 1e-3
+const MILE_TIEBREAK = 1e-6
 
 export type RouteAssignment = {
   routeId: string
@@ -239,6 +251,8 @@ export type RouteAssignment = {
   repositionCost: number
 }
 
+export type PhasedMilestone = { date: string; routesLive: number }
+
 export type AssignmentOutcome = {
   feasible: boolean
   shortBy: number
@@ -246,6 +260,7 @@ export type AssignmentOutcome = {
   repositionCost: number
   movesOverServiceArea: number
   assignments: RouteAssignment[]
+  milestones: PhasedMilestone[]
 }
 
 type Matrix = (Candidate | null)[][]
@@ -255,24 +270,21 @@ export function candidateMatrix(routes: Route[], trucks: PlanTruck[], areasById:
 }
 
 /**
- * Assign trucks to routes.
- *
- * uniform: every route starts on `startDate`; only trucks that can make it qualify.
- * phased:  each route starts as soon as its truck can; lateness is traded
- *          against deadhead at latePenaltyMilesPerDay.
+ * Assign trucks so every route is live by `deadline`, at the lowest absorbed
+ * transport cost. Each route starts as soon as its truck can.
  */
 export function assign(
   routes: Route[],
   trucks: PlanTruck[],
   matrix: Matrix,
-  settings: PlanSettings,
-  mode: { kind: 'uniform'; startDate: string } | { kind: 'phased' },
+  deadline: string,
+  planStart: string,
 ): AssignmentOutcome {
-  const cost = matrix.map(row => row.map(c => {
-    if (!c) return Infinity
-    if (mode.kind === 'uniform') return c.start <= mode.startDate ? c.distanceMiles : Infinity
-    return c.distanceMiles + settings.latePenaltyMilesPerDay * Math.max(0, daysBetween(settings.planStart, c.start))
-  }))
+  const cost = matrix.map(row => row.map(c =>
+    c && c.start <= deadline
+      ? c.repositionCost + daysBetween(planStart, c.start) * DAY_TIEBREAK + c.distanceMiles * MILE_TIEBREAK
+      : Infinity,
+  ))
   const { colForRow, unserved } = minCostAssignment(cost)
 
   const assignments: RouteAssignment[] = routes.map((r, i) => {
@@ -283,7 +295,7 @@ export function assign(
       routeName: r.name,
       hopRoadMiles: r.hopRoadMiles,
       truckNumber: c ? trucks[j].truckNumber : null,
-      start: c ? (mode.kind === 'uniform' ? mode.startDate : c.start) : null,
+      start: c ? c.start : null,
       firstAreaId: c?.firstAreaId ?? null,
       originLabel: c?.originLabel ?? null,
       distanceMiles: c?.distanceMiles ?? 0,
@@ -291,6 +303,8 @@ export function assign(
       repositionCost: c?.repositionCost ?? 0,
     }
   })
+  const live = assignments.map(a => a.start).filter((d): d is string => d !== null).sort()
+  const milestones = [...new Set(live)].map(d => ({ date: d, routesLive: live.filter(x => x <= d).length }))
   return {
     feasible: unserved === 0,
     shortBy: unserved,
@@ -298,68 +312,59 @@ export function assign(
     repositionCost: Math.round(assignments.reduce((s, a) => s + a.repositionCost, 0)),
     movesOverServiceArea: assignments.filter(a => a.repositionCost > 0).length,
     assignments,
+    milestones,
   }
 }
 
-export type StartOption = {
-  label: string
-  startDate: string | null
+export type DateOption = {
+  date: string
+  /** Trucks with nothing booked from this date through plan-through. */
   trucksClear: number
-  spare: number
-  outcome: AssignmentOutcome
+  /**
+   * Every route live by this date, each starting as soon as its truck can.
+   * (Holding every route back to launch together on this date would use the
+   * same trucks at the same cost, so it is not a separate option.)
+   */
+  liveBy: AssignmentOutcome
 }
 
-export type PhasedMilestone = { date: string; routesLive: number }
+export type DateDecision = {
+  options: DateOption[]
+  /** First date by which every route can be live. */
+  firstFullLiveBy: string | null
+}
 
 /**
- * The start-options table: a handful of uniform start dates, the first date
- * every route could start together, and the phased plan.
+ * The start-date decision table: weekly dates from planStart, plus the first
+ * date on which full coverage becomes possible, until waiting longer no
+ * longer lowers the transport we absorb.
  */
-export function startOptions(
+export function dateOptions(
   routes: Route[],
   trucks: PlanTruck[],
   matrix: Matrix,
   settings: PlanSettings,
-): { options: StartOption[]; phased: AssignmentOutcome; milestones: PhasedMilestone[]; firstFullStart: string | null } {
+): DateDecision {
   const clearBy = (date: string) =>
     trucks.filter(t => { const f = freeFrom(t.jobs, settings.planStart, settings.planThrough); return f !== null && f <= date }).length
 
-  // Earliest uniform date that serves every route: scan the distinct dates on
-  // which a candidate becomes available.
-  const dates = [...new Set(matrix.flat().filter((c): c is Candidate => c !== null).map(c => c.start))].sort()
-  let firstFullStart: string | null = null
-  for (const d of dates) {
-    if (assign(routes, trucks, matrix, settings, { kind: 'uniform', startDate: d }).feasible) { firstFullStart = d; break }
+  const candidateDates = [...new Set(matrix.flat().filter((c): c is Candidate => c !== null).map(c => c.start))].sort()
+  const firstFullLiveBy = candidateDates.find(d => assign(routes, trucks, matrix, d, settings.planStart).feasible) ?? null
+
+  const limit = addDays(settings.planStart, settings.maxSlipDays)
+  const dates = new Set<string>()
+  for (let d = settings.planStart; d <= limit; d = addDays(d, 7)) dates.add(d)
+  if (firstFullLiveBy) dates.add(firstFullLiveBy)
+
+  const options: DateOption[] = []
+  for (const date of [...dates].sort()) {
+    const opt: DateOption = { date, trucksClear: clearBy(date), liveBy: assign(routes, trucks, matrix, date, settings.planStart) }
+    const prev = options[options.length - 1]
+    // Stop once waiting another week no longer lowers what we absorb.
+    if (prev && prev.liveBy.feasible && opt.liveBy.repositionCost === prev.liveBy.repositionCost) break
+    options.push(opt)
   }
-
-  const uniformDates = [0, 7, 14, 21].map(n => addDays(settings.planStart, n))
-  if (firstFullStart && !uniformDates.includes(firstFullStart)) uniformDates.push(firstFullStart)
-  uniformDates.sort()
-
-  const options: StartOption[] = uniformDates.map(d => {
-    const outcome = assign(routes, trucks, matrix, settings, { kind: 'uniform', startDate: d })
-    const clear = clearBy(d)
-    return {
-      label: d === firstFullStart ? 'Earliest full start' : 'All routes together',
-      startDate: d,
-      trucksClear: clear,
-      spare: clear - routes.length,
-      outcome,
-    }
-  })
-
-  const phased = assign(routes, trucks, matrix, settings, { kind: 'phased' })
-  const live = phased.assignments.map(a => a.start).filter((d): d is string => d !== null).sort()
-  const milestones: PhasedMilestone[] = []
-  for (const d of [...new Set(live)]) milestones.push({ date: d, routesLive: live.filter(x => x <= d).length })
-  options.push({
-    label: 'Phased',
-    startDate: live[0] ?? null,
-    trucksClear: trucks.length,
-    spare: trucks.length - routes.length,
-    outcome: phased,
-  })
-  return { options, phased, milestones, firstFullStart }
+  return { options, firstFullLiveBy }
 }
 
 // ---------------------------------------------------------------------------

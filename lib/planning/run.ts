@@ -10,9 +10,8 @@ import type { Area } from './areas'
 import { DEFAULT_RULES, loadPlanningFleet, type ReservedTruck } from './fleet'
 import { loadUsageHistory, type UsageSummary } from './history'
 import {
-  DEFAULT_SETTINGS, buildRoutes, candidateMatrix, startOptions, priceProgram, capacityLeft,
-  type CoverageModel, type PlanSettings, type Route, type StartOption, type PhasedMilestone,
-  type AssignmentOutcome, type ProgramPrice,
+  DEFAULT_SETTINGS, buildRoutes, candidateMatrix, dateOptions, priceProgram, capacityLeft,
+  type CoverageModel, type PlanSettings, type Route, type DateOption, type ProgramPrice,
 } from './planner'
 
 export type PlanRequest = {
@@ -36,10 +35,11 @@ export type CapacityRow = { model: CoverageModel; programTrucks: number; leftLow
 export type PlanResponse = {
   settings: PlanSettings
   routes: Route[]
-  startOptions: StartOption[]
-  phased: AssignmentOutcome
-  milestones: PhasedMilestone[]
-  firstFullStart: string | null
+  /** The decision: for each date, the transport we absorb to be live by it. */
+  dateOptions: DateOption[]
+  firstFullLiveBy: string | null
+  /** Index into dateOptions of the first date with every route live. */
+  defaultOption: number
   pricing: { chosen: ProgramPrice; other: ProgramPrice }
   capacity: {
     activeTrucks: number
@@ -81,7 +81,7 @@ export async function runPlan(req: PlanRequest): Promise<PlanResponse> {
   const areasById = new Map(req.areas.map(a => [a.id, a]))
   const { routes, greedyClusters } = buildRoutes(req.areas, settings)
   const matrix = candidateMatrix(routes, fleet.trucks, areasById, settings)
-  const starts = startOptions(routes, fleet.trucks, matrix, settings)
+  const decision = dateOptions(routes, fleet.trucks, matrix, settings)
 
   // Capacity: what each model's commitment leaves for other clients.
   const renewingTrucks = fleet.reserved.filter(r => !r.reason.startsWith('AT&T soft')).length
@@ -101,10 +101,11 @@ export async function runPlan(req: PlanRequest): Promise<PlanResponse> {
   if (greedyClusters > 0) {
     warnings.push(`${greedyClusters} cluster(s) of areas were too large to pair exactly and were paired shortest-hop-first; the truck count may be one or two higher than optimal.`)
   }
-  if (starts.phased.shortBy > 0) {
-    warnings.push(`${starts.phased.shortBy} route(s) have no truck that can start within ${settings.maxSlipDays} days of ${settings.planStart}.`)
+  if (!decision.firstFullLiveBy) {
+    const last = decision.options[decision.options.length - 1]
+    warnings.push(`${last?.liveBy.shortBy ?? routes.length} route(s) have no truck that can start within ${settings.maxSlipDays} days of ${settings.planStart}.`)
   }
-  const firstStart = starts.phased.assignments.map(a => a.start).filter((d): d is string => !!d).sort()[0]
+  const firstStart = decision.options.flatMap(o => o.liveBy.assignments.map(a => a.start)).filter((d): d is string => !!d).sort()[0]
   if (firstStart) {
     const lead = businessDaysBetween(new Date(), new Date(firstStart + 'T00:00:00Z'))
     if (lead < MIN_LEAD_BUSINESS_DAYS_TO_ABSORB) {
@@ -117,10 +118,9 @@ export async function runPlan(req: PlanRequest): Promise<PlanResponse> {
   return {
     settings,
     routes,
-    startOptions: starts.options,
-    phased: starts.phased,
-    milestones: starts.milestones,
-    firstFullStart: starts.firstFullStart,
+    dateOptions: decision.options,
+    firstFullLiveBy: decision.firstFullLiveBy,
+    defaultOption: Math.max(0, decision.options.findIndex(o => o.liveBy.feasible)),
     pricing: {
       chosen: priceProgram(req.areas.length, req.model, { smartDirectional: req.smartDirectional, rateOverrides }),
       other: priceProgram(req.areas.length, OTHER[req.model], { smartDirectional: req.smartDirectional, rateOverrides }),

@@ -369,7 +369,15 @@ Feasibility is recomputed from the stored job chain every time, so a second camp
 
 For programs that cover many areas every week, where the question is fleet-wide rather than one market at a time. Internal only; nothing here is exposed on a client route.
 
-**Input.** A client ZIP list (CSV). ZIPs are geocoded against the Census ZIP centroids in `lib/planning/data/`, and grouped into areas by the client's DMA names. DMAs whose centres are within 30 miles are worked as one area. Every correction is reported, not absorbed: duplicates, rows with no DMA (placed with the nearest area), ZIPs with no households (PO-box and unique ZIPs are not Census ZCTAs), and ZIPs more than 150 miles from the rest of their DMA (almost always typos).
+**Input.** A client ZIP list (CSV, `.xlsx`, or via Claude, PDF or email). ZIPs are geocoded against the Census ZIP centroids in `lib/planning/data/`, and grouped into areas by the client's DMA names. DMAs whose centres are within 30 miles are worked as one area. We count ourselves in a DMA within an hour's drive, about 60 miles.
+
+Every assumption and correction is reported, not absorbed:
+- duplicates
+- rows with no DMA (placed with the nearest area)
+- ZIPs with no households (PO-box and unique ZIPs are not Census ZCTAs)
+- ZIPs more than 60 miles from their area's centre (assumed covered, to confirm)
+- areas with no standard market within 60 miles (one must be chosen or added to book)
+- ZIPs more than 150 miles from the rest of their DMA (almost always typos)
 
 **Coverage models.** 5 × 8 puts one truck on each area. 3 × 12 pairs areas within a road-mile hop limit (default 250, straight line × 1.25) onto one truck. The truck alternates A Mon–Wed / travel Thu / B Fri–Sun, then the reverse, so each area gets three 12-hour days every calendar week. Pairing maximises the number of pairs first, then minimises hop miles.
 
@@ -380,7 +388,7 @@ For programs that cover many areas every week, where the question is fleet-wide 
 
 **When each truck can start.** From the first date it has nothing booked through plan-through, run through the same chain check as every quote (§6b): the release-point origin, transport days to arrive, and no stranded successor. A truck that needs travel days starts that many days later.
 
-**Start options.** Every route starting on one date (only trucks that can make that date qualify), versus phased, where each route starts when its best-placed truck is free. Trucks are matched to routes by minimum-cost assignment on deadhead miles, plus 40 miles-equivalent per day of delay in phased mode.
+**The start-date decision.** Nothing here trades days against miles. For each date (weekly from the earliest start, plus the first date full coverage is possible), trucks are assigned so every route is live by that date at the **lowest transport we absorb**, and each route starts as soon as its truck is ready. Earlier dates mean pulling trucks from further away. The table stops once waiting another week no longer lowers the cost. The rep picks the row that is worth it, and the route table follows. Among trucks that cost the same, the earlier start wins, then the shorter drive. Holding every route back to launch on one day would use the same trucks at the same cost, so it is not shown as a separate option.
 
 **Repositioning** is `absorbedLegCost()` for legs beyond the service area, and zero inside it. It is our cost, not a client charge, because a program this size clears both absorption tests. A warning appears if the first start is under 10 business days out.
 

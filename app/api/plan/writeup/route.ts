@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
   const denied = await requireStaff(req)
   if (denied) return denied
 
-  let body: { plan?: PlanResponse; areaCount?: number; zipCount?: number; flagsSummary?: string[]; clientRequest?: string }
+  let body: { plan?: PlanResponse; areaCount?: number; zipCount?: number; flagsSummary?: string[]; clientRequest?: string; selectedOption?: number }
   try {
     body = await req.json()
   } catch {
@@ -32,6 +32,7 @@ export async function POST(req: NextRequest) {
       zipCount: Number(body.zipCount ?? 0),
       flagsSummary: Array.isArray(body.flagsSummary) ? body.flagsSummary.slice(0, 50).map(String) : [],
       clientRequest: typeof body.clientRequest === 'string' ? body.clientRequest : undefined,
+      selectedOption: Number.isInteger(body.selectedOption) ? body.selectedOption : undefined,
     })
     return NextResponse.json(result)
   } catch (err) {

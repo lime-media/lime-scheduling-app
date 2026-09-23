@@ -2,8 +2,6 @@
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { format, addDays, startOfDay, parseISO, isSameDay } from 'date-fns'
-import toast from 'react-hot-toast'
-import { HoldModal } from './HoldModal'
 import { CellDetail } from './CellDetail'
 import { getNearbyMarkets, getMarketCoords, haversineDistance } from '@/lib/marketCoordinates'
 
@@ -57,7 +55,7 @@ export type HoldRequestBlock = {
   company_name: string
 }
 
-// ── Internal synthesised row type (used by CellDetail / HoldModal) ────────────
+// ── Internal synthesised row type (used by CellDetail) ─────────────────────────
 
 export type ScheduleRow = {
   truck_number: string
@@ -168,8 +166,6 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
   const [selectedCell, setSelectedCell] = useState<ScheduleRow | null>(null)
   const [dragStart, setDragStart] = useState<{ truck: string; dateIdx: number } | null>(null)
   const [dragEnd,   setDragEnd]   = useState<{ truck: string; dateIdx: number } | null>(null)
-  const [showHoldModal, setShowHoldModal] = useState(false)
-  const [holdRange, setHoldRange] = useState<{ truck: string; start: Date; end: Date } | null>(null)
 
   const isDragging    = useRef(false)
   const hasMoved      = useRef(false)
@@ -675,6 +671,10 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
   }
 
   const handleMouseEnter = (truckNum: string, dateIdx: number) => {
+    // Dragging across dates only exists to request a hold, which is a client
+    // action. Internal users place holds from the quote tools, not the grid, so
+    // for them a press is always a click that opens the cell detail.
+    if (!clientView) return
     if (!isDragging.current || !dragStart || dragStart.truck !== truckNum) return
     if (pendingCell.current?.display_status === 'SCHEDULED_LED' ||
         pendingCell.current?.display_status === 'MAINTENANCE') return
@@ -703,30 +703,14 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
       const maxIdx = Math.max(dragStart.dateIdx, dragEnd.dateIdx)
 
       if (hasMoved.current && minIdx !== maxIdx) {
-        // Block hold if any date in the range already has a schedule block
-        const truckNum = dragStart.truck
-        let schedConflict: { date: Date; program: string } | null = null
-        for (let i = minIdx; i <= maxIdx; i++) {
-          const entry = dataMap.get(`${truckNum}__${format(dates[i], 'yyyy-MM-dd')}`)
-          if (entry?.sched) { schedConflict = { date: dates[i], program: entry.sched.program }; break }
-        }
-
+        // Only reachable in client view — see handleMouseEnter.
         if (onCellRangeSelected && clientView) {
+          const truckNum = dragStart.truck
           // Block if any date in the range is near-term
           const hasNearTerm = Array.from({ length: maxIdx - minIdx + 1 }, (_, i) => format(dates[minIdx + i], 'yyyy-MM-dd')).some(d => nearTermDates.has(d))
           if (hasNearTerm) { setDragStart(null); setDragEnd(null); hasMoved.current = false; return }
           const market = truckMarketLookup.get(truckNum) ?? ''
           onCellRangeSelected(truckNum, format(dates[minIdx], 'yyyy-MM-dd'), format(dates[maxIdx], 'yyyy-MM-dd'), market)
-        } else if (schedConflict) {
-          const isMaint = schedConflict.program?.toLowerCase() === 'truck maintenance'
-          toast.error(
-            isMaint
-              ? `Truck ${truckNum} is under maintenance on ${format(schedConflict.date, 'MMM d')} — holds cannot be placed`
-              : `Cannot place hold — Truck ${truckNum} is already scheduled for "${schedConflict.program}" on ${format(schedConflict.date, 'MMM d')}`
-          )
-        } else {
-          setHoldRange({ truck: truckNum, start: dates[minIdx], end: dates[maxIdx] })
-          setShowHoldModal(true)
         }
       } else {
         setSelectedCell(pendingCell.current)
@@ -736,54 +720,12 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
     setDragStart(null)
     setDragEnd(null)
     hasMoved.current = false
-  }, [dragStart, dragEnd, dates, dataMap, onCellRangeSelected, clientView, truckMarketLookup, nearTermDates])
+  }, [dragStart, dragEnd, dates, onCellRangeSelected, clientView, truckMarketLookup, nearTermDates])
 
   useEffect(() => {
     window.addEventListener('mouseup', handleMouseUp)
     return () => window.removeEventListener('mouseup', handleMouseUp)
   }, [handleMouseUp])
-
-  // ── Hold submission ───────────────────────────────────────────────────────
-
-  const handleHoldSubmit = async (formData: {
-    client_name: string
-    market: string
-    state: string
-    status: string
-    notes: string
-  }) => {
-    if (!holdRange) return
-    const res = await fetch('/api/holds', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        truck_number: holdRange.truck,
-        start_date:   format(holdRange.start, 'yyyy-MM-dd'),
-        end_date:     format(holdRange.end,   'yyyy-MM-dd'),
-        ...formData,
-      }),
-    })
-    if (res.ok) {
-      toast.success('Hold placed successfully')
-      onHoldCreated()
-      setShowHoldModal(false)
-      setHoldRange(null)
-    } else {
-      const err = await res.json()
-      toast.error(err.error || 'Failed to place hold')
-    }
-  }
-
-  const handlePanelPlaceHold = () => {
-    if (!selectedCell) return
-    const date = new Date(selectedCell.calendar_date)
-    setHoldRange({
-      truck: selectedCell.truck_number,
-      start: startOfDay(date),
-      end:   startOfDay(date),
-    })
-    setShowHoldModal(true)
-  }
 
   const todayIdx = dates.findIndex((d) => isSameDay(d, today))
 
@@ -978,25 +920,9 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
           cell={selectedCell}
           lastKnownMarket={panelLastMarket}
           onClose={() => setSelectedCell(null)}
-          onPlaceHold={handlePanelPlaceHold}
           onHoldDeleted={() => {
             onHoldCreated()
             setSelectedCell(null)
-          }}
-        />
-      )}
-
-      {/* Hold modal — internal users only */}
-      {!clientView && showHoldModal && holdRange && (
-        <HoldModal
-          truck={holdRange.truck}
-          startDate={holdRange.start}
-          endDate={holdRange.end}
-          markets={markets}
-          onSubmit={handleHoldSubmit}
-          onClose={() => {
-            setShowHoldModal(false)
-            setHoldRange(null)
           }}
         />
       )}

@@ -8,7 +8,6 @@ interface CellDetailProps {
   cell: ScheduleRow | null
   lastKnownMarket: string
   onClose: () => void
-  onPlaceHold: () => void
   onHoldDeleted: () => void
 }
 
@@ -30,7 +29,7 @@ const STATUS_LABELS: Record<string, string> = {
   MAINTENANCE:       'Under Maintenance',
 }
 
-export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHoldDeleted }: CellDetailProps) {
+export function CellDetail({ cell, lastKnownMarket, onClose, onHoldDeleted }: CellDetailProps) {
 
   const handleRelease = async () => {
     if (!cell?.hold_id) return
@@ -184,16 +183,6 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
 
       {/* Action buttons */}
       <div className="px-4 pb-4 flex flex-col gap-2">
-        {/* Place Hold — shown for available cells */}
-        {status === 'EMPTY' && (
-          <button
-            onClick={onPlaceHold}
-            className="w-full bg-green-700 hover:bg-green-800 text-white text-sm py-2 rounded-lg font-medium transition-colors"
-          >
-            Place Hold
-          </button>
-        )}
-
         {/* Hold management buttons */}
         {isHold && (
           <>

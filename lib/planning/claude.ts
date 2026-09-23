@@ -182,7 +182,7 @@ const REVIEW_SYSTEM = `You check client ZIP lists for Lime Media before a truck 
 - LIKELY_TYPO: a ZIP that is probably a digit slip, such as a transposed or wrong first digit that moves it out of its state. Suggest the ZIP it was likely meant to be only when the city and state make it clear.
 - OTHER: anything else a rep should confirm with the client, such as one DMA that spans places a single truck cannot cover in a day.
 
-Each row carries located_near: the standard market nearest to where that ZIP actually is, from Census data (null when the ZIP has no residential area). Trust it over the city the client typed.
+Each row carries lat and lng: where that ZIP actually is, from Census data (null when the ZIP has no residential area). Trust the coordinates over the city the client typed.
 
 Report only real problems. An empty list is the right answer for a clean file. Do not repeat the problems code already flagged unless you can add a correction.`
 
@@ -191,28 +191,14 @@ export async function reviewFootprint(opts: {
   areas: Area[]
   flags: AreaFlag[]
   centroids: Centroids
-  /** Standard markets, so each ZIP can be described by where it actually is. */
-  markets: Map<string, { lat: number; lng: number }>
 }): Promise<ReviewFinding[]> {
-  const marketList = [...opts.markets]
-  const locatedNear = (zip: string): string | null => {
-    const c = opts.centroids[zip]
-    if (!c) return null
-    let best: [string, number] | null = null
-    for (const [name, m] of marketList) {
-      const d = haversineDistance(c[0], c[1], m.lat, m.lng)
-      if (!best || d < best[1]) best = [name, d]
-    }
-    return best ? `${best[0]} (${Math.round(best[1])} mi)` : null
-  }
-  const byArea = opts.areas.map(a => ({
-    area: a.name,
-    nearest_standard_market: a.nearestMarket?.name ?? null,
-    spread_miles: a.spreadMiles,
-  }))
+  const byArea = opts.areas.map(a => ({ area: a.name, spread_miles: a.spreadMiles }))
   const payload = {
-    // located_near comes from the Census centroid, not from the client's text.
-    rows: opts.rows.map(r => ({ dma: r.label, zip: r.zip, city: r.city, state: r.state, located_near: locatedNear(r.zip) })),
+    // lat/lng come from the Census centroid, not from the client's text.
+    rows: opts.rows.map(r => {
+      const c = opts.centroids[r.zip]
+      return { dma: r.label, zip: r.zip, city: r.city, state: r.state, lat: c ? c[0] : null, lng: c ? c[1] : null }
+    }),
     areas: byArea,
     already_flagged: opts.flags.map(f => ({ kind: f.kind, zip: f.zip ?? '', detail: f.detail })),
   }
@@ -265,10 +251,10 @@ Use only the numbers in the plan you are given. Do not compute new ones: no sums
 Write two sections in Markdown:
 
 ## For the client
-A short proposal the rep can adapt. Say what we can offer: how many areas, how many hours each week, starting when (from the chosen plan), and at what weekly price. If the plan's model differs from what the client asked for, say so plainly and why, in one or two sentences. Mention any list corrections they need to confirm. Nothing internal: no truck numbers, repositioning cost, capacity, other clients or AT&T.
+A short proposal the rep can adapt. Say what we can offer: how many areas, how many hours each week, starting when (from the chosen plan), and at what weekly price. If the plan's model differs from what the client asked for, say so plainly and why, in one or two sentences. Mention any list corrections they need to confirm. Nothing internal: no truck numbers or VINs, repositioning cost, capacity, other clients or AT&T.
 
 ## Internal
-For the sales lead. Cover the chosen start date and the transport we absorb for it, what an earlier or later date would cost (from the start-date options), what it leaves for other clients, the reservations assumed (AT&T, Alloy Build), the warnings, and the decisions that are still open. Short paragraphs and a few bullets.
+For the sales lead. Cover the chosen start date and the transport we absorb for it, what an earlier or later date would cost (from the start-date options), what it leaves for other clients, the reservations assumed (AT&T, Alloy Build), the warnings, and the decisions that are still open. End with a table of the assigned trucks: route, truck, VIN, start date. Short paragraphs and a few bullets.
 
 Plain, specific sentences. No filler, no exclamation marks.`
 
@@ -320,6 +306,8 @@ export function planFacts(opts: { plan: PlanResponse; areaCount: number; zipCoun
       milestones: ms,
       transport_absorbed: chosen.liveBy.repositionCost,
       moves_beyond_service_area: chosen.liveBy.movesOverServiceArea,
+      // Internal only — the client section must not list trucks.
+      assigned_trucks: chosen.liveBy.assignments.map(a => ({ route: a.routeName, truck: a.truckNumber, vin: a.vin, starts: a.start, coming_from: a.originLabel })),
     } : null,
     price_per_week: plan.pricing.chosen.totalPerWeek,
     price_per_quarter: plan.pricing.chosen.totalPerQuarter,

@@ -133,7 +133,6 @@ const C: Centroids = {
   '30009': [30.0, -80.0],                                                      // Gamma typo, ~900 mi away
   '40001': [40.1, -90.1],                                                      // unlabeled, near Gamma
 }
-const markets = new Map([['Alpha City, OK', { lat: 35.02, lng: -97.02 }], ['Gamma Town, IL', { lat: 40.0, lng: -90.0 }]])
 const rows = [
   { label: 'Alpha', zip: '10001', city: '', state: 'OK' },
   { label: 'Alpha', zip: '10002', city: '', state: 'OK' },
@@ -146,22 +145,19 @@ const rows = [
   { label: 'Gamma', zip: '30009', city: '', state: 'IL' },
   { label: '', zip: '40001', city: '', state: 'IL' },
 ]
-const built = buildAreas(rows, C, markets)
+const built = buildAreas(rows, C)
 eq('flags', built.flags.map(f => f.kind).sort(), ['DUPLICATE', 'NOT_GEOCODED', 'NO_LABEL', 'OUTLIER'])
 eq('Alpha and Beta merge into one area', built.areas.map(a => a.name).sort(), ['Alpha / Beta', 'Gamma'])
 const gamma = built.areas.find(a => a.name === 'Gamma')!
 eq('unlabeled ZIP joins the nearest area', gamma.zips.includes('40001'), true)
 eq('outlier kept in the list but not the centre', [gamma.zips.includes('30009'), gamma.lat < 41], [true, true])
-eq('nearest standard market', gamma.nearestMarket?.name, 'Gamma Town, IL')
 {
-  // A ZIP 75 mi out, and an area with no market within an hour.
+  // A ZIP about 68 mi out.
   const far = buildAreas(
     [{ label: 'Delta', zip: '50001', city: '', state: '' }, { label: 'Delta', zip: '50002', city: '', state: '' }, { label: 'Delta', zip: '50003', city: '', state: '' }],
     { '50001': [44.0, -100.0], '50002': [44.02, -100.0], '50003': [45.5, -100.0] },
-    new Map([['Faraway, SD', { lat: 46.5, lng: -100.0 }]]),
   )
   eq('over an hour out: flagged as an assumption', far.flags.filter(f => f.kind === 'BEYOND_REACH').map(f => f.zip), ['50003'])
-  eq('no market within an hour: flagged', far.flags.some(f => f.kind === 'FAR_FROM_MARKET'), true)
   eq('still in the area', far.areas[0].zips.length, 3)
 }
 
@@ -169,7 +165,7 @@ eq('nearest standard market', gamma.nearestMarket?.name, 'Gamma Town, IL')
 section('routes')
 
 const area = (id: string, lat: number, lng: number): Area =>
-  ({ id, name: id, labels: [id], zips: [], residentialZips: 1, lat, lng, spreadMiles: 0, nearestMarket: null })
+  ({ id, name: id, labels: [id], zips: [], residentialZips: 1, lat, lng, spreadMiles: 0 })
 // Dallas, Fort Worth (~30 mi), Houston (~225 mi from Dallas), Denver (far).
 const A = [area('dal', 32.78, -96.80), area('ftw', 32.75, -97.33), area('hou', 29.76, -95.37), area('den', 39.74, -104.99)]
 const S: PlanSettings = { ...DEFAULT_SETTINGS, planStart: '2026-10-12', planThrough: '2027-03-31', today: '2026-09-23' }
@@ -190,13 +186,13 @@ eq('free from after the last clash', freeFrom([job('2026-10-01', '2026-10-20', '
 eq('never free if booked past plan-through', freeFrom([job('2026-10-01', '2027-06-01', 'Denver', 'CO', 39.74, -104.99)], '2026-10-12', '2027-03-31'), null)
 
 // Truck finishing in Denver on 20 Oct, route in Dallas (~660 mi): 2 transport days.
-const denverTruck: PlanTruck = { truckNumber: 'T1', jobs: [job('2026-10-01', '2026-10-20', 'Denver', 'CO', 39.74, -104.99)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
+const denverTruck: PlanTruck = { truckNumber: 'T1', vin: null, jobs: [job('2026-10-01', '2026-10-20', 'Denver', 'CO', 39.74, -104.99)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
 const cand = earliestStart(denverTruck, solo('dal'), byId, S)!
 eq('origin is the release point, not GPS', cand.originLabel, 'Denver, CO')
 eq('start = release + transport days', cand.start, addDays('2026-10-21', 2))
 eq('reposition cost charged beyond the service area', cand.repositionCost > 0, true)
 
-const localTruck: PlanTruck = { truckNumber: 'T2', jobs: [], gps: { lat: 32.8, lng: -96.9 }, gpsLabel: 'Dallas, TX' }
+const localTruck: PlanTruck = { truckNumber: 'T2', vin: null, jobs: [], gps: { lat: 32.8, lng: -96.9 }, gpsLabel: 'Dallas, TX' }
 const local = earliestStart(localTruck, solo('dal'), byId, S)!
 eq('idle local truck starts on day one, no cost', [local.start, local.repositionCost], ['2026-10-12', 0])
 
@@ -211,8 +207,8 @@ section('start date vs. transport we absorb')
 {
   // One Dallas route. A truck idle in Denver today (costs transport), and a
   // Dallas truck that is busy until 18 Oct (free, local).
-  const far: PlanTruck = { truckNumber: 'FAR', jobs: [], gps: { lat: 39.74, lng: -104.99 }, gpsLabel: 'Denver, CO' }
-  const near: PlanTruck = { truckNumber: 'NEAR', jobs: [job('2026-10-01', '2026-10-17', 'Dallas', 'TX', 32.78, -96.80)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
+  const far: PlanTruck = { truckNumber: 'FAR', vin: null, jobs: [], gps: { lat: 39.74, lng: -104.99 }, gpsLabel: 'Denver, CO' }
+  const near: PlanTruck = { truckNumber: 'NEAR', vin: null, jobs: [job('2026-10-01', '2026-10-17', 'Dallas', 'TX', 32.78, -96.80)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
   const r = [solo('dal')]
   const t = [far, near]
   const m = candidateMatrix(r, t, byId, S)
@@ -226,10 +222,12 @@ section('start date vs. transport we absorb')
 
   // Two free local trucks, one ready now and one next week: same $0, so the
   // earlier start wins even though it is a few miles further away.
-  const nowT: PlanTruck = { truckNumber: 'NOW', jobs: [], gps: { lat: 32.9, lng: -96.9 }, gpsLabel: 'Dallas, TX' }
-  const laterT: PlanTruck = { truckNumber: 'LATER', jobs: [job('2026-10-01', '2026-10-15', 'Dallas', 'TX', 32.78, -96.80)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
+  const nowT: PlanTruck = { truckNumber: 'NOW', vin: null, jobs: [], gps: { lat: 32.9, lng: -96.9 }, gpsLabel: 'Dallas, TX' }
+  const laterT: PlanTruck = { truckNumber: 'LATER', vin: null, jobs: [job('2026-10-01', '2026-10-15', 'Dallas', 'TX', 32.78, -96.80)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
   const m3 = candidateMatrix(r, [laterT, nowT], byId, S)
   eq('equal cost: earlier start wins', assign(r, [laterT, nowT], m3, '2026-10-30', S.planStart).assignments[0].truckNumber, 'NOW')
+  const withVin: PlanTruck = { ...nowT, vin: '1FVACWDT0HHJK1234' }
+  eq('the assigned truck carries its VIN', assign(r, [withVin], candidateMatrix(r, [withVin], byId, S), '2026-10-30', S.planStart).assignments[0].vin, '1FVACWDT0HHJK1234')
 }
 
 // ---------------------------------------------------------------------------

@@ -7,7 +7,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { reviewFootprint } from '@/lib/planning/claude'
 import { requireStaff, claudeErrorResponse } from '@/lib/planning/http'
-import { loadStandardMarketCoords, titleCaseMarket } from '@/lib/marketBounds'
 import type { Area, AreaFlag, Centroids, ZipRow } from '@/lib/planning/areas'
 import centroidData from '@/lib/planning/data/zcta-centroids.json'
 
@@ -30,9 +29,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const marketCoords = await loadStandardMarketCoords()
-    const markets = new Map([...marketCoords].map(([k, v]) => [titleCaseMarket(k), v]))
-    const findings = await reviewFootprint({ rows: body.rows, areas: body.areas, flags: body.flags ?? [], centroids, markets })
+    const findings = await reviewFootprint({ rows: body.rows, areas: body.areas, flags: body.flags ?? [], centroids })
     return NextResponse.json({ findings })
   } catch (err) {
     return claudeErrorResponse(err, 'review')

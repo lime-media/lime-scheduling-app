@@ -9,7 +9,8 @@
  * made instead of silently absorbing it — the flags are what a rep takes back
  * to the client.
  *
- * Pure: the ZIP centroids and market coordinates are passed in.
+ * Pure: the ZIP centroids are passed in. Where our trucks can actually go is
+ * decided later, from live truck positions and bookings, not from any market list.
  */
 
 import { haversineDistance } from '@/lib/marketCoordinates'
@@ -22,7 +23,6 @@ export type AreaFlagKind =
   | 'NOT_GEOCODED'   // not a Census ZCTA — almost always a PO-box or unique ZIP with no households
   | 'OUTLIER'        // geocodes far from the rest of its DMA — usually a typo
   | 'BEYOND_REACH'   // over an hour's drive from its area's centre; assumed covered, to confirm
-  | 'FAR_FROM_MARKET' // no standard market within an hour's drive of the area; one must be chosen or added to book
   | 'OUTSIDE_48'     // outside the contiguous 48 states, which we do not serve
   | 'INVALID_ZIP'    // not a ZIP at all
 
@@ -40,7 +40,6 @@ export type Area = {
   lng: number
   /** Furthest geocoded ZIP from the area's centre, in straight-line miles. */
   spreadMiles: number
-  nearestMarket: { name: string; distanceMiles: number } | null
 }
 
 export type AreaBuildResult = {
@@ -158,14 +157,13 @@ export type AreaBuildOptions = {
   mergeMiles?: number
   /** A ZIP this far from its DMA's median point is treated as a probable typo. */
   outlierMiles?: number
-  /** Beyond this, a ZIP or a market is flagged as outside an hour's drive. */
+  /** Beyond this, a ZIP is flagged as outside an hour's drive of its area. */
   reachMiles?: number
 }
 
 export function buildAreas(
   rows: ZipRow[],
   centroids: Centroids,
-  markets: Map<string, { lat: number; lng: number }>,
   opts: AreaBuildOptions = {},
 ): AreaBuildResult {
   const mergeMiles = opts.mergeMiles ?? 30
@@ -278,11 +276,6 @@ export function buildAreas(
     if (good.length === 0) continue
     const lat = good.reduce((s, p) => s + p.lat!, 0) / good.length
     const lng = good.reduce((s, p) => s + p.lng!, 0) / good.length
-    let nearest: Area['nearestMarket'] = null
-    for (const [name, c] of markets) {
-      const d = haversineDistance(lat, lng, c.lat, c.lng)
-      if (!nearest || d < nearest.distanceMiles) nearest = { name, distanceMiles: Math.round(d) }
-    }
     const name = members.join(' / ')
 
     // An hour's drive: flag what we are assuming, rather than silently
@@ -293,11 +286,6 @@ export function buildAreas(
         flags.push({ kind: 'BEYOND_REACH', zip: p.zip, label: p.label, detail: `${p.zip} (${p.city || p.label}) is ${Math.round(d)} mi from the centre of ${name} — over an hour's drive; assumed covered by that area's truck` })
       }
     }
-    if (nearest && nearest.distanceMiles > reachMiles) {
-      flags.push({ kind: 'FAR_FROM_MARKET', label: name, detail: `${name}: the nearest standard market is ${nearest.name}, ${nearest.distanceMiles} mi away — choose or add a market to book it` })
-    } else if (!nearest) {
-      flags.push({ kind: 'FAR_FROM_MARKET', label: name, detail: `${name}: no standard market list available to match against` })
-    }
 
     areas.push({
       id: slug(name),
@@ -307,7 +295,6 @@ export function buildAreas(
       residentialZips: all.filter(g => g.lat !== undefined && !g.outlier).length,
       lat, lng,
       spreadMiles: Math.round(Math.max(...good.map(p => haversineDistance(lat, lng, p.lat!, p.lng!)))),
-      nearestMarket: nearest,
     })
   }
   areas.sort((a, b) => b.zips.length - a.zips.length || a.name.localeCompare(b.name))

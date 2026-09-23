@@ -112,6 +112,7 @@ export async function runPlan(req: PlanRequest): Promise<PlanResponse> {
       warnings.push(`The first route starts ${lead} business days out; transport is only absorbed with ${MIN_LEAD_BUSINESS_DAYS_TO_ABSORB}+. Move the start to keep repositioning absorbed.`)
     }
   }
+  if (!fleet.vinsLoaded) warnings.push('Samsara could not be reached for VINs, so the VIN column is blank. Trucks and routes are unaffected.')
   const withoutPosition = fleet.trucks.filter(t => !t.gps).length
 
   const historySummary = { reservedCore: history.reservedCore, renewingRecent: history.renewingRecent, other: history.other }

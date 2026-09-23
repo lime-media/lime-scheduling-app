@@ -64,6 +64,8 @@ export const DEFAULT_SETTINGS: Omit<PlanSettings, 'planStart' | 'planThrough' | 
 
 export type PlanTruck = {
   truckNumber: string
+  /** From Samsara; null when the truck is not linked or the lookup failed. */
+  vin: string | null
   jobs: TruckJob[]
   gps: Coords | null
   gpsLabel: string
@@ -243,6 +245,7 @@ export type RouteAssignment = {
   routeName: string
   hopRoadMiles: number
   truckNumber: string | null
+  vin: string | null
   start: string | null
   firstAreaId: string | null
   originLabel: string | null
@@ -295,6 +298,7 @@ export function assign(
       routeName: r.name,
       hopRoadMiles: r.hopRoadMiles,
       truckNumber: c ? trucks[j].truckNumber : null,
+      vin: c ? trucks[j].vin : null,
       start: c ? c.start : null,
       firstAreaId: c?.firstAreaId ?? null,
       originLabel: c?.originLabel ?? null,

@@ -9,9 +9,27 @@
  */
 
 import { useMemo, useState } from 'react'
-import type { Area, AreaBuildResult, AreaFlag } from '@/lib/planning/areas'
+import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { PlanResponse } from '@/lib/planning/run'
 import type { CoverageModel } from '@/lib/planning/planner'
+import type { FootprintRequest, ReviewFinding, WriteUp } from '@/lib/planning/claude'
+
+type BuiltAreas = AreaBuildResult & {
+  source: 'csv' | 'xlsx' | 'claude' | 'rows'
+  parsedRows: ZipRow[]
+  request: FootprintRequest | null
+  notes: string[]
+}
+
+// Vercel caps a request body at 4.5 MB; base64 adds a third.
+const MAX_UPLOAD_BYTES = 3 * 1024 * 1024
+
+async function fileToBase64(f: File): Promise<string> {
+  const bytes = new Uint8Array(await f.arrayBuffer())
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  return btoa(bin)
+}
 
 const fmtMoney = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
 const fmtNum = (n: number) => Math.round(n).toLocaleString('en-US')
@@ -50,9 +68,11 @@ const tdNum = td + ' text-right tabular-nums'
 
 export function PlannerTab() {
   const [text, setText] = useState('')
+  const [file, setFile] = useState<{ name: string; base64: string } | null>(null)
   const [areasLoading, setAreasLoading] = useState(false)
   const [areasError, setAreasError] = useState<string | null>(null)
-  const [built, setBuilt] = useState<AreaBuildResult | null>(null)
+  const [built, setBuilt] = useState<BuiltAreas | null>(null)
+  const [review, setReview] = useState<{ loading: boolean; error: string | null; findings: ReviewFinding[] | null }>({ loading: false, error: null, findings: null })
 
   const defaultStart = useMemo(() => nextMondayAtLeast(14), [])
   const [settings, setSettings] = useState({
@@ -73,21 +93,65 @@ export function PlannerTab() {
 
   const onFile = async (f: File | undefined) => {
     if (!f) return
-    setText(await f.text())
+    setAreasError(null)
+    const lower = f.name.toLowerCase()
+    if (lower.endsWith('.xlsx') || lower.endsWith('.pdf')) {
+      if (f.size > MAX_UPLOAD_BYTES) { setAreasError('That file is over 3 MB. Save the ZIP list as CSV and paste it instead.'); return }
+      setFile({ name: f.name, base64: await fileToBase64(f) })
+      setText('')
+    } else {
+      setFile(null)
+      setText(await f.text())
+    }
   }
 
-  const buildAreasNow = async () => {
-    setAreasLoading(true); setAreasError(null); setBuilt(null); setPlan(null)
+  const runReview = async (b: BuiltAreas) => {
+    setReview({ loading: true, error: null, findings: null })
     try {
-      const res = await fetch('/api/plan/areas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) })
+      const res = await fetch('/api/plan/review', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: b.parsedRows, areas: b.areas, flags: b.flags }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Review failed')
+      setReview({ loading: false, error: null, findings: data.findings })
+    } catch (e) {
+      setReview({ loading: false, error: e instanceof Error ? e.message : 'Review failed', findings: null })
+    }
+  }
+
+  const submitAreas = async (payload: object, keepReview = false) => {
+    setAreasLoading(true); setAreasError(null); setPlan(null)
+    if (!keepReview) setReview({ loading: false, error: null, findings: null })
+    try {
+      const res = await fetch('/api/plan/areas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Could not build areas')
-      setBuilt(data)
+      // A rebuild from corrected rows keeps what was learned from the original file.
+      setBuilt(prev => (keepReview && prev ? { ...data, source: prev.source, request: prev.request, notes: prev.notes } : data))
+      if (data.request?.startDate && /^\d{4}-\d{2}-\d{2}$/.test(data.request.startDate)) {
+        setSettings(p => ({ ...p, planStart: data.request.startDate, planThrough: plusWeeks(data.request.startDate, 26) }))
+      }
+      if (!keepReview) runReview(data)
     } catch (e) {
       setAreasError(e instanceof Error ? e.message : 'Could not build areas')
     } finally {
       setAreasLoading(false)
     }
+  }
+
+  const buildAreasNow = () => submitAreas(file ? { file } : { text })
+
+  /** Apply a verified correction to the rows and rebuild the areas. */
+  const applyFinding = (f: ReviewFinding) => {
+    if (!built) return
+    const rows = built.parsedRows.map(r => {
+      if (f.kind === 'LIKELY_TYPO' && f.suggestedZip && r.zip === f.zip) return { ...r, zip: f.suggestedZip }
+      if (f.kind === 'LABEL_MISMATCH' && f.suggestedDma && r.label === f.dma) return { ...r, label: f.suggestedDma }
+      return r
+    })
+    setReview(p => ({ ...p, findings: p.findings?.filter(x => x !== f) ?? null }))
+    submitAreas({ rows }, true)
   }
 
   const runPlanNow = async () => {
@@ -117,10 +181,17 @@ export function PlannerTab() {
       <div className={card}>
         <h2 className="text-sm font-semibold text-gray-900 mb-1">1. Client ZIP list</h2>
         <p className="text-xs text-gray-500 mb-3">
-          Paste or upload CSV with a header row naming the DMA and ZIP columns (City and State optional). Several sheets pasted together are fine.
+          Upload the client&apos;s file (.xlsx, .csv or .pdf) or paste the list, or an email containing it. A header row naming the DMA and ZIP columns is read directly; anything else is read by Claude.
         </p>
+        {file && (
+          <div className="flex items-center gap-2 mb-2 text-sm text-gray-700">
+            <span className="bg-gray-100 rounded px-2 py-1">{file.name}</span>
+            <button onClick={() => setFile(null)} className="text-xs text-gray-500 hover:text-gray-700">Remove</button>
+          </div>
+        )}
         <textarea
           value={text}
+          disabled={!!file}
           onChange={e => setText(e.target.value)}
           rows={6}
           placeholder={'DMA Name,Zip,City,State\nGreensboro,27260,High Point,NC\n...'}
@@ -128,21 +199,21 @@ export function PlannerTab() {
         />
         <div className="flex items-center gap-3 mt-3">
           <label className="text-sm text-green-700 hover:text-green-800 cursor-pointer">
-            <input type="file" accept=".csv,.tsv,.txt" className="hidden" onChange={e => onFile(e.target.files?.[0])} />
-            Upload CSV
+            <input type="file" accept=".xlsx,.csv,.tsv,.txt,.pdf,.eml" className="hidden" onChange={e => { onFile(e.target.files?.[0]); e.target.value = '' }} />
+            Upload file
           </label>
           <button
             onClick={buildAreasNow}
-            disabled={areasLoading || !text.trim()}
+            disabled={areasLoading || (!file && !text.trim())}
             className="ml-auto bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-4 py-2 text-sm font-medium"
           >
-            {areasLoading ? 'Building…' : 'Build areas'}
+            {areasLoading ? (file?.name.toLowerCase().endsWith('.pdf') ? 'Claude is reading the file…' : 'Building…') : 'Build areas'}
           </button>
         </div>
         {areasError && <div className="mt-3 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm text-red-800">{areasError}</div>}
       </div>
 
-      {built && <AreasPanel built={built} />}
+      {built && <AreasPanel built={built} review={review} onApply={applyFinding} onRecheck={() => runReview(built)} />}
 
       {/* 2. Settings */}
       {built && (
@@ -211,13 +282,25 @@ export function PlannerTab() {
       )}
 
       {plan && built && <PlanResults plan={plan} areas={built.areas} />}
+      {plan && built && <WriteUpPanel plan={plan} built={built} />}
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
 
-function AreasPanel({ built }: { built: AreaBuildResult }) {
+const REVIEW_LABELS: Record<ReviewFinding['kind'], string> = {
+  LABEL_MISMATCH: 'Label names a different place',
+  LIKELY_TYPO: 'Likely typo',
+  OTHER: 'Check with the client',
+}
+
+function AreasPanel({ built, review, onApply, onRecheck }: {
+  built: BuiltAreas
+  review: { loading: boolean; error: string | null; findings: ReviewFinding[] | null }
+  onApply: (f: ReviewFinding) => void
+  onRecheck: () => void
+}) {
   const [showAreas, setShowAreas] = useState(false)
   const byKind = new Map<AreaFlag['kind'], AreaFlag[]>()
   for (const f of built.flags) byKind.set(f.kind, [...(byKind.get(f.kind) ?? []), f])
@@ -229,6 +312,51 @@ function AreasPanel({ built }: { built: AreaBuildResult }) {
         <span><b>{fmtNum(built.rows)}</b> rows</span>
         <span><b>{fmtNum(built.uniqueZips)}</b> unique ZIPs</span>
         <span><b>{built.areas.length}</b> areas</span>
+      </div>
+
+      {built.source === 'claude' && (
+        <div className="mb-3 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-sm text-blue-900">
+          Claude read this file. Spot-check the row count against the original.
+          {built.request?.summary && <div className="mt-1 text-xs"><b>Client asked for:</b> {built.request.summary}</div>}
+          {built.notes.length > 0 && <ul className="mt-1 text-xs list-disc list-inside">{built.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>}
+        </div>
+      )}
+
+      <div className="mb-3">
+        <div className="flex items-center">
+          <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Claude review</h3>
+          {!review.loading && <button onClick={onRecheck} className="ml-auto text-xs text-green-700 hover:text-green-800">Check again</button>}
+        </div>
+        {review.loading && <p className="text-sm text-gray-500 mt-1">Claude is checking the labels and ZIPs…</p>}
+        {review.error && <p className="text-sm text-amber-800 mt-1">{review.error}</p>}
+        {review.findings && review.findings.length === 0 && <p className="text-sm text-gray-600 mt-1">Nothing beyond the flags below.</p>}
+        {review.findings && review.findings.length > 0 && (
+          <ul className="mt-1 space-y-2">
+            {review.findings.map((f, i) => {
+              const canApply = (f.kind === 'LIKELY_TYPO' && f.suggestedZip && f.verified) || (f.kind === 'LABEL_MISMATCH' && f.suggestedDma)
+              return (
+                <li key={i} className="text-sm border border-gray-100 rounded-lg px-3 py-2">
+                  <div className="flex items-start gap-2">
+                    <div className="flex-1">
+                      <span className="font-medium text-gray-900">{REVIEW_LABELS[f.kind]}</span>
+                      <span className="text-gray-500"> · {f.dma}{f.zip ? ` · ${f.zip}` : ''}</span>
+                      <div className="text-gray-700">{f.detail}</div>
+                      {f.suggestedZip && (
+                        <div className={`text-xs mt-0.5 ${f.verified ? 'text-green-700' : 'text-amber-700'}`}>
+                          Suggested {f.suggestedZip}: {f.verification}
+                        </div>
+                      )}
+                      {f.suggestedDma && <div className="text-xs mt-0.5 text-gray-600">Suggested label: {f.suggestedDma}</div>}
+                    </div>
+                    {canApply && (
+                      <button onClick={() => onApply(f)} className="shrink-0 text-xs bg-green-600 hover:bg-green-700 text-white rounded px-2 py-1">Apply</button>
+                    )}
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        )}
       </div>
 
       {built.flags.length > 0 && (
@@ -430,6 +558,65 @@ function PlanResults({ plan, areas }: { plan: PlanResponse; areas: Area[] }) {
         </details>
       </div>
     </>
+  )
+}
+
+function WriteUpPanel({ plan, built }: { plan: PlanResponse; built: BuiltAreas }) {
+  const [state, setState] = useState<{ loading: boolean; error: string | null; result: WriteUp | null }>({ loading: false, error: null, result: null })
+  const [copied, setCopied] = useState(false)
+
+  const draft = async () => {
+    setState({ loading: true, error: null, result: null })
+    try {
+      const counts = new Map<string, number>()
+      for (const f of built.flags) counts.set(FLAG_LABELS[f.kind], (counts.get(FLAG_LABELS[f.kind]) ?? 0) + 1)
+      const res = await fetch('/api/plan/writeup', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          plan,
+          areaCount: built.areas.length,
+          zipCount: built.uniqueZips,
+          flagsSummary: [...counts].map(([k, n]) => `${k}: ${n}`),
+          clientRequest: built.request?.summary,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Write-up failed')
+      setState({ loading: false, error: null, result: data })
+    } catch (e) {
+      setState({ loading: false, error: e instanceof Error ? e.message : 'Write-up failed', result: null })
+    }
+  }
+
+  const copy = async () => {
+    if (!state.result) return
+    await navigator.clipboard.writeText(state.result.markdown)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  return (
+    <div className={card}>
+      <div className="flex items-center">
+        <h3 className="text-sm font-semibold text-gray-900">Write-up</h3>
+        <div className="ml-auto flex gap-3">
+          {state.result && <button onClick={copy} className="text-sm text-green-700 hover:text-green-800">{copied ? 'Copied' : 'Copy'}</button>}
+          <button onClick={draft} disabled={state.loading} className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-4 py-2 text-sm font-medium">
+            {state.loading ? 'Claude is writing…' : state.result ? 'Redraft' : 'Draft with Claude'}
+          </button>
+        </div>
+      </div>
+      <p className="text-xs text-gray-500 mt-1">A client section to adapt and an internal section, written from this plan&apos;s numbers only.</p>
+      {state.error && <div className="mt-3 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm text-red-800">{state.error}</div>}
+      {state.result && state.result.unverifiedNumbers.length > 0 && (
+        <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm text-amber-900">
+          These figures are not in the plan. Check or remove them before sending: {state.result.unverifiedNumbers.join(', ')}
+        </div>
+      )}
+      {state.result && (
+        <div className="mt-3 whitespace-pre-wrap text-sm text-gray-800 border border-gray-100 rounded-lg p-3 bg-gray-50">{state.result.markdown}</div>
+      )}
+    </div>
   )
 }
 

@@ -388,6 +388,14 @@ For programs that cover many areas every week, where the question is fleet-wide 
 
 **Capacity** is what the commitment leaves for other clients: active fleet, less the maintenance reserve, less AT&T's weekly range (its soft-hold trucks are inside that range, not added to it), less renewing programs, less this program. Alongside it the tab shows the last 52 weeks of usage, split by booking client.
 
+**Where Claude is used, and where it is not.** Claude (`claude-opus-5`, via `ANTHROPIC_API_KEY`) does three jobs, and none of them involves fleet arithmetic:
+
+- **Reading files code cannot.** A PDF, an email, or text with no ZIP column is transcribed into DMA/ZIP rows, along with what the client asked for (hours, days, dates). It transcribes and never corrects, so typos still reach the flags. Clean CSV and `.xlsx` are parsed in code (`lib/planning/xlsx.ts`) and never sent to Claude.
+- **Reviewing the list.** It looks for what geometry cannot see: a DMA label that names a different city than its ZIPs are in, or a probable digit slip. Each ZIP is described by its nearest standard market from Census data, not by the client's text. A suggested ZIP is shown as verified only when code confirms it exists and lies within 60 miles of the rest of its DMA. The rep applies a correction with one click, and the areas are rebuilt.
+- **Writing it up.** A client section and an internal section are drafted from the plan's own figures. Every number in the draft is checked against the plan, and any that is not in it is listed for the rep to check or remove.
+
+Truck counts, assignments, prices and capacity come only from the code above. If the API key is missing, the deterministic planner still works; only the Claude steps return an error.
+
 ## 7. What the client sees vs. what's internal
 
 Nothing under an `_internal` key is returned on a client-authenticated route — not the margin check, and not the downstream deadhead flags. Those appear only on the staff routes (`/api/quote`, `/api/quote/hold`) and the MCP endpoint; on the client routes the same values are logged server-side instead. A client-facing response is visible in the browser network tab whether or not the UI renders it.

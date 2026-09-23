@@ -6,7 +6,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { getToken } from 'next-auth/jwt'
+import { requireStaff } from '@/lib/planning/http'
 import { runPlan, type PlanRequest } from '@/lib/planning/run'
 import type { Area } from '@/lib/planning/areas'
 
@@ -20,8 +20,8 @@ const isArea = (a: unknown): a is Area => {
 }
 
 export async function POST(req: NextRequest) {
-  const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const denied = await requireStaff(req)
+  if (denied) return denied
 
   let body: PlanRequest
   try {

@@ -218,3 +218,66 @@ section('AT&T soft-hold reservation')
   eq('only the latest month counts', [...latestSoftHoldTrucks([h('A', '2026-09-01'), h('B', '2026-10-01'), h('C', '2026-10-01')])].sort(), ['B', 'C'])
   eq('none on file, none reserved', latestSoftHoldTrucks([]).size, 0)
 }
+
+// ---------------------------------------------------------------------------
+section('xlsx reader')
+{
+  // Build a minimal two-sheet .xlsx in memory: a real zip of the XML parts.
+  const { deflateRawSync } = require('zlib') as typeof import('zlib')
+  const { readXlsx, xlsxToCsv } = require('@/lib/planning/xlsx') as typeof import('@/lib/planning/xlsx')
+  const crc32 = (b: Buffer) => {
+    let c = ~0
+    for (const x of b) { c ^= x; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)) }
+    return ~c >>> 0
+  }
+  const zip = (files: Record<string, string>) => {
+    const locals: Buffer[] = []; const centrals: Buffer[] = []; let off = 0
+    for (const [name, text] of Object.entries(files)) {
+      const raw = Buffer.from(text, 'utf8'); const data = deflateRawSync(raw); const nm = Buffer.from(name)
+      const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(8, 8)
+      lh.writeUInt32LE(crc32(raw), 14); lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(raw.length, 22); lh.writeUInt16LE(nm.length, 26)
+      const ch = Buffer.alloc(46); ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(8, 10)
+      ch.writeUInt32LE(crc32(raw), 16); ch.writeUInt32LE(data.length, 20); ch.writeUInt32LE(raw.length, 24); ch.writeUInt16LE(nm.length, 28); ch.writeUInt32LE(off, 42)
+      locals.push(lh, nm, data); centrals.push(ch, nm); off += 30 + nm.length + data.length
+    }
+    const cd = Buffer.concat(centrals)
+    const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(Object.keys(files).length, 8); end.writeUInt16LE(Object.keys(files).length, 10)
+    end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(off, 16)
+    return Buffer.concat([...locals, cd, end])
+  }
+  const sheet = (rows: string) => `<?xml version="1.0"?><worksheet><sheetData>${rows}</sheetData></worksheet>`
+  const book = zip({
+    'xl/workbook.xml': '<workbook><sheets><sheet name="East" sheetId="1" r:id="rId1"/><sheet name="West &amp; South" sheetId="2" r:id="rId2"/></sheets></workbook>',
+    'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Target="/xl/worksheets/sheet2.xml"/></Relationships>',
+    'xl/sharedStrings.xml': '<sst><si><t>DMA Name</t></si><si><t>Zip</t></si><si><r><t>Green</t></r><r><t>sboro</t></r></si><si><t xml:space="preserve">A &amp; B, "C"</t></si></sst>',
+    'xl/worksheets/sheet1.xml': sheet('<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><v>27260</v></c></row>'),
+    'xl/worksheets/sheet2.xml': sheet('<row r="1"><c r="A1" t="s"><v>3</v></c><c r="C1" t="inlineStr"><is><t>1103</t></is></c></row>'),
+  })
+  const sheets = readXlsx(book)
+  eq('sheet names in workbook order', sheets.map(s => s.name), ['East', 'West & South'])
+  eq('rich-text shared string joined', sheets[0].rows[1], ['Greensboro', '27260'])
+  eq('gap column kept, inline string read', sheets[1].rows[0], ['A & B, "C"', '', '1103'])
+  eq('csv quotes a comma and doubles quotes', xlsxToCsv(book).split('\n')[2], '"A & B, ""C""",,1103')
+  eq('parses through to ZIP rows', parseZipRows(xlsxToCsv(book)).rows[0], { label: 'Greensboro', zip: '27260', city: '', state: '' })
+}
+
+// ---------------------------------------------------------------------------
+section('Claude layer: code-side checks')
+{
+  const { verifyFinding, unverifiedNumbers } = require('@/lib/planning/claude') as typeof import('@/lib/planning/claude')
+  const cz: Centroids = { '32303': [30.49, -84.33], '32304': [30.45, -84.35], '31602': [30.87, -83.34], '99501': [61.2, -149.9] }
+  const ctx = { rows: [
+    { label: 'Tallahassee', zip: '23303', city: 'Tallahassee', state: 'FL' },
+    { label: 'Tallahassee', zip: '32304', city: 'Tallahassee', state: 'FL' },
+    { label: 'Tallahassee', zip: '31602', city: 'Valdosta', state: 'GA' },
+  ], centroids: cz }
+  const f = (suggested: string | null) => ({ kind: 'LIKELY_TYPO' as const, zip: '23303', dma: 'Tallahassee', detail: '', suggested_zip: suggested, suggested_dma: null })
+  eq('suggestion that exists near its DMA is verified', verifyFinding(f('32303'), ctx).verified, true)
+  eq('suggestion that does not exist is not', verifyFinding(f('32399'), ctx).verified, false)
+  eq('suggestion far from its DMA is not', verifyFinding(f('99501'), ctx).verified, false)
+
+  const facts = { price_per_week: 297000, trucks: 25, first_start: '2026-10-12', rate_per_truck_hour: 150, left: { low: 25, high: 30 } }
+  eq('plan numbers pass in any format', unverifiedNumbers('25 trucks from Oct 12 at $297,000 a week, or $297K, $150 per hour; 25 to 30 left.', facts), [])
+  eq('small counting words pass', unverifiedNumbers('three 12-hour days, 2 drivers', facts), [])
+  eq('invented arithmetic is caught', unverifiedNumbers('a 10% saving of $33,000 against 44 trucks', facts), ['10%', '$33,000', '44'])
+}

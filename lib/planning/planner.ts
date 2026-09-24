@@ -22,7 +22,7 @@
 import { haversineDistance } from '@/lib/marketCoordinates'
 import { checkChainFeasibility, type Coords } from '@/lib/chainFeasibility'
 import { findWindowClash, type TruckJob } from '@/lib/truckTimeline'
-import { absorbedLegCost, needsRepositioning, transportDaysFromDistance } from '@/lib/pricing/transport'
+import { absorbedLegCost } from '@/lib/pricing/transport'
 import { computeQuote } from '@/lib/pricing/engine'
 import type { RateOverrides } from '@/lib/pricing/config'
 import { maxPairing } from './matching'
@@ -204,7 +204,9 @@ export function earliestStart(
           originIsPriorJob: chain.inbound.originIsPriorJob,
           distanceMiles: Math.round(miles),
           transportDays: chain.inbound.transportDays,
-          repositionCost: needsRepositioning(miles, settings.serviceAreaMiles) ? absorbedLegCost(transportDaysFromDistance(miles)) : 0,
+          // One derivation: the chain check already decided the transport
+          // days (0 inside the service area), so the cost uses exactly those.
+          repositionCost: chain.inbound.transportDays > 0 ? absorbedLegCost(chain.inbound.transportDays) : 0,
         }
         if (!best || cand.start < best.start || (cand.start === best.start && cand.distanceMiles < best.distanceMiles)) best = cand
         break

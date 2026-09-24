@@ -377,3 +377,18 @@ section('Claude layer: code-side checks')
   eq('truck number, cost and stems are caught', findLeaks('Truck 1261 costs $6,624; we absorbed it for AT&T.', forbidden), ['1261', '$6,624', 'AT&T', 'absorb*'])
   eq('no false hit inside ordinary words', findLeaks('Attached is the plan; 12610 impressions.', forbidden), [])
 }
+
+section('matching: bounded work')
+{
+  // A dense 60-node cluster (every pair within reach) would be astronomically
+  // large for the exact search. It must fall back fast, and say so.
+  const edges: MatchEdge[] = []
+  const r = rng(424242)
+  for (let a = 0; a < 60; a++) for (let b = a + 1; b < 60; b++) edges.push({ a, b, miles: Math.round(r() * 250) })
+  const t0 = Date.now()
+  const got = maxPairing(60, edges)
+  const ms = Date.now() - t0
+  eq('dense cluster: falls back to greedy and reports it', got.greedyClusters, 1)
+  eq('dense cluster: still pairs everyone', got.pairs.length, 30)
+  eq('dense cluster: decided quickly (precheck, not the time budget)', ms < 500, true)
+}

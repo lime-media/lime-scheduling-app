@@ -6,13 +6,21 @@
  * only has edges between areas within one truck-hop of each other, so it falls
  * apart into small regional clusters, and each cluster is solved exactly with a
  * memoised search over "who is still unpaired". Ordering a cluster's nodes by
- * breadth-first search keeps that state small.
+ * reverse Cuthill–McKee keeps that state small.
  *
- * The search state is a BigInt bitmask, so there is no size cutoff: a cluster
- * of any size is solved exactly. Only if the search itself grows past
- * MEMO_LIMIT states (a dense cluster with a very large hop limit) does it fall
- * back to greedy shortest-hop-first, and that is reported, so a sub-optimal
- * answer is never silent.
+ * The search state is a BigInt bitmask, so there is no size cutoff. What
+ * bounds the work is the cluster's bandwidth in that order — how far ahead of
+ * a node its furthest neighbour sits — because the state only has to remember
+ * pairings within that window: at most k × 2^bandwidth states. So:
+ *
+ *   1. Precheck. If that bound is over MEMO_LIMIT, skip straight to greedy.
+ *      No time is spent discovering the limit by running into it.
+ *   2. Budget. The exact search also stops at MEMO_LIMIT states or
+ *      TIME_BUDGET_MS, whichever comes first, and falls back to greedy.
+ *
+ * Either fallback is counted in greedyClusters and surfaced as a warning, so a
+ * sub-optimal answer is never silent. Real footprints sit far inside the
+ * bound: 44 areas at a 250-mile hop solve exactly in milliseconds.
  */
 
 export type MatchEdge = { a: number; b: number; miles: number }
@@ -23,7 +31,8 @@ export type MatchResult = {
   greedyClusters: number
 }
 
-const MEMO_LIMIT = 2_000_000
+const MEMO_LIMIT = 500_000
+const TIME_BUDGET_MS = 1_500
 const PAIR_VALUE = 1e7 // one more pair always beats any saving in miles
 
 export function maxPairing(n: number, edges: MatchEdge[]): MatchResult {
@@ -33,20 +42,34 @@ export function maxPairing(n: number, edges: MatchEdge[]): MatchResult {
     adj[e.b].push({ a: e.b, b: e.a, miles: e.miles })
   }
 
-  // Connected components.
+  // Connected components, each in reverse Cuthill–McKee order: breadth-first
+  // from a low-degree node, visiting neighbours lowest-degree first, then
+  // reversed. It is the standard ordering for keeping every node's neighbours
+  // close to it in the list, which is exactly what bounds the search state.
+  const degree = adj.map(a => a.length)
   const comp = new Array<number>(n).fill(-1)
   const components: number[][] = []
   for (let s = 0; s < n; s++) {
     if (comp[s] !== -1) continue
-    const order: number[] = []
-    const queue = [s]
+    const members: number[] = []
+    const stack = [s]
     comp[s] = components.length
+    while (stack.length) {
+      const v = stack.pop()!
+      members.push(v)
+      for (const e of adj[v]) if (comp[e.b] === -1) { comp[e.b] = components.length; stack.push(e.b) }
+    }
+    const start = members.reduce((best, v) => (degree[v] < degree[best] ? v : best), members[0])
+    const seen = new Set([start])
+    const order: number[] = []
+    const queue = [start]
     while (queue.length) {
       const v = queue.shift()!
       order.push(v)
-      for (const e of adj[v]) if (comp[e.b] === -1) { comp[e.b] = components.length; queue.push(e.b) }
+      const next = adj[v].map(e => e.b).filter(u => !seen.has(u)).sort((x, y) => degree[x] - degree[y])
+      for (const u of next) if (!seen.has(u)) { seen.add(u); queue.push(u) }
     }
-    components.push(order)
+    components.push(order.reverse())
   }
 
   const pairs: MatchEdge[] = []
@@ -72,8 +95,13 @@ function solveExact(nodes: number[], adj: MatchEdge[][]): MatchEdge[] | null {
       .sort((x, y) => x.miles - y.miles),
   )
 
+  // Precheck: the state space is bounded by k × 2^bandwidth.
+  const bandwidth = Math.max(0, ...fwd.map((list, i) => list.reduce((m, x) => Math.max(m, x.j - i), 0)))
+  if (bandwidth >= 40 || k * 2 ** bandwidth > MEMO_LIMIT) return null
+
   const memo = new Map<string, { value: number; pick: number }>()
   let aborted = false
+  const deadline = Date.now() + TIME_BUDGET_MS
   const bit = (n: number) => BigInt(1) << BigInt(n)
   const keyOf = (i: number, taken: bigint) => `${i}:${(taken >> BigInt(i + 1)).toString(36)}`
 
@@ -85,7 +113,7 @@ function solveExact(nodes: number[], adj: MatchEdge[][]): MatchEdge[] | null {
     const key = keyOf(i, taken)
     const hit = memo.get(key)
     if (hit) return hit.value
-    if (memo.size > MEMO_LIMIT) { aborted = true; return 0 }
+    if (memo.size > MEMO_LIMIT || (memo.size % 4096 === 0 && Date.now() > deadline)) { aborted = true; return 0 }
 
     let best = solve(i + 1, taken) // leave i unpaired
     let pick = -1

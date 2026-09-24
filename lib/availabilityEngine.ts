@@ -41,7 +41,8 @@ import { findWindowClash } from '@/lib/truckTimeline'
 // Constants
 // ---------------------------------------------------------------------------
 
-const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
+/** Trucks never offered for booking. Exported so the planner excludes the same ones. */
+export const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
 
 // ---------------------------------------------------------------------------
 // Types

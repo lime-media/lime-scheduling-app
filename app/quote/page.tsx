@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
+import { PlannerTab } from '@/components/PlannerTab'
 
 // ---------------------------------------------------------------------------
 // Types (mirrors client-side QuoteResponse)
@@ -135,7 +136,7 @@ export default function InternalQuotePage() {
   }, [status, router])
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<'builder' | 'classic'>('builder')
+  const [activeTab, setActiveTab] = useState<'builder' | 'classic' | 'planner'>('builder')
 
   // SFDC Account
   const [account, setAccount] = useState<SfdcAccount | null>(null)
@@ -259,9 +260,17 @@ export default function InternalQuotePage() {
           >
             Classic Quote Tool
           </button>
+          <button
+            onClick={() => setActiveTab('planner')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'planner' ? 'border-green-600 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+          >
+            Multi-market Plan
+          </button>
         </div>
 
-        {activeTab === 'classic' ? (
+        {activeTab === 'planner' ? (
+          <PlannerTab />
+        ) : activeTab === 'classic' ? (
           <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden" style={{ minHeight: 'calc(100vh - 200px)' }}>
             <iframe
               src="/led-quote-generator.html"

@@ -69,11 +69,20 @@ function textOf(xml: string): string {
   return out
 }
 
-function columnIndex(ref: string): number {
+/** Excel's last column is XFD, index 16,383. Nothing real lies beyond it. */
+export const MAX_COLUMN_INDEX = 16_383
+
+/**
+ * Zero-based column index of a cell reference, or -1 past Excel's last column.
+ * A crafted reference like "ZZZZZZZZ1" would otherwise decode to billions, and
+ * the row would be padded out to that length.
+ */
+export function columnIndex(ref: string): number {
   const letters = ref.replace(/\d+$/, '')
+  if (letters.length > 3) return -1
   let n = 0
   for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64)
-  return n - 1
+  return n - 1 <= MAX_COLUMN_INDEX ? n - 1 : -1
 }
 
 function csvCell(v: string): string {
@@ -125,6 +134,7 @@ export function readXlsx(buf: Buffer): XlsxSheet[] {
         else if (type === 'inlineStr') value = textOf(body)
         else if (v !== undefined) value = decodeXml(v)
         const idx = ref ? columnIndex(ref) : row.length
+        if (idx < 0 || idx > MAX_COLUMN_INDEX) continue
         while (row.length < idx) row.push('')
         row[idx] = value.trim()
       }

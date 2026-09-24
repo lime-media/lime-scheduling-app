@@ -332,12 +332,19 @@ export type DateDecision = {
   options: DateOption[]
   /** First date by which every route can be live. */
   firstFullLiveBy: string | null
+  /** Earliest date at which the transport we absorb reaches its lowest. */
+  cheapestDate: string | null
 }
 
 /**
- * The start-date decision table: weekly dates from planStart, plus the first
- * date on which full coverage becomes possible, until waiting longer no
- * longer lowers the transport we absorb.
+ * The start-date decision table.
+ *
+ * Cost does not fall steadily as the date moves out: it can hold flat for
+ * weeks and then drop when one well-placed truck frees up. So every date on
+ * which any truck becomes available is evaluated, through the slip limit, and
+ * the cheapest is found from all of them — never inferred from two equal rows.
+ * The table shows weekly dates, the first full-coverage date, and the
+ * cheapest date, and stops after the cheapest.
  */
 export function dateOptions(
   routes: Route[],
@@ -347,24 +354,40 @@ export function dateOptions(
 ): DateDecision {
   const clearBy = (date: string) =>
     trucks.filter(t => { const f = freeFrom(t.jobs, settings.planStart, settings.planThrough); return f !== null && f <= date }).length
-
-  const candidateDates = [...new Set(matrix.flat().filter((c): c is Candidate => c !== null).map(c => c.start))].sort()
-  const firstFullLiveBy = candidateDates.find(d => assign(routes, trucks, matrix, d, settings.planStart).feasible) ?? null
-
   const limit = addDays(settings.planStart, settings.maxSlipDays)
+
+  // Cost can only change on a date when some candidate becomes available.
+  const candidateDates = [...new Set(matrix.flat().filter((c): c is Candidate => c !== null).map(c => c.start))]
+    .filter(d => d <= limit)
+    .sort()
+  const outcomes = new Map<string, AssignmentOutcome>()
+  const outcome = (d: string) => {
+    let o = outcomes.get(d)
+    if (!o) { o = assign(routes, trucks, matrix, d, settings.planStart); outcomes.set(d, o) }
+    return o
+  }
+
+  let firstFullLiveBy: string | null = null
+  let cheapestDate: string | null = null
+  let cheapest = Infinity
+  for (const d of candidateDates) {
+    const o = outcome(d)
+    if (!o.feasible) continue
+    firstFullLiveBy ??= d
+    if (o.repositionCost < cheapest) { cheapest = o.repositionCost; cheapestDate = d }
+  }
+
   const dates = new Set<string>()
   for (let d = settings.planStart; d <= limit; d = addDays(d, 7)) dates.add(d)
   if (firstFullLiveBy) dates.add(firstFullLiveBy)
+  if (cheapestDate) dates.add(cheapestDate)
+  const last = cheapestDate ?? limit
 
-  const options: DateOption[] = []
-  for (const date of [...dates].sort()) {
-    const opt: DateOption = { date, trucksClear: clearBy(date), liveBy: assign(routes, trucks, matrix, date, settings.planStart) }
-    const prev = options[options.length - 1]
-    // Stop once waiting another week no longer lowers what we absorb.
-    if (prev && prev.liveBy.feasible && opt.liveBy.repositionCost === prev.liveBy.repositionCost) break
-    options.push(opt)
-  }
-  return { options, firstFullLiveBy }
+  const options: DateOption[] = [...dates]
+    .filter(d => d <= last)
+    .sort()
+    .map(date => ({ date, trucksClear: clearBy(date), liveBy: outcome(date) }))
+  return { options, firstFullLiveBy, cheapestDate }
 }
 
 // ---------------------------------------------------------------------------

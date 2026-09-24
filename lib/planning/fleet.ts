@@ -7,12 +7,15 @@
  *   - Soft-hold trucks (ATT_SOFT) belong to AT&T. The holds are loaded one
  *     month at a time, but the commitment is ongoing, so the trucks on the
  *     LATEST month of soft holds on file are reserved for the whole plan — and
- *     stay reserved after that month lapses. Only the latest month counts:
- *     older months are rarely expired, and the roster rotates, so taking every
- *     recent month would reserve trucks AT&T has already handed back.
+ *     stay reserved however long ago that month was, until a newer month is
+ *     loaded. Only the latest month counts: older months are rarely expired,
+ *     and the roster rotates, so taking every month would reserve trucks AT&T
+ *     has already handed back.
  *   - Programs expected to renew (AT&T's Alloy Build, by default off) keep
- *     their trucks. Matched on program name UNDER the reserved client, because
- *     a program named after the product is not recognisably AT&T by name.
+ *     their trucks. Matched under the reserved client, because a program named
+ *     after the product is not recognisably AT&T by name — and matched by
+ *     "contains", not equality, so "Alloy Build - DFW" or a client stored as
+ *     "160over90 Inc" still count.
  *
  * With soft holds not reserved, their jobs are dropped instead: a rep releasing
  * them is exactly what "yieldable" means.
@@ -50,8 +53,6 @@ export type PlanningFleet = {
 
 const lower = (s: string) => s.trim().toLowerCase()
 
-/** How far back to look for the latest month of soft holds once they lapse. */
-export const SOFT_HOLD_LOOKBACK_DAYS = 90
 
 export async function loadPlanningFleet(opts: {
   today: string
@@ -63,8 +64,9 @@ export async function loadPlanningFleet(opts: {
     // Look back far enough to see the job a truck is on today.
     loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS, window: { start: addDays(today, -30), end: planThrough } }),
     query<{ truck_number: string }[]>(ALL_TRUCKS_QUERY),
+    // Every soft hold on file, any age: only the latest month is used.
     prisma.hold.findMany({
-      where: { status: 'ATT_SOFT', end_date: { gte: new Date(addDays(today, -SOFT_HOLD_LOOKBACK_DAYS) + 'T00:00:00Z') } },
+      where: { status: 'ATT_SOFT' },
       select: { truck_number: true, start_date: true },
     }),
   ])
@@ -85,7 +87,8 @@ export async function loadPlanningFleet(opts: {
     }
     const renew = jobs.find(j =>
       j.source === 'SCHEDULE' && j.end >= today
-      && renewing.has(lower(j.program ?? '')) && clients.has(lower(j.client ?? '')),
+      && [...renewing].some(p => lower(j.program ?? '').includes(p))
+      && [...clients].some(c => lower(j.client ?? '').includes(c)),
     )
     if (renew) {
       reserved.push({ truckNumber, reason: `${renew.program} renews` })

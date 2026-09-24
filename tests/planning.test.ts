@@ -49,9 +49,12 @@ function bruteMatch(n: number, edges: MatchEdge[]): { pairs: number; miles: numb
 
 let matchOk = 0
 const MATCH_TRIALS = 200
+const matchSizes = new Set<number>()
 for (let t = 0; t < MATCH_TRIALS; t++) {
-  const r = rng(t + 1)
-  const n = 2 + Math.floor(r() * 9)
+  // Seeds spread apart: consecutive seeds give an LCG near-identical first draws.
+  const r = rng(t * 7919 + 13)
+  const n = 2 + Math.floor(r() * 11)
+  matchSizes.add(n)
   const edges: MatchEdge[] = []
   for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) if (r() < 0.45) edges.push({ a, b, miles: Math.round(r() * 300) })
   const got = maxPairing(n, edges)
@@ -61,6 +64,15 @@ for (let t = 0; t < MATCH_TRIALS; t++) {
   if (disjoint && got.pairs.length === want.pairs && Math.abs(miles - want.miles) < 1e-6) matchOk++
 }
 eq(`exact on ${MATCH_TRIALS} random graphs`, matchOk, MATCH_TRIALS)
+eq('random graphs span sizes 2 to 12', [Math.min(...matchSizes), Math.max(...matchSizes), matchSizes.size], [2, 12, 11])
+{
+  // A 40-node path, long-short-long-...: greedy takes the short edges and
+  // strands every other node; the exact search pairs everything.
+  const edges: MatchEdge[] = []
+  for (let i = 0; i < 39; i++) edges.push({ a: i, b: i + 1, miles: i % 2 === 0 ? 100 : 1 })
+  const got = maxPairing(40, edges)
+  eq('exact beyond 30 nodes: 40-node path fully paired', [got.pairs.length, got.greedyClusters], [20, 0])
+}
 eq('no edges, no pairs', maxPairing(4, []).pairs.length, 0)
 // A path a-b-c-d: pairing the short middle edge alone would strand both ends.
 eq('prefers two pairs over one shorter pair',
@@ -93,10 +105,13 @@ function bruteAssign(cost: number[][]): { served: number; total: number } {
 
 let assignOk = 0
 const ASSIGN_TRIALS = 200
+let underSupply = 0
 for (let t = 0; t < ASSIGN_TRIALS; t++) {
-  const r = rng(1000 + t)
+  const r = rng(t * 104729 + 7)
   const n = 1 + Math.floor(r() * 5)
-  const m = n + Math.floor(r() * 3)
+  // Include fewer trucks than routes: the under-supply path must be exact too.
+  const m = Math.max(1, n - 2 + Math.floor(r() * 5))
+  if (m < n) underSupply++
   const cost = Array.from({ length: n }, () => Array.from({ length: m }, () => (r() < 0.25 ? Infinity : Math.round(r() * 1000))))
   const got = minCostAssignment(cost)
   const want = bruteAssign(cost)
@@ -104,6 +119,7 @@ for (let t = 0; t < ASSIGN_TRIALS; t++) {
   if (n - got.unserved === want.served && Math.abs(got.totalCost - want.total) < 1e-6 && new Set(cols).size === cols.length) assignOk++
 }
 eq(`optimal on ${ASSIGN_TRIALS} random matrices`, assignOk, ASSIGN_TRIALS)
+eq('some trials have fewer trucks than routes', underSupply > 20, true)
 eq('all blocked -> all unserved', minCostAssignment([[Infinity, Infinity]]).unserved, 1)
 
 // ---------------------------------------------------------------------------
@@ -152,6 +168,20 @@ const gamma = built.areas.find(a => a.name === 'Gamma')!
 eq('unlabeled ZIP joins the nearest area', gamma.zips.includes('40001'), true)
 eq('outlier kept in the list but not the centre', [gamma.zips.includes('30009'), gamma.lat < 41], [true, true])
 {
+  const cc: Centroids = { '32304': [30.45, -84.35], '23303': [37.9, -75.5], '30001': [40, -90], '30002': [40.05, -90] }
+  const two = buildAreas([
+    { label: 'Tallahassee', zip: '32304', city: '', state: 'FL' }, { label: 'Tallahassee', zip: '23303', city: '', state: 'FL' },
+    { label: 'Gamma', zip: '30001', city: '', state: 'IL' }, { label: 'Gamma', zip: '30002', city: '', state: 'IL' },
+  ], cc)
+  eq('two-ZIP DMA with a typo is kept, not dropped', two.areas.map(a => a.name).sort(), ['Gamma', 'Tallahassee'])
+  eq('...and flagged as uncertain', [two.areas.find(a => a.name === 'Tallahassee')!.locationUncertain, two.flags.map(f => f.kind)], [true, ['UNCERTAIN_LOCATION']])
+  const po = buildAreas([{ label: 'PO Only', zip: '70821', city: '', state: 'LA' }, { label: 'Gamma', zip: '30001', city: '', state: 'IL' }], cc)
+  eq('all-PO-box DMA is reported as not in the plan', [po.unplaced.map(u => u.label), po.flags.some(f => f.kind === 'NOT_PLACED')], [['PO Only'], true])
+  const order1 = buildAreas([{ label: 'B', zip: '30001', city: '', state: '' }, { label: 'A', zip: '30002', city: '', state: '' }], cc)
+  const order2 = buildAreas([{ label: 'A', zip: '30002', city: '', state: '' }, { label: 'B', zip: '30001', city: '', state: '' }], cc)
+  eq('area ids do not depend on paste order', order1.areas[0].id, order2.areas[0].id)
+}
+{
   // A ZIP about 68 mi out.
   const far = buildAreas(
     [{ label: 'Delta', zip: '50001', city: '', state: '' }, { label: 'Delta', zip: '50002', city: '', state: '' }, { label: 'Delta', zip: '50003', city: '', state: '' }],
@@ -165,7 +195,7 @@ eq('outlier kept in the list but not the centre', [gamma.zips.includes('30009'),
 section('routes')
 
 const area = (id: string, lat: number, lng: number): Area =>
-  ({ id, name: id, labels: [id], zips: [], residentialZips: 1, lat, lng, spreadMiles: 0 })
+  ({ id, name: id, labels: [id], zips: [], residentialZips: 1, lat, lng, spreadMiles: 0, locationUncertain: false })
 // Dallas, Fort Worth (~30 mi), Houston (~225 mi from Dallas), Denver (far).
 const A = [area('dal', 32.78, -96.80), area('ftw', 32.75, -97.33), area('hou', 29.76, -95.37), area('den', 39.74, -104.99)]
 const S: PlanSettings = { ...DEFAULT_SETTINGS, planStart: '2026-10-12', planThrough: '2027-03-31', today: '2026-09-23' }
@@ -219,6 +249,17 @@ section('start date vs. transport we absorb')
   const table = dateOptions(r, t, m, S)
   eq('the table shows the cost falling as the date moves out', table.options[0].liveBy.repositionCost > table.options[table.options.length - 1].liveBy.repositionCost, true)
   eq('first date everything is live', table.firstFullLiveBy, early.assignments[0].start)
+
+  // Plateau, then a drop: two far trucks (same cost) free now and in a week,
+  // and a local truck free in three weeks. Two equal rows must not end the
+  // table before the $0 option.
+  const far2: PlanTruck = { truckNumber: 'FAR2', jobs: [job('2026-10-01', '2026-10-18', 'Denver', 'CO', 39.74, -104.99)], gps: null, gpsLabel: '' }
+  const late: PlanTruck = { truckNumber: 'LATE', jobs: [job('2026-10-01', '2026-11-02', 'Dallas', 'TX', 32.78, -96.80)], gps: null, gpsLabel: '' }
+  const tp = [far, far2, late]
+  const mp = candidateMatrix(r, tp, byId, S)
+  const plateau = dateOptions(r, tp, mp, S)
+  const lastRow = plateau.options[plateau.options.length - 1]
+  eq('cheapest date found past a plateau', [plateau.cheapestDate, lastRow.date, lastRow.liveBy.repositionCost], ['2026-11-03', '2026-11-03', 0])
 
   // Two free local trucks, one ready now and one next week: same $0, so the
   // earlier start wins even though it is a few miles further away.
@@ -292,6 +333,15 @@ section('xlsx reader')
   eq('gap column kept, inline string read', sheets[1].rows[0], ['A & B, "C"', '', '1103'])
   eq('csv quotes a comma and doubles quotes', xlsxToCsv(book).split('\n')[2], '"A & B, ""C""",,1103')
   eq('parses through to ZIP rows', parseZipRows(xlsxToCsv(book)).rows[0], { label: 'Greensboro', zip: '27260', city: '', state: '' })
+  const { columnIndex } = require('@/lib/planning/xlsx') as typeof import('@/lib/planning/xlsx')
+  eq('last real column', columnIndex('XFD1'), 16383)
+  eq('crafted column refs are rejected, not padded to', [columnIndex('XFE1'), columnIndex('AAAAAAA1'), columnIndex('ZZZZZZZZ1')], [-1, -1, -1])
+  const bomb = zip({
+    'xl/workbook.xml': '<workbook><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>',
+    'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
+    'xl/worksheets/sheet1.xml': sheet('<row r="1"><c r="A1" t="inlineStr"><is><t>ok</t></is></c><c r="ZZZZZZZZ1" t="inlineStr"><is><t>x</t></is></c></row>'),
+  })
+  eq('a crafted cell reference is skipped', readXlsx(bomb)[0].rows[0], ['ok'])
 }
 
 // ---------------------------------------------------------------------------
@@ -309,8 +359,21 @@ section('Claude layer: code-side checks')
   eq('suggestion that does not exist is not', verifyFinding(f('32399'), ctx).verified, false)
   eq('suggestion far from its DMA is not', verifyFinding(f('99501'), ctx).verified, false)
 
-  const facts = { price_per_week: 297000, trucks: 25, first_start: '2026-10-12', rate_per_truck_hour: 150, left: { low: 25, high: 30 } }
+  const facts = { price_per_week: 297000, trucks: 25, first_start: '2026-10-12', rate_per_truck_hour: 150, left: { low: 25, high: 30 }, hours_per_day: 12, drivers_per_paired_route: 2 }
   eq('plan numbers pass in any format', unverifiedNumbers('25 trucks from Oct 12 at $297,000 a week, or $297K, $150 per hour; 25 to 30 left.', facts), [])
-  eq('small counting words pass', unverifiedNumbers('three 12-hour days, 2 drivers', facts), [])
+  eq('schedule constants in the plan pass', unverifiedNumbers('three 12-hour days, 2 drivers', facts), [])
+  eq('small counts are checked too', unverifiedNumbers('only 4 trucks', facts), ['4'])
   eq('invented arithmetic is caught', unverifiedNumbers('a 10% saving of $33,000 against 44 trucks', facts), ['10%', '$33,000', '44'])
+  const { verifiableFacts } = require('@/lib/planning/claude') as typeof import('@/lib/planning/claude')
+  const withFile = { trucks: 25, client_request: 'Client wants 999 trucks', list_corrections: ['OUTLIER: 777'] } as unknown as Parameters<typeof verifiableFacts>[0]
+  eq('numbers from the uploaded file cannot vouch for themselves', unverifiedNumbers('999 trucks, 777', verifiableFacts(withFile)), ['999', '777'])
+
+  eq('one-ZIP DMA: suggestion exists but is not verified', verifyFinding({ kind: 'LIKELY_TYPO', zip: '23303', dma: 'Solo', detail: '', suggested_zip: '32303', suggested_dma: null },
+    { rows: [{ label: 'Solo', zip: '23303', city: '', state: '' }], centroids: cz }).verified, false)
+  eq('Claude misspells the DMA: the listed label is used', verifyFinding({ kind: 'LIKELY_TYPO', zip: '23303', dma: 'Talahassee', detail: '', suggested_zip: '32303', suggested_dma: null }, ctx).verified, true)
+
+  const { findLeaks } = require('@/lib/planning/leaks') as typeof import('@/lib/planning/leaks')
+  const forbidden = ['1261', '$6,624', 'AT&T', 'ATT', 'absorb*']
+  eq('truck number, cost and stems are caught', findLeaks('Truck 1261 costs $6,624; we absorbed it for AT&T.', forbidden), ['1261', '$6,624', 'AT&T', 'absorb*'])
+  eq('no false hit inside ordinary words', findLeaks('Attached is the plan; 12610 impressions.', forbidden), [])
 }

@@ -24,6 +24,7 @@ import { jsonSchemaOutputFormat } from '@anthropic-ai/sdk/helpers/json-schema'
 import { haversineDistance } from '@/lib/marketCoordinates'
 import type { Area, AreaFlag, Centroids, ZipRow } from './areas'
 import type { PlanResponse } from './run'
+import { findLeaks } from './leaks'
 
 export const PLANNER_MODEL = 'claude-opus-5'
 
@@ -219,7 +220,19 @@ export async function reviewFootprint(opts: {
   return out.findings.map(f => verifyFinding(f, opts))
 }
 
-/** Check a suggested ZIP in code before anyone acts on it. */
+/** How close a suggested ZIP must be to the rest of its DMA to count as verified. */
+export const VERIFY_MILES = 60
+
+const norm = (x: string) => x.trim().toLowerCase().replace(/\s+/g, ' ')
+
+/**
+ * Check a suggested ZIP in code before anyone acts on it.
+ *
+ * Verified means: the suggested ZIP exists AND lies within VERIFY_MILES of
+ * the DMA's other ZIPs. With nothing to measure against — a one-ZIP DMA, or a
+ * DMA name Claude spelled differently — it is never verified, because the
+ * distance check is the whole safety property of the one-click Apply.
+ */
 export function verifyFinding(
   f: { kind: ReviewFinding['kind']; zip: string; dma: string; detail: string; suggested_zip: string | null; suggested_dma: string | null },
   ctx: { rows: ZipRow[]; centroids: Centroids },
@@ -229,36 +242,60 @@ export function verifyFinding(
 
   const c = ctx.centroids[f.suggested_zip]
   if (!c) return { ...base, verified: false, verification: `${f.suggested_zip} is not a residential ZIP.` }
+
+  // The DMA is the one the flagged ZIP is actually listed under; Claude's
+  // spelling of the name is only a fallback.
+  const listed = ctx.rows.find(r => r.zip === f.zip)
+  const dma = listed ? listed.label : f.dma
   const siblings = ctx.rows
-    .filter(r => r.label === f.dma && r.zip !== f.zip)
+    .filter(r => norm(r.label) === norm(dma) && r.zip !== f.zip)
     .map(r => ctx.centroids[r.zip])
     .filter((p): p is [number, number] => Boolean(p))
-  if (siblings.length === 0) return { ...base, verified: true, verification: `${f.suggested_zip} exists; no other ZIPs in ${f.dma} to compare against.` }
+  if (siblings.length === 0) {
+    return { ...base, verified: false, verification: `${f.suggested_zip} exists, but ${dma || 'this DMA'} has no other ZIPs to check it against — confirm with the client.` }
+  }
   const nearest = Math.min(...siblings.map(p => haversineDistance(p[0], p[1], c[0], c[1])))
-  return nearest <= 60
-    ? { ...base, verified: true, verification: `${f.suggested_zip} exists and is ${Math.round(nearest)} mi from the rest of ${f.dma}.` }
-    : { ...base, verified: false, verification: `${f.suggested_zip} exists but is ${Math.round(nearest)} mi from the rest of ${f.dma}.` }
+  return nearest <= VERIFY_MILES
+    ? { ...base, verified: true, verification: `${f.suggested_zip} exists and is ${Math.round(nearest)} mi from the rest of ${dma}.` }
+    : { ...base, verified: false, verification: `${f.suggested_zip} exists but is ${Math.round(nearest)} mi from the rest of ${dma}.` }
 }
 
 // ---------------------------------------------------------------------------
 // 3. Write-up
 // ---------------------------------------------------------------------------
 
+const WRITEUP_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['client_markdown', 'internal_markdown'],
+  properties: {
+    client_markdown: { type: 'string', description: 'The client-facing proposal, Markdown' },
+    internal_markdown: { type: 'string', description: 'The internal summary for the sales lead, Markdown' },
+  },
+} as const
+
 const WRITEUP_SYSTEM = `You write planning summaries for Lime Media's sales team. Lime Media runs LED billboard trucks. You are given a fleet plan that code has already computed. Your job is to explain it, not to change it.
 
 Use only the numbers in the plan you are given. Do not compute new ones: no sums, differences, percentages or averages that are not already in the plan. If a number you want is not there, leave it out.
 
-Write two sections in Markdown:
+Write two separate texts.
 
-## For the client
-A short proposal the rep can adapt. Say what we can offer: how many areas, how many hours each week, starting when (from the chosen plan), and at what weekly price. If the plan's model differs from what the client asked for, say so plainly and why, in one or two sentences. Mention any list corrections they need to confirm. Nothing internal: no truck numbers, repositioning cost, capacity, other clients or AT&T.
+client_markdown: a short proposal the rep can adapt. Say what we can offer: how many areas, how many hours each week, starting when (from the chosen plan), and at what weekly price. If the plan's model differs from what the client asked for, say so plainly and why, in one or two sentences. Mention any list corrections they need to confirm. Nothing internal, ever: no truck numbers, no transport or repositioning cost, no capacity or other clients, no AT&T or Alloy Build.
 
-## Internal
-For the sales lead. Cover the chosen start date and the transport we absorb for it, what an earlier or later date would cost (from the start-date options), what it leaves for other clients, the reservations assumed (AT&T, Alloy Build), the warnings, and the decisions that are still open. End with a table of the assigned trucks: route, truck number, start date. Short paragraphs and a few bullets.
+internal_markdown: for the sales lead. Cover the chosen start date and the transport we absorb for it, what an earlier or later date would cost (from the start-date options), what it leaves for other clients, the reservations assumed (AT&T, Alloy Build), the warnings, and the decisions still open. End with a table of the assigned trucks: route, truck number, start date. Short paragraphs and a few bullets.
 
 Plain, specific sentences. No filler, no exclamation marks.`
 
-export type WriteUp = { markdown: string; unverifiedNumbers: string[] }
+export type WriteUp = {
+  client: string
+  internal: string
+  /** Numbers in either text that are not in the plan. */
+  unverifiedNumbers: string[]
+  /** Terms that must never appear in the client text; the tab re-checks edits against these. */
+  clientForbidden: string[]
+  /** Forbidden terms actually found in the client text as drafted. */
+  clientLeaks: string[]
+}
 
 export async function writePlanSummary(opts: {
   plan: PlanResponse
@@ -275,14 +312,44 @@ export async function writePlanSummary(opts: {
       model: PLANNER_MODEL,
       max_tokens: 16000,
       system: WRITEUP_SYSTEM,
-      output_config: { effort: 'medium' },
+      output_config: { effort: 'medium', format: jsonSchemaOutputFormat(WRITEUP_SCHEMA) },
       messages: [{ role: 'user', content: `Plan:\n\n${JSON.stringify(facts, null, 1)}` }],
     })
     .finalMessage()
   assertUsable(msg, 'write this summary')
-  const markdown = msg.content.flatMap(b => (b.type === 'text' ? [b.text] : [])).join('\n').trim()
-  return { markdown, unverifiedNumbers: unverifiedNumbers(markdown, facts) }
+  const out = msg.parsed_output
+  if (!out) throw new Error('Claude returned an unreadable write-up.')
+
+  const client = out.client_markdown.trim()
+  const internal = out.internal_markdown.trim()
+  const verifiable = verifiableFacts(facts)
+  const forbidden = clientForbiddenTerms(opts.plan, opts.selectedOption)
+  return {
+    client,
+    internal,
+    unverifiedNumbers: [...new Set([...unverifiedNumbers(client, verifiable), ...unverifiedNumbers(internal, verifiable)])],
+    clientForbidden: forbidden,
+    clientLeaks: findLeaks(client, forbidden),
+  }
 }
+
+/**
+ * Terms that must never reach a client: every assigned truck number, the
+ * transport we absorb, and the names of other commitments.
+ */
+export function clientForbiddenTerms(plan: PlanResponse, selectedOption?: number): string[] {
+  const chosen = plan.dateOptions[selectedOption ?? plan.defaultOption] ?? plan.dateOptions[0]
+  const trucks = (chosen?.liveBy.assignments ?? []).map(a => a.truckNumber).filter((t): t is string => !!t)
+  const money = plan.dateOptions.flatMap(o => (o.liveBy.feasible && o.liveBy.repositionCost > 0 ? [o.liveBy.repositionCost.toLocaleString('en-US')] : []))
+  return [...new Set([
+    ...trucks,
+    ...money.map(m => `$${m}`),
+    'AT&T', 'ATT', 'Alloy', '160over90', 'soft hold',
+    // A trailing * matches the stem: absorbed, repositioning, ...
+    'absorb*', 'reposition*', 'deadhead*', 'capacity', 'other clients', 'maintenance',
+  ])]
+}
+
 
 /** The plan reduced to what a write-up may cite — already rounded and labelled. */
 export function planFacts(opts: { plan: PlanResponse; areaCount: number; zipCount: number; flagsSummary: string[]; clientRequest?: string; selectedOption?: number }) {
@@ -314,6 +381,11 @@ export function planFacts(opts: { plan: PlanResponse; areaCount: number; zipCoun
     rate_per_truck_day: plan.pricing.chosen.effectiveDailyRate,
     rate_per_truck_hour: plan.pricing.chosen.perTruckHour,
     hours_per_area_per_week: plan.settings.model === '3x12' ? 36 : 40,
+    days_per_area_per_week: plan.settings.model === '3x12' ? 3 : 5,
+    hours_per_day: plan.settings.model === '3x12' ? 12 : 8,
+    days_per_week: 7,
+    drivers_per_paired_route: 2,
+    weeks_per_quarter: 13,
     alternative_model: {
       model: plan.pricing.other.model === '3x12' ? 'three 12-hour days' : 'five 8-hour days',
       trucks: plan.capacity.rows[1]?.programTrucks,
@@ -341,11 +413,26 @@ export function planFacts(opts: { plan: PlanResponse; areaCount: number; zipCoun
 }
 
 /**
+ * The facts a number may be verified against: the plan's own figures only.
+ * The client's request and the list corrections are text that came from the
+ * uploaded file (or Claude's reading of it), so a number planted in a file
+ * could otherwise vouch for itself.
+ */
+export function verifiableFacts(facts: ReturnType<typeof planFacts>) {
+  const plan: Partial<typeof facts> = { ...facts }
+  delete plan.client_request
+  delete plan.list_corrections
+  return plan
+}
+
+/**
  * Numbers in the text that do not appear in the facts.
  *
- * Tolerant of formatting ($297,000 vs 297000, "36-hour"), and of small counting
- * words a sentence needs (one to twelve), but not of arithmetic: a sum or a
- * percentage that is not in the plan is reported.
+ * Tolerant of formatting ($297,000 vs 297000, "36-hour"), but not of
+ * arithmetic, and not of small numbers: truck, route and area counts are
+ * exactly the figures that matter, so every number must come from the plan.
+ * The plan carries the schedule constants a sentence needs (3 days, 12 hours,
+ * 7-day week, 2 drivers) so that ordinary sentences still pass.
  */
 export function unverifiedNumbers(text: string, facts: unknown): string[] {
   const known = new Set<string>()
@@ -376,8 +463,6 @@ export function unverifiedNumbers(text: string, facts: unknown): string[] {
     const n = Number(raw.replace(/[$,%]/g, ''))
     if (!Number.isFinite(n)) continue
     if (raw.endsWith('%')) { if (!percents.has(raw)) out.push(raw); continue }
-    // Counting words ("2 drivers", "12-hour") — but never a percentage or a price.
-    if (n <= 12 && Number.isInteger(n) && !raw.includes('%') && !raw.startsWith('$')) continue
     if (known.has(String(Math.round(n * 100) / 100))) continue
     out.push(raw)
   }

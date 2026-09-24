@@ -23,6 +23,8 @@ export const maxDuration = 300
 
 const centroids = centroidData as unknown as Centroids
 const MAX_TEXT = 2_000_000
+/** 3 MB of file, base64-encoded. Checked before anything is decoded or parsed. */
+const MAX_BASE64 = 4_200_000
 const MAX_ROWS = 20_000
 
 type Body = {
@@ -63,6 +65,10 @@ export async function POST(req: NextRequest) {
       let text = typeof body.text === 'string' ? body.text : ''
       let pdf: string | null = null
 
+      if (typeof body.file?.base64 === 'string' && body.file.base64.length > MAX_BASE64) {
+        return NextResponse.json({ error: 'That file is over 3 MB. Save the ZIP list as CSV and paste it instead.' }, { status: 413 })
+      }
+      if (text.length > MAX_TEXT) return NextResponse.json({ error: 'That text is too large.' }, { status: 413 })
       if (body.file?.base64) {
         const buf = Buffer.from(body.file.base64, 'base64')
         if (name.endsWith('.xlsx')) { text = xlsxToCsv(buf); source = 'xlsx' }

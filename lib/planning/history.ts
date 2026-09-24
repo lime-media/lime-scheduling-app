@@ -38,14 +38,17 @@ export async function loadUsageHistory(opts: {
   today: string
   reservedClients: string[]
   renewingPrograms: string[]
+  hiddenTrucks: Set<string>
 }): Promise<UsageSummary> {
   const params: Record<string, unknown> = {}
-  const list = (prefix: string, values: string[]) => {
-    if (values.length === 0) return `(NULL)`
-    return '(' + values.map((v, i) => { params[`${prefix}${i}`] = v; return `@${prefix}${i}` }).join(', ') + ')'
+  // "contains" matches, same as the fleet reservation rules.
+  const contains = (column: string, prefix: string, values: string[]) => {
+    if (values.length === 0) return '1 = 0'
+    return '(' + values.map((v, i) => { params[`${prefix}${i}`] = `%${v}%`; return `${column} LIKE @${prefix}${i}` }).join(' OR ') + ')'
   }
-  const clients = list('c', opts.reservedClients)
-  const programs = list('p', opts.renewingPrograms)
+  const clients = contains('cl.client', 'c', opts.reservedClients)
+  const programs = contains('cp.program', 'p', opts.renewingPrograms)
+  const hidden = [...opts.hiddenTrucks].map((t, i) => { params[`h${i}`] = t; return `@h${i}` })
   params.today = opts.today
 
   const rows = await query<{ week: Date | string; reserved_core: number; renewing: number; other: number }[]>(`
@@ -53,15 +56,18 @@ WITH days AS (
   SELECT DISTINCT ps.truck_uid,
          CAST(ps.start_time AS DATE) AS d,
          CASE
-           WHEN cl.client IN ${clients} AND cp.program IN ${programs} THEN 'renewing'
-           WHEN cl.client IN ${clients} THEN 'reserved_core'
+           WHEN ${clients} AND ${programs} THEN 'renewing'
+           WHEN ${clients} THEN 'reserved_core'
            ELSE 'other'
          END AS grp
   FROM dbo.program_schedule ps
   JOIN dbo.trucks t ON t.truck_uid = ps.truck_uid
   LEFT JOIN dbo.client_programs cp ON cp.client_program_uid = ps.client_program_uid
   LEFT JOIN dbo.clients cl ON cl.client_uid = cp.client_uid
-  WHERE CAST(ps.start_time AS DATE) >= DATEADD(week, -52, CAST(@today AS DATE))
+  -- The same fleet the planner uses: not archived, not hidden.
+  WHERE COALESCE(t.is_deleted, 0) = 0${hidden.length ? `
+    AND t.truck_number NOT IN (${hidden.join(', ')})` : ''}
+    AND CAST(ps.start_time AS DATE) >= DATEADD(week, -52, CAST(@today AS DATE))
     AND CAST(ps.start_time AS DATE) <  CAST(@today AS DATE)
     AND COALESCE(cp.program, '') NOT LIKE '%Maint%'
 ),

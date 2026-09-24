@@ -10,7 +10,8 @@ import { requireStaff } from '@/lib/planning/http'
 import { runPlan, type PlanRequest } from '@/lib/planning/run'
 import type { Area } from '@/lib/planning/areas'
 
-export const maxDuration = 60
+// Loads the fleet, its history and a year of usage, then solves every date.
+export const maxDuration = 300
 
 const isDate = (s: unknown): s is string => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
 const isArea = (a: unknown): a is Area => {
@@ -37,6 +38,10 @@ export async function POST(req: NextRequest) {
   if (body.model !== '3x12' && body.model !== '5x8') return NextResponse.json({ error: 'model must be 3x12 or 5x8' }, { status: 400 })
   if (!isDate(body.planStart) || !isDate(body.planThrough) || body.planThrough <= body.planStart) {
     return NextResponse.json({ error: 'Start and plan-through dates are required, with plan-through after start.' }, { status: 400 })
+  }
+  const today = new Date().toISOString().split('T')[0]
+  if (body.planThrough <= today) {
+    return NextResponse.json({ error: 'Plan-through must be in the future.' }, { status: 400 })
   }
 
   try {

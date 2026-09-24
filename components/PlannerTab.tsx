@@ -13,6 +13,7 @@ import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/are
 import type { PlanResponse } from '@/lib/planning/run'
 import type { CoverageModel } from '@/lib/planning/planner'
 import type { FootprintRequest, ReviewFinding, WriteUp } from '@/lib/planning/claude'
+import { findLeaks } from '@/lib/planning/leaks'
 
 type BuiltAreas = AreaBuildResult & {
   source: 'csv' | 'xlsx' | 'claude' | 'rows'
@@ -23,6 +24,21 @@ type BuiltAreas = AreaBuildResult & {
 
 // Vercel caps a request body at 4.5 MB; base64 adds a third.
 const MAX_UPLOAD_BYTES = 3 * 1024 * 1024
+
+/**
+ * Read a JSON response, turning a non-JSON error page (a gateway timeout, say)
+ * into a readable error instead of "Unexpected token '<'".
+ */
+// Each caller treats the body as its route's own response type.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function readJson(res: Response): Promise<any> {
+  const text = await res.text()
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw new Error(res.ok ? 'The server sent an unreadable response.' : `The server returned ${res.status}${res.status === 504 ? ' (timed out)' : ''}. Try again.`)
+  }
+}
 
 async function fileToBase64(f: File): Promise<string> {
   const bytes = new Uint8Array(await f.arrayBuffer())
@@ -54,6 +70,8 @@ const FLAG_LABELS: Record<AreaFlag['kind'], string> = {
   NOT_GEOCODED: 'No households (PO box or unique ZIP)',
   OUTLIER: 'Probable typo — far from the rest of its DMA',
   BEYOND_REACH: 'Over an hour from the area centre (assumed covered)',
+  UNCERTAIN_LOCATION: 'Location uncertain — its ZIPs disagree',
+  NOT_PLACED: 'Not in the plan — no ZIP we can locate',
   DUPLICATE: 'Listed twice',
   NO_LABEL: 'No DMA given',
   OUTSIDE_48: 'Outside the contiguous 48',
@@ -114,7 +132,7 @@ export function PlannerTab() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rows: b.parsedRows, areas: b.areas, flags: b.flags }),
       })
-      const data = await res.json()
+      const data = await readJson(res)
       if (!res.ok) throw new Error(data.error || 'Review failed')
       setReview({ loading: false, error: null, findings: data.findings })
     } catch (e) {
@@ -127,7 +145,7 @@ export function PlannerTab() {
     if (!keepReview) setReview({ loading: false, error: null, findings: null })
     try {
       const res = await fetch('/api/plan/areas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-      const data = await res.json()
+      const data = await readJson(res)
       if (!res.ok) throw new Error(data.error || 'Could not build areas')
       // A rebuild from corrected rows keeps what was learned from the original file.
       setBuilt(prev => (keepReview && prev ? { ...data, source: prev.source, request: prev.request, notes: prev.notes } : data))
@@ -165,7 +183,7 @@ export function PlannerTab() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ areas: built.areas, ...settings }),
       })
-      const data = await res.json()
+      const data = await readJson(res)
       if (!res.ok) throw new Error(data.error || 'The plan could not be run')
       setPlan(data)
       setSelected(data.defaultOption ?? 0)
@@ -284,7 +302,7 @@ export function PlannerTab() {
         </div>
       )}
 
-      {plan && built && <PlanResults plan={plan} areas={built.areas} selected={selected} onSelect={setSelected} />}
+      {plan && built && <PlanResults plan={plan} areas={built.areas} unplaced={built.unplaced.map(u => u.label)} selected={selected} onSelect={setSelected} />}
       {plan && built && <WriteUpPanel plan={plan} built={built} selected={selected} />}
     </div>
   )
@@ -317,6 +335,17 @@ function AreasPanel({ built, review, onApply, onRecheck }: {
         <span><b>{built.areas.length}</b> areas</span>
       </div>
 
+      {built.unplaced.length > 0 && (
+        <div className="mb-3 bg-red-50 border border-red-300 rounded-lg px-3 py-2 text-sm text-red-900">
+          <b>{built.unplaced.length} DMA{built.unplaced.length === 1 ? ' is' : 's are'} not in the plan or the price:</b>{' '}
+          {built.unplaced.map(u => u.label).join(', ')}. None of their ZIPs can be located. Get a residential ZIP from the client, or quote them separately.
+        </div>
+      )}
+      {built.areas.some(a => a.locationUncertain) && (
+        <div className="mb-3 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 text-sm text-amber-900">
+          <b>Location uncertain:</b> {built.areas.filter(a => a.locationUncertain).map(a => a.name).join(', ')}. Their ZIPs disagree about where they are, and the truck assignment for them may be wrong. Confirm with the client before quoting.
+        </div>
+      )}
       {built.source === 'claude' && (
         <div className="mb-3 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-sm text-blue-900">
           Claude read this file. Spot-check the row count against the original.
@@ -407,9 +436,10 @@ function AreasPanel({ built, review, onApply, onRecheck }: {
 
 // ---------------------------------------------------------------------------
 
-function PlanResults({ plan, areas, selected, onSelect }: {
+function PlanResults({ plan, areas, unplaced, selected, onSelect }: {
   plan: PlanResponse
   areas: Area[]
+  unplaced: string[]
   selected: number
   onSelect: (i: number) => void
 }) {
@@ -451,6 +481,11 @@ function PlanResults({ plan, areas, selected, onSelect }: {
           />
           <Stat label="Transport we absorb" value={outcome ? fmtMoney(outcome.repositionCost) : '—'} sub={`${outcome?.movesOverServiceArea ?? 0} moves beyond the service area`} />
         </div>
+        {unplaced.length > 0 && (
+          <div className="mt-3 bg-red-50 border border-red-300 rounded-lg px-4 py-2 text-sm text-red-900">
+            This plan and its price leave out {unplaced.length} DMA{unplaced.length === 1 ? '' : 's'} the client listed: {unplaced.join(', ')}.
+          </div>
+        )}
         {plan.warnings.length > 0 && (
           <ul className="mt-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 text-sm text-amber-900 list-disc list-inside">
             {plan.warnings.map((w, i) => <li key={i}>{w}</li>)}
@@ -479,7 +514,11 @@ function PlanResults({ plan, areas, selected, onSelect }: {
               {plan.dateOptions.map((o, i) => (
                 <tr key={o.date} onClick={() => onSelect(i)} className={`cursor-pointer ${i === selected ? 'bg-green-50 font-semibold' : 'hover:bg-gray-50'}`}>
                   <td className={td}><input type="radio" readOnly checked={i === selected} /></td>
-                  <td className={td}>{fmtDate(o.date)}</td>
+                  <td className={td}>
+                    {fmtDate(o.date)}
+                    {o.date === plan.cheapestDate && <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-green-700 bg-green-100 rounded px-1.5 py-0.5">Cheapest</span>}
+                    {o.date === plan.firstFullLiveBy && o.date !== plan.cheapestDate && <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-gray-600 bg-gray-100 rounded px-1.5 py-0.5">Earliest</span>}
+                  </td>
                   <td className={tdNum}>{o.liveBy.feasible ? fmtMoney(o.liveBy.repositionCost) : <span className="text-gray-500">not possible — short by {o.liveBy.shortBy} route{o.liveBy.shortBy === 1 ? '' : 's'}</span>}</td>
                   <td className={tdNum}>{o.liveBy.milestones[0]?.date === plan.settings.planStart ? o.liveBy.milestones[0].routesLive : 0} of {plan.routes.length}</td>
                   <td className={tdNum}>{o.trucksClear}</td>
@@ -567,7 +606,7 @@ function PlanResults({ plan, areas, selected, onSelect }: {
             <tr><td className={td}>Active fleet</td>{capacity.rows.map(r => <td key={r.model} className={tdNum}>{capacity.activeTrucks}</td>)}</tr>
             <tr><td className={td}>Maintenance</td>{capacity.rows.map(r => <td key={r.model} className={tdNum}>{capacity.maintenanceReserve}</td>)}</tr>
             <tr><td className={td}>AT&amp;T</td>{capacity.rows.map(r => <td key={r.model} className={tdNum}>{range(capacity.reservedLow, capacity.reservedHigh)}</td>)}</tr>
-            {capacity.renewingTrucks > 0 && <tr><td className={td}>AT&amp;T Alloy Build (renewing)</td>{capacity.rows.map(r => <td key={r.model} className={tdNum}>{capacity.renewingTrucks}</td>)}</tr>}
+            {capacity.renewingOn && <tr><td className={td}>AT&amp;T Alloy Build (renewing)</td>{capacity.rows.map(r => <td key={r.model} className={tdNum}>{capacity.renewingTrucks}</td>)}</tr>}
             <tr><td className={td}>This client</td>{capacity.rows.map(r => <td key={r.model} className={tdNum}>{r.programTrucks}</td>)}</tr>
             <tr className="font-semibold"><td className={td}>Left for other clients</td>{capacity.rows.map(r => <td key={r.model} className={tdNum + (r.leftHigh < 0 ? ' text-red-700' : '')}>{r.leftHigh < 0 ? `short by ${range(-r.leftHigh, -r.leftLow)}` : range(Math.max(0, r.leftLow), r.leftHigh)}</td>)}</tr>
           </tbody>
@@ -587,7 +626,12 @@ function PlanResults({ plan, areas, selected, onSelect }: {
 
 function WriteUpPanel({ plan, built, selected }: { plan: PlanResponse; built: BuiltAreas; selected: number }) {
   const [state, setState] = useState<{ loading: boolean; error: string | null; result: WriteUp | null }>({ loading: false, error: null, result: null })
-  const [copied, setCopied] = useState(false)
+  const [clientText, setClientText] = useState('')
+  const [copied, setCopied] = useState<'client' | 'internal' | null>(null)
+
+  // Re-checked on every edit: the client text cannot be copied while it
+  // contains a truck number, absorbed transport, or another commitment.
+  const leaks = state.result ? findLeaks(clientText, state.result.clientForbidden) : []
 
   const draft = async () => {
     setState({ loading: true, error: null, result: null })
@@ -605,33 +649,31 @@ function WriteUpPanel({ plan, built, selected }: { plan: PlanResponse; built: Bu
           selectedOption: selected,
         }),
       })
-      const data = await res.json()
+      const data = await readJson(res)
       if (!res.ok) throw new Error(data.error || 'Write-up failed')
       setState({ loading: false, error: null, result: data })
+      setClientText(data.client)
     } catch (e) {
       setState({ loading: false, error: e instanceof Error ? e.message : 'Write-up failed', result: null })
     }
   }
 
-  const copy = async () => {
+  const copy = async (which: 'client' | 'internal') => {
     if (!state.result) return
-    await navigator.clipboard.writeText(state.result.markdown)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+    await navigator.clipboard.writeText(which === 'client' ? clientText : state.result.internal)
+    setCopied(which)
+    setTimeout(() => setCopied(null), 1500)
   }
 
   return (
     <div className={card}>
       <div className="flex items-center">
         <h3 className="text-sm font-semibold text-gray-900">Write-up</h3>
-        <div className="ml-auto flex gap-3">
-          {state.result && <button onClick={copy} className="text-sm text-green-700 hover:text-green-800">{copied ? 'Copied' : 'Copy'}</button>}
-          <button onClick={draft} disabled={state.loading} className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-4 py-2 text-sm font-medium">
-            {state.loading ? 'Claude is writing…' : state.result ? 'Redraft' : 'Draft with Claude'}
-          </button>
-        </div>
+        <button onClick={draft} disabled={state.loading} className="ml-auto bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-4 py-2 text-sm font-medium">
+          {state.loading ? 'Claude is writing…' : state.result ? 'Redraft' : 'Draft with Claude'}
+        </button>
       </div>
-      <p className="text-xs text-gray-500 mt-1">A client section to adapt and an internal section, written from this plan&apos;s numbers only.</p>
+      <p className="text-xs text-gray-500 mt-1">Two separate texts, written from this plan&apos;s numbers only: one for the client, one for internal use.</p>
       {state.error && <div className="mt-3 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm text-red-800">{state.error}</div>}
       {state.result && state.result.unverifiedNumbers.length > 0 && (
         <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm text-amber-900">
@@ -639,7 +681,38 @@ function WriteUpPanel({ plan, built, selected }: { plan: PlanResponse; built: Bu
         </div>
       )}
       {state.result && (
-        <div className="mt-3 whitespace-pre-wrap text-sm text-gray-800 border border-gray-100 rounded-lg p-3 bg-gray-50">{state.result.markdown}</div>
+        <>
+          <div className="mt-4 flex items-center">
+            <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide">For the client</h4>
+            <button
+              onClick={() => copy('client')}
+              disabled={leaks.length > 0}
+              title={leaks.length ? 'Remove the internal details first' : undefined}
+              className="ml-auto text-sm text-green-700 hover:text-green-800 disabled:text-gray-400 disabled:cursor-not-allowed"
+            >
+              {copied === 'client' ? 'Copied' : 'Copy client text'}
+            </button>
+          </div>
+          {leaks.length > 0 && (
+            <div className="mt-1 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm text-red-800">
+              Internal details in the client text: {leaks.map(l => l.replace(/\*$/, '')).join(', ')}. Edit them out (or redraft) to enable copying.
+            </div>
+          )}
+          <textarea
+            value={clientText}
+            onChange={e => setClientText(e.target.value)}
+            rows={10}
+            className={input + ' mt-1 text-sm'}
+          />
+
+          <div className="mt-4 flex items-center">
+            <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Internal</h4>
+            <button onClick={() => copy('internal')} className="ml-auto text-sm text-green-700 hover:text-green-800">
+              {copied === 'internal' ? 'Copied' : 'Copy internal text'}
+            </button>
+          </div>
+          <div className="mt-1 whitespace-pre-wrap text-sm text-gray-800 border border-gray-100 rounded-lg p-3 bg-gray-50">{state.result.internal}</div>
+        </>
       )}
     </div>
   )

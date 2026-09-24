@@ -6,6 +6,7 @@
 
 import { resolveDefaultRateOverrides, businessDaysBetween } from '@/lib/pricing/resolvers'
 import { MIN_LEAD_BUSINESS_DAYS_TO_ABSORB } from '@/lib/pricing/transport'
+import { HIDDEN_TRUCKS } from '@/lib/availabilityEngine'
 import type { Area } from './areas'
 import { DEFAULT_RULES, loadPlanningFleet, type ReservedTruck } from './fleet'
 import { loadUsageHistory, type UsageSummary } from './history'
@@ -38,6 +39,7 @@ export type PlanResponse = {
   /** The decision: for each date, the transport we absorb to be live by it. */
   dateOptions: DateOption[]
   firstFullLiveBy: string | null
+  cheapestDate: string | null
   /** Index into dateOptions of the first date with every route live. */
   defaultOption: number
   pricing: { chosen: ProgramPrice; other: ProgramPrice }
@@ -47,6 +49,8 @@ export type PlanResponse = {
     reservedLow: number
     reservedHigh: number
     renewingTrucks: number
+    /** The Alloy Build renewal toggle was on for this plan. */
+    renewingOn: boolean
     rows: CapacityRow[]
     history: Omit<UsageSummary, 'weeks'>
   }
@@ -74,7 +78,7 @@ export async function runPlan(req: PlanRequest): Promise<PlanResponse> {
 
   const [fleet, history, rateOverrides] = await Promise.all([
     loadPlanningFleet({ today, planThrough: settings.planThrough, rules }),
-    loadUsageHistory({ today, reservedClients: rules.reservedClients, renewingPrograms: ['Alloy Build'] }),
+    loadUsageHistory({ today, reservedClients: rules.reservedClients, renewingPrograms: ['Alloy Build'], hiddenTrucks: HIDDEN_TRUCKS }),
     resolveDefaultRateOverrides(),
   ])
 
@@ -98,6 +102,12 @@ export async function runPlan(req: PlanRequest): Promise<PlanResponse> {
   })
 
   const warnings: string[] = []
+  if (req.alloyRenews && renewingTrucks === 0) {
+    warnings.push('Alloy Build is marked as renewing, but no truck is currently on an Alloy Build job, so none are held back. Check the program name in the schedule.')
+  }
+  if (rules.reserveSoftHolds && !fleet.reserved.some(r => r.reason.startsWith('AT&T soft'))) {
+    warnings.push('No AT&T soft holds are on file, so no AT&T trucks are held back. The capacity table still subtracts the AT&T range you entered.')
+  }
   if (greedyClusters > 0) {
     warnings.push(`${greedyClusters} cluster(s) of areas were too large to pair exactly and were paired shortest-hop-first; the truck count may be one or two higher than optimal.`)
   }
@@ -120,6 +130,7 @@ export async function runPlan(req: PlanRequest): Promise<PlanResponse> {
     routes,
     dateOptions: decision.options,
     firstFullLiveBy: decision.firstFullLiveBy,
+    cheapestDate: decision.cheapestDate,
     defaultOption: Math.max(0, decision.options.findIndex(o => o.liveBy.feasible)),
     pricing: {
       chosen: priceProgram(req.areas.length, req.model, { smartDirectional: req.smartDirectional, rateOverrides }),
@@ -131,6 +142,7 @@ export async function runPlan(req: PlanRequest): Promise<PlanResponse> {
       reservedLow,
       reservedHigh,
       renewingTrucks,
+      renewingOn: !!req.alloyRenews,
       rows,
       history: historySummary,
     },

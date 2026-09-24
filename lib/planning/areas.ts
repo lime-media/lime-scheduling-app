@@ -23,6 +23,8 @@ export type AreaFlagKind =
   | 'NOT_GEOCODED'   // not a Census ZCTA — almost always a PO-box or unique ZIP with no households
   | 'OUTLIER'        // geocodes far from the rest of its DMA — usually a typo
   | 'BEYOND_REACH'   // over an hour's drive from its area's centre; assumed covered, to confirm
+  | 'UNCERTAIN_LOCATION' // a DMA whose few ZIPs disagree about where it is; it is planned, but its location must be confirmed
+  | 'NOT_PLACED'     // a DMA with no ZIP we can locate; it is NOT in the plan until fixed
   | 'OUTSIDE_48'     // outside the contiguous 48 states, which we do not serve
   | 'INVALID_ZIP'    // not a ZIP at all
 
@@ -40,6 +42,8 @@ export type Area = {
   lng: number
   /** Furthest geocoded ZIP from the area's centre, in straight-line miles. */
   spreadMiles: number
+  /** True when the area's ZIPs disagree and no majority shows which is right. */
+  locationUncertain: boolean
 }
 
 export type AreaBuildResult = {
@@ -47,6 +51,11 @@ export type AreaBuildResult = {
   uniqueZips: number
   areas: Area[]
   flags: AreaFlag[]
+  /**
+   * DMAs that could not be placed at all (no ZIP we can locate). They are not
+   * in the plan and not in the price; the tab shows them as a blocking banner.
+   */
+  unplaced: { label: string; zips: string[] }[]
 }
 
 export type Centroids = Record<string, [number, number]>
@@ -208,27 +217,47 @@ export function buildAreas(
   }
 
   // 3. Outliers: far from the label's median point. The median resists the
-  // very typo it is trying to catch; a mean would be dragged toward it.
+  // very typo it is trying to catch — but only with three or more ZIPs. With
+  // two, the median is their midpoint, so one typo would condemn both; there
+  // is no majority to say which is wrong. Then the DMA is kept, planned from
+  // both, and flagged as uncertain. A DMA is never dropped by this step.
   const centre = new Map<string, { lat: number; lng: number }>()
+  const uncertain = new Set<string>()
   for (const [label, list] of byLabel) {
     const pts = list.filter(g => g.lat !== undefined && !g.outlier)
     if (pts.length === 0) continue
-    const mLat = median(pts.map(p => p.lat!))
-    const mLng = median(pts.map(p => p.lng!))
-    for (const p of pts) {
-      const d = haversineDistance(mLat, mLng, p.lat!, p.lng!)
-      if (pts.length > 1 && d > outlierMiles) {
-        p.outlier = true
-        flags.push({ kind: 'OUTLIER', zip: p.zip, label, detail: `${p.zip} (${p.city || label}, ${p.state}) sits ${Math.round(d)} mi from the rest of ${label} — check for a typo` })
+    if (pts.length >= 3) {
+      const mLat = median(pts.map(p => p.lat!))
+      const mLng = median(pts.map(p => p.lng!))
+      const far = pts.filter(p => haversineDistance(mLat, mLng, p.lat!, p.lng!) > outlierMiles)
+      if (far.length < pts.length) {
+        for (const p of far) {
+          p.outlier = true
+          flags.push({ kind: 'OUTLIER', zip: p.zip, label, detail: `${p.zip} (${p.city || label}, ${p.state}) sits ${Math.round(haversineDistance(mLat, mLng, p.lat!, p.lng!))} mi from the rest of ${label} — check for a typo` })
+        }
+      } else {
+        uncertain.add(label)
+      }
+    } else if (pts.length === 2) {
+      const d = haversineDistance(pts[0].lat!, pts[0].lng!, pts[1].lat!, pts[1].lng!)
+      if (d > outlierMiles) {
+        uncertain.add(label)
+        flags.push({ kind: 'UNCERTAIN_LOCATION', label, detail: `${label}: its two ZIPs, ${pts[0].zip} and ${pts[1].zip}, are ${Math.round(d)} mi apart, so one is probably a typo and there is no way to tell which. It is planned from both — confirm with the client before quoting.` })
       }
     }
     const good = pts.filter(p => !p.outlier)
-    if (good.length) {
-      centre.set(label, {
-        lat: good.reduce((s, p) => s + p.lat!, 0) / good.length,
-        lng: good.reduce((s, p) => s + p.lng!, 0) / good.length,
-      })
-    }
+    centre.set(label, {
+      lat: good.reduce((s, p) => s + p.lat!, 0) / good.length,
+      lng: good.reduce((s, p) => s + p.lng!, 0) / good.length,
+    })
+  }
+
+  // DMAs with no locatable ZIP cannot be planned. Reported, never dropped quietly.
+  const unplaced: AreaBuildResult['unplaced'] = []
+  for (const [label, list] of byLabel) {
+    if (centre.has(label)) continue
+    unplaced.push({ label, zips: list.map(g => g.zip) })
+    flags.push({ kind: 'NOT_PLACED', label, detail: `${label}: none of its ${list.length} ZIP${list.length === 1 ? '' : 's'} can be located (PO-box, unique or out-of-area ZIPs), so it is NOT in the plan or the price. Get a residential ZIP for it from the client.` })
   }
 
   // 4. Rows with no label go to the nearest labelled centre.
@@ -265,22 +294,21 @@ export function buildAreas(
     const root = find(l)
     groups.set(root, [...(groups.get(root) ?? []), l])
   }
-  // Labels with no geocodable ZIPs at all still need an area to report against.
-  for (const l of byLabel.keys()) if (!centre.has(l)) groups.set(l, [l])
 
   const areas: Area[] = []
   for (const members of groups.values()) {
     const all = members.flatMap(l => byLabel.get(l) ?? [])
-    members.sort((a, b) => (byLabel.get(b)?.length ?? 0) - (byLabel.get(a)?.length ?? 0))
+    members.sort((a, b) => (byLabel.get(b)?.length ?? 0) - (byLabel.get(a)?.length ?? 0) || a.localeCompare(b))
     const good = all.filter(g => g.lat !== undefined && !g.outlier)
-    if (good.length === 0) continue
     const lat = good.reduce((s, p) => s + p.lat!, 0) / good.length
     const lng = good.reduce((s, p) => s + p.lng!, 0) / good.length
     const name = members.join(' / ')
 
     // An hour's drive: flag what we are assuming, rather than silently
-    // including or dropping it.
-    for (const p of good) {
+    // including or dropping it. (Not for an uncertain area: its centre is a
+    // compromise between ZIPs that disagree, already flagged as such.)
+    const isUncertain = members.some(m => uncertain.has(m))
+    for (const p of isUncertain ? [] : good) {
       const d = haversineDistance(lat, lng, p.lat!, p.lng!)
       if (d > reachMiles) {
         flags.push({ kind: 'BEYOND_REACH', zip: p.zip, label: p.label, detail: `${p.zip} (${p.city || p.label}) is ${Math.round(d)} mi from the centre of ${name} — over an hour's drive; assumed covered by that area's truck` })
@@ -288,16 +316,18 @@ export function buildAreas(
     }
 
     areas.push({
-      id: slug(name),
+      // Stable whatever order the client listed things in.
+      id: slug([...members].sort().join(' ')),
       name,
       labels: members,
       zips: all.map(g => g.zip),
       residentialZips: all.filter(g => g.lat !== undefined && !g.outlier).length,
       lat, lng,
       spreadMiles: Math.round(Math.max(...good.map(p => haversineDistance(lat, lng, p.lat!, p.lng!)))),
+      locationUncertain: isUncertain,
     })
   }
   areas.sort((a, b) => b.zips.length - a.zips.length || a.name.localeCompare(b.name))
 
-  return { rows: rows.length, uniqueZips: unique.length, areas, flags }
+  return { rows: rows.length, uniqueZips: unique.length, areas, flags, unplaced }
 }

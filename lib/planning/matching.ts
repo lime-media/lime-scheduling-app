@@ -8,20 +8,21 @@
  * memoised search over "who is still unpaired". Ordering a cluster's nodes by
  * breadth-first search keeps that state small.
  *
- * A cluster too big to solve exactly (over 30 nodes) falls back to a greedy
- * shortest-hop-first matching and is reported, so a sub-optimal answer is never
- * silent.
+ * The search state is a BigInt bitmask, so there is no size cutoff: a cluster
+ * of any size is solved exactly. Only if the search itself grows past
+ * MEMO_LIMIT states (a dense cluster with a very large hop limit) does it fall
+ * back to greedy shortest-hop-first, and that is reported, so a sub-optimal
+ * answer is never silent.
  */
 
 export type MatchEdge = { a: number; b: number; miles: number }
 
 export type MatchResult = {
   pairs: MatchEdge[]
-  /** Clusters solved greedily because they were too large for the exact search. */
+  /** Clusters solved greedily because the exact search grew too large. */
   greedyClusters: number
 }
 
-const EXACT_LIMIT = 30
 const MEMO_LIMIT = 2_000_000
 const PAIR_VALUE = 1e7 // one more pair always beats any saving in miles
 
@@ -52,7 +53,7 @@ export function maxPairing(n: number, edges: MatchEdge[]): MatchResult {
   let greedyClusters = 0
   for (const nodes of components) {
     if (nodes.length < 2) continue
-    const exact = nodes.length <= EXACT_LIMIT ? solveExact(nodes, adj) : null
+    const exact = solveExact(nodes, adj)
     if (exact) pairs.push(...exact)
     else { greedyClusters++; pairs.push(...solveGreedy(nodes, adj)) }
   }
@@ -73,13 +74,15 @@ function solveExact(nodes: number[], adj: MatchEdge[][]): MatchEdge[] | null {
 
   const memo = new Map<string, { value: number; pick: number }>()
   let aborted = false
+  const bit = (n: number) => BigInt(1) << BigInt(n)
+  const keyOf = (i: number, taken: bigint) => `${i}:${(taken >> BigInt(i + 1)).toString(36)}`
 
   // State: position i, plus which later nodes are already paired (bitmask).
-  const solve = (i: number, taken: number): number => {
+  const solve = (i: number, taken: bigint): number => {
     if (aborted) return 0
     if (i >= k) return 0
-    if (taken & (1 << i)) return solve(i + 1, taken)
-    const key = `${i}:${taken >>> (i + 1)}`
+    if (taken & bit(i)) return solve(i + 1, taken)
+    const key = keyOf(i, taken)
     const hit = memo.get(key)
     if (hit) return hit.value
     if (memo.size > MEMO_LIMIT) { aborted = true; return 0 }
@@ -88,26 +91,26 @@ function solveExact(nodes: number[], adj: MatchEdge[][]): MatchEdge[] | null {
     let pick = -1
     for (let x = 0; x < fwd[i].length; x++) {
       const { j, miles } = fwd[i][x]
-      if (taken & (1 << j)) continue
-      const v = PAIR_VALUE - miles + solve(i + 1, taken | (1 << j))
+      if (taken & bit(j)) continue
+      const v = PAIR_VALUE - miles + solve(i + 1, taken | bit(j))
       if (v > best) { best = v; pick = x }
     }
     memo.set(key, { value: best, pick })
     return best
   }
 
-  solve(0, 0)
+  solve(0, BigInt(0))
   if (aborted) return null
 
   // Walk the memo to recover the chosen pairs.
   const out: MatchEdge[] = []
-  let taken = 0
+  let taken = BigInt(0)
   for (let i = 0; i < k; i++) {
-    if (taken & (1 << i)) continue
-    const hit = memo.get(`${i}:${taken >>> (i + 1)}`)
+    if (taken & bit(i)) continue
+    const hit = memo.get(keyOf(i, taken))
     if (!hit || hit.pick < 0) continue
     const { j, edge } = fwd[i][hit.pick]
-    taken |= 1 << j
+    taken |= bit(j)
     out.push({ a: Math.min(edge.a, edge.b), b: Math.max(edge.a, edge.b), miles: edge.miles })
   }
   return out

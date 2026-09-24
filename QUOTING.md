@@ -376,18 +376,22 @@ Every assumption and correction is reported, not absorbed:
 - rows with no DMA (placed with the nearest area)
 - ZIPs with no households (PO-box and unique ZIPs are not Census ZCTAs)
 - ZIPs more than 60 miles from their area's centre (assumed covered, to confirm)
-- ZIPs more than 150 miles from the rest of their DMA (almost always typos)
+- ZIPs more than 150 miles from the rest of their DMA (almost always typos; judged only when a DMA has three or more ZIPs)
+- a DMA whose two ZIPs are far apart: kept in the plan, but flagged as uncertain, since there is no majority to show which ZIP is wrong
+- a DMA with no ZIP we can locate: shown in a red banner as **not in the plan or the price**
+
+A DMA is never dropped silently.
 
 **Coverage models.** 5 × 8 puts one truck on each area. 3 × 12 pairs areas within a road-mile hop limit (default 250, straight line × 1.25) onto one truck. The truck alternates A Mon–Wed / travel Thu / B Fri–Sun, then the reverse, so each area gets three 12-hour days every calendar week. Pairing maximises the number of pairs first, then minimises hop miles.
 
 **Which trucks.** Feasibility comes only from the fleet itself: live truck positions (Samsara), every booking and hold, and the transport needed to get each truck there. The market list plays no part. The pool is the same bookable fleet as quoting (`HIDDEN_TRUCKS` excluded), with jobs loaded through the plan-through date rather than the rolling −30/+63 window. Two reservation rules apply:
 
-- **AT&T soft holds are permanent.** Trucks on the latest month of `ATT_SOFT` holds are held back for the whole plan, and stay held back after that month lapses. Only the latest month counts, because older months are rarely expired and the roster rotates.
-- **Renewing programs keep their trucks** (optional). AT&T's Alloy Build is booked under 160over90, so it is matched by program under the client, not by name alone.
+- **AT&T soft holds are permanent.** Trucks on the latest month of `ATT_SOFT` holds on file are held back for the whole plan, however old that month is, until a newer month is loaded. Only the latest month counts, because older months are rarely expired and the roster rotates. If none are on file at all, the plan warns.
+- **Renewing programs keep their trucks** (optional). AT&T's Alloy Build is booked under 160over90, so it is matched by program under the client, not by name alone. The match is "contains", not exact equality. If the toggle is on but nothing matches, the plan warns.
 
 **When each truck can start.** From the first date it has nothing booked through plan-through, run through the same chain check as every quote (§6b): the release-point origin, transport days to arrive, and no stranded successor. A truck that needs travel days starts that many days later.
 
-**The start-date decision.** Nothing here trades days against miles. For each date (weekly from the earliest start, plus the first date full coverage is possible), trucks are assigned so every route is live by that date at the **lowest transport we absorb**, and each route starts as soon as its truck is ready. Earlier dates mean pulling trucks from further away. The table stops once waiting another week no longer lowers the cost. The rep picks the row that is worth it, and the route table follows. Among trucks that cost the same, the earlier start wins, then the shorter drive. Holding every route back to launch on one day would use the same trucks at the same cost, so it is not shown as a separate option.
+**The start-date decision.** Nothing here trades days against miles. For each date (weekly from the earliest start, plus the first date full coverage is possible), trucks are assigned so every route is live by that date at the **lowest transport we absorb**, and each route starts as soon as its truck is ready. Earlier dates mean pulling trucks from further away. Cost does not fall steadily as the date moves out; it can hold flat for weeks and then drop when one well-placed truck frees up. So every date on which a truck becomes available is evaluated, through the slip limit. The cheapest is marked, and the table runs through it. The rep picks the row that is worth it, and the route table follows. Among trucks that cost the same, the earlier start wins, then the shorter drive. Holding every route back to launch on one day would use the same trucks at the same cost, so it is not shown as a separate option.
 
 **Each assignment names the truck** by truck number (e.g. 1261), with where it is coming from, its start date, and what we absorb to move it.
 
@@ -400,8 +404,10 @@ Every assumption and correction is reported, not absorbed:
 **Where Claude is used, and where it is not.** Claude (`claude-opus-5`, via `ANTHROPIC_API_KEY`) does three jobs, and none of them involves fleet arithmetic:
 
 - **Reading files code cannot.** A PDF, an email, or text with no ZIP column is transcribed into DMA/ZIP rows, along with what the client asked for (hours, days, dates). It transcribes and never corrects, so typos still reach the flags. Clean CSV and `.xlsx` are parsed in code (`lib/planning/xlsx.ts`) and never sent to Claude.
-- **Reviewing the list.** It looks for what geometry cannot see: a DMA label that names a different city than its ZIPs are in, or a probable digit slip. Each ZIP is given to it with its Census coordinates, not just the client's text. A suggested ZIP is shown as verified only when code confirms it exists and lies within 60 miles of the rest of its DMA. The rep applies a correction with one click, and the areas are rebuilt.
-- **Writing it up.** A client section and an internal section are drafted from the plan's own figures. Every number in the draft is checked against the plan, and any that is not in it is listed for the rep to check or remove.
+- **Reviewing the list.** It looks for what geometry cannot see: a DMA label that names a different city than its ZIPs are in, or a probable digit slip. Each ZIP is given to it with its Census coordinates, not just the client's text. A suggested ZIP is shown as verified only when code confirms it exists and lies within 60 miles of the DMA's other ZIPs. With no other ZIPs to measure against, it is never verified. The rep applies a correction with one click, and the areas are rebuilt.
+- **Writing it up.** A client text and an internal text are drafted separately from the plan's own figures, with separate Copy buttons.
+  - Every number is checked against the plan's figures only. Text from the uploaded file never counts, so a number planted in a file can't vouch for itself.
+  - The client text is checked in code for anything internal: assigned truck numbers, absorbed transport, AT&T, Alloy Build, capacity. Its Copy button stays disabled until those are edited out.
 
 Truck counts, assignments, prices and capacity come only from the code above. If the API key is missing, the deterministic planner still works; only the Claude steps return an error.
 

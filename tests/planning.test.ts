@@ -9,7 +9,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { maxPairing, type MatchEdge } from '@/lib/planning/matching'
+import { maxPairing, solveLarge, type MatchEdge } from '@/lib/planning/matching'
 import { minCostAssignment } from '@/lib/planning/assignment'
 import { parseZipRows, buildAreas, type Area, type Centroids } from '@/lib/planning/areas'
 import {
@@ -65,6 +65,28 @@ for (let t = 0; t < MATCH_TRIALS; t++) {
 }
 eq(`exact on ${MATCH_TRIALS} random graphs`, matchOk, MATCH_TRIALS)
 eq('random graphs span sizes 2 to 12', [Math.min(...matchSizes), Math.max(...matchSizes), matchSizes.size], [2, 12, 11])
+{
+  // The large-cluster fallback must never cost a truck: its pair count must
+  // equal the true maximum on every instance (odd cycles included).
+  let cardOk = 0
+  for (let t = 0; t < MATCH_TRIALS; t++) {
+    const r = rng(t * 6151 + 97)
+    const n = 2 + Math.floor(r() * 11)
+    const edges: MatchEdge[] = []
+    for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) if (r() < 0.35) edges.push({ a, b, miles: Math.round(r() * 300) })
+    const adj: MatchEdge[][] = Array.from({ length: n }, () => [])
+    for (const e of edges) { adj[e.a].push(e); adj[e.b].push({ a: e.b, b: e.a, miles: e.miles }) }
+    const got = solveLarge([...Array(n).keys()], adj)
+    const disjoint = new Set(got.flatMap(p => [p.a, p.b])).size === got.length * 2
+    if (disjoint && got.length === bruteMatch(n, edges).pairs) cardOk++
+  }
+  eq(`fallback finds the maximum number of pairs on ${MATCH_TRIALS} random graphs`, cardOk, MATCH_TRIALS)
+  // An odd cycle with a tail: the case greedy and naive augmenting get wrong.
+  const cyc: MatchEdge[] = [{ a: 0, b: 1, miles: 1 }, { a: 1, b: 2, miles: 1 }, { a: 2, b: 0, miles: 1 }, { a: 2, b: 3, miles: 50 }, { a: 3, b: 4, miles: 1 }, { a: 4, b: 5, miles: 50 }]
+  const cadj: MatchEdge[][] = Array.from({ length: 6 }, () => [])
+  for (const e of cyc) { cadj[e.a].push(e); cadj[e.b].push({ a: e.b, b: e.a, miles: e.miles }) }
+  eq('fallback handles an odd cycle (blossom)', solveLarge([0, 1, 2, 3, 4, 5], cadj).length, 3)
+}
 {
   // A 40-node path, long-short-long-...: greedy takes the short edges and
   // strands every other node; the exact search pairs everything.
@@ -380,15 +402,16 @@ section('Claude layer: code-side checks')
 
 section('matching: bounded work')
 {
-  // A dense 60-node cluster (every pair within reach) would be astronomically
-  // large for the exact search. It must fall back fast, and say so.
+  // A dense 60-node cluster (every pair within reach) is too large for the
+  // exact search. It must stop within the time budget, say so, and still use
+  // the fewest trucks.
   const edges: MatchEdge[] = []
   const r = rng(424242)
   for (let a = 0; a < 60; a++) for (let b = a + 1; b < 60; b++) edges.push({ a, b, miles: Math.round(r() * 250) })
   const t0 = Date.now()
   const got = maxPairing(60, edges)
   const ms = Date.now() - t0
-  eq('dense cluster: falls back to greedy and reports it', got.greedyClusters, 1)
-  eq('dense cluster: still pairs everyone', got.pairs.length, 30)
-  eq('dense cluster: decided quickly (precheck, not the time budget)', ms < 500, true)
+  eq('dense cluster: falls back and reports it', got.greedyClusters, 1)
+  eq('dense cluster: still the fewest trucks (everyone paired)', got.pairs.length, 30)
+  eq('dense cluster: bounded by the time budget', ms < 2500, true)
 }

@@ -109,7 +109,7 @@ export async function runPlan(req: PlanRequest): Promise<PlanResponse> {
     warnings.push('No AT&T soft holds are on file, so no AT&T trucks are held back. The capacity table still subtracts the AT&T range you entered.')
   }
   if (greedyClusters > 0) {
-    warnings.push(`${greedyClusters} cluster(s) of areas were too dense to pair exactly within the time allowed and were paired shortest-hop-first; the truck count may be one or two higher than optimal. A smaller pairing distance avoids this.`)
+    warnings.push(`${greedyClusters} cluster(s) of areas were too large to pair exactly within the time allowed. The truck count is still the minimum, but the pairings may not have the shortest possible hops. A smaller pairing distance gives an exact answer.`)
   }
   if (!decision.firstFullLiveBy) {
     const last = decision.options[decision.options.length - 1]

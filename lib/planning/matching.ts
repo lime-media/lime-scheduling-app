@@ -8,26 +8,28 @@
  * memoised search over "who is still unpaired". Ordering a cluster's nodes by
  * reverse Cuthill–McKee keeps that state small.
  *
- * The search state is a BigInt bitmask, so there is no size cutoff. What
- * bounds the work is the cluster's bandwidth in that order — how far ahead of
- * a node its furthest neighbour sits — because the state only has to remember
- * pairings within that window: at most k × 2^bandwidth states. So:
+ * The search state is a BigInt bitmask, so there is no size cutoff. The work
+ * is bounded adaptively: the search stops at MEMO_LIMIT states or
+ * TIME_BUDGET_MS, whichever comes first. (A static k × 2^bandwidth precheck was
+ * tried and removed: it is a worst-case bound, far above the states a real
+ * map cluster reaches, so it rejected clusters that solved in milliseconds.)
  *
- *   1. Precheck. If that bound is over MEMO_LIMIT, skip straight to greedy.
- *      No time is spent discovering the limit by running into it.
- *   2. Budget. The exact search also stops at MEMO_LIMIT states or
- *      TIME_BUDGET_MS, whichever comes first, and falls back to greedy.
- *
- * Either fallback is counted in greedyClusters and surfaced as a warning, so a
- * sub-optimal answer is never silent. Real footprints sit far inside the
- * bound: 44 areas at a 250-mile hop solve exactly in milliseconds.
+ * When a cluster is too big for the exact search, the fallback still
+ * guarantees the fewest trucks. Edmonds' blossom algorithm finds a
+ * maximum-cardinality matching, seeded from shortest-hop-first so the
+ * augmentations start from short hops. A pair-swap pass then shortens hops
+ * further. Only the total hop miles can then be above optimal, never the truck
+ * count. Such clusters are counted in greedyClusters and surfaced as a warning.
  */
 
 export type MatchEdge = { a: number; b: number; miles: number }
 
 export type MatchResult = {
   pairs: MatchEdge[]
-  /** Clusters solved greedily because the exact search grew too large. */
+  /**
+   * Clusters too big for the exact search. Their truck count is still optimal
+   * (maximum cardinality); only their hop miles may be above optimal.
+   */
   greedyClusters: number
 }
 
@@ -78,7 +80,7 @@ export function maxPairing(n: number, edges: MatchEdge[]): MatchResult {
     if (nodes.length < 2) continue
     const exact = solveExact(nodes, adj)
     if (exact) pairs.push(...exact)
-    else { greedyClusters++; pairs.push(...solveGreedy(nodes, adj)) }
+    else { greedyClusters++; pairs.push(...solveLarge(nodes, adj)) }
   }
   return { pairs, greedyClusters }
 }
@@ -94,10 +96,6 @@ function solveExact(nodes: number[], adj: MatchEdge[][]): MatchEdge[] | null {
       .filter(x => x.j > i)
       .sort((x, y) => x.miles - y.miles),
   )
-
-  // Precheck: the state space is bounded by k × 2^bandwidth.
-  const bandwidth = Math.max(0, ...fwd.map((list, i) => list.reduce((m, x) => Math.max(m, x.j - i), 0)))
-  if (bandwidth >= 40 || k * 2 ** bandwidth > MEMO_LIMIT) return null
 
   const memo = new Map<string, { value: number; pick: number }>()
   let aborted = false
@@ -144,16 +142,117 @@ function solveExact(nodes: number[], adj: MatchEdge[][]): MatchEdge[] | null {
   return out
 }
 
-function solveGreedy(nodes: number[], adj: MatchEdge[][]): MatchEdge[] {
-  const inSet = new Set(nodes)
-  const edges = nodes.flatMap(v => adj[v].filter(e => e.a < e.b && inSet.has(e.b)))
-  edges.sort((x, y) => x.miles - y.miles)
-  const used = new Set<number>()
+/**
+ * Fallback for clusters too big to search exactly: maximum cardinality
+ * (Edmonds' blossom algorithm) seeded from shortest-hop-first, then pair swaps
+ * that shorten total hop miles without losing a pair.
+ */
+export function solveLarge(nodes: number[], adj: MatchEdge[][]): MatchEdge[] {
+  const k = nodes.length
+  const local = new Map(nodes.map((v, i) => [v, i]))
+  const g: number[][] = nodes.map(v => adj[v].map(e => local.get(e.b)!))
+  const miles = new Map<string, number>()
+  const key = (a: number, b: number) => (a < b ? `${a}-${b}` : `${b}-${a}`)
+  nodes.forEach((v, i) => adj[v].forEach(e => miles.set(key(i, local.get(e.b)!), e.miles)))
+
+  // Seed: shortest hop first.
+  const match = new Array<number>(k).fill(-1)
+  const edges = [...miles].map(([kk, m]) => { const [a, b] = kk.split('-').map(Number); return { a, b, m } }).sort((x, y) => x.m - y.m)
+  for (const e of edges) if (match[e.a] === -1 && match[e.b] === -1) { match[e.a] = e.b; match[e.b] = e.a }
+
+  // Edmonds: augment from every unmatched node until none can grow.
+  const p = new Array<number>(k)
+  const base = new Array<number>(k)
+  const used = new Array<boolean>(k)
+  const blossom = new Array<boolean>(k)
+  const lca = (a: number, b: number): number => {
+    const seen = new Array<boolean>(k).fill(false)
+    for (;;) { a = base[a]; seen[a] = true; if (match[a] === -1) break; a = p[match[a]] }
+    for (;;) { b = base[b]; if (seen[b]) return b; b = p[match[b]] }
+  }
+  const markPath = (v: number, b: number, child: number) => {
+    while (base[v] !== b) {
+      blossom[base[v]] = blossom[base[match[v]]] = true
+      p[v] = child
+      child = match[v]
+      v = p[match[v]]
+    }
+  }
+  const findPath = (root: number): number => {
+    used.fill(false); p.fill(-1)
+    for (let i = 0; i < k; i++) base[i] = i
+    used[root] = true
+    const q = [root]
+    for (let h = 0; h < q.length; h++) {
+      const v = q[h]
+      for (const to of g[v]) {
+        if (base[v] === base[to] || match[v] === to) continue
+        if (to === root || (match[to] !== -1 && p[match[to]] !== -1)) {
+          const cur = lca(v, to)
+          blossom.fill(false)
+          markPath(v, cur, to)
+          markPath(to, cur, v)
+          for (let i = 0; i < k; i++) {
+            if (blossom[base[i]]) {
+              base[i] = cur
+              if (!used[i]) { used[i] = true; q.push(i) }
+            }
+          }
+        } else if (p[to] === -1) {
+          p[to] = v
+          if (match[to] === -1) return to
+          used[match[to]] = true
+          q.push(match[to])
+        }
+      }
+    }
+    return -1
+  }
+  for (let v = 0; v < k; v++) {
+    if (match[v] !== -1) continue
+    let end = findPath(v)
+    while (end !== -1) {
+      const pv = p[end]
+      const next = match[pv]
+      match[end] = pv
+      match[pv] = end
+      end = next
+    }
+  }
+
+  // Shorten hops: swap partners between two pairs when both new hops exist
+  // and the total is shorter. The pair count never changes.
+  const hop = (a: number, b: number) => miles.get(key(a, b))
+  for (let pass = 0, improved = true; improved && pass < 50; pass++) {
+    improved = false
+    const pairs: [number, number][] = []
+    for (let i = 0; i < k; i++) if (match[i] > i) pairs.push([i, match[i]])
+    for (let x = 0; x < pairs.length; x++) {
+      for (let y = x + 1; y < pairs.length; y++) {
+        const [a, b] = pairs[x]
+        const [c, d] = pairs[y]
+        if (match[a] !== b || match[c] !== d) continue
+        const now = hop(a, b)! + hop(c, d)!
+        for (const [u1, v1, u2, v2] of [[a, c, b, d], [a, d, b, c]]) {
+          const h1 = hop(u1, v1)
+          const h2 = hop(u2, v2)
+          if (h1 !== undefined && h2 !== undefined && h1 + h2 < now - 1e-9) {
+            match[u1] = v1; match[v1] = u1; match[u2] = v2; match[v2] = u2
+            improved = true
+            break
+          }
+        }
+      }
+    }
+  }
+
   const out: MatchEdge[] = []
-  for (const e of edges) {
-    if (used.has(e.a) || used.has(e.b)) continue
-    used.add(e.a); used.add(e.b)
-    out.push(e)
+  for (let i = 0; i < k; i++) {
+    if (match[i] > i) {
+      const a = nodes[i]
+      const b = nodes[match[i]]
+      out.push({ a: Math.min(a, b), b: Math.max(a, b), miles: hop(i, match[i])! })
+    }
   }
   return out
 }

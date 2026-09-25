@@ -10,9 +10,12 @@
 import { eq, section } from './harness'
 import {
   canShare, buildJobs, canFollow, chainJobs, planOrder, trucksByLine, legsByLine, rotationStints, lineActivationDays,
+  rotation, workDays, deliveredTruckDays, fitTruck,
   DEFAULT_ENGINE, type EngineSettings, type OrderLine,
 } from '@/lib/planning/order'
-import { freeFrom, type PlanTruck } from '@/lib/planning/planner'
+import { addDays, freeFrom, type PlanTruck } from '@/lib/planning/planner'
+import { fitNames, lineFeatures } from '@/lib/planning/booking'
+import type { LineQuote } from '@/lib/planning/quote'
 import type { TruckJob } from '@/lib/truckTimeline'
 
 const S: EngineSettings = { ...DEFAULT_ENGINE, today: '2026-09-25' }
@@ -132,3 +135,86 @@ eq('3 days a week, two weeks', lineActivationDays({ startDate: '2026-10-12', end
 eq('3 days a week, part week', lineActivationDays({ startDate: '2026-10-12', endDate: '2026-10-21', daysPerWeek: 3 }), 6)
 eq('Mon-Fri as the single quote', lineActivationDays({ startDate: '2026-09-01', endDate: '2026-09-14', daysPerWeek: 5 }), 10)
 eq('every day as the single quote', lineActivationDays({ startDate: '2026-09-01', endDate: '2026-09-03', daysPerWeek: 7 }), 3)
+
+// ---------------------------------------------------------------------------
+section('order: billing matches what the rotation delivers, for any span')
+{
+  let mismatches = 0, overlaps = 0, gaps = 0, wrongEnd = 0, shortWeeks = 0
+  for (let cal = 1; cal <= 60; cal++) {
+    for (const offset of [0, 3]) {
+      const a = line('dal', 'dal', '2026-10-12', addDays('2026-10-12', cal - 1))
+      const b = line('ftw', 'ftw', addDays('2026-10-12', offset), addDays('2026-10-12', cal - 1 + offset))
+      if (!canShare(a, b, S)) continue
+      const [job] = buildJobs([a, b], S).jobs
+      if (job.lines.length !== 2) continue
+      const days = rotation(job)
+      // Billing reads the same WORK days the holds are cut from.
+      const plan = { trucks: [{ truckNumber: 'T', jobs: [job], legs: [], drivers: 2 }], shortfalls: [], poolSize: 1 }
+      const billed = deliveredTruckDays(plan)
+      const worked = workDays(job)
+      for (const id of ['dal', 'ftw']) if (billed.get(id) !== worked.get(id) || worked.get(id) !== days.filter(d => d.kind === 'WORK' && d.lineId === id).length) mismatches++
+      const st = rotationStints(job)
+      for (let i = 1; i < st.length; i++) { if (st[i].start <= st[i - 1].end) overlaps++; if (st[i].start !== addDays(st[i - 1].end, 1)) gaps++ }
+      if (st[0].start !== job.start || st[st.length - 1].end !== job.end) gaps++
+      // Work only happens inside the stretch held for that market.
+      for (const d of days) if (d.kind === 'WORK' && !st.some(x => x.lineId === d.lineId && x.start <= d.date && d.date <= x.end)) mismatches++
+      // Where the job ends, for chaining, is where the truck actually is.
+      const lastDay = days[days.length - 1]
+      const endsIn = lastDay.kind === 'TRAVEL' ? job.lines.find(l => l.id !== lastDay.lineId)!.id : lastDay.lineId
+      if (job.last.id !== endsIn) wrongEnd++
+      // Every full week of the overlap gives each market exactly its 3 days.
+      const ov = offset
+      for (let w = 0; ov + (w + 1) * 7 <= cal; w++) {
+        const week = days.filter(d => d.date >= addDays(b.startDate, w * 7) && d.date < addDays(b.startDate, (w + 1) * 7) && d.kind === 'WORK')
+        if (week.filter(d => d.lineId === 'dal').length !== 3 || week.filter(d => d.lineId === 'ftw').length !== 3) shortWeeks++
+      }
+    }
+  }
+  eq('billed days = worked days = WORK days in the rotation', mismatches, 0)
+  eq('holds never overlap', overlaps, 0)
+  eq('holds leave no gap', gaps, 0)
+  eq('the job ends where the truck is (10 and 21-day spans included)', wrongEnd, 0)
+  eq('each full week: 3 days in each market', shortWeeks, 0)
+
+  const a = line('dal', 'dal', '2026-10-12', '2026-10-21')
+  const b = line('ftw', 'ftw', '2026-10-12', '2026-10-21')
+  const plan = planOrder([a, b], [truck('1261', 'dal'), truck('1262', 'ftw')], S)
+  const d = deliveredTruckDays(plan)
+  eq('Oct 12-21 shared: each market is billed the days it gets, not a formula', [d.get('dal'), d.get('ftw')], [3, 6])
+}
+
+section('order: the next booking is checked from where the chain ends')
+{
+  const miami = { start: '2026-10-21', end: '2026-10-30', market: 'Miami', state: 'FL', lat: 25.76, lng: -80.19, source: 'SCHEDULE' as const, yieldable: false }
+  const [den] = buildJobs([line('den', 'den', '2026-10-12', '2026-10-20', 1, 5, 8)], S).jobs
+  eq('a hard booking in Miami the next day cannot be stranded', fitTruck(truck('1261', 'dal', [miami]), [den], S), null)
+  eq('a soft hold there can be (the rep decides)', fitTruck(truck('1261', 'dal', [{ ...miami, source: 'HOLD', yieldable: true }]), [den], S) !== null, true)
+  eq('with time to get there, fine', fitTruck(truck('1261', 'dal', [{ ...miami, start: '2026-10-28', end: '2026-11-05' }]), [den], S) !== null, true)
+}
+
+section('order: a chain no truck can take stays as whole as it can')
+{
+  // Three back-to-back Dallas jobs; the only truck is booked for the third.
+  const l1 = line('a', 'dal', '2026-10-05', '2026-10-11', 1, 5, 8)
+  const l2 = line('b', 'dal', '2026-10-12', '2026-10-18', 1, 5, 8)
+  const l3 = line('c', 'dal', '2026-10-19', '2026-10-25', 1, 5, 8)
+  const plan = planOrder([l1, l2, l3], [truck('1261', 'dal', [busy('2026-10-19', '2026-10-25', 'dal')])], S)
+  eq('the truck keeps the first two jobs together', plan.trucks.map(t => t.jobs.length), [2])
+  eq('only the third is short', plan.shortfalls.map(x => x.lineId), ['c'])
+}
+
+section('booking: what a client can see, and Salesforce text')
+{
+  const lq = { dailyRate: 1500, hourSurcharge: 300, truckDays: 6, trucks: 1, activationDays: 6, calendarDays: 10, daysPerWeek: 3, hours: 12, baseMedia: 10800,
+    shadowFencing: 900, shadowFencingFloored: false, smartDirectional: 0, deviceId: 0, transport: { outcome: 'ABSORBED', billed: 0, absorbedCost: 4321 },
+    arrivals: [{ truckNumber: '9999', from: 'Denver', fromKind: 'GPS', miles: 660, transportDays: 2, outOfMarket: true, charge: 0, ourCost: 4321 }] } as unknown as LineQuote
+  const json = JSON.stringify(lineFeatures(lq, { shadowFencing: true, smartDirectional: false, deviceId: false }))
+  eq('no truck origins, our costs or fleet counts in the hold breakdown', ['9999', 'Denver', '4321', 'ourCost', 'absorbed', 'poolSize', 'leftForOthers', 'arrivals'].filter(t => json.includes(t)), [])
+  eq('it is the breakdown the hold pages render', Object.keys(JSON.parse(json)).includes('truckDays') && Object.keys(JSON.parse(json)).includes('baseMedia'), true)
+
+  const names = Array.from({ length: 44 }, (_, i) => `Market Number ${i + 1}, TX`)
+  const fit = fitNames(names, 255)
+  eq('Markets__c fits 255', fit.length <= 255, true)
+  eq('and is cut between names, with a count', /; \+\d+ more$/.test(fit) && fit.split('; ').slice(0, -1).every(n => names.includes(n)), true)
+  eq('short lists are untouched', fitNames(['Dallas, TX', 'Fort Worth, TX'], 255), 'Dallas, TX; Fort Worth, TX')
+}

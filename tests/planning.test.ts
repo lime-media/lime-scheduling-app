@@ -301,5 +301,5 @@ section('matching: bounded work')
   const ms = Date.now() - t0
   eq('dense cluster: falls back and reports it', got.greedyClusters, 1)
   eq('dense cluster: still the fewest trucks (everyone paired)', got.pairs.length, 30)
-  eq('dense cluster: bounded by the time budget', ms < 2500, true)
+  eq('dense cluster: finishes quickly', ms < 2500, true)
 }

@@ -42,6 +42,12 @@ export type OrderLine = {
   trucks: number
   daysPerWeek: number
   hours: number
+  /**
+   * The standard market holds are written against, when it differs from
+   * `market` — an imported DMA is booked under its nearest standard market so
+   * the hold resolves to a location later.
+   */
+  standardMarket?: string
 }
 
 export type EngineSettings = {
@@ -165,15 +171,19 @@ export function buildJobs(lines: OrderLine[], s: EngineSettings): { jobs: Job[];
     used.add(p.a); used.add(p.b)
     const [x, y] = [slots[p.a].line, slots[p.b].line]
     const first = x.startDate <= y.startDate ? x : y
-    const last = x.endDate >= y.endDate ? x : y
-    jobs.push({
+    const end = x.endDate >= y.endDate ? x.endDate : y.endDate
+    const job: Job = {
       id: `${x.id}#${slots[p.a].index}+${y.id}#${slots[p.b].index}`,
       lines: [first, first === x ? y : x],
       start: first.startDate,
-      end: last.endDate,
-      first, last,
+      end,
+      first, last: first,
       hopRoadMiles: Math.round(p.miles),
-    })
+    }
+    // Where the truck ends up follows the rotation, not the end dates: with
+    // equal end dates it can finish in either market.
+    job.last = rotationEndsIn(job)
+    jobs.push(job)
   }
   slots.forEach((sl, i) => {
     if (used.has(i)) return
@@ -241,11 +251,16 @@ export function fitTruck(truck: PlanTruck, chain: Job[], s: EngineSettings): Fit
   })
   if (inbound.blockedBy === 'CANNOT_ARRIVE' || inbound.blockedBy === 'UNKNOWN_ORIGIN') return null
   // The next booking is reached from where the chain ENDS, not where it starts.
+  // Read the successor impact directly: checkChainFeasibility reports
+  // CANNOT_ARRIVE before it reaches the strand rule, and from the chain's last
+  // market the truck's own release point is usually out of reach, so the
+  // blockedBy verdict would hide a stranded booking.
   const outbound = checkChainFeasibility({
     campaignStart: start, campaignEnd: end, campaignCoords: { lat: lastJob.last.lat, lng: lastJob.last.lng },
     jobs: truck.jobs, currentCoords: truck.gps, today: s.today, serviceAreaMiles: s.serviceAreaMiles,
   })
-  if (outbound.blockedBy === 'STRANDS_SUCCESSOR' && !outbound.overridable) return null
+  const next = outbound.successor
+  if (next && !next.unresolvedMarket && !next.yieldable && next.transportDays > next.gapDays) return null
 
   const miles = inbound.inbound.distanceMiles
   const days = inbound.inbound.transportDays
@@ -297,9 +312,12 @@ export function planOrder(lines: OrderLine[], trucks: PlanTruck[], s: EngineSett
     return leftover
   }
 
-  // Whole chains first; a chain no truck can take is split into its jobs.
-  const unchained = assignRound(chains)
-  const unserved = assignRound(unchained.flatMap(c => (c.length > 1 ? c.map(j => [j]) : [c])))
+  // Whole chains first. A chain no truck can take is split in half and tried
+  // again, so as much of it as possible stays on one truck, down to single jobs.
+  let unserved = assignRound(chains)
+  while (unserved.some(c => c.length > 1) && pool.length > 0) {
+    unserved = assignRound(unserved.flatMap(c => (c.length > 1 ? [c.slice(0, Math.ceil(c.length / 2)), c.slice(Math.ceil(c.length / 2))] : [c])))
+  }
 
   // What could not be done, per line, with the nearest feasible alternative.
   // Only trucks this order has not already taken can make up a shortfall.
@@ -333,51 +351,110 @@ export function planOrder(lines: OrderLine[], trucks: PlanTruck[], s: EngineSett
 /** A stretch one truck spends in one market; `travelTo` when it ends with the drive to the other. */
 export type Stint = { lineId: string; market: string; start: string; end: string; travelTo: string | null }
 
+/** One day of a job: where the truck is, and whether it works or drives that day. */
+export type RotationDay = { date: string; lineId: string; kind: 'WORK' | 'IDLE' | 'TRAVEL' }
+
+/** Working days in a 7-day block for a line on its own: the first N days (Mon-Fri etc. are handled by the single-quote rule). */
+function soloWorks(line: OrderLine, date: string): boolean {
+  if (line.daysPerWeek === 3) return daysBetween(line.startDate, date) % 7 < 3
+  if (line.daysPerWeek === 7) return true
+  const dow = new Date(date + 'T00:00:00Z').getUTCDay()
+  return line.daysPerWeek === 6 ? dow !== 0 : dow !== 0 && dow !== 6
+}
+
 /**
- * The days a job's truck spends in each market, as back-to-back stretches that
- * never overlap, so each can carry its own hold.
+ * Day by day, where a job's truck is and what it does. This is the one
+ * definition both billing (the WORK days) and holds (the stretches) use.
  *
- * A shared truck alternates on a two-week cycle, so each market gets its days
- * every calendar week and the truck drives only once a week:
+ * A shared truck alternates on a two-week cycle from the day the two lines
+ * overlap, so each market gets its days in every full week and the truck
+ * drives once a week:
  *
- *   week 1: A A A → B B B B      (A's days, travel day, B's days)
- *   week 2: B B B → A A A A      (B's days, travel day, A's days)
+ *   week 1: A A A → B B B        (A's days, travel day, B's days)
+ *   week 2: B B B → A A A
  *
- * Days outside the two lines' overlap go to whichever line is running. The
- * travel day is kept on the stretch it leaves, so the truck is never shown
- * free between markets.
+ * Before the overlap, and after one line ends, the truck works the running
+ * line's days and sits in that market otherwise. A move between markets is
+ * always a TRAVEL day, kept on the market it leaves.
  */
-export function rotationStints(job: Job): Stint[] {
+export function rotation(job: Job): RotationDay[] {
+  const out: RotationDay[] = []
   if (job.lines.length === 1) {
     const l = job.lines[0]
-    return [{ lineId: l.id, market: l.market, start: job.start, end: job.end, travelTo: null }]
+    for (let d = job.start; d <= job.end; d = addDays(d, 1)) out.push({ date: d, lineId: l.id, kind: soloWorks(l, d) ? 'WORK' : 'IDLE' })
+    return out
   }
   const [a, b] = job.lines
   const overlapStart = a.startDate > b.startDate ? a.startDate : b.startDate
-  const TRAVEL = 'travel'
-  const where = (d: string): string => {
+  const other = (l: OrderLine) => (l.id === a.id ? b : a)
+  let at = a
+  for (let d = job.start; d <= job.end; d = addDays(d, 1)) {
     const inA = a.startDate <= d && d <= a.endDate
     const inB = b.startDate <= d && d <= b.endDate
-    if (inA && !inB) return a.id
-    if (inB && !inA) return b.id
-    const k = daysBetween(overlapStart, d)
-    const pos = k % 7
-    const [first, second] = Math.floor(k / 7) % 2 === 0 ? [a, b] : [b, a]
-    return pos < first.daysPerWeek ? first.id : pos === first.daysPerWeek ? TRAVEL : second.id
+    let want: OrderLine
+    let works: boolean
+    if (d < overlapStart) {
+      want = inA ? a : b
+      works = soloWorks(want, d)
+    } else {
+      const k = daysBetween(overlapStart, d)
+      const pos = k % 7
+      const [first, second] = Math.floor(k / 7) % 2 === 0 ? [a, b] : [b, a]
+      if (inA && inB) {
+        if (pos === first.daysPerWeek) { out.push({ date: d, lineId: at.id, kind: 'TRAVEL' }); at = second; continue }
+        want = pos < first.daysPerWeek ? first : second
+        works = pos < first.daysPerWeek || pos <= first.daysPerWeek + second.daysPerWeek
+      } else {
+        // One line has ended: keep that line's slot in the cycle.
+        want = inA ? a : b
+        works = want === first ? pos < first.daysPerWeek : pos > other(want).daysPerWeek && pos <= other(want).daysPerWeek + want.daysPerWeek
+      }
+    }
+    if (want.id !== at.id) { out.push({ date: d, lineId: at.id, kind: 'TRAVEL' }); at = want; continue }
+    out.push({ date: d, lineId: want.id, kind: works ? 'WORK' : 'IDLE' })
   }
+  return out
+}
 
-  const byId = new Map([[a.id, a], [b.id, b]])
+/** Where the truck is at the end of the job (after any final travel day). */
+function rotationEndsIn(job: Job): OrderLine {
+  const days = rotation(job)
+  const last = days[days.length - 1]
+  const line = job.lines.find(l => l.id === last.lineId)!
+  return last.kind === 'TRAVEL' ? job.lines.find(l => l.id !== line.id)! : line
+}
+
+/** Working days the job gives each of its lines — what the client is billed for. */
+export function workDays(job: Job): Map<string, number> {
+  const m = new Map<string, number>(job.lines.map(l => [l.id, 0]))
+  for (const d of rotation(job)) if (d.kind === 'WORK') m.set(d.lineId, (m.get(d.lineId) ?? 0) + 1)
+  return m
+}
+
+/**
+ * The days a job's truck spends in each market, as back-to-back stretches that
+ * never overlap, so each can carry its own hold. Travel days stay on the
+ * stretch they leave, so the truck is never shown free between markets.
+ */
+export function rotationStints(job: Job): Stint[] {
+  const byId = new Map(job.lines.map(l => [l.id, l]))
   const out: Stint[] = []
-  for (let d = job.start; d <= job.end; d = addDays(d, 1)) {
-    const at = where(d)
+  for (const d of rotation(job)) {
     const cur = out[out.length - 1]
-    if (at === TRAVEL) {
-      if (cur) { cur.end = d; cur.travelTo = byId.get(cur.lineId === a.id ? b.id : a.id)!.market }
+    if (cur && cur.lineId === d.lineId && !cur.travelTo) {
+      cur.end = d.date
+      if (d.kind === 'TRAVEL') cur.travelTo = job.lines.find(l => l.id !== d.lineId)!.market
       continue
     }
-    if (cur && cur.lineId === at && !cur.travelTo) { cur.end = d; continue }
-    out.push({ lineId: at, market: byId.get(at)!.market, start: d, end: d, travelTo: null })
+    out.push({ lineId: d.lineId, market: byId.get(d.lineId)!.market, start: d.date, end: d.date, travelTo: d.kind === 'TRAVEL' ? job.lines.find(l => l.id !== d.lineId)!.market : null })
   }
+  return out
+}
+
+/** Truck-days each line receives from the plan. */
+export function deliveredTruckDays(plan: OrderPlan): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const t of plan.trucks) for (const j of t.jobs) for (const [id, n] of workDays(j)) out.set(id, (out.get(id) ?? 0) + n)
   return out
 }
 

@@ -12,7 +12,7 @@
  * one Salesforce opportunity in one step.
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { ReviewFinding } from '@/lib/planning/claude'
@@ -59,10 +59,10 @@ const SCHEDULE_OPTIONS: { value: number; label: string }[] = [
 ]
 const scheduleLabel = (dpw: number) => (dpw === 3 ? '3 days/wk' : dpw === 5 ? 'Mon-Fri' : dpw === 6 ? 'Mon-Sat' : '7 days')
 
-/** Like the single-market quote: 6 days or fewer runs every day; longer ranges pick a schedule. */
+/** Like the single-market quote: a range of 6 days or fewer is priced Mon-Fri; longer ranges pick a schedule. */
 function ScheduleSelect({ start, end, value, onChange }: { start: string; end: string; value: number; onChange: (v: number) => void }) {
   const cal = calendarDays(start, end)
-  if (cal > 0 && cal <= 6) return <div className="text-xs text-gray-500 px-1 py-2 whitespace-nowrap">Every day ({cal})</div>
+  if (cal > 0 && cal <= 6) return <div className="text-xs text-gray-500 px-1 py-2 whitespace-nowrap" title="Priced as the single-market quote prices a short range">Mon-Fri ({cal} cal days)</div>
   return (
     <select className={input + ' min-w-[12rem]'} value={value} onChange={e => onChange(Number(e.target.value))}>
       {SCHEDULE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -118,10 +118,21 @@ export function PlannerTab() {
   const [holdResult, setHoldResult] = useState<{ ok: boolean; message: string } | null>(null)
   // Markets to book. Every market with a truck is selected when a quote arrives.
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  // One id per quote shown. Every booking attempt for this quote reuses it, so
+  // a retry after a timeout returns the first attempt's holds, never a second set.
+  const bookingId = useRef('')
   const showQuote = (q: MultiMarketQuote) => {
     setQuote(q)
     setSelected(new Set(q.lines.filter(l => l.missing < l.trucks).map(l => l.id)))
+    bookingId.current = (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`).replace(/[^A-Za-z0-9_-]/g, '')
   }
+
+  // A quote is only good for the inputs it was built from. Any change to the
+  // markets, options or client clears it, so the button can never book
+  // something other than what is on screen.
+  useEffect(() => {
+    setQuote(null); setHoldResult(null)
+  }, [rows, features, alloyRenews, account])
 
   const updateRow = (id: string, patch: Partial<QuoteRow>) => {
     setRows(rs => rs.map(r => (r.id === id ? { ...r, ...patch } : r)))
@@ -218,11 +229,15 @@ export function PlannerTab() {
     }
   }
 
-  const placeHolds = async (allowPartial = false) => {
-    if (!account) return
+  const placeHolds = async (allowPartial = false, expectedTotal?: number): Promise<void> => {
+    if (!account || !quote) return
+    const shown = expectedTotal ?? quote.lines.filter(l => selected.has(l.id)).reduce((n, l) => n + l.total, 0)
     setHolding(true); setHoldResult(null)
     try {
-      const res = await fetch('/api/plan/hold', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial }) })
+      const res = await fetch('/api/plan/hold', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown }),
+      })
       const data = await readJson(res)
       if (res.status === 409 && data.shortfalls) {
         const ok = window.confirm(`${data.error}\n\n${data.shortfalls.map((s: { market: string; missing: number }) => `${s.market}: ${s.missing} truck(s) short`).join('\n')}\n\nBook what can be covered? The rest will be noted on the Salesforce opportunity as quoted but not available, and left out of its amount.`)
@@ -230,8 +245,14 @@ export function PlannerTab() {
         setHoldResult({ ok: false, message: 'No holds placed.' })
         return
       }
+      if (res.status === 409 && data.priceChanged) {
+        const ok = window.confirm(`Booking ${allowPartial ? 'what can be covered' : 'the selected markets'} on fresh truck data comes to ${fmtMoney(data.priceChanged.now)}, not ${fmtMoney(data.priceChanged.was)}.\n\nBook at ${fmtMoney(data.priceChanged.now)}?`)
+        if (ok) { setHolding(false); return placeHolds(allowPartial, data.priceChanged.now) }
+        setHoldResult({ ok: false, message: 'No holds placed.' })
+        return
+      }
       if (!res.ok) throw new Error(data.error || 'Holds could not be placed')
-      setHoldResult({ ok: true, message: data.message + (data.skipped?.length ? ` ${data.skipped.length} skipped (booked since the quote was built).` : '') })
+      setHoldResult({ ok: true, message: data.message })
     } catch (e) {
       setHoldResult({ ok: false, message: e instanceof Error ? e.message : 'Holds could not be placed' })
     } finally {

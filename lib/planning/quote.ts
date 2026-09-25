@@ -20,9 +20,11 @@ import {
 import { countCalendarDays } from '@/lib/pricing/schedule'
 import { resolveDefaultRateOverrides, resolveRateOverridesBySfdcAccount, resolveMarketInputAll } from '@/lib/pricing/resolvers'
 import type { RateOverrides } from '@/lib/pricing/config'
+import { canonicalMarketName, loadStandardMarketCoords, titleCaseMarket } from '@/lib/marketBounds'
+import { haversineDistance } from '@/lib/marketCoordinates'
 import { DEFAULT_RULES, loadPlanningFleet, type ReservedTruck } from './fleet'
 import {
-  DEFAULT_ENGINE, planOrder, legsByLine, trucksByLine, lineActivationDays, SCHEDULES,
+  DEFAULT_ENGINE, planOrder, legsByLine, trucksByLine, lineActivationDays, deliveredTruckDays, SCHEDULES,
   type EngineSettings, type OrderLine, type OrderPlan, type Shortfall,
 } from './order'
 import { addDays, type PlanTruck } from './planner'
@@ -55,6 +57,21 @@ export type QuoteRequest = {
 
 export type RowError = { rowId: string; message: string; candidates?: string[] }
 
+/** The canonical name of the standard market nearest a point, or null when none are loaded. */
+async function nearestStandardMarket(lat: number, lng: number): Promise<string | null> {
+  const coords = await loadStandardMarketCoords()
+  let best: { key: string; miles: number } | null = null
+  for (const [key, c] of coords) {
+    const miles = haversineDistance(lat, lng, c.lat, c.lng)
+    if (!best || miles < best.miles) best = { key, miles }
+  }
+  if (!best) return null
+  return (await canonicalMarketName(best.key)) ?? titleCaseMarket(best.key)
+}
+
+/** Hop limits the engine accepts, whatever a request asks for. */
+export const HOP_LIMIT_RANGE = { min: 50, max: 450 }
+
 /** Shape and range checks for a quote request; null when it is valid. */
 export function validateQuoteRequest(body: QuoteRequest): string | null {
   if (!Array.isArray(body.rows) || body.rows.length === 0) return 'Add at least one market.'
@@ -84,8 +101,15 @@ export type LineQuote = {
   trucks: number
   daysPerWeek: number
   hours: number
+  /** Days per truck the client asked for (the schedule over the date range). */
   activationDays: number
+  calendarDays: number
+  /** Truck-days billed: the days the plan's trucks actually work here, plus requested days for any truck not covered. */
+  truckDays: number
+  dailyRate: number
+  hourSurcharge: number
   effectiveDailyRate: number
+  shadowFencingFloored: boolean
   baseMedia: number
   shadowFencing: number
   smartDirectional: number
@@ -155,6 +179,14 @@ export type MultiMarketQuote = {
 
 const EXCLUDED_STATES = new Set(['AK', 'HI'])
 
+/**
+ * What the single-market quote bills a range of 6 days or fewer on: the page
+ * (app/quote/page.tsx) always sends days_per_week, and for short ranges that
+ * is its hidden default of 5. Kept identical so the same campaign prices the
+ * same on both tabs; change both together.
+ */
+export const SHORT_RANGE_DAYS_PER_WEEK = 5
+
 export async function resolveRows(rows: QuoteRow[]): Promise<{ lines: OrderLine[]; errors: RowError[] }> {
   const lines: OrderLine[] = []
   const errors: RowError[] = []
@@ -166,7 +198,12 @@ export async function resolveRows(rows: QuoteRow[]): Promise<{ lines: OrderLine[
     let market = r.market.trim()
     let lat = r.lat
     let lng = r.lng
-    if (lat === undefined || lng === undefined) {
+    let standardMarket: string | undefined
+    if (lat !== undefined && lng !== undefined) {
+      // An imported DMA is not a standard market name. Book it under the
+      // nearest standard market so its holds resolve to a place later.
+      standardMarket = (await nearestStandardMarket(lat, lng)) ?? undefined
+    } else {
       const matches = await resolveMarketInputAll(market)
       if (matches.length === 0) { errors.push({ rowId: r.id, message: `"${market}" was not found. Include the state, e.g. "Portland, OR".` }); continue }
       if (matches.length > 1) { errors.push({ rowId: r.id, message: `Several markets match "${market}".`, candidates: matches.map(m => m.formal) }); continue }
@@ -176,12 +213,13 @@ export async function resolveRows(rows: QuoteRow[]): Promise<{ lines: OrderLine[
       lat = coords.lat
       lng = coords.lng
     }
-    const st = market.split(',').pop()?.trim().toUpperCase()
+    const st = (standardMarket ?? market).split(',').pop()?.trim().toUpperCase()
     if (st && EXCLUDED_STATES.has(st)) { errors.push({ rowId: r.id, message: `${market} is outside the contiguous 48 states.` }); continue }
-    // As in the single-market quote: a range of 6 days or fewer runs every day,
-    // and the weekly schedule applies only to longer ranges.
-    const daysPerWeek = countCalendarDays(r.startDate, r.endDate) <= 6 ? 7 : r.daysPerWeek
-    lines.push({ id: r.id, market, lat, lng, startDate: r.startDate, endDate: r.endDate, trucks: Math.floor(r.trucks), daysPerWeek, hours: r.hours })
+    // Priced exactly as the single-market quote prices it: for a range of 6
+    // days or fewer that page hides its schedule buttons and sends its
+    // default, Mon-Fri, so a short range bills its weekdays.
+    const daysPerWeek = countCalendarDays(r.startDate, r.endDate) <= 6 ? SHORT_RANGE_DAYS_PER_WEEK : r.daysPerWeek
+    lines.push({ id: r.id, market, lat, lng, startDate: r.startDate, endDate: r.endDate, trucks: Math.floor(r.trucks), daysPerWeek, hours: r.hours, standardMarket })
   }
   return { lines, errors }
 }
@@ -209,12 +247,21 @@ async function priceLines(
 ): Promise<LineQuote[]> {
   const legs = legsByLine(plan)
   const trucks = trucksByLine(plan)
+  const delivered = deliveredTruckDays(plan)
   const missing = new Map(plan.shortfalls.map(s => [s.lineId, s.missing]))
   return lines.map(line => {
     const activationDays = lineActivationDays(line)
+    // Bill what the trucks actually work here. A shared truck's rotation can
+    // give a market a different number of days in a part week than a truck of
+    // its own would, so the request's days x trucks is not the bill. Trucks
+    // the fleet cannot cover are quoted at the requested days.
+    const truckDays = Math.max(1, (delivered.get(line.id) ?? 0) + (missing.get(line.id) ?? 0) * activationDays)
+    // The rate depends only on total truck-days (the lower of the per-truck
+    // and cumulative tiers is always the cumulative one), so one truck for
+    // truckDays prices exactly as N trucks sharing them.
     const q = computeQuote({
-      truckCount: line.trucks,
-      days: Math.max(1, activationDays),
+      truckCount: 1,
+      days: truckDays,
       operatingHours: line.hours,
       marketSizeTierId: tiers.get(line.market) ?? 3,
       includeSmartDirectional: features.smartDirectional,
@@ -258,7 +305,9 @@ async function priceLines(
     return {
       id: line.id, market: line.market, startDate: line.startDate, endDate: line.endDate,
       trucks: line.trucks, daysPerWeek: line.daysPerWeek, hours: line.hours,
-      activationDays, effectiveDailyRate: q.effectiveDailyRate,
+      activationDays, calendarDays: countCalendarDays(line.startDate, line.endDate), truckDays,
+      dailyRate: q.dailyRate, hourSurcharge: q.hourSurcharge, effectiveDailyRate: q.effectiveDailyRate,
+      shadowFencingFloored: features.shadowFencing && q.better.shadowFencingFloored,
       baseMedia: Math.round(q.good.baseMedia), shadowFencing: Math.round(sf), smartDirectional: Math.round(sd), deviceId: Math.round(did),
       media: Math.round(media),
       transport: { outcome: t.outcome, billed: Math.round(t.charge), absorbedCost },
@@ -324,13 +373,13 @@ export async function buildMultiMarketQuote(req: QuoteRequest, lines: OrderLine[
   const s: EngineSettings = {
     ...DEFAULT_ENGINE,
     today,
-    hopLimitRoadMiles: req.hopLimitRoadMiles ?? DEFAULT_ENGINE.hopLimitRoadMiles,
+    hopLimitRoadMiles: Math.min(HOP_LIMIT_RANGE.max, Math.max(HOP_LIMIT_RANGE.min, Number(req.hopLimitRoadMiles) || DEFAULT_ENGINE.hopLimitRoadMiles)),
     serviceAreaMiles: overrides?.service_area_miles,
   }
   // Load far enough out that the cheaper-start alternatives see the fleet too.
   const fleet = await loadPlanningFleet({ today, planThrough: addDays(planThrough, START_SHIFTS[START_SHIFTS.length - 1]), rules })
   const tiers = new Map<string, number>()
-  for (const l of lines) if (!tiers.has(l.market)) tiers.set(l.market, await resolveMarketSizeTierId(l.market))
+  for (const l of lines) if (!tiers.has(l.market)) tiers.set(l.market, await resolveMarketSizeTierId(l.standardMarket ?? l.market))
 
   const run = (ls: OrderLine[], settings = s) => planOrder(ls, fleet.trucks, settings)
   const plan = run(lines)
@@ -345,6 +394,10 @@ export async function buildMultiMarketQuote(req: QuoteRequest, lines: OrderLine[
   if (rules.reserveSoftHolds && !fleet.reserved.some(r => r.reason.startsWith('AT&T soft'))) warnings.push('No AT&T soft holds are on file, so no AT&T trucks are held back.')
   if (req.alloyRenews && !fleet.reserved.some(r => !r.reason.startsWith('AT&T soft'))) warnings.push('Alloy Build is marked as renewing, but no truck is currently on an Alloy Build job.')
   for (const l of priced) {
+    const asked = l.trucks * l.activationDays
+    if (l.truckDays < asked && l.assigned.some(a => a.sharedWith)) {
+      warnings.push(`${l.market} gets ${l.truckDays} of the ${asked} truck-days asked for, and is billed for ${l.truckDays}: its truck alternates with ${l.assigned.find(a => a.sharedWith)!.sharedWith}, and the final part-week goes to that market. A truck of its own would cover every day.`)
+    }
     const lead = businessDaysBetween(new Date(), new Date(l.startDate + 'T00:00:00Z'))
     if (l.transport.outcome === 'BILLED' && lead < 10) warnings.push(`${l.market} starts ${lead} business days out, so its transport is billed rather than absorbed.`)
   }

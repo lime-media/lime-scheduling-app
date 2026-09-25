@@ -189,16 +189,16 @@ export default function InternalQuotePage() {
             Quote Builder
           </button>
           <button
-            onClick={() => setActiveTab('classic')}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'classic' ? 'border-green-600 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
-          >
-            Classic Quote Tool
-          </button>
-          <button
             onClick={() => setActiveTab('planner')}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'planner' ? 'border-green-600 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
           >
             Multi-market Plan
+          </button>
+          <button
+            onClick={() => setActiveTab('classic')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'classic' ? 'border-green-600 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+          >
+            Classic Quote Tool
           </button>
         </div>
 

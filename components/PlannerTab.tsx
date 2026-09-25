@@ -64,7 +64,7 @@ function ScheduleSelect({ start, end, value, onChange }: { start: string; end: s
   const cal = calendarDays(start, end)
   if (cal > 0 && cal <= 6) return <div className="text-xs text-gray-500 px-1 py-2 whitespace-nowrap">Every day ({cal})</div>
   return (
-    <select className={input} value={value} onChange={e => onChange(Number(e.target.value))}>
+    <select className={input + ' min-w-[12rem]'} value={value} onChange={e => onChange(Number(e.target.value))}>
       {SCHEDULE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
     </select>
   )
@@ -302,13 +302,13 @@ export function PlannerTab() {
                     </td>
                     <td className={td}><input type="date" className={input} min={todayStr()} value={r.startDate} onChange={e => updateRow(r.id, { startDate: e.target.value })} /></td>
                     <td className={td}><input type="date" className={input} min={r.startDate || todayStr()} value={r.endDate} onChange={e => updateRow(r.id, { endDate: e.target.value })} /></td>
-                    <td className={td + ' w-20'}><input type="number" min={1} max={50} className={input} value={r.trucks} onChange={e => updateRow(r.id, { trucks: Math.max(1, parseInt(e.target.value) || 1) })} /></td>
-                    <td className={td + ' w-44'}>
+                    <td className={td}><input type="number" min={1} max={50} className={input + ' min-w-[4.5rem]'} value={r.trucks} onChange={e => updateRow(r.id, { trucks: Math.max(1, parseInt(e.target.value) || 1) })} /></td>
+                    <td className={td}>
                       <ScheduleSelect start={r.startDate} end={r.endDate} value={r.daysPerWeek} onChange={v => updateRow(r.id, { daysPerWeek: v })} />
                     </td>
-                    <td className={td + ' w-20'}>
-                      <select className={input} value={r.hours} onChange={e => updateRow(r.id, { hours: Number(e.target.value) })}>
-                        {[8, 10, 12].map(h => <option key={h} value={h}>{h}</option>)}
+                    <td className={td}>
+                      <select className={input + ' min-w-[5.5rem]'} value={r.hours} onChange={e => updateRow(r.id, { hours: Number(e.target.value) })}>
+                        {[8, 10, 12].map(h => <option key={h} value={h}>{h} hr</option>)}
                       </select>
                     </td>
                     <td className={td}>
@@ -383,14 +383,14 @@ function ImportPanel(p: {
       <p className="text-xs text-gray-600 mb-2">
         Upload the client&apos;s file (.xlsx, .csv or .pdf) or paste the list, or an email containing it. Each DMA becomes a market row with the schedule below; edit any row afterwards.
       </p>
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-2">
+      <div className="flex flex-wrap gap-2 mb-2 [&>div]:flex-1 [&>div]:min-w-[8rem]">
         <div><label className="text-xs text-gray-600">Start</label><input type="date" className={input} value={bulk.startDate} onChange={e => setBulk({ ...bulk, startDate: e.target.value })} /></div>
         <div><label className="text-xs text-gray-600">End</label><input type="date" className={input} value={bulk.endDate} onChange={e => setBulk({ ...bulk, endDate: e.target.value })} /></div>
         <div><label className="text-xs text-gray-600">Trucks each</label><input type="number" min={1} className={input} value={bulk.trucks} onChange={e => setBulk({ ...bulk, trucks: Math.max(1, parseInt(e.target.value) || 1) })} /></div>
         <div><label className="text-xs text-gray-600">Schedule</label>
           <ScheduleSelect start={bulk.startDate} end={bulk.endDate} value={bulk.daysPerWeek} onChange={v => setBulk({ ...bulk, daysPerWeek: v })} /></div>
         <div><label className="text-xs text-gray-600">Hours</label>
-          <select className={input} value={bulk.hours} onChange={e => setBulk({ ...bulk, hours: Number(e.target.value) })}>{[8, 10, 12].map(h => <option key={h} value={h}>{h}</option>)}</select></div>
+          <select className={input + ' min-w-[5.5rem]'} value={bulk.hours} onChange={e => setBulk({ ...bulk, hours: Number(e.target.value) })}>{[8, 10, 12].map(h => <option key={h} value={h}>{h} hr</option>)}</select></div>
       </div>
       {p.file && (
         <div className="flex items-center gap-2 mb-2 text-sm text-gray-700">

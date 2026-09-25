@@ -16,7 +16,7 @@ import { useState } from 'react'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { ReviewFinding } from '@/lib/planning/claude'
-import type { MultiMarketQuote, QuoteRow, RowError } from '@/lib/planning/quote'
+import type { Arrival, MultiMarketQuote, QuoteRow, RowError } from '@/lib/planning/quote'
 
 type BuiltAreas = AreaBuildResult & { source: string; parsedRows: ZipRow[]; notes: string[] }
 
@@ -471,6 +471,7 @@ function QuoteResult({ quote, account, holding, holdResult, selected, onToggle, 
   const chosen = quote.lines.filter(l => selected.has(l.id))
   const chosenTotal = chosen.reduce((s, l) => s + l.total, 0)
   const booked = holdResult?.ok === true
+  const outOfMarket = quote.lines.flatMap(l => l.arrivals).filter(a => a.outOfMarket)
 
   return (
     <>
@@ -518,13 +519,9 @@ function QuoteResult({ quote, account, holding, holdResult, selected, onToggle, 
                     {l.transport.billed > 0 ? fmtMoney(l.transport.billed) : <span className="text-gray-400">{l.transport.outcome === 'ABSORBED' ? 'included' : '—'}</span>}
                   </td>
                   <td className={tdNum + ' font-medium'}>{fmtMoney(l.total)}</td>
-                  <td className={td}>
-                    {l.assigned.map((a, i) => (
-                      <span key={i} className="inline-block mr-2 whitespace-nowrap">
-                        #{a.truckNumber}{a.sharedWith && <span className="text-gray-400"> (shared with {a.sharedWith})</span>}
-                      </span>
-                    ))}
-                    {l.missing > 0 && <span className="text-red-700">{l.missing} not covered</span>}
+                  <td className={td + ' text-xs min-w-[16rem]'}>
+                    {l.arrivals.map(a => <ArrivalLine key={a.truckNumber} a={a} />)}
+                    {l.missing > 0 && <div className="text-red-700">{l.missing} not covered</div>}
                   </td>
                 </tr>
               ))}
@@ -539,7 +536,8 @@ function QuoteResult({ quote, account, holding, holdResult, selected, onToggle, 
           </table>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3 text-sm">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-3 text-sm">
+          <Fact label="From out of market" value={outOfMarket.length ? `${outOfMarket.length} truck${outOfMarket.length === 1 ? '' : 's'} · ${fmtNum(outOfMarket.reduce((n, a) => n + a.miles, 0))} mi` : 'None'} />
           <Fact label="Transport we absorb" value={fmtMoney(summary.transportAbsorbed)} />
           <Fact label="Deadhead miles" value={fmtNum(summary.deadheadMiles)} />
           <Fact label="Trucks used" value={`${summary.trucksUsed} of ${summary.poolSize} available`} />
@@ -620,6 +618,24 @@ function QuoteResult({ quote, account, holding, holdResult, selected, onToggle, 
       </div>
     </>
   )
+}
+
+/** Where one truck comes from, as the single-market quote shows it. */
+function ArrivalLine({ a }: { a: Arrival }) {
+  const days = `${a.transportDays} travel day${a.transportDays === 1 ? '' : 's'}`
+  if (a.fromKind === 'SHARED') {
+    return <div className="whitespace-nowrap"><b>#{a.truckNumber}</b> <span className="text-gray-500">alternates with {a.from}, {fmtNum(a.miles)} mi weekly hop</span></div>
+  }
+  const from = a.fromKind === 'THIS_ORDER' ? `${a.from} (earlier in this order)` : a.fromKind === 'GPS' ? `${a.from} (current location)` : a.from
+  if (a.outOfMarket) {
+    return (
+      <div className="text-amber-800">
+        <b>#{a.truckNumber}</b> from {from} · {fmtNum(a.miles)} mi, {days}
+        {' · '}{a.charge > 0 ? `${fmtMoney(a.charge)} billed` : a.ourCost > 0 ? `included (we absorb ${fmtMoney(a.ourCost)})` : 'included'}
+      </div>
+    )
+  }
+  return <div className="whitespace-nowrap"><b>#{a.truckNumber}</b> <span className="text-gray-500">in market · {a.miles < 1 ? `already in ${from}` : `${fmtNum(a.miles)} mi from ${from}`}</span></div>
 }
 
 function Fact({ label, value }: { label: string; value: string }) {

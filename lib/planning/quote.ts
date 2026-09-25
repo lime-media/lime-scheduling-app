@@ -92,9 +92,28 @@ export type LineQuote = {
   deviceId: number
   media: number
   transport: { outcome: 'INCLUDED' | 'ABSORBED' | 'BILLED'; billed: number; absorbedCost: number }
+  /** Why transport is included, when it is absorbed. */
+  transportNote: string | null
   total: number
-  assigned: { truckNumber: string; sharedWith: string | null }[]
+  assigned: { truckNumber: string; sharedWith: string | null; hopRoadMiles: number }[]
+  /** Where each assigned truck comes from to reach this market, as the single-market quote shows it. */
+  arrivals: Arrival[]
   missing: number
+}
+
+export type Arrival = {
+  truckNumber: string
+  /** Market or place the truck drives from. */
+  from: string
+  fromKind: 'PRIOR_JOB' | 'GPS' | 'THIS_ORDER' | 'SHARED'
+  miles: number
+  transportDays: number
+  /** Beyond the service area: a repositioning move, billed or absorbed per §6. */
+  outOfMarket: boolean
+  /** Charged to the client for this move (BILLED only). */
+  charge: number
+  /** What we absorb for this move (ABSORBED only). */
+  ourCost: number
 }
 
 export type Itinerary = {
@@ -211,11 +230,30 @@ async function priceLines(
     const t = priceTransport({
       activationDays,
       leadBusinessDays: businessDaysBetween(new Date(), new Date(line.startDate + 'T00:00:00Z')),
-      legs: lineLegs.map(l => ({ distanceMiles: l.distanceMiles, needsRepositioning: l.transportDays > 0 })),
+      legs: lineLegs.map(l => ({ distanceMiles: l.distanceMiles, needsRepositioning: l.transportDays > 0, truckNumber: l.truckNumber, fromMarket: l.fromLabel })),
       transportIncluded: overrides?.transport_included,
       overrides: { dayRate: overrides?.transport_day_rate, airfare: overrides?.transport_airfare, hotelPerNight: overrides?.transport_hotel_per_night },
     })
     const absorbedCost = t.outcome === 'ABSORBED' ? Math.round(lineLegs.reduce((s, l) => s + l.absorbedCost, 0)) : 0
+
+    // Per truck: the move that brings it here, at the charge priceTransport
+    // gave it. A truck shared with another market reaches this one by the
+    // weekly hop.
+    const legCharge = new Map(t.legs.map(l => [l.truckNumber, l.charge]))
+    const assigned = trucks.get(line.id) ?? []
+    const arrivals: Arrival[] = assigned.map(a => {
+      const leg = lineLegs.find(l => l.truckNumber === a.truckNumber)
+      if (!leg) {
+        return { truckNumber: a.truckNumber, from: a.sharedWith ?? '', fromKind: 'SHARED', miles: a.hopRoadMiles, transportDays: 0, outOfMarket: false, charge: 0, ourCost: 0 }
+      }
+      const out = leg.transportDays > 0
+      return {
+        truckNumber: a.truckNumber, from: leg.fromLabel, fromKind: leg.fromKind,
+        miles: Math.round(leg.distanceMiles), transportDays: leg.transportDays, outOfMarket: out,
+        charge: out && t.outcome === 'BILLED' ? Math.round(legCharge.get(leg.truckNumber) ?? 0) : 0,
+        ourCost: out && t.outcome === 'ABSORBED' ? Math.round(leg.absorbedCost) : 0,
+      }
+    })
 
     return {
       id: line.id, market: line.market, startDate: line.startDate, endDate: line.endDate,
@@ -225,7 +263,9 @@ async function priceLines(
       media: Math.round(media),
       transport: { outcome: t.outcome, billed: Math.round(t.charge), absorbedCost },
       total: Math.round(media + t.charge),
-      assigned: trucks.get(line.id) ?? [],
+      assigned,
+      arrivals,
+      transportNote: t.absorbedReason ?? null,
       missing: missing.get(line.id) ?? 0,
     }
   })

@@ -84,7 +84,16 @@ export type Job = {
   hopRoadMiles: number
 }
 
-export type Leg = { fromLabel: string; toLineId: string; distanceMiles: number; transportDays: number; absorbedCost: number }
+export type Leg = {
+  truckNumber: string
+  fromLabel: string
+  /** Where the truck starts the move: its last job before this order, its live position, or an earlier market in this order. */
+  fromKind: 'PRIOR_JOB' | 'GPS' | 'THIS_ORDER'
+  toLineId: string
+  distanceMiles: number
+  transportDays: number
+  absorbedCost: number
+}
 
 export type TruckPlan = {
   truckNumber: string
@@ -216,7 +225,7 @@ export function chainJobs(jobs: Job[], s: EngineSettings): Job[][] {
 // 3. Assign
 // ---------------------------------------------------------------------------
 
-type Fit = { cost: number; inboundMiles: number; inboundDays: number; originLabel: string }
+type Fit = { cost: number; inboundMiles: number; inboundDays: number; originLabel: string; fromPriorJob: boolean }
 
 /** Can this truck take this whole chain? Same chain rules as every quote. */
 export function fitTruck(truck: PlanTruck, chain: Job[], s: EngineSettings): Fit | null {
@@ -245,12 +254,15 @@ export function fitTruck(truck: PlanTruck, chain: Job[], s: EngineSettings): Fit
     inboundMiles: Math.round(miles),
     inboundDays: days,
     originLabel: inbound.inbound.originIsPriorJob ? inbound.inbound.originLabel : truck.gpsLabel || 'current position',
+    fromPriorJob: Boolean(inbound.inbound.originIsPriorJob),
   }
 }
 
 function toTruckPlan(truck: PlanTruck, chain: Job[], fit: Fit, s: EngineSettings): TruckPlan {
   const legs: Leg[] = [{
+    truckNumber: truck.truckNumber,
     fromLabel: fit.originLabel,
+    fromKind: fit.fromPriorJob ? 'PRIOR_JOB' : 'GPS',
     toLineId: chain[0].first.id,
     distanceMiles: fit.inboundMiles,
     transportDays: fit.inboundDays,
@@ -259,7 +271,7 @@ function toTruckPlan(truck: PlanTruck, chain: Job[], fit: Fit, s: EngineSettings
   for (let k = 1; k < chain.length; k++) {
     const miles = straight(chain[k - 1].last, chain[k].first)
     const days = moveDays(miles, s)
-    legs.push({ fromLabel: chain[k - 1].last.market, toLineId: chain[k].first.id, distanceMiles: Math.round(miles), transportDays: days, absorbedCost: days > 0 ? absorbedLegCost(days) : 0 })
+    legs.push({ truckNumber: truck.truckNumber, fromLabel: chain[k - 1].last.market, fromKind: 'THIS_ORDER', toLineId: chain[k].first.id, distanceMiles: Math.round(miles), transportDays: days, absorbedCost: days > 0 ? absorbedLegCost(days) : 0 })
   }
   return { truckNumber: truck.truckNumber, jobs: chain, legs, drivers: Math.max(...chain.map(j => j.lines.length)) }
 }
@@ -381,13 +393,13 @@ export function legsByLine(plan: OrderPlan): Map<string, Leg[]> {
 }
 
 /** Trucks serving each line, with the line they share with, if any. */
-export function trucksByLine(plan: OrderPlan): Map<string, { truckNumber: string; sharedWith: string | null }[]> {
-  const out = new Map<string, { truckNumber: string; sharedWith: string | null }[]>()
+export function trucksByLine(plan: OrderPlan): Map<string, { truckNumber: string; sharedWith: string | null; hopRoadMiles: number }[]> {
+  const out = new Map<string, { truckNumber: string; sharedWith: string | null; hopRoadMiles: number }[]>()
   for (const t of plan.trucks) {
     for (const j of t.jobs) {
       for (const l of j.lines) {
         const other = j.lines.find(x => x.id !== l.id)
-        out.set(l.id, [...(out.get(l.id) ?? []), { truckNumber: t.truckNumber, sharedWith: other ? other.market : null }])
+        out.set(l.id, [...(out.get(l.id) ?? []), { truckNumber: t.truckNumber, sharedWith: other ? other.market : null, hopRoadMiles: j.hopRoadMiles }])
       }
     }
   }

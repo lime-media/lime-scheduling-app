@@ -79,11 +79,14 @@ section('order: choosing real trucks')
   const booked = planOrder(order, [truck('1261', 'dal', [busy('2026-10-20', '2026-10-25', 'dal')]), truck('9001', 'den')], S)
   eq('a truck booked mid-campaign is skipped', booked.trucks.map(t => t.truckNumber), ['9001'])
   eq('the Denver truck is repositioned, and priced', booked.trucks[0].legs[0].transportDays > 0 && booked.trucks[0].legs[0].absorbedCost > 0, true)
+  eq('the move names its truck and where it comes from', [booked.trucks[0].legs[0].truckNumber, booked.trucks[0].legs[0].fromLabel, booked.trucks[0].legs[0].fromKind], ['9001', 'Denver', 'GPS'])
+  eq('and how far it drives', Math.round(booked.trucks[0].legs[0].distanceMiles / 10) * 10, 660)
 
   const shared = planOrder([dal3, ftw3], [truck('1261', 'dal'), truck('1262', 'ftw')], S)
   eq('Dallas + Fort Worth at 3 days each: one truck, two drivers', shared.trucks.map(t => [t.truckNumber, t.drivers]).length, 1)
   eq('the other truck is left for other clients', shared.poolSize - shared.trucks.length, 1)
   eq('each market names the market it shares with', trucksByLine(shared).get('dal')![0].sharedWith, 'Fort Worth')
+  eq('and the weekly hop between them', trucksByLine(shared).get('ftw')![0].hopRoadMiles, 39)
   eq('the only move arrives at the first market', [...legsByLine(shared).keys()].length, 1)
 }
 

@@ -37,7 +37,7 @@ The schedule defaults by campaign length:
 | 6 days or fewer | 7 days/week | Every day is an activation day |
 | 7 days or more | 5 days/week (Mon–Fri) | Weekends are skipped and not billed |
 
-The client can override this to 5, 6 (Mon–Sat), or 7 days per week. Multi-market quotes (§6c) also allow 1–4 days per week: each full week bills that many days, and a part week bills the lesser of its length and the weekly count. Before 2026-09-25, anything under 5 was billed as 6.
+The client can override this to 5, 6 (Mon–Sat), or 7 days per week.
 
 **Worked example.** A campaign running Mon Sept 1 → Sun Sept 14 is **14 calendar days**. At the default 5-day schedule for a 7+ day campaign, that's **10 activation days** — the four weekend days drop out. You quote 10 days, not 14. This also pulls the campaign to exactly the 10-day threshold that matters for transport (§6).
 
@@ -369,11 +369,11 @@ Feasibility is recomputed from the stored job chain every time, so a second camp
 
 The single-market quote, for many markets at once. The rep picks the client, lists the markets (typed, or imported from the client's ZIP file), and gets one quote. Behind it, a routing engine decides which real trucks serve which markets. Then one button places every hold and one Salesforce opportunity. Internal only; nothing here is exposed on a client route.
 
-**Input.** One row per market: market, start, end, trucks, days per week (1–7), hours (8, 10 or 12). Every row can be edited. Typed markets resolve the same way as the single-market quote; an ambiguous name shows its candidates to click. An imported client file fills the rows (see *List intake* below), using the bulk dates and schedule the rep sets. AK and HI are refused: Lime Media serves the contiguous 48 states.
+**Input.** One row per market: market, start, end, trucks, schedule, hours (8, 10 or 12). The schedule works as in the single-market quote (§2): a range of 6 days or fewer runs every day, and a longer range picks Mon–Fri, Mon–Sat or 7 days. It can also pick **3 days a week**, which bills three days in each full week (and up to three in a part week) and is the only schedule that lets a truck alternate between two markets. Every row can be edited. Typed markets resolve the same way as the single-market quote; an ambiguous name shows its candidates to click. An imported client file fills the rows (see *List intake* below), using the bulk dates and schedule the rep sets. AK and HI are refused: Lime Media serves the contiguous 48 states.
 
 **The routing engine** (`lib/planning/order.ts`) finds the way to meet every row with the fewest trucks, then the least transport, then the least driving. That also leaves the most trucks for other clients. It never moves a date or changes a schedule the rep asked for; those only appear as alternatives.
 
-1. **Share.** Two truck-slots share one truck when it can alternate between them within a week. That means both markets are within the hop limit (default 250 road miles: straight line × 1.25), their dates overlap, and days A + days B + 1 travel day ≤ 7 (3 + 3 fits; 5 + 5 does not). A maximum matching gets the most shares first, then the shortest hops. A shared truck has two drivers.
+1. **Share.** Two truck-slots share one truck when it can alternate between them within a week. That means both markets are within the hop limit (default 250 road miles: straight line × 1.25), their dates overlap, and both are on 3 days a week (3 + 3 + 1 travel day fits in a week). A maximum matching gets the most shares first, then the shortest hops. A shared truck has two drivers.
 2. **Chain.** Jobs that follow each other in time go on one truck if it can get from the end of one to the start of the next in time (transport days as in §6). A minimum path cover gives the fewest trucks first, then the least transport.
 3. **Assign.** Each chain gets a real truck by number (e.g. 1261). The truck must be free for the whole chain and able to arrive in time from where it is released (its prior job, else live GPS). It also must not strand its next booking, reached from where the chain ends. This is the same chain check as every quote (§6b). A minimum-cost assignment on the transport we absorb picks which truck. A chain no truck can take is split into its jobs and tried again.
 
@@ -391,11 +391,10 @@ The pool is the bookable fleet (`HIDDEN_TRUCKS` excluded), with jobs and holds l
 - **Hours model.** 5 × 8 markets as 3 × 12, or the reverse: the change in trucks and order total.
 - **Start date.** If markets are short, the first start 1–6 weeks later that covers every market. Otherwise, a start 1–3 weeks later that cuts transport by $500 or more.
 
-**Holds and Salesforce** (`/api/plan/hold`). The client must be selected. The order is re-routed from fresh data at the moment of booking. If markets are now short, the rep is asked before holds are placed for the rest. Then:
+**Holds and Salesforce** (`/api/plan/hold`). The client must be selected, and the rep ticks the markets to book (every market with a truck starts ticked). The selected markets are re-routed from fresh data at the moment of booking. If some trucks can no longer be covered, the rep is asked before the rest are booked. Then:
 
-- one hold per truck per job, with the usual clash check and expiry, and a shared campaign group
-- a truck shared between two markets gets **one** hold covering both date ranges, under its first market, with the other market named in the notes (one truck cannot carry two overlapping holds)
-- one Salesforce opportunity for the whole order: amount = order total, all markets and truck numbers, activation notes per market; its ID is written back to every hold
+- **Holds are by market.** A truck on one market gets one hold per job. A truck alternating between two markets gets a hold for each stretch it spends in each one, following its rotation: A Mon–Wed, travel Thu, B Fri–Sun, B Mon–Wed, travel Thu, A Fri–Sun, and so on. The holds sit back to back and never overlap, and the travel day stays on the stretch it leaves, so the truck never shows as free between markets. Each hold carries its own market, the usual clash check and expiry, and the order's campaign group.
+- **One Salesforce opportunity** for what is booked. The amount is the booked markets' total. The Description lists each booked market, then the markets **quoted but not selected** and the trucks **quoted but not available**, with their quoted totals. Activation Notes (500 characters) gets a one-line summary. The opportunity ID is written back to every hold.
 
 **List intake.** A client ZIP list (CSV, `.xlsx`, or via Claude, PDF or email) is geocoded against the Census ZIP centroids in `lib/planning/data/` and grouped into markets by the client's DMA names. DMAs whose centres are within 30 miles are worked as one. We count ourselves in a DMA within an hour's drive, about 60 miles. Every assumption is reported, not absorbed: duplicates, rows with no DMA, PO-box ZIPs, ZIPs over 60 miles from their market's centre, probable typos (over 150 miles from the rest of their DMA), and DMAs whose ZIPs disagree. A DMA with no ZIP we can locate is shown in a red banner as **not in the quote**. A DMA is never dropped silently.
 

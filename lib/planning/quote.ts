@@ -14,14 +14,15 @@
  */
 
 import {
-  computeQuote, priceTransport, countActivationDays,
+  computeQuote, priceTransport,
   resolveCampaignCoords, resolveMarketSizeTierId, businessDaysBetween,
 } from '@/lib/pricing'
+import { countCalendarDays } from '@/lib/pricing/schedule'
 import { resolveDefaultRateOverrides, resolveRateOverridesBySfdcAccount, resolveMarketInputAll } from '@/lib/pricing/resolvers'
 import type { RateOverrides } from '@/lib/pricing/config'
 import { DEFAULT_RULES, loadPlanningFleet, type ReservedTruck } from './fleet'
 import {
-  DEFAULT_ENGINE, planOrder, legsByLine, trucksByLine,
+  DEFAULT_ENGINE, planOrder, legsByLine, trucksByLine, lineActivationDays, SCHEDULES,
   type EngineSettings, type OrderLine, type OrderPlan, type Shortfall,
 } from './order'
 import { addDays, type PlanTruck } from './planner'
@@ -63,7 +64,7 @@ export function validateQuoteRequest(body: QuoteRequest): string | null {
     if (typeof r.id !== 'string' || typeof r.market !== 'string') return 'Each row needs an id and a market.'
     if (!isDate(r.startDate) || !isDate(r.endDate)) return `Dates are missing for ${r.market || 'a row'}.`
     if (!Number.isInteger(r.trucks) || r.trucks < 1 || r.trucks > 50) return `Trucks for ${r.market} must be 1 to 50.`
-    if (!Number.isInteger(r.daysPerWeek) || r.daysPerWeek < 1 || r.daysPerWeek > 7) return `Days per week for ${r.market} must be 1 to 7.`
+    if (!(SCHEDULES as readonly number[]).includes(r.daysPerWeek)) return `Schedule for ${r.market} must be Mon-Fri, Mon-Sat, 7 days or 3 days a week.`
     if (!(r.hours >= 8 && r.hours <= 12)) return `Hours for ${r.market} must be 8 to 12.`
   }
   const today = new Date().toISOString().split('T')[0]
@@ -158,7 +159,10 @@ export async function resolveRows(rows: QuoteRow[]): Promise<{ lines: OrderLine[
     }
     const st = market.split(',').pop()?.trim().toUpperCase()
     if (st && EXCLUDED_STATES.has(st)) { errors.push({ rowId: r.id, message: `${market} is outside the contiguous 48 states.` }); continue }
-    lines.push({ id: r.id, market, lat, lng, startDate: r.startDate, endDate: r.endDate, trucks: Math.floor(r.trucks), daysPerWeek: r.daysPerWeek, hours: r.hours })
+    // As in the single-market quote: a range of 6 days or fewer runs every day,
+    // and the weekly schedule applies only to longer ranges.
+    const daysPerWeek = countCalendarDays(r.startDate, r.endDate) <= 6 ? 7 : r.daysPerWeek
+    lines.push({ id: r.id, market, lat, lng, startDate: r.startDate, endDate: r.endDate, trucks: Math.floor(r.trucks), daysPerWeek, hours: r.hours })
   }
   return { lines, errors }
 }
@@ -188,7 +192,7 @@ async function priceLines(
   const trucks = trucksByLine(plan)
   const missing = new Map(plan.shortfalls.map(s => [s.lineId, s.missing]))
   return lines.map(line => {
-    const activationDays = countActivationDays(line.startDate, line.endDate, line.daysPerWeek)
+    const activationDays = lineActivationDays(line)
     const q = computeQuote({
       truckCount: line.trucks,
       days: Math.max(1, activationDays),
@@ -268,7 +272,7 @@ export type PreparedQuote = {
   plan: OrderPlan
 }
 
-export async function buildMultiMarketQuote(req: QuoteRequest, lines: OrderLine[]): Promise<PreparedQuote> {
+export async function buildMultiMarketQuote(req: QuoteRequest, lines: OrderLine[], opts: { alternatives?: boolean } = {}): Promise<PreparedQuote> {
   const today = new Date().toISOString().split('T')[0]
   const planThrough = lines.reduce((m, l) => (l.endDate > m ? l.endDate : m), today)
   const rules = {
@@ -293,7 +297,7 @@ export async function buildMultiMarketQuote(req: QuoteRequest, lines: OrderLine[
   const priced = await priceLines(lines, plan, req.features, overrides, tiers)
   const summary = summarize(priced, plan)
 
-  const alternatives = await buildAlternatives(lines, plan, summary, { run, price: (ls, p) => priceLines(ls, p, req.features, overrides, tiers), s, trucks: fleet.trucks })
+  const alternatives = opts.alternatives === false ? [] : await buildAlternatives(lines, plan, summary, { run, price: (ls, p) => priceLines(ls, p, req.features, overrides, tiers), s, trucks: fleet.trucks })
 
   const warnings: string[] = []
   if (plan.approximateClusters > 0) warnings.push('Some markets were too many to pair exactly in the time allowed. The truck count is still the minimum, but the weekly hops may not be the shortest possible.')
@@ -367,7 +371,7 @@ async function buildAlternatives(
   }
 
   // A different hours model.
-  const fiveByEight = lines.filter(l => l.daysPerWeek >= 4 && l.hours <= 8)
+  const fiveByEight = lines.filter(l => l.daysPerWeek === 5 && l.hours <= 8)
   const threeByTwelve = lines.filter(l => l.daysPerWeek === 3 && l.hours === 12)
   const variant = fiveByEight.length
     ? { from: '5×8', to: '3×12', ids: new Set(fiveByEight.map(l => l.id)), dpw: 3, hours: 12 }

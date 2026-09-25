@@ -9,7 +9,7 @@
  */
 import { eq, section } from './harness'
 import {
-  canShare, buildJobs, canFollow, chainJobs, planOrder, trucksByLine, legsByLine,
+  canShare, buildJobs, canFollow, chainJobs, planOrder, trucksByLine, legsByLine, rotationStints, lineActivationDays,
   DEFAULT_ENGINE, type EngineSettings, type OrderLine,
 } from '@/lib/planning/order'
 import { freeFrom, type PlanTruck } from '@/lib/planning/planner'
@@ -97,3 +97,35 @@ section('order: shortfalls')
   eq('earliest a truck not already in this order could start', plan.shortfalls[0].earliestPossibleStart, '2026-10-21')
   eq('freeFrom agrees', freeFrom(fleet[1].jobs, '2026-10-12', '2026-11-08'), '2026-10-21')
 }
+
+// ---------------------------------------------------------------------------
+section('order: holds by market for a shared truck')
+{
+  // Mon Oct 12 - Sun Oct 25: two weeks, Dallas and Fort Worth 3 days a week each.
+  const a = line('dal', 'dal', '2026-10-12', '2026-10-25')
+  const b = line('ftw', 'ftw', '2026-10-12', '2026-10-25')
+  const [job] = buildJobs([a, b], S).jobs
+  const st = rotationStints(job)
+  eq('Dallas, Fort Worth, Dallas: back-to-back stretches', st.map(x => [x.market, x.start, x.end]), [
+    ['Dallas', '2026-10-12', '2026-10-15'],      // Mon-Wed, Thu travel
+    ['Fort Worth', '2026-10-16', '2026-10-22'],  // Fri-Sun, Mon-Wed, Thu travel
+    ['Dallas', '2026-10-23', '2026-10-25'],      // Fri-Sun
+  ])
+  eq('each stretch but the last ends with the drive to the other', st.map(x => x.travelTo), ['Fort Worth', 'Dallas', null])
+  const days = (id: string) => st.filter(x => x.lineId === id).reduce((n, x) => n + (Math.round((Date.parse(x.end) - Date.parse(x.start)) / 864e5) + 1) - (x.travelTo ? 1 : 0), 0)
+  eq('each market gets its 3 days in each of the 2 weeks', [days('dal'), days('ftw')], [6, 6])
+  const noOverlap = st.every((x, i) => i === 0 || x.start > st[i - 1].end)
+  eq('no two holds overlap', noOverlap, true)
+  eq('no day uncovered', st.every((x, i) => i === 0 || x.start === new Date(Date.parse(st[i - 1].end) + 864e5).toISOString().slice(0, 10)), true)
+
+  const lead = line('dal', 'dal', '2026-10-05', '2026-10-25')
+  const [j2] = buildJobs([lead, b], S).jobs
+  eq('a week on Dallas alone comes before the rotation', rotationStints(j2)[0], { lineId: 'dal', market: 'Dallas', start: '2026-10-05', end: '2026-10-15', travelTo: 'Fort Worth' })
+  eq('a market on its own truck: one hold', rotationStints(buildJobs([line('den', 'den', '2026-10-12', '2026-11-08', 1, 5, 8)], S).jobs[0]).length, 1)
+}
+
+section('order: billed days')
+eq('3 days a week, two weeks', lineActivationDays({ startDate: '2026-10-12', endDate: '2026-10-25', daysPerWeek: 3 }), 6)
+eq('3 days a week, part week', lineActivationDays({ startDate: '2026-10-12', endDate: '2026-10-21', daysPerWeek: 3 }), 6)
+eq('Mon-Fri as the single quote', lineActivationDays({ startDate: '2026-09-01', endDate: '2026-09-14', daysPerWeek: 5 }), 10)
+eq('every day as the single quote', lineActivationDays({ startDate: '2026-09-01', endDate: '2026-09-03', daysPerWeek: 7 }), 3)

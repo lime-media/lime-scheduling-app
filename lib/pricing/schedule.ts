@@ -27,13 +27,6 @@ export function countCalendarDays(startStr: string, endStr: string): number {
  * - 7 days/week: every calendar day
  * - 6 days/week: Mon-Sat (skip Sunday)
  * - 5 days/week: Mon-Fri (skip Saturday and Sunday)
- * - 1-4 days/week: that many days in each full week, plus up to that many in
- *   a final partial week. These days are not tied to weekdays: a truck that
- *   alternates between two markets (three days each) works whichever days the
- *   rotation gives it.
- *
- * Anything under 5 used to fall through to the 6-day rule, so a 3-day
- * schedule was billed as 6 days a week.
  */
 export function countActivationDays(
   startStr: string,
@@ -41,11 +34,6 @@ export function countActivationDays(
   daysPerWeek: number,
 ): number {
   if (daysPerWeek === 7) return countCalendarDays(startStr, endStr)
-  if (daysPerWeek >= 1 && daysPerWeek <= 4) {
-    const calendar = countCalendarDays(startStr, endStr)
-    const dpw = Math.floor(daysPerWeek)
-    return Math.floor(calendar / 7) * dpw + Math.min(dpw, calendar % 7)
-  }
 
   let count = 0
   const current = new Date(startStr + 'T00:00:00Z')

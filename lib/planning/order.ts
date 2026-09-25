@@ -27,6 +27,7 @@ import { haversineDistance } from '@/lib/marketCoordinates'
 import { checkChainFeasibility, type Coords } from '@/lib/chainFeasibility'
 import { findWindowClash } from '@/lib/truckTimeline'
 import { absorbedLegCost, needsRepositioning, transportDaysFromDistance } from '@/lib/pricing/transport'
+import { countActivationDays, countCalendarDays } from '@/lib/pricing/schedule'
 import { maxPairing, type MatchEdge } from './matching'
 import { minCostAssignment } from './assignment'
 import { addDays, daysBetween, freeFrom, type PlanTruck } from './planner'
@@ -49,6 +50,20 @@ export type EngineSettings = {
   hopLimitRoadMiles: number
   roadFactor: number
   serviceAreaMiles?: number
+}
+
+/**
+ * Weekly schedules a market can ask for. 5, 6 and 7 are the single-market
+ * quote's Mon-Fri, Mon-Sat and every day. 3 is three days a week on a
+ * rotation, which lets one truck alternate between two nearby markets.
+ */
+export const SCHEDULES = [5, 6, 7, 3] as const
+
+/** Billed days for a line: the single-market rule, or 3 per week on rotation. */
+export function lineActivationDays(line: Pick<OrderLine, 'startDate' | 'endDate' | 'daysPerWeek'>): number {
+  if (line.daysPerWeek !== 3) return countActivationDays(line.startDate, line.endDate, line.daysPerWeek)
+  const calendar = countCalendarDays(line.startDate, line.endDate)
+  return Math.floor(calendar / 7) * 3 + Math.min(3, calendar % 7)
 }
 
 export const DEFAULT_ENGINE: Omit<EngineSettings, 'today'> = { hopLimitRoadMiles: 250, roadFactor: 1.25 }
@@ -297,6 +312,61 @@ export function planOrder(lines: OrderLine[], trucks: PlanTruck[], s: EngineSett
 
   assigned.sort((a, b) => a.jobs[0].start.localeCompare(b.jobs[0].start) || a.truckNumber.localeCompare(b.truckNumber))
   return { trucks: assigned, shortfalls, poolSize: trucks.length, approximateClusters }
+}
+
+// ---------------------------------------------------------------------------
+// Rotation: where a shared truck is, day by day
+// ---------------------------------------------------------------------------
+
+/** A stretch one truck spends in one market; `travelTo` when it ends with the drive to the other. */
+export type Stint = { lineId: string; market: string; start: string; end: string; travelTo: string | null }
+
+/**
+ * The days a job's truck spends in each market, as back-to-back stretches that
+ * never overlap, so each can carry its own hold.
+ *
+ * A shared truck alternates on a two-week cycle, so each market gets its days
+ * every calendar week and the truck drives only once a week:
+ *
+ *   week 1: A A A → B B B B      (A's days, travel day, B's days)
+ *   week 2: B B B → A A A A      (B's days, travel day, A's days)
+ *
+ * Days outside the two lines' overlap go to whichever line is running. The
+ * travel day is kept on the stretch it leaves, so the truck is never shown
+ * free between markets.
+ */
+export function rotationStints(job: Job): Stint[] {
+  if (job.lines.length === 1) {
+    const l = job.lines[0]
+    return [{ lineId: l.id, market: l.market, start: job.start, end: job.end, travelTo: null }]
+  }
+  const [a, b] = job.lines
+  const overlapStart = a.startDate > b.startDate ? a.startDate : b.startDate
+  const TRAVEL = 'travel'
+  const where = (d: string): string => {
+    const inA = a.startDate <= d && d <= a.endDate
+    const inB = b.startDate <= d && d <= b.endDate
+    if (inA && !inB) return a.id
+    if (inB && !inA) return b.id
+    const k = daysBetween(overlapStart, d)
+    const pos = k % 7
+    const [first, second] = Math.floor(k / 7) % 2 === 0 ? [a, b] : [b, a]
+    return pos < first.daysPerWeek ? first.id : pos === first.daysPerWeek ? TRAVEL : second.id
+  }
+
+  const byId = new Map([[a.id, a], [b.id, b]])
+  const out: Stint[] = []
+  for (let d = job.start; d <= job.end; d = addDays(d, 1)) {
+    const at = where(d)
+    const cur = out[out.length - 1]
+    if (at === TRAVEL) {
+      if (cur) { cur.end = d; cur.travelTo = byId.get(cur.lineId === a.id ? b.id : a.id)!.market }
+      continue
+    }
+    if (cur && cur.lineId === at && !cur.travelTo) { cur.end = d; continue }
+    out.push({ lineId: at, market: byId.get(at)!.market, start: d, end: d, travelTo: null })
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------

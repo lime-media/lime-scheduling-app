@@ -46,6 +46,30 @@ const fmtNum = (n: number) => Math.round(n).toLocaleString('en-US')
 const fmtDate = (d: string) => new Date(d + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
 const todayStr = () => new Date().toISOString().split('T')[0]
 
+const calendarDays = (start: string, end: string) =>
+  start && end ? Math.round((new Date(end + 'T00:00:00Z').getTime() - new Date(start + 'T00:00:00Z').getTime()) / 86400000) + 1 : 0
+
+// Same choices as the single-market quote, plus three days a week, which lets
+// one truck alternate between two nearby markets.
+const SCHEDULE_OPTIONS: { value: number; label: string }[] = [
+  { value: 5, label: 'Mon-Fri' },
+  { value: 6, label: 'Mon-Sat' },
+  { value: 7, label: '7 days' },
+  { value: 3, label: '3 days/wk (can alternate)' },
+]
+const scheduleLabel = (dpw: number) => (dpw === 3 ? '3 days/wk' : dpw === 5 ? 'Mon-Fri' : dpw === 6 ? 'Mon-Sat' : '7 days')
+
+/** Like the single-market quote: 6 days or fewer runs every day; longer ranges pick a schedule. */
+function ScheduleSelect({ start, end, value, onChange }: { start: string; end: string; value: number; onChange: (v: number) => void }) {
+  const cal = calendarDays(start, end)
+  if (cal > 0 && cal <= 6) return <div className="text-xs text-gray-500 px-1 py-2 whitespace-nowrap">Every day ({cal})</div>
+  return (
+    <select className={input} value={value} onChange={e => onChange(Number(e.target.value))}>
+      {SCHEDULE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
+  )
+}
+
 let rowSeq = 0
 const newRow = (defaults: Partial<QuoteRow> = {}): QuoteRow => ({
   id: `r${++rowSeq}`, market: '', startDate: '', endDate: '', trucks: 1, daysPerWeek: 5, hours: 8, ...defaults,
@@ -92,6 +116,12 @@ export function PlannerTab() {
   const [quote, setQuote] = useState<MultiMarketQuote | null>(null)
   const [holding, setHolding] = useState(false)
   const [holdResult, setHoldResult] = useState<{ ok: boolean; message: string } | null>(null)
+  // Markets to book. Every market with a truck is selected when a quote arrives.
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const showQuote = (q: MultiMarketQuote) => {
+    setQuote(q)
+    setSelected(new Set(q.lines.filter(l => l.missing < l.trucks).map(l => l.id)))
+  }
 
   const updateRow = (id: string, patch: Partial<QuoteRow>) => {
     setRows(rs => rs.map(r => (r.id === id ? { ...r, ...patch } : r)))
@@ -180,7 +210,7 @@ export function PlannerTab() {
         if (data.rowErrors) setRowErrors(data.rowErrors)
         throw new Error(data.error || 'The quote could not be built')
       }
-      setQuote(data)
+      showQuote(data)
     } catch (e) {
       setQuoteError(e instanceof Error ? e.message : 'The quote could not be built')
     } finally {
@@ -192,11 +222,10 @@ export function PlannerTab() {
     if (!account) return
     setHolding(true); setHoldResult(null)
     try {
-      const res = await fetch('/api/plan/hold', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...requestBody(), allowPartial }) })
+      const res = await fetch('/api/plan/hold', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial }) })
       const data = await readJson(res)
       if (res.status === 409 && data.shortfalls) {
-        if (data.quote) setQuote(data.quote)
-        const ok = window.confirm(`${data.error}\n\n${data.shortfalls.map((s: { market: string; missing: number }) => `${s.market}: ${s.missing} truck(s) short`).join('\n')}\n\nPlace holds for everything that can be covered?`)
+        const ok = window.confirm(`${data.error}\n\n${data.shortfalls.map((s: { market: string; missing: number }) => `${s.market}: ${s.missing} truck(s) short`).join('\n')}\n\nBook what can be covered? The rest will be noted on the Salesforce opportunity as quoted but not available, and left out of its amount.`)
         if (ok) { setHolding(false); return placeHolds(true) }
         setHoldResult({ ok: false, message: 'No holds placed.' })
         return
@@ -245,7 +274,7 @@ export function PlannerTab() {
             <thead>
               <tr>
                 <th className={th}>Market</th><th className={th}>Start</th><th className={th}>End</th>
-                <th className={th}>Trucks</th><th className={th}>Days/wk</th><th className={th}>Hours</th><th className={th}></th>
+                <th className={th}>Trucks</th><th className={th}>Schedule</th><th className={th}>Hours</th><th className={th}></th>
               </tr>
             </thead>
             <tbody>
@@ -274,10 +303,8 @@ export function PlannerTab() {
                     <td className={td}><input type="date" className={input} min={todayStr()} value={r.startDate} onChange={e => updateRow(r.id, { startDate: e.target.value })} /></td>
                     <td className={td}><input type="date" className={input} min={r.startDate || todayStr()} value={r.endDate} onChange={e => updateRow(r.id, { endDate: e.target.value })} /></td>
                     <td className={td + ' w-20'}><input type="number" min={1} max={50} className={input} value={r.trucks} onChange={e => updateRow(r.id, { trucks: Math.max(1, parseInt(e.target.value) || 1) })} /></td>
-                    <td className={td + ' w-24'}>
-                      <select className={input} value={r.daysPerWeek} onChange={e => updateRow(r.id, { daysPerWeek: Number(e.target.value) })}>
-                        {[7, 6, 5, 4, 3, 2, 1].map(d => <option key={d} value={d}>{d}</option>)}
-                      </select>
+                    <td className={td + ' w-44'}>
+                      <ScheduleSelect start={r.startDate} end={r.endDate} value={r.daysPerWeek} onChange={v => updateRow(r.id, { daysPerWeek: v })} />
                     </td>
                     <td className={td + ' w-20'}>
                       <select className={input} value={r.hours} onChange={e => updateRow(r.id, { hours: Number(e.target.value) })}>
@@ -324,6 +351,8 @@ export function PlannerTab() {
           account={account}
           holding={holding}
           holdResult={holdResult}
+          selected={selected}
+          onToggle={id => setSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })}
           onPlaceHolds={() => placeHolds(false)}
           unplaced={built?.unplaced.map(u => u.label) ?? []}
         />
@@ -358,8 +387,8 @@ function ImportPanel(p: {
         <div><label className="text-xs text-gray-600">Start</label><input type="date" className={input} value={bulk.startDate} onChange={e => setBulk({ ...bulk, startDate: e.target.value })} /></div>
         <div><label className="text-xs text-gray-600">End</label><input type="date" className={input} value={bulk.endDate} onChange={e => setBulk({ ...bulk, endDate: e.target.value })} /></div>
         <div><label className="text-xs text-gray-600">Trucks each</label><input type="number" min={1} className={input} value={bulk.trucks} onChange={e => setBulk({ ...bulk, trucks: Math.max(1, parseInt(e.target.value) || 1) })} /></div>
-        <div><label className="text-xs text-gray-600">Days/wk</label>
-          <select className={input} value={bulk.daysPerWeek} onChange={e => setBulk({ ...bulk, daysPerWeek: Number(e.target.value) })}>{[7, 6, 5, 4, 3, 2, 1].map(d => <option key={d} value={d}>{d}</option>)}</select></div>
+        <div><label className="text-xs text-gray-600">Schedule</label>
+          <ScheduleSelect start={bulk.startDate} end={bulk.endDate} value={bulk.daysPerWeek} onChange={v => setBulk({ ...bulk, daysPerWeek: v })} /></div>
         <div><label className="text-xs text-gray-600">Hours</label>
           <select className={input} value={bulk.hours} onChange={e => setBulk({ ...bulk, hours: Number(e.target.value) })}>{[8, 10, 12].map(h => <option key={h} value={h}>{h}</option>)}</select></div>
       </div>
@@ -426,17 +455,22 @@ function ImportPanel(p: {
 
 // ---------------------------------------------------------------------------
 
-function QuoteResult({ quote, account, holding, holdResult, onPlaceHolds, unplaced }: {
+function QuoteResult({ quote, account, holding, holdResult, selected, onToggle, onPlaceHolds, unplaced }: {
   quote: MultiMarketQuote
   account: SfdcAccount | null
   holding: boolean
   holdResult: { ok: boolean; message: string } | null
+  selected: Set<string>
+  onToggle: (id: string) => void
   onPlaceHolds: () => void
   unplaced: string[]
 }) {
   const { summary } = quote
   const [openTruck, setOpenTruck] = useState<string | null>(null)
   const short = quote.lines.filter(l => l.missing > 0)
+  const chosen = quote.lines.filter(l => selected.has(l.id))
+  const chosenTotal = chosen.reduce((s, l) => s + l.total, 0)
+  const booked = holdResult?.ok === true
 
   return (
     <>
@@ -464,17 +498,21 @@ function QuoteResult({ quote, account, holding, holdResult, onPlaceHolds, unplac
           <table className="w-full">
             <thead>
               <tr>
-                <th className={th}>Market</th><th className={th}>Dates</th><th className={th}>Schedule</th>
+                <th className={th}>Book</th><th className={th}>Market</th><th className={th}>Dates</th><th className={th}>Schedule</th>
                 <th className={th + ' text-right'}>Media</th><th className={th + ' text-right'}>Transport</th><th className={th + ' text-right'}>Total</th>
                 <th className={th}>Trucks</th>
               </tr>
             </thead>
             <tbody>
               {quote.lines.map(l => (
-                <tr key={l.id}>
+                <tr key={l.id} className={selected.has(l.id) ? '' : 'text-gray-400'}>
+                  <td className={td}>
+                    <input type="checkbox" checked={selected.has(l.id)} disabled={booked || l.missing >= l.trucks} onChange={() => onToggle(l.id)}
+                      title={l.missing >= l.trucks ? 'No truck can cover this market' : 'Book this market'} />
+                  </td>
                   <td className={td}>{l.market}</td>
                   <td className={td + ' whitespace-nowrap'}>{fmtDate(l.startDate)} – {fmtDate(l.endDate)}</td>
-                  <td className={td + ' whitespace-nowrap'}>{l.trucks} × {l.daysPerWeek}d × {l.hours}h <span className="text-gray-400">({l.activationDays} days)</span></td>
+                  <td className={td + ' whitespace-nowrap'}>{l.trucks} × {scheduleLabel(l.daysPerWeek)} × {l.hours}h <span className="text-gray-400">({l.activationDays} days)</span></td>
                   <td className={tdNum}>{fmtMoney(l.media)}</td>
                   <td className={tdNum}>
                     {l.transport.billed > 0 ? fmtMoney(l.transport.billed) : <span className="text-gray-400">{l.transport.outcome === 'ABSORBED' ? 'included' : '—'}</span>}
@@ -491,7 +529,7 @@ function QuoteResult({ quote, account, holding, holdResult, onPlaceHolds, unplac
                 </tr>
               ))}
               <tr className="font-medium">
-                <td className={td} colSpan={3}>Totals</td>
+                <td className={td} colSpan={4}>Totals</td>
                 <td className={tdNum}>{fmtMoney(summary.media)}</td>
                 <td className={tdNum}>{summary.transportBilled > 0 ? fmtMoney(summary.transportBilled) : '—'}</td>
                 <td className={tdNum + ' font-bold'}>{fmtMoney(summary.grandTotal)}</td>
@@ -517,10 +555,20 @@ function QuoteResult({ quote, account, holding, holdResult, onPlaceHolds, unplac
         {holdResult?.ok ? (
           <div className="mt-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-800 font-medium">✓ {holdResult.message}</div>
         ) : (
-          <button onClick={onPlaceHolds} disabled={holding || !account}
-            className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium">
-            {!account ? 'Select a client above to place holds' : holding ? 'Re-checking trucks and placing holds…' : `Place holds & create Salesforce opportunity — ${fmtMoney(summary.grandTotal)}`}
-          </button>
+          <>
+            <button onClick={onPlaceHolds} disabled={holding || !account || chosen.length === 0}
+              className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium">
+              {!account ? 'Select a client above to place holds'
+                : chosen.length === 0 ? 'Select at least one market to book'
+                : holding ? 'Re-checking trucks and placing holds…'
+                : `Place holds & create Salesforce opportunity — ${chosen.length} of ${quote.lines.length} markets, ${fmtMoney(chosenTotal)}`}
+            </button>
+            {chosen.length > 0 && chosen.length < quote.lines.length && (
+              <p className="mt-1 text-xs text-gray-500">
+                The markets not selected stay out of the holds and the opportunity amount, and are listed on the opportunity as quoted but not selected. Booking only some markets re-routes the trucks, so the final amount can differ slightly from this sum.
+              </p>
+            )}
+          </>
         )}
         {holdResult && !holdResult.ok && <div className="mt-2 bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-800">{holdResult.message}</div>}
       </div>

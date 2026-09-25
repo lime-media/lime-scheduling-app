@@ -24,7 +24,8 @@ import { canonicalMarketName, loadStandardMarketCoords, titleCaseMarket } from '
 import { haversineDistance } from '@/lib/marketCoordinates'
 import { DEFAULT_RULES, loadPlanningFleet, type ReservedTruck } from './fleet'
 import {
-  DEFAULT_ENGINE, planOrder, legsByLine, trucksByLine, lineActivationDays, deliveredTruckDays, SCHEDULES,
+  DEFAULT_ENGINE, planOrder, legsByLine, trucksByLine, lineActivationDays, deliveredTruckDays, lineDelivery, SCHEDULES,
+  type LineDelivery,
   type EngineSettings, type OrderLine, type OrderPlan, type Shortfall,
 } from './order'
 import { addDays, type PlanTruck } from './planner'
@@ -106,6 +107,10 @@ export type LineQuote = {
   calendarDays: number
   /** Truck-days billed: the days the plan's trucks actually work here, plus requested days for any truck not covered. */
   truckDays: number
+  /** Truck-days asked for: trucks x the schedule over the requested range. */
+  requestedTruckDays: number
+  /** What the covered trucks actually deliver: real first and last working day, full weeks and the final part-week. */
+  delivery: LineDelivery
   dailyRate: number
   hourSurcharge: number
   effectiveDailyRate: number
@@ -306,6 +311,7 @@ async function priceLines(
       id: line.id, market: line.market, startDate: line.startDate, endDate: line.endDate,
       trucks: line.trucks, daysPerWeek: line.daysPerWeek, hours: line.hours,
       activationDays, calendarDays: countCalendarDays(line.startDate, line.endDate), truckDays,
+      requestedTruckDays: line.trucks * activationDays, delivery: lineDelivery(plan, line),
       dailyRate: q.dailyRate, hourSurcharge: q.hourSurcharge, effectiveDailyRate: q.effectiveDailyRate,
       shadowFencingFloored: features.shadowFencing && q.better.shadowFencingFloored,
       baseMedia: Math.round(q.good.baseMedia), shadowFencing: Math.round(sf), smartDirectional: Math.round(sd), deviceId: Math.round(did),
@@ -394,9 +400,16 @@ export async function buildMultiMarketQuote(req: QuoteRequest, lines: OrderLine[
   if (rules.reserveSoftHolds && !fleet.reserved.some(r => r.reason.startsWith('AT&T soft'))) warnings.push('No AT&T soft holds are on file, so no AT&T trucks are held back.')
   if (req.alloyRenews && !fleet.reserved.some(r => !r.reason.startsWith('AT&T soft'))) warnings.push('Alloy Build is marked as renewing, but no truck is currently on an Alloy Build job.')
   for (const l of priced) {
-    const asked = l.trucks * l.activationDays
-    if (l.truckDays < asked && l.assigned.some(a => a.sharedWith)) {
-      warnings.push(`${l.market} gets ${l.truckDays} of the ${asked} truck-days asked for, and is billed for ${l.truckDays}: its truck alternates with ${l.assigned.find(a => a.sharedWith)!.sharedWith}, and the final part-week goes to that market. A truck of its own would cover every day.`)
+    // State plainly any market whose trucks deliver less than asked, with the
+    // real last working day and the part-week that accounts for it.
+    const covered = l.trucks - l.missing
+    const askedCovered = covered * l.activationDays
+    if (covered > 0 && l.delivery.days < askedCovered) {
+      const pw = l.delivery.partialWeek
+      const partner = l.assigned.find(a => a.sharedWith)?.sharedWith
+      warnings.push(`${l.market}: ${l.delivery.days} truck-days delivered and billed, not the ${askedCovered} asked for.`
+        + (l.delivery.lastDay && l.delivery.lastDay < l.endDate ? ` Last working day is ${fmt(l.delivery.lastDay)}, not ${fmt(l.endDate)}.` : '')
+        + (pw ? ` The final part-week (${fmt(pw.start)}–${fmt(pw.end)}) gets ${pw.days} day${pw.days === 1 ? '' : 's'}` + (partner ? `; the truck is in ${partner} then.` : '.') : ''))
     }
     const lead = businessDaysBetween(new Date(), new Date(l.startDate + 'T00:00:00Z'))
     if (l.transport.outcome === 'BILLED' && lead < 10) warnings.push(`${l.market} starts ${lead} business days out, so its transport is billed rather than absorbed.`)

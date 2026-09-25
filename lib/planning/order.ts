@@ -451,6 +451,44 @@ export function rotationStints(job: Job): Stint[] {
   return out
 }
 
+/**
+ * What a line actually gets from the plan, stated plainly: the first and last
+ * day any of its trucks works there, and the working days split into the full
+ * weeks of the requested range and the final part-week (if the range is not
+ * whole weeks). All counts are truck-days across the line's trucks.
+ */
+export type LineDelivery = {
+  firstDay: string | null
+  lastDay: string | null
+  fullWeeks: number
+  fullWeekDays: number
+  /** The final part-week of the requested range, or null when the range is whole weeks. */
+  partialWeek: { start: string; end: string; calendarDays: number; days: number } | null
+  /** Truck-days worked in total (fullWeekDays + partialWeek.days). */
+  days: number
+}
+
+export function lineDelivery(plan: OrderPlan, line: OrderLine): LineDelivery {
+  const work: string[] = []
+  for (const t of plan.trucks) for (const j of t.jobs) {
+    if (!j.lines.some(l => l.id === line.id)) continue
+    for (const d of rotation(j)) if (d.kind === 'WORK' && d.lineId === line.id) work.push(d.date)
+  }
+  work.sort()
+  const cal = daysBetween(line.startDate, line.endDate) + 1
+  const fullWeeks = Math.floor(cal / 7)
+  const partialStart = addDays(line.startDate, fullWeeks * 7)
+  const inPartial = work.filter(d => d >= partialStart).length
+  return {
+    firstDay: work[0] ?? null,
+    lastDay: work[work.length - 1] ?? null,
+    fullWeeks,
+    fullWeekDays: work.length - inPartial,
+    partialWeek: cal % 7 === 0 ? null : { start: partialStart, end: line.endDate, calendarDays: cal % 7, days: inPartial },
+    days: work.length,
+  }
+}
+
 /** Truck-days each line receives from the plan. */
 export function deliveredTruckDays(plan: OrderPlan): Map<string, number> {
   const out = new Map<string, number>()

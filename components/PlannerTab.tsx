@@ -16,7 +16,7 @@ import { useEffect, useRef, useState } from 'react'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { ReviewFinding } from '@/lib/planning/claude'
-import type { Arrival, MultiMarketQuote, QuoteRow, RowError } from '@/lib/planning/quote'
+import type { Arrival, LineQuote, MultiMarketQuote, QuoteRow, RowError } from '@/lib/planning/quote'
 
 type BuiltAreas = AreaBuildResult & { source: string; parsedRows: ZipRow[]; notes: string[] }
 
@@ -533,8 +533,8 @@ function QuoteResult({ quote, account, holding, holdResult, selected, onToggle, 
                       title={l.missing >= l.trucks ? 'No truck can cover this market' : 'Book this market'} />
                   </td>
                   <td className={td}>{l.market}</td>
-                  <td className={td + ' whitespace-nowrap'}>{fmtDate(l.startDate)} – {fmtDate(l.endDate)}</td>
-                  <td className={td + ' whitespace-nowrap'}>{l.trucks} × {scheduleLabel(l.daysPerWeek)} × {l.hours}h <span className="text-gray-400">({l.activationDays} days)</span></td>
+                  <td className={td + ' whitespace-nowrap'}><DeliveryDates l={l} /></td>
+                  <td className={td + ' whitespace-nowrap'}><DeliveryDays l={l} /></td>
                   <td className={tdNum}>{fmtMoney(l.media)}</td>
                   <td className={tdNum}>
                     {l.transport.billed > 0 ? fmtMoney(l.transport.billed) : <span className="text-gray-400">{l.transport.outcome === 'ABSORBED' ? 'included' : '—'}</span>}
@@ -637,6 +637,43 @@ function QuoteResult({ quote, account, holding, holdResult, selected, onToggle, 
           ))}
         </ul>
       </div>
+    </>
+  )
+}
+
+/**
+ * The dates the market's trucks actually work, with the requested range
+ * beneath whenever it differs. Never shows the request as if it were delivered.
+ */
+function DeliveryDates({ l }: { l: LineQuote }) {
+  const d = l.delivery
+  if (!d.firstDay || !d.lastDay) return <>{fmtDate(l.startDate)} – {fmtDate(l.endDate)} <span className="block text-[11px] text-red-700">requested; no truck assigned</span></>
+  const differs = d.firstDay !== l.startDate || d.lastDay !== l.endDate
+  // Amber only when days are actually short; weekends at the ends of a Mon-Fri
+  // range move the dates without losing any day.
+  const short = d.days < (l.trucks - l.missing) * l.activationDays
+  return (
+    <>
+      {fmtDate(d.firstDay)} – {fmtDate(d.lastDay)}
+      {differs && <span className={`block text-[11px] ${short ? 'text-amber-700 font-medium' : 'text-gray-400'}`}>requested {fmtDate(l.startDate)} – {fmtDate(l.endDate)}</span>}
+    </>
+  )
+}
+
+/** The billed days, worked out: full weeks, then the final part-week as it actually falls. */
+function DeliveryDays({ l }: { l: LineQuote }) {
+  const d = l.delivery
+  const pw = d.partialWeek
+  const covered = l.trucks - l.missing
+  return (
+    <>
+      {l.trucks} × {scheduleLabel(l.daysPerWeek)} × {l.hours}h
+      <span className="block text-[11px] text-gray-500">
+        {d.fullWeeks > 0 && <>{d.fullWeeks} wk{d.fullWeeks === 1 ? '' : 's'}: {d.fullWeekDays}</>}
+        {pw && <>{d.fullWeeks > 0 ? ' + ' : ''}part-week {fmtDate(pw.start)}{pw.calendarDays > 1 ? `–${fmtDate(pw.end)}` : ''}: <span className={pw.days < covered * Math.min(pw.calendarDays, l.daysPerWeek) ? 'text-amber-700 font-medium' : ''}>{pw.days}</span></>}
+        {' = '}{d.days} {covered > 1 ? 'truck-days' : 'days'}
+        {l.missing > 0 && <> + {l.missing * l.activationDays} quoted, not covered</>}
+      </span>
     </>
   )
 }

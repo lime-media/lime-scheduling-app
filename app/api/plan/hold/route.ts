@@ -63,7 +63,19 @@ type HoldBody = QuoteRequest & {
 
 const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
 const scheduleText = (dpw: number) => (dpw === 3 ? '3 days/wk' : dpw === 7 ? 'every day' : dpw === 6 ? 'Mon-Sat' : 'Mon-Fri')
-const describe = (l: LineQuote, trucks = l.trucks) =>
+/** A booked market as delivered: real working dates and days, with the request when it differs. */
+const describe = (l: LineQuote, trucks = l.trucks) => {
+  const d = l.delivery
+  const base = `${l.market}: ${trucks} truck${trucks === 1 ? '' : 's'}, ${scheduleText(l.daysPerWeek)} x ${l.hours}h`
+  if (!d.firstDay || !d.lastDay) return `${base}, requested ${l.startDate} to ${l.endDate}`
+  const pw = d.partialWeek
+  return `${base}, ${d.firstDay} to ${d.lastDay}`
+    + (d.firstDay !== l.startDate || d.lastDay !== l.endDate ? ` (requested ${l.startDate} to ${l.endDate})` : '')
+    + `, ${d.days} ${trucks > 1 ? 'truck-days' : 'days'}`
+    + (pw ? ` (${d.fullWeeks} wk: ${d.fullWeekDays} + part-week ${pw.start} to ${pw.end}: ${pw.days})` : '')
+}
+/** A market quoted but not booked: the request as quoted. */
+const describeQuoted = (l: LineQuote, trucks = l.trucks) =>
   `${l.market}: ${trucks} truck${trucks === 1 ? '' : 's'}, ${l.startDate} to ${l.endDate}, ${scheduleText(l.daysPerWeek)} x ${l.hours}h`
 
 export async function POST(req: NextRequest) {
@@ -227,7 +239,7 @@ export async function POST(req: NextRequest) {
     const bookedTrucks = new Map(quote.lines.map(l => [l.id, l.trucks]))
     const unavailable = asQuoted.lines
       .filter(l => (bookedTrucks.get(l.id) ?? 0) < l.trucks)
-      .map(l => describe(l, l.trucks - (bookedTrucks.get(l.id) ?? 0)))
+      .map(l => describeQuoted(l, l.trucks - (bookedTrucks.get(l.id) ?? 0)))
     const notSelected = allLines.some(l => !selected.has(l.id))
       ? (await buildMultiMarketQuote(body, allLines, { alternatives: false })).quote.lines.filter(l => !selected.has(l.id))
       : []
@@ -236,12 +248,13 @@ export async function POST(req: NextRequest) {
     let sfdcError: string | null = null
     if (isSfdcConfigured()) {
       try {
-        const starts = quote.lines.map(l => l.startDate).sort()
-        const ends = quote.lines.map(l => l.endDate).sort()
+        // The dates trucks actually work, not the requested range.
+        const starts = quote.lines.map(l => l.delivery.firstDay ?? l.startDate).sort()
+        const ends = quote.lines.map(l => l.delivery.lastDay ?? l.endDate).sort()
         const description = [
           'Booked:',
           ...quote.lines.map(l => `${describe(l)}, ${money(l.total)}`),
-          ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describe(l)}, ${money(l.total)}`)] : []),
+          ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(l.total)}`)] : []),
           ...(unavailable.length ? ['', 'Quoted but no truck available:', ...unavailable] : []),
         ].join('\n')
         const result = await createOpportunity({

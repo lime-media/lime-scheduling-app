@@ -10,7 +10,7 @@
 import { eq, section } from './harness'
 import {
   canShare, buildJobs, canFollow, chainJobs, planOrder, trucksByLine, legsByLine, rotationStints, lineActivationDays,
-  rotation, workDays, deliveredTruckDays, fitTruck,
+  rotation, workDays, deliveredTruckDays, fitTruck, lineDelivery,
   DEFAULT_ENGINE, type EngineSettings, type OrderLine,
 } from '@/lib/planning/order'
 import { addDays, freeFrom, type PlanTruck } from '@/lib/planning/planner'
@@ -217,4 +217,18 @@ section('booking: what a client can see, and Salesforce text')
   eq('Markets__c fits 255', fit.length <= 255, true)
   eq('and is cut between names, with a count', /; \+\d+ more$/.test(fit) && fit.split('; ').slice(0, -1).every(n => names.includes(n)), true)
   eq('short lists are untouched', fitNames(['Dallas, TX', 'Fort Worth, TX'], 255), 'Dallas, TX; Fort Worth, TX')
+}
+
+section('order: real working dates and the final part-week')
+{
+  const a = line('dal', 'dal', '2026-10-12', '2026-10-21')
+  const b = line('ftw', 'ftw', '2026-10-12', '2026-10-21')
+  const plan = planOrder([a, b], [truck('1261', 'dal'), truck('1262', 'ftw')], S)
+  eq('Dallas: real dates, 1 full week of 3, part-week Oct 19-21 gets 0', lineDelivery(plan, a),
+    { firstDay: '2026-10-12', lastDay: '2026-10-14', fullWeeks: 1, fullWeekDays: 3, partialWeek: { start: '2026-10-19', end: '2026-10-21', calendarDays: 3, days: 0 }, days: 3 })
+  eq('Fort Worth: 3 in the full week, all 3 of the part-week', lineDelivery(plan, b),
+    { firstDay: '2026-10-16', lastDay: '2026-10-21', fullWeeks: 1, fullWeekDays: 3, partialWeek: { start: '2026-10-19', end: '2026-10-21', calendarDays: 3, days: 3 }, days: 6 })
+  const whole = planOrder([line('den', 'den', '2026-10-12', '2026-10-25', 1, 5, 8)], [truck('1261', 'den')], S)
+  eq('whole weeks on a truck of its own: no part-week, the request as asked', lineDelivery(whole, line('den', 'den', '2026-10-12', '2026-10-25', 1, 5, 8)),
+    { firstDay: '2026-10-12', lastDay: '2026-10-23', fullWeeks: 2, fullWeekDays: 10, partialWeek: null, days: 10 })
 }

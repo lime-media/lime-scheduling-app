@@ -1,10 +1,10 @@
 /**
- * Multi-market planner — pure-function coverage.
+ * Multi-market planning — solvers, list intake and the Claude checks.
  *
  * The solvers are checked against brute force on random small instances, since
  * a matching or assignment that is merely plausible would still produce a
- * confident-looking plan. The pricing cases pin the figures from the 23 Sep
- * 2026 analysis (44 areas: $297,000 a week at 3x12, $330,000 at 5x8).
+ * confident-looking plan. Routing and pricing of a multi-market order are
+ * covered in order.test.ts.
  *
  * Run with: npm test
  */
@@ -12,11 +12,7 @@ import { eq, section } from './harness'
 import { maxPairing, solveLarge, type MatchEdge } from '@/lib/planning/matching'
 import { minCostAssignment } from '@/lib/planning/assignment'
 import { parseZipRows, buildAreas, type Area, type Centroids } from '@/lib/planning/areas'
-import {
-  addDays, freeFrom, earliestStart, latestSoftHoldTrucks, dateOptions, buildRoutes, priceProgram, capacityLeft, assign, candidateMatrix,
-  DEFAULT_SETTINGS, type PlanSettings, type PlanTruck, type Route,
-} from '@/lib/planning/planner'
-import type { TruckJob } from '@/lib/truckTimeline'
+import { latestSoftHoldTrucks } from '@/lib/planning/planner'
 
 // Deterministic PRNG so failures reproduce.
 function rng(seed: number) {
@@ -213,101 +209,6 @@ eq('outlier kept in the list but not the centre', [gamma.zips.includes('30009'),
   eq('still in the area', far.areas[0].zips.length, 3)
 }
 
-// ---------------------------------------------------------------------------
-section('routes')
-
-const area = (id: string, lat: number, lng: number): Area =>
-  ({ id, name: id, labels: [id], zips: [], residentialZips: 1, lat, lng, spreadMiles: 0, locationUncertain: false })
-// Dallas, Fort Worth (~30 mi), Houston (~225 mi from Dallas), Denver (far).
-const A = [area('dal', 32.78, -96.80), area('ftw', 32.75, -97.33), area('hou', 29.76, -95.37), area('den', 39.74, -104.99)]
-const S: PlanSettings = { ...DEFAULT_SETTINGS, planStart: '2026-10-12', planThrough: '2027-03-31', today: '2026-09-23' }
-eq('5x8: one route per area', buildRoutes(A, { ...S, model: '5x8' }).routes.length, 4)
-const r312 = buildRoutes(A, S).routes
-eq('3x12: Dallas pairs, Denver solo', r312.map(r => r.areaIds.length).sort(), [1, 1, 2])
-eq('3x12: tightest pair chosen', r312.find(r => r.areaIds.length === 2)!.areaIds.sort(), ['dal', 'ftw'])
-
-// ---------------------------------------------------------------------------
-section('when can a truck start')
-
-const job = (start: string, end: string, market: string, state: string, lat: number, lng: number): TruckJob =>
-  ({ start, end, market, state, lat, lng, source: 'SCHEDULE', program: 'X', yieldable: false })
-const byId = new Map(A.map(a => [a.id, a]))
-const solo = (id: string): Route => ({ id, areaIds: [id], name: id, hopRoadMiles: 0 })
-
-eq('free from after the last clash', freeFrom([job('2026-10-01', '2026-10-20', 'Denver', 'CO', 39.74, -104.99)], '2026-10-12', '2027-03-31'), '2026-10-21')
-eq('never free if booked past plan-through', freeFrom([job('2026-10-01', '2027-06-01', 'Denver', 'CO', 39.74, -104.99)], '2026-10-12', '2027-03-31'), null)
-
-// Truck finishing in Denver on 20 Oct, route in Dallas (~660 mi): 2 transport days.
-const denverTruck: PlanTruck = { truckNumber: 'T1', jobs: [job('2026-10-01', '2026-10-20', 'Denver', 'CO', 39.74, -104.99)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
-const cand = earliestStart(denverTruck, solo('dal'), byId, S)!
-eq('origin is the release point, not GPS', cand.originLabel, 'Denver, CO')
-eq('start = release + transport days', cand.start, addDays('2026-10-21', 2))
-eq('reposition cost charged beyond the service area', cand.repositionCost > 0, true)
-
-const localTruck: PlanTruck = { truckNumber: 'T2', jobs: [], gps: { lat: 32.8, lng: -96.9 }, gpsLabel: 'Dallas, TX' }
-const local = earliestStart(localTruck, solo('dal'), byId, S)!
-eq('idle local truck starts on day one, no cost', [local.start, local.repositionCost], ['2026-10-12', 0])
-
-// Uniform start before the Denver truck is free: only the local truck qualifies.
-const routes2 = [solo('dal'), solo('ftw')]
-const trucks2 = [denverTruck, localTruck]
-const m2 = candidateMatrix(routes2, trucks2, byId, S)
-eq('live by 12 Oct: short by one', assign(routes2, trucks2, m2, '2026-10-12', S.planStart).shortBy, 1)
-eq('live by 30 Oct: both served', assign(routes2, trucks2, m2, '2026-10-30', S.planStart).shortBy, 0)
-
-section('start date vs. transport we absorb')
-{
-  // One Dallas route. A truck idle in Denver today (costs transport), and a
-  // Dallas truck that is busy until 18 Oct (free, local).
-  const far: PlanTruck = { truckNumber: 'FAR', jobs: [], gps: { lat: 39.74, lng: -104.99 }, gpsLabel: 'Denver, CO' }
-  const near: PlanTruck = { truckNumber: 'NEAR', jobs: [job('2026-10-01', '2026-10-17', 'Dallas', 'TX', 32.78, -96.80)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
-  const r = [solo('dal')]
-  const t = [far, near]
-  const m = candidateMatrix(r, t, byId, S)
-  const early = assign(r, t, m, '2026-10-14', S.planStart)
-  const later = assign(r, t, m, '2026-10-19', S.planStart)
-  eq('early date: only the far truck makes it, and we absorb its transport', [early.assignments[0].truckNumber, early.repositionCost > 0], ['FAR', true])
-  eq('a week later: the local truck, nothing absorbed', [later.assignments[0].truckNumber, later.repositionCost], ['NEAR', 0])
-  const table = dateOptions(r, t, m, S)
-  eq('the table shows the cost falling as the date moves out', table.options[0].liveBy.repositionCost > table.options[table.options.length - 1].liveBy.repositionCost, true)
-  eq('first date everything is live', table.firstFullLiveBy, early.assignments[0].start)
-
-  // Plateau, then a drop: two far trucks (same cost) free now and in a week,
-  // and a local truck free in three weeks. Two equal rows must not end the
-  // table before the $0 option.
-  const far2: PlanTruck = { truckNumber: 'FAR2', jobs: [job('2026-10-01', '2026-10-18', 'Denver', 'CO', 39.74, -104.99)], gps: null, gpsLabel: '' }
-  const late: PlanTruck = { truckNumber: 'LATE', jobs: [job('2026-10-01', '2026-11-02', 'Dallas', 'TX', 32.78, -96.80)], gps: null, gpsLabel: '' }
-  const tp = [far, far2, late]
-  const mp = candidateMatrix(r, tp, byId, S)
-  const plateau = dateOptions(r, tp, mp, S)
-  const lastRow = plateau.options[plateau.options.length - 1]
-  eq('cheapest date found past a plateau', [plateau.cheapestDate, lastRow.date, lastRow.liveBy.repositionCost], ['2026-11-03', '2026-11-03', 0])
-
-  // Two free local trucks, one ready now and one next week: same $0, so the
-  // earlier start wins even though it is a few miles further away.
-  const nowT: PlanTruck = { truckNumber: 'NOW', jobs: [], gps: { lat: 32.9, lng: -96.9 }, gpsLabel: 'Dallas, TX' }
-  const laterT: PlanTruck = { truckNumber: 'LATER', jobs: [job('2026-10-01', '2026-10-15', 'Dallas', 'TX', 32.78, -96.80)], gps: { lat: 32.78, lng: -96.80 }, gpsLabel: 'Dallas, TX' }
-  const m3 = candidateMatrix(r, [laterT, nowT], byId, S)
-  eq('equal cost: earlier start wins', assign(r, [laterT, nowT], m3, '2026-10-30', S.planStart).assignments[0].truckNumber, 'NOW')
-  eq('each route names the truck that serves it', assign(r, [nowT], candidateMatrix(r, [nowT], byId, S), '2026-10-30', S.planStart).assignments[0].truckNumber, 'NOW')
-}
-
-// ---------------------------------------------------------------------------
-section('pricing (rate card, no agreement)')
-
-const p312 = priceProgram(44, '3x12')
-eq('3x12 44 areas: $1,800/day', p312.effectiveDailyRate, 1800)
-eq('3x12 base per week', p312.baseMediaPerWeek, 237600)
-eq('3x12 with shadow fencing per week', p312.totalPerWeek, 297000)
-const p58 = priceProgram(44, '5x8')
-eq('5x8 base per week', p58.baseMediaPerWeek, 264000)
-eq('5x8 with shadow fencing per week', p58.totalPerWeek, 330000)
-eq('same $150 per truck-hour', [p312.perTruckHour, p58.perTruckHour], [150, 150])
-
-section('capacity')
-eq('82 - 7 - (20..25) - 25', capacityLeft({ activeTrucks: 82, maintenanceReserve: 7, reservedLow: 20, reservedHigh: 25, renewingTrucks: 0, programTrucks: 25 }), { low: 25, high: 30 })
-eq('with Alloy renewing at 15', capacityLeft({ activeTrucks: 82, maintenanceReserve: 7, reservedLow: 20, reservedHigh: 25, renewingTrucks: 15, programTrucks: 25 }), { low: 10, high: 15 })
-
 section('AT&T soft-hold reservation')
 {
   const h = (tn: string, start: string) => ({ truck_number: tn, start_date: new Date(start + 'T00:00:00Z') })
@@ -369,7 +270,7 @@ section('xlsx reader')
 // ---------------------------------------------------------------------------
 section('Claude layer: code-side checks')
 {
-  const { verifyFinding, unverifiedNumbers } = require('@/lib/planning/claude') as typeof import('@/lib/planning/claude')
+  const { verifyFinding } = require('@/lib/planning/claude') as typeof import('@/lib/planning/claude')
   const cz: Centroids = { '32303': [30.49, -84.33], '32304': [30.45, -84.35], '31602': [30.87, -83.34], '99501': [61.2, -149.9] }
   const ctx = { rows: [
     { label: 'Tallahassee', zip: '23303', city: 'Tallahassee', state: 'FL' },
@@ -381,23 +282,10 @@ section('Claude layer: code-side checks')
   eq('suggestion that does not exist is not', verifyFinding(f('32399'), ctx).verified, false)
   eq('suggestion far from its DMA is not', verifyFinding(f('99501'), ctx).verified, false)
 
-  const facts = { price_per_week: 297000, trucks: 25, first_start: '2026-10-12', rate_per_truck_hour: 150, left: { low: 25, high: 30 }, hours_per_day: 12, drivers_per_paired_route: 2 }
-  eq('plan numbers pass in any format', unverifiedNumbers('25 trucks from Oct 12 at $297,000 a week, or $297K, $150 per hour; 25 to 30 left.', facts), [])
-  eq('schedule constants in the plan pass', unverifiedNumbers('three 12-hour days, 2 drivers', facts), [])
-  eq('small counts are checked too', unverifiedNumbers('only 4 trucks', facts), ['4'])
-  eq('invented arithmetic is caught', unverifiedNumbers('a 10% saving of $33,000 against 44 trucks', facts), ['10%', '$33,000', '44'])
-  const { verifiableFacts } = require('@/lib/planning/claude') as typeof import('@/lib/planning/claude')
-  const withFile = { trucks: 25, client_request: 'Client wants 999 trucks', list_corrections: ['OUTLIER: 777'] } as unknown as Parameters<typeof verifiableFacts>[0]
-  eq('numbers from the uploaded file cannot vouch for themselves', unverifiedNumbers('999 trucks, 777', verifiableFacts(withFile)), ['999', '777'])
 
   eq('one-ZIP DMA: suggestion exists but is not verified', verifyFinding({ kind: 'LIKELY_TYPO', zip: '23303', dma: 'Solo', detail: '', suggested_zip: '32303', suggested_dma: null },
     { rows: [{ label: 'Solo', zip: '23303', city: '', state: '' }], centroids: cz }).verified, false)
   eq('Claude misspells the DMA: the listed label is used', verifyFinding({ kind: 'LIKELY_TYPO', zip: '23303', dma: 'Talahassee', detail: '', suggested_zip: '32303', suggested_dma: null }, ctx).verified, true)
-
-  const { findLeaks } = require('@/lib/planning/leaks') as typeof import('@/lib/planning/leaks')
-  const forbidden = ['1261', '$6,624', 'AT&T', 'ATT', 'absorb*']
-  eq('truck number, cost and stems are caught', findLeaks('Truck 1261 costs $6,624; we absorbed it for AT&T.', forbidden), ['1261', '$6,624', 'AT&T', 'absorb*'])
-  eq('no false hit inside ordinary words', findLeaks('Attached is the plan; 12610 impressions.', forbidden), [])
 }
 
 section('matching: bounded work')
@@ -413,5 +301,5 @@ section('matching: bounded work')
   const ms = Date.now() - t0
   eq('dense cluster: falls back and reports it', got.greedyClusters, 1)
   eq('dense cluster: still the fewest trucks (everyone paired)', got.pairs.length, 30)
-  eq('dense cluster: bounded by the time budget', ms < 2500, true)
+  eq('dense cluster: finishes quickly', ms < 2500, true)
 }

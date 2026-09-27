@@ -9,6 +9,7 @@ import './markets.test'
 import './holdExpiry.test'
 import './conflicts.test'
 import './planning.test'
+import './attSoft.test'
 import { report } from './harness'
 
 process.exit(report())

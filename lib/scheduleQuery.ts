@@ -19,6 +19,7 @@ SELECT
     COALESCE(cpm.standard_market_name, '') AS standard_market_name,
     COALESCE(cpm.state,   '') AS state,
     COALESCE(cp.program,  '') AS program,
+    COALESCE(cl.client,   '') AS client,  -- internal only; client routes must not pass it on
     CAST(ps.start_time AS DATE) AS shift_start,
     CAST(ps.start_time AS DATE) AS shift_end  -- use start date; end_time bleeds into next day for overnight shifts
 FROM dbo.program_schedule ps
@@ -28,6 +29,8 @@ LEFT JOIN dbo.client_program_markets cpm
     ON  cpm.client_program_market_uid = ps.client_program_market_uid
 LEFT JOIN dbo.client_programs cp
     ON  cp.client_program_uid = ps.client_program_uid
+LEFT JOIN dbo.clients cl
+    ON  cl.client_uid = cp.client_uid
 WHERE CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
   AND CAST(ps.start_time AS DATE) <= DATEADD(day,  63, CAST(GETDATE() AS DATE))
 ORDER BY t.truck_number, ps.start_time

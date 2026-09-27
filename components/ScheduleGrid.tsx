@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
-import { GRID_COLORS, CLIENT_GRID_COLORS } from '@/lib/statusColors'
+import { GRID_COLORS, CLIENT_GRID_COLORS, RESERVATION_LABEL } from '@/lib/statusColors'
 import { format, addDays, startOfDay, parseISO, isSameDay } from 'date-fns'
 import { CellDetail } from './CellDetail'
 import { getNearbyMarkets, getMarketCoords, haversineDistance } from '@/lib/marketCoordinates'
@@ -25,6 +25,8 @@ export type ScheduleBlock = {
   standard_market_name?: string
   state: string
   program: string
+  /** AT&T work: any 160over90 program (set by /api/schedule; absent on client routes). */
+  att?: boolean
   shift_start: string        // YYYY-MM-DD
   shift_end: string          // YYYY-MM-DD
 }
@@ -98,8 +100,8 @@ const CLIENT_STATUS_COLORS = CLIENT_GRID_COLORS
 const STATUS_LABELS: Record<string, string> = {
   EMPTY:              'Available',
   SCHEDULED_LED:      'Scheduled',
-  HOLD_TENTATIVE:     'On Hold',
-  COMMITTED_NOT_SET:  'Committed',
+  HOLD_TENTATIVE:     RESERVATION_LABEL,
+  COMMITTED_NOT_SET:  RESERVATION_LABEL,
   ATT_SOFT:           'ATT Hold',
   MAINTENANCE:        'Maintenance',
   DEPARTING:          'Departing',
@@ -324,11 +326,13 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
     return m
   }, [schedules, holds, holdRequests])
 
-  // Pre-compute non-ATT schedules per truck for ATT_SOFT voiding logic
+  // Pre-compute non-AT&T schedules per truck for ATT_SOFT voiding logic.
+  // AT&T work is any 160over90 program (the `att` flag from /api/schedule),
+  // not a program name containing "att" — which also matched "Seattle".
   const nonAttSchedulesByTruck = useMemo(() => {
     const m = new Map<string, Array<{ shift_start: string; shift_end: string }>>()
     for (const block of schedules) {
-      if (block.program?.toLowerCase().includes('att')) continue
+      if (block.att) continue
       if (!m.has(block.truck_number)) m.set(block.truck_number, [])
       m.get(block.truck_number)!.push({ shift_start: block.shift_start, shift_end: block.shift_end })
     }
@@ -418,9 +422,10 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
         matched.add(b.truck_number)
       }
     }
+    // Reservations: holds and committed holds alike.
     if (filters.statusFilters.has('HOLD_TENTATIVE')) {
       for (const h of holds) {
-        if (h.status !== 'HOLD') continue
+        if (h.status !== 'HOLD' && h.status !== 'COMMITTED') continue
         if (dfStr && h.end_date   < dfStr) continue
         if (dtStr && h.start_date > dtStr) continue
         matched.add(h.truck_number)
@@ -828,9 +833,8 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
 
                         // Diagonal stripe background for conflict cells (hold + schedule overlap)
                         const conflictStyle = cell.conflictProgram ? {
-                          background: status === 'COMMITTED_NOT_SET'
-                            ? 'repeating-linear-gradient(135deg,#fca5a5 0px,#ef4444 4px,#22c55e 4px,#22c55e 8px)'
-                            : 'repeating-linear-gradient(135deg,#fde68a 0px,#fbbf24 4px,#22c55e 4px,#22c55e 8px)',
+                          // Reservation stripes over the scheduled colour (slate).
+                          background: 'repeating-linear-gradient(135deg,#fde68a 0px,#fbbf24 4px,#64748b 4px,#64748b 8px)',
                         } : undefined
 
                         const isDeparting  = status === 'DEPARTING' && !!cell.departing_to

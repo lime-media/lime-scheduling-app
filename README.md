@@ -82,9 +82,11 @@ The AI is instructed never to guess or infer a truck's location â€” it can only 
 |---|---|---|
 | SCHEDULED | LED app (`program_schedule`) | Assigned to a client program |
 | AVAILABLE | LED app (no row for today) | No active program |
-| HOLD | This app (Prisma) | Tentatively reserved by the sales team |
-| COMMITTED | This app (Prisma) | Confirmed booking |
-| ATT_SOFT | This app (Prisma, auto-created) | Soft hold for AT&T trucks for the following month |
+| HOLD | This app (Prisma) | Reservation. Shown as a yellow **Reservation** everywhere |
+| COMMITTED | This app (Prisma) | Also shown as **Reservation**; still recorded (a Closed Won Salesforce opportunity sets it) and never auto-expires |
+| ATT_SOFT | This app (Prisma, auto-created) | AT&T soft hold (blue): trucks whose latest work is any 160over90 program, for the current month (from today) and the next two. See `lib/attSoftHolds.ts` |
+
+Colours are shared across the internal and client views (`lib/statusColors.ts`): **green = available** in both; internally, scheduled is slate, reservations yellow, AT&T soft holds blue, maintenance orange. The client view shows anything booked as gray.
 
 ---
 
@@ -329,7 +331,8 @@ The app is hosted on Vercel. Pushing to `main` on GitHub does not auto-deploy â€
 ### Scheduled maintenance sweep
 
 `vercel.json` registers an hourly Vercel Cron against `GET /api/cron`. That sweep
-releases stale `ATT_SOFT` holds, reconciles Salesforce Opportunity stages, expires
+keeps AT&T soft holds current (releases prior months, duplicates and stale
+holds; fills the current month and the next two), reconciles Salesforce Opportunity stages, expires
 holds past their `expires_at`, and re-runs conflict detection.
 
 **Opportunity stage reconcile.** Salesforce never tells us when an Opportunity

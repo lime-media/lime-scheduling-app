@@ -35,16 +35,16 @@ type HoldRequest = {
 }
 
 const STATUS_BADGE: Record<string, string> = {
-  HOLD:                 'bg-green-100 text-green-800 border border-green-200',
-  COMMITTED:            'bg-green-100 text-green-800 border border-green-200',
-  ATT_SOFT:             'bg-purple-100 text-purple-800 border border-purple-200',
+  HOLD:                 'bg-yellow-100 text-yellow-800 border border-yellow-200',
+  COMMITTED:            'bg-yellow-100 text-yellow-800 border border-yellow-200',
+  ATT_SOFT:             'bg-blue-100 text-blue-800 border border-blue-200',
   EXPIRED:              'bg-gray-100 text-gray-500 border border-gray-200',
   EXTENSION_REQUESTED:  'bg-amber-100 text-amber-800 border border-amber-200',
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  HOLD: 'Active',
-  COMMITTED: 'Active',
+  HOLD: 'Reservation',
+  COMMITTED: 'Reservation',
   ATT_SOFT: 'AT&T Soft',
   EXPIRED: 'Expired',
   EXTENSION_REQUESTED: 'Extension Requested',

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
-import { GRID_COLORS, CLIENT_GRID_COLORS, RESERVATION_LABEL } from '@/lib/statusColors'
+import { GRID_COLORS, CLIENT_GRID_COLORS, RESERVATION_LABEL, COMMITTED_LABEL } from '@/lib/statusColors'
 import { format, addDays, startOfDay, parseISO, isSameDay } from 'date-fns'
 import { CellDetail } from './CellDetail'
 import { getNearbyMarkets, getMarketCoords, haversineDistance } from '@/lib/marketCoordinates'
@@ -101,7 +101,7 @@ const STATUS_LABELS: Record<string, string> = {
   EMPTY:              'Available',
   SCHEDULED_LED:      'Scheduled',
   HOLD_TENTATIVE:     RESERVATION_LABEL,
-  COMMITTED_NOT_SET:  RESERVATION_LABEL,
+  COMMITTED_NOT_SET:  COMMITTED_LABEL,
   ATT_SOFT:           'ATT Hold',
   MAINTENANCE:        'Maintenance',
   DEPARTING:          'Departing',
@@ -422,10 +422,9 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
         matched.add(b.truck_number)
       }
     }
-    // Reservations: holds and committed holds alike.
     if (filters.statusFilters.has('HOLD_TENTATIVE')) {
       for (const h of holds) {
-        if (h.status !== 'HOLD' && h.status !== 'COMMITTED') continue
+        if (h.status !== 'HOLD') continue
         if (dfStr && h.end_date   < dfStr) continue
         if (dtStr && h.start_date > dtStr) continue
         matched.add(h.truck_number)
@@ -833,8 +832,10 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
 
                         // Diagonal stripe background for conflict cells (hold + schedule overlap)
                         const conflictStyle = cell.conflictProgram ? {
-                          // Reservation stripes over the scheduled colour (slate).
-                          background: 'repeating-linear-gradient(135deg,#fde68a 0px,#fbbf24 4px,#64748b 4px,#64748b 8px)',
+                          // Reservation (yellow) or committed (soft green) stripes over the scheduled colour (slate).
+                          background: status === 'COMMITTED_NOT_SET'
+                            ? 'repeating-linear-gradient(135deg,#bbf7d0 0px,#86efac 4px,#64748b 4px,#64748b 8px)'
+                            : 'repeating-linear-gradient(135deg,#fde68a 0px,#fbbf24 4px,#64748b 4px,#64748b 8px)',
                         } : undefined
 
                         const isDeparting  = status === 'DEPARTING' && !!cell.departing_to

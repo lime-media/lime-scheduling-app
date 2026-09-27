@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { PIN, STATUS_BADGE as SHARED_BADGE, RESERVATION_LABEL } from '@/lib/statusColors'
+import { PIN, STATUS_BADGE as SHARED_BADGE, RESERVATION_LABEL, COMMITTED_LABEL } from '@/lib/statusColors'
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -19,7 +19,7 @@ type HoldEntry  = { truck_number: string; start_date: string; end_date: string; 
 const STATUS_COLORS: Record<TruckLocation['status'], string> = {
   SCHEDULED_LED: PIN.scheduled,
   HOLD:          PIN.reservation,
-  COMMITTED:     PIN.reservation,
+  COMMITTED:     PIN.committed,
   EMPTY:         PIN.available,
 }
 
@@ -34,7 +34,7 @@ const STATUS_COLORS_CLIENT: Record<TruckLocation['status'], string> = {
 const STATUS_LABELS: Record<TruckLocation['status'], string> = {
   SCHEDULED_LED: 'Scheduled',
   HOLD:          RESERVATION_LABEL,
-  COMMITTED:     RESERVATION_LABEL,
+  COMMITTED:     COMMITTED_LABEL,
   EMPTY:         'Available',
 }
 
@@ -240,6 +240,7 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
   // Filters
   const [showScheduled, setShowScheduled] = useState(true)
   const [showHold,      setShowHold]      = useState(true)
+  const [showCommitted, setShowCommitted] = useState(true)
   const [showEmpty,     setShowEmpty]     = useState(true)
   const [stateFilter,   setStateFilter]   = useState('')
 
@@ -372,7 +373,7 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
   const filtered = displayTrucks.filter((t) => {
     if (!showScheduled && t.status === 'SCHEDULED_LED') return false
     if (!showHold      && t.status === 'HOLD')          return false
-    if (!showHold      && t.status === 'COMMITTED')      return false
+    if (!showCommitted && t.status === 'COMMITTED')      return false
     if (!showEmpty     && t.status === 'EMPTY')          return false
     if (stateFilter && t.state !== stateFilter)          return false
     return true
@@ -423,7 +424,8 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
         ) : (
           ([
             { key: 'SCHEDULED_LED' as const, label: 'Scheduled', checked: showScheduled, set: setShowScheduled },
-            { key: 'HOLD'          as const, label: RESERVATION_LABEL, checked: showHold, set: setShowHold },
+            { key: 'HOLD'          as const, label: RESERVATION_LABEL, checked: showHold,      set: setShowHold      },
+            { key: 'COMMITTED'     as const, label: COMMITTED_LABEL,   checked: showCommitted, set: setShowCommitted },
             { key: 'EMPTY'         as const, label: 'Available', checked: showEmpty,     set: setShowEmpty     },
           ] as const).map(({ key, label, checked, set }) => (
             <label key={key} className="flex items-center gap-2 cursor-pointer select-none">
@@ -563,6 +565,7 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
                 <div className="w-2 h-2 rounded-full bg-green-500" />
                 <div className="w-2 h-2 rounded-full bg-slate-500" />
                 <div className="w-2 h-2 rounded-full bg-yellow-400" />
+                <div className="w-2 h-2 rounded-full bg-green-300" />
               </div>
               <span className="text-sm font-semibold text-gray-900">
                 {filtered.length} truck{filtered.length !== 1 ? 's' : ''}

@@ -1,7 +1,7 @@
 'use client'
 
 import { format, parseISO } from 'date-fns'
-import { STATUS_BADGE, RESERVATION_LABEL } from '@/lib/statusColors'
+import { STATUS_BADGE, RESERVATION_LABEL, COMMITTED_LABEL } from '@/lib/statusColors'
 import toast from 'react-hot-toast'
 import type { ScheduleRow } from './ScheduleGrid'
 
@@ -16,7 +16,7 @@ const STATUS_LABELS: Record<string, string> = {
   EMPTY:             'Available',
   SCHEDULED_LED:     'Scheduled',
   HOLD_TENTATIVE:    RESERVATION_LABEL,
-  COMMITTED_NOT_SET: RESERVATION_LABEL,
+  COMMITTED_NOT_SET: COMMITTED_LABEL,
   ATT_SOFT:          'ATT Soft Hold',
   MAINTENANCE:       'Under Maintenance',
 }
@@ -36,6 +36,22 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onHoldDeleted }: Ce
     } else {
       const err = await res.json()
       toast.error(err.error || 'Failed to release hold')
+    }
+  }
+
+  const handleUpgrade = async () => {
+    if (!cell?.hold_id) return
+    const res = await fetch(`/api/holds/${cell.hold_id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'COMMITTED' }),
+    })
+    if (res.ok) {
+      toast.success('Marked committed (won)')
+      onHoldDeleted()
+    } else {
+      const err = await res.json()
+      toast.error(err.error || 'Failed to mark committed')
     }
   }
 
@@ -107,6 +123,14 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onHoldDeleted }: Ce
         {/* Hold / committed details */}
         {isHold && (
           <>
+            {status === 'HOLD_TENTATIVE' && (
+              <button
+                onClick={handleUpgrade}
+                className="w-full bg-green-200 hover:bg-green-300 text-green-900 text-sm py-2 rounded-lg font-medium transition-colors"
+              >
+                Mark committed (won)
+              </button>
+            )}
             {cell.client_name   && <Row label="Client"  value={cell.client_name} />}
             {market             && <Row label="Market"  value={market} />}
             {cell.hold_notes    && <Row label="Notes"   value={cell.hold_notes} />}
@@ -162,6 +186,14 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onHoldDeleted }: Ce
         {/* Hold management buttons */}
         {isHold && (
           <>
+            {status === 'HOLD_TENTATIVE' && (
+              <button
+                onClick={handleUpgrade}
+                className="w-full bg-green-200 hover:bg-green-300 text-green-900 text-sm py-2 rounded-lg font-medium transition-colors"
+              >
+                Mark committed (won)
+              </button>
+            )}
             <button
               onClick={handleRelease}
               className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm py-2 rounded-lg font-medium transition-colors"

@@ -33,7 +33,7 @@ type HoldRequest = {
 
 const STATUS_BADGE: Record<string, string> = {
   HOLD:                 'bg-yellow-100 text-yellow-800 border border-yellow-200',
-  COMMITTED:            'bg-yellow-100 text-yellow-800 border border-yellow-200',
+  COMMITTED:            'bg-green-50 text-green-700 border border-green-200',
   PENDING:              'bg-purple-100 text-purple-800 border border-purple-200',
   APPROVED:             'bg-green-100 text-green-800 border border-green-200',
   REJECTED:             'bg-red-100 text-red-800 border border-red-200',
@@ -240,7 +240,7 @@ export default function ClientHoldRequestsPage() {
                           <PricingBadge tier={first.pricing_tier} total={first.quoted_total} />
                           <ExpirationBadge expiresAt={first.expires_at} status={first.status} />
                           <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[first.status] ?? STATUS_BADGE.PENDING}`}>
-                            {first.status === 'EXTENSION_REQUESTED' ? 'Extension Requested' : first.status === 'HOLD' || first.status === 'COMMITTED' ? 'Reservation' : first.status}
+                            {first.status === 'EXTENSION_REQUESTED' ? 'Extension Requested' : first.status === 'HOLD' ? 'Reservation' : first.status === 'COMMITTED' ? 'Committed' : first.status}
                           </span>
                         </div>
                       </div>
@@ -358,7 +358,7 @@ export default function ClientHoldRequestsPage() {
                                   <td className="px-4 py-3">
                                     <div className="flex items-center gap-2">
                                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[r.status] ?? STATUS_BADGE.PENDING}`}>
-                                        {r.status === 'EXTENSION_REQUESTED' ? 'Ext. Req.' : r.status === 'HOLD' || r.status === 'COMMITTED' ? 'Reservation' : r.status}
+                                        {r.status === 'EXTENSION_REQUESTED' ? 'Ext. Req.' : r.status === 'HOLD' ? 'Reservation' : r.status === 'COMMITTED' ? 'Committed' : r.status}
                                       </span>
                                       <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
                                     </div>

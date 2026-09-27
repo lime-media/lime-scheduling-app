@@ -1,7 +1,7 @@
 'use client'
 
 import { format, addDays, startOfDay } from 'date-fns'
-import { LEGEND_SWATCH, RESERVATION_LABEL } from '@/lib/statusColors'
+import { LEGEND_SWATCH, RESERVATION_LABEL, COMMITTED_LABEL } from '@/lib/statusColors'
 import { US_STATE_NAMES, US_STATE_ABBREVIATIONS } from '@/lib/usStates'
 import { SearchableSelect } from '@/components/SearchableSelect'
 
@@ -26,6 +26,7 @@ const STATUS_OPTIONS = [
   { value: 'SCHEDULED_LED',     label: 'Scheduled',    color: LEGEND_SWATCH.SCHEDULED_LED },
   { value: 'MAINTENANCE',       label: 'Maintenance',  color: LEGEND_SWATCH.MAINTENANCE },
   { value: 'HOLD_TENTATIVE',    label: RESERVATION_LABEL, color: LEGEND_SWATCH.HOLD_TENTATIVE },
+  { value: 'COMMITTED_NOT_SET', label: COMMITTED_LABEL,   color: LEGEND_SWATCH.COMMITTED_NOT_SET },
   { value: 'ATT_SOFT',          label: 'ATT Hold',     color: LEGEND_SWATCH.ATT_SOFT },
   { value: 'HOLD_REQUEST',      label: 'Requested',    color: LEGEND_SWATCH.HOLD_REQUEST },
 ]

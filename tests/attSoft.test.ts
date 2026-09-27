@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { isAttClient, softHoldWindow } from '@/lib/attSoftRules'
+import { attLookback, isAttClient, isAttTruck, softHoldWindow } from '@/lib/attSoftRules'
 
 section('AT&T soft holds: who is AT&T')
 eq('160over90 is AT&T, whatever the program is called', isAttClient('160over90'), true)
@@ -23,3 +23,10 @@ eq('across a year end', softHoldWindow('2026-12-15').map(w => [w.start, w.end]),
   ['2027-02-01', '2027-02-28'],
 ])
 eq('labels', softHoldWindow('2026-09-27').map(w => w.label), ['September 2026', 'October 2026', 'November 2026'])
+
+section('AT&T soft holds: which trucks are AT&T\'s')
+eq('counts the prior month and the current month', attLookback('2026-09-27'), { from: '2026-08-01', to: '2026-09-30' })
+eq('across a year start', attLookback('2027-01-10'), { from: '2026-12-01', to: '2027-01-31' })
+eq('more than 5 days for 160over90: AT&T', isAttTruck(6), true)
+eq('exactly 5 is not enough', isAttTruck(5), false)
+eq('a truck that did 20 AT&T days and then 2 days elsewhere keeps its soft hold', isAttTruck(20), true)

@@ -4,7 +4,8 @@
  * Every truck-day in the window gets one entry per thing on it: a scheduled
  * shift (with its hours and driver), maintenance, a reservation, a committed
  * reservation, a client hold request, an AT&T soft hold, or nothing (open).
- * The pivot then groups those entries by truck, driver, client or campaign.
+ * The pivot then groups those entries by truck, driver, client, campaign or
+ * market.
  * A row is always one truck; grouping only adds the headers above it, so every
  * cell is a plain 8, 10 or 12 (or "R" for a reservation with no hours on file).
  *
@@ -54,7 +55,7 @@ export type Entry = {
   detail: string
 }
 
-export type Pivot = 'truck' | 'driver' | 'client' | 'campaign'
+export type Pivot = 'truck' | 'driver' | 'client' | 'campaign' | 'market'
 
 export type PlannerRow = { truck: string; cells: Record<string, Entry[]> }
 export type PlannerGroup = { key: string; label: string; unclassified: boolean; rows: PlannerRow[] }
@@ -83,6 +84,11 @@ export function plannerWindow(today: string, weeksAhead = 6): { from: string; to
 export function shiftHours(minutes: number | null): number | null {
   if (minutes === null || !Number.isFinite(minutes) || minutes <= 0) return null
   return Math.round(minutes / 60)
+}
+
+/** One spelling per market: trims the stray spaces standard_market names carry and fixes comma spacing. */
+export function normalizeMarket(m: string): string {
+  return (m || '').trim().replace(/\s*,\s*/g, ', ').replace(/\s+/g, ' ')
 }
 
 const isMaintenance = (s: PlannerShift) => s.program.trim().toLowerCase() === 'truck maintenance' || s.client.trim().toLowerCase() === 'truck maintenance'
@@ -128,7 +134,7 @@ export function buildEntries(input: { trucks: string[]; days: string[]; shifts: 
       driver: s.driverName ?? (s.driverId ? `Driver ${s.driverId.slice(0, 8)}` : null),
       client: s.client || 'No client',
       campaign: s.program || 'No program',
-      market: s.market,
+      market: normalizeMarket(s.market),
       barKey: `S|${s.program}|${s.driverId ?? ''}`,
       detail: [s.program, s.market, s.client].filter(Boolean).join(' · '),
     })
@@ -146,7 +152,7 @@ export function buildEntries(input: { trucks: string[]; days: string[]; shifts: 
         driver: null,
         client: h.client || 'No client',
         campaign: reservationCampaign(h),
-        market: h.market,
+        market: normalizeMarket(h.market),
         barKey: `H|${h.id}`,
         detail: [kind === 'COMMITTED' ? 'Committed (won)' : kind === 'REQUEST' ? 'Client request' : 'Reservation', h.market, h.client].filter(Boolean).join(' · '),
       })
@@ -184,6 +190,10 @@ export function groupOf(e: Entry, pivot: Pivot): { key: string; unclassified: bo
       return e.driver ? { key: e.driver, unclassified: false } : { key: e.kind === 'OPEN' ? OPEN_CAPACITY : UNCLASSIFIED, unclassified: true }
     case 'client': return { key: e.client, unclassified: e.kind === 'OPEN' }
     case 'campaign': return { key: e.campaign, unclassified: e.kind === 'OPEN' }
+    case 'market':
+      // AT&T soft holds (and the odd reservation) carry no market.
+      if (e.kind === 'OPEN') return { key: OPEN_CAPACITY, unclassified: true }
+      return e.market ? { key: e.market, unclassified: false } : { key: UNCLASSIFIED, unclassified: true }
   }
 }
 

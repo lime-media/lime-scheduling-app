@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { buildEntries, cellText, pivotEntries, plannerWindow, primary, shiftHours, OPEN_CAPACITY, UNCLASSIFIED, type PlannerHold, type PlannerShift } from '@/lib/planner/build'
+import { buildEntries, cellText, normalizeMarket, pivotEntries, plannerWindow, primary, shiftHours, OPEN_CAPACITY, UNCLASSIFIED, type PlannerHold, type PlannerShift } from '@/lib/planner/build'
 
 section('planner: window')
 {
@@ -69,4 +69,13 @@ section('planner: pivots')
   eq('a client row only holds that client\'s days', Object.keys(byClient.find(g => g.label === 'Toyota')!.rows[0].cells).sort(), ['2026-09-28', '2026-09-29'])
   eq('truck pivot: one row per truck', pivotEntries(entries, 'truck')[0].rows.map(r => r.truck), ['1261', '1262', '1263'])
   eq('status filters apply', pivotEntries(entries, 'truck', new Set(['SCHEDULED']))[0].rows.map(r => r.truck), ['1261'])
+}
+
+section('planner: market pivot')
+{
+  const byMarket = pivotEntries(entries, 'market')
+  eq('markets, then Unclassified (the soft hold has none), then open capacity', byMarket.map(g => g.label), ['Austin, TX', 'Dallas, TX', UNCLASSIFIED, OPEN_CAPACITY])
+  eq('Dallas holds the scheduled truck', byMarket.find(g => g.label === 'Dallas, TX')!.rows.map(r => r.truck), ['1261'])
+  eq('Austin holds both reservation trucks', byMarket.find(g => g.label === 'Austin, TX')!.rows.map(r => r.truck), ['1262', '1263'])
+  eq('one spelling per market', normalizeMarket('  Boston ,MA '), 'Boston, MA')
 }

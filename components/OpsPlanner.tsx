@@ -5,7 +5,7 @@
  * out, every truck's scheduled shifts (with hours), maintenance, reservations,
  * committed reservations, client requests, AT&T soft holds and open days.
  *
- * Pivot by truck, driver, client or campaign. A row is always one truck;
+ * Pivot by truck, driver, client, campaign or market. A row is always one truck;
  * grouping only adds the header above it, so every cell is a plain 8, 10 or
  * 12 — or "R" for a reservation with no hours on file. Reservations have no
  * driver, so under the driver pivot they sit in Unclassified.
@@ -41,6 +41,7 @@ const PIVOTS: { value: Pivot; label: string }[] = [
   { value: 'driver', label: 'Driver' },
   { value: 'client', label: 'Client' },
   { value: 'campaign', label: 'Campaign' },
+  { value: 'market', label: 'Market' },
 ]
 
 const iso = (d: Date) => d.toISOString().slice(0, 10)

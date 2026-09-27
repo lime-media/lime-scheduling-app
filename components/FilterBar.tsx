@@ -1,6 +1,7 @@
 'use client'
 
 import { format, addDays, startOfDay } from 'date-fns'
+import { LEGEND_SWATCH } from '@/lib/statusColors'
 import { US_STATE_NAMES, US_STATE_ABBREVIATIONS } from '@/lib/usStates'
 import { SearchableSelect } from '@/components/SearchableSelect'
 
@@ -21,13 +22,13 @@ interface FilterBarProps {
 }
 
 const STATUS_OPTIONS = [
-  { value: 'EMPTY',             label: 'Available',    color: 'bg-gray-400' },
-  { value: 'SCHEDULED_LED',     label: 'Scheduled',    color: 'bg-green-500' },
-  { value: 'MAINTENANCE',       label: 'Maintenance',  color: 'bg-orange-400' },
-  { value: 'HOLD_TENTATIVE',    label: 'On Hold',      color: 'bg-yellow-400' },
-  { value: 'COMMITTED_NOT_SET', label: 'Committed',    color: 'bg-red-500' },
-  { value: 'ATT_SOFT',          label: 'ATT Hold',     color: 'bg-blue-400' },
-  { value: 'HOLD_REQUEST',      label: 'Requested',    color: 'bg-yellow-400' },
+  { value: 'EMPTY',             label: 'Available',    color: LEGEND_SWATCH.EMPTY },
+  { value: 'SCHEDULED_LED',     label: 'Scheduled',    color: LEGEND_SWATCH.SCHEDULED_LED },
+  { value: 'MAINTENANCE',       label: 'Maintenance',  color: LEGEND_SWATCH.MAINTENANCE },
+  { value: 'HOLD_TENTATIVE',    label: 'On Hold',      color: LEGEND_SWATCH.HOLD_TENTATIVE },
+  { value: 'COMMITTED_NOT_SET', label: 'Committed',    color: LEGEND_SWATCH.COMMITTED_NOT_SET },
+  { value: 'ATT_SOFT',          label: 'ATT Hold',     color: LEGEND_SWATCH.ATT_SOFT },
+  { value: 'HOLD_REQUEST',      label: 'Requested',    color: LEGEND_SWATCH.HOLD_REQUEST },
 ]
 
 const BOOKED_STATUSES = ['SCHEDULED_LED', 'MAINTENANCE', 'HOLD_TENTATIVE', 'ATT_SOFT', 'COMMITTED_NOT_SET']

@@ -1,6 +1,7 @@
 'use client'
 
 import { format, parseISO } from 'date-fns'
+import { STATUS_BADGE } from '@/lib/statusColors'
 import toast from 'react-hot-toast'
 import type { ScheduleRow } from './ScheduleGrid'
 
@@ -9,15 +10,6 @@ interface CellDetailProps {
   lastKnownMarket: string
   onClose: () => void
   onHoldDeleted: () => void
-}
-
-const STATUS_BADGE: Record<string, string> = {
-  EMPTY:             'bg-gray-100 text-gray-600',
-  SCHEDULED_LED:     'bg-green-100 text-green-800',
-  HOLD_TENTATIVE:    'bg-yellow-100 text-yellow-800',
-  COMMITTED_NOT_SET: 'bg-red-100 text-red-800',
-  ATT_SOFT:          'bg-blue-100 text-blue-800',
-  MAINTENANCE:       'bg-orange-100 text-orange-800',
 }
 
 const STATUS_LABELS: Record<string, string> = {

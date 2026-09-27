@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { GRID_COLORS, CLIENT_GRID_COLORS } from '@/lib/statusColors'
 import { format, addDays, startOfDay, parseISO, isSameDay } from 'date-fns'
 import { CellDetail } from './CellDetail'
 import { getNearbyMarkets, getMarketCoords, haversineDistance } from '@/lib/marketCoordinates'
@@ -91,30 +92,8 @@ type Filters = {
   dateTo: string
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  EMPTY:              'bg-gray-200 hover:bg-gray-300',
-  SCHEDULED_LED:      'bg-green-500 hover:bg-green-600',
-  HOLD_TENTATIVE:     'bg-yellow-400 hover:bg-yellow-500',
-  COMMITTED_NOT_SET:  'bg-red-500 hover:bg-red-600',
-  ATT_SOFT:           'bg-blue-400 hover:bg-blue-500',
-  MAINTENANCE:        'bg-orange-400 hover:bg-orange-500',
-  DEPARTING:          'bg-gray-200 hover:bg-gray-300',
-  HOLD_REQUEST:       'bg-yellow-400 hover:bg-yellow-500',
-}
-
-
-// Client view: available = green, anything booked/unavailable = gray
-const CLIENT_STATUS_COLORS: Record<string, string> = {
-  EMPTY:              'bg-green-500 hover:bg-green-600',
-  SCHEDULED_LED:      'bg-gray-300 hover:bg-gray-400',
-  HOLD_TENTATIVE:     'bg-gray-300 hover:bg-gray-400',
-  COMMITTED_NOT_SET:  'bg-gray-300 hover:bg-gray-400',
-  ATT_SOFT:           'bg-gray-300 hover:bg-gray-400',
-  MAINTENANCE:        'bg-gray-300 hover:bg-gray-400',
-  DEPARTING:          'bg-green-500 hover:bg-green-600',
-  HOLD_REQUEST:       'bg-yellow-400 hover:bg-yellow-500',
-}
-
+const STATUS_COLORS = GRID_COLORS
+const CLIENT_STATUS_COLORS = CLIENT_GRID_COLORS
 
 const STATUS_LABELS: Record<string, string> = {
   EMPTY:              'Available',
@@ -876,7 +855,7 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
                                 : cell.conflictProgram
                                 ? ''
                                 : (clientView ? CLIENT_STATUS_COLORS : STATUS_COLORS)[status]
-                            } ${isToday ? 'border-l-2 border-l-green-700' : ''} ${groupTopBorder}${showDeptText ? ' relative overflow-visible group/dp' : isNearTerm ? ' relative' : ''}`}
+                            } ${isToday ? 'border-l-2 border-l-gray-900' : ''} ${groupTopBorder}${showDeptText ? ' relative overflow-visible group/dp' : isNearTerm ? ' relative' : ''}`}
                             style={conflictStyle}
                             onMouseDown={clientView && !onCellRangeSelected ? undefined : () => handleMouseDown(truckNum, dateIdx, cell)}
                             onMouseEnter={clientView && !onCellRangeSelected ? undefined : () => handleMouseEnter(truckNum, dateIdx)}

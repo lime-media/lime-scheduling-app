@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { PIN, STATUS_BADGE as SHARED_BADGE } from '@/lib/statusColors'
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -16,18 +17,18 @@ type HoldEntry  = { truck_number: string; start_date: string; end_date: string; 
 // ── Status config ─────────────────────────────────────────────────────────────
 
 const STATUS_COLORS: Record<TruckLocation['status'], string> = {
-  SCHEDULED_LED: '#16a34a',
-  HOLD:          '#ca8a04',
-  COMMITTED:     '#dc2626',
-  EMPTY:         '#9ca3af',
+  SCHEDULED_LED: PIN.scheduled,
+  HOLD:          PIN.hold,
+  COMMITTED:     PIN.committed,
+  EMPTY:         PIN.available,
 }
 
 // Client view: available = green, anything booked = gray
 const STATUS_COLORS_CLIENT: Record<TruckLocation['status'], string> = {
-  SCHEDULED_LED: '#9ca3af',
-  HOLD:          '#9ca3af',
-  COMMITTED:     '#9ca3af',
-  EMPTY:         '#16a34a',
+  SCHEDULED_LED: PIN.booked,
+  HOLD:          PIN.booked,
+  COMMITTED:     PIN.booked,
+  EMPTY:         PIN.available,
 }
 
 const STATUS_LABELS: Record<TruckLocation['status'], string> = {
@@ -45,10 +46,10 @@ const STATUS_LABELS_CLIENT: Record<TruckLocation['status'], string> = {
 }
 
 const STATUS_BADGE: Record<TruckLocation['status'], string> = {
-  SCHEDULED_LED: 'bg-green-100 text-green-800',
-  HOLD:          'bg-yellow-100 text-yellow-800',
-  COMMITTED:     'bg-red-100 text-red-800',
-  EMPTY:         'bg-gray-100 text-gray-600',
+  SCHEDULED_LED: SHARED_BADGE.SCHEDULED_LED,
+  HOLD:          SHARED_BADGE.HOLD_TENTATIVE,
+  COMMITTED:     SHARED_BADGE.COMMITTED_NOT_SET,
+  EMPTY:         SHARED_BADGE.EMPTY,
 }
 
 const STATUS_BADGE_CLIENT: Record<TruckLocation['status'], string> = {
@@ -561,8 +562,8 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
           >
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full bg-gray-400" />
                 <div className="w-2 h-2 rounded-full bg-green-500" />
+                <div className="w-2 h-2 rounded-full bg-slate-500" />
                 <div className="w-2 h-2 rounded-full bg-yellow-400" />
                 <div className="w-2 h-2 rounded-full bg-red-500" />
               </div>

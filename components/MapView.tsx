@@ -563,9 +563,9 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-1.5">
                 <div className="w-2 h-2 rounded-full bg-green-500" />
-                <div className="w-2 h-2 rounded-full bg-slate-500" />
+                <div className="w-2 h-2 rounded-full bg-gray-400" />
                 <div className="w-2 h-2 rounded-full bg-yellow-400" />
-                <div className="w-2 h-2 rounded-full bg-green-300" />
+                <div className="w-2 h-2 rounded-full bg-gray-300" />
               </div>
               <span className="text-sm font-semibold text-gray-900">
                 {filtered.length} truck{filtered.length !== 1 ? 's' : ''}

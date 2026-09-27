@@ -25,8 +25,16 @@ eq('across a year end', softHoldWindow('2026-12-15').map(w => [w.start, w.end]),
 eq('labels', softHoldWindow('2026-09-27').map(w => w.label), ['September 2026', 'October 2026', 'November 2026'])
 
 section('AT&T soft holds: which trucks are AT&T\'s')
-eq('counts the prior month and the current month', attLookback('2026-09-27'), { from: '2026-08-01', to: '2026-09-30' })
-eq('across a year start', attLookback('2027-01-10'), { from: '2026-12-01', to: '2027-01-31' })
-eq('more than 5 days for 160over90: AT&T', isAttTruck(6), true)
-eq('exactly 5 is not enough', isAttTruck(5), false)
-eq('a truck that did 20 AT&T days and then 2 days elsewhere keeps its soft hold', isAttTruck(20), true)
+{
+  const early = attLookback('2026-10-10')
+  const late = attLookback('2026-10-11')
+  eq('through the 10th: the prior month counts too', early, { current: { from: '2026-10-01', to: '2026-10-31' }, prior: { from: '2026-09-01', to: '2026-09-30' } })
+  eq('from the 11th: the current month only', late, { current: { from: '2026-10-01', to: '2026-10-31' }, prior: null })
+  eq('across a year start', attLookback('2027-01-03').prior, { from: '2026-12-01', to: '2026-12-31' })
+  eq('more than 5 days this month: AT&T', isAttTruck({ current: 6, prior: 0 }, late), true)
+  eq('exactly 5 is not enough', isAttTruck({ current: 5, prior: 0 }, late), false)
+  eq('months are not added together (3 + 3)', isAttTruck({ current: 3, prior: 3 }, early), false)
+  eq('early in the month, last month alone is enough', isAttTruck({ current: 0, prior: 20 }, early), true)
+  eq('after the 10th, no 160over90 shifts this month: released', isAttTruck({ current: 0, prior: 20 }, late), false)
+  eq('a truck on AT&T all month with 2 days elsewhere keeps it', isAttTruck({ current: 18, prior: 0 }, late), true)
+}

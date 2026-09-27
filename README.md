@@ -84,7 +84,7 @@ The AI is instructed never to guess or infer a truck's location — it can only 
 | AVAILABLE | LED app (no row for today) | No active program |
 | HOLD | This app (Prisma) | Reservation. Shown as a yellow **Reservation** everywhere |
 | COMMITTED | This app (Prisma) | **Committed (won)**, soft green: won in Salesforce (Closed Won sets it) but not yet on the LED schedule. Blocks the truck and never auto-expires |
-| ATT_SOFT | This app (Prisma, auto-created) | AT&T soft hold (blue): trucks with more than 5 days of 160over90 work (any program) in the prior and current month, for the current month (from today) and the next two. A day or two on another client does not release it. See `lib/attSoftHolds.ts` |
+| ATT_SOFT | This app (Prisma, auto-created) | AT&T soft hold (blue): trucks with more than 5 days of 160over90 work (any program) in the current month, or through the 10th in the prior month (each month on its own), for the current month (from today) and the next two. A day or two on another client does not release it; from the 11th, no 160over90 shifts this month does. See `lib/attSoftHolds.ts` |
 
 Colours are shared across the internal and client views (`lib/statusColors.ts`): **green = available** in both; internally, scheduled is slate, reservations yellow, committed (won) soft green, AT&T soft holds blue, maintenance orange. The client view shows anything booked as gray.
 

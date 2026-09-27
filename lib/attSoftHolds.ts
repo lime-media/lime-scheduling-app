@@ -5,10 +5,13 @@
  * AT&T work is booked under the agency 160over90 (ATT Fiber, ATT AIA, Alloy
  * Build, AT&T ECL ...), so it is matched by client, not program name.
  *
- * Which trucks are AT&T's: a truck that worked MORE than 5 days for 160over90
- * in the prior month and the current month together (scheduled days count).
- * A day or two on another client's program does not change that — the truck
- * keeps its soft hold, and the grid shows the real shift on those days.
+ * Which trucks are AT&T's: a truck with MORE than 5 days of 160over90 work in
+ * the current month (scheduled days count). Through the 10th of the month the
+ * prior month also counts, on its own — AT&T's commitments for a new month
+ * drag into its first days. Months are never added together. From the 11th,
+ * a truck with no 160over90 shifts this month is released. A day or two on
+ * another client's program does not change any of this — the truck keeps its
+ * soft hold, and the grid shows the real shift on those days.
  * (Soft holds are placeholders: conflict detection ignores them and quoting
  * treats them as displaceable, so the overlap blocks nothing.)
  *
@@ -19,8 +22,7 @@
  *   1. Releases soft holds from months before the current one.
  *   2. Removes duplicate soft holds (same truck, same start), keeping the
  *      oldest. Two grid loads at the same moment used to create two.
- *   3. Releases soft holds on trucks that are no longer AT&T's (5 days or
- *      fewer of 160over90 work in the prior and current month).
+ *   3. Releases soft holds on trucks that are no longer AT&T's.
  *   4. Gives every AT&T truck a soft hold for each month of the window it
  *      does not already have.
  *
@@ -31,7 +33,7 @@ import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
-import { ATT_CLIENT, ATT_MIN_DAYS, attLookback, isAttClient, isAttTruck, softHoldWindow } from '@/lib/attSoftRules'
+import { ATT_CLIENT, ATT_MIN_DAYS, PRIOR_MONTH_GRACE_DAY, attLookback, isAttClient, isAttTruck, softHoldWindow } from '@/lib/attSoftRules'
 
 export { ATT_CLIENT, isAttClient, softHoldWindow }
 
@@ -114,14 +116,18 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
 
   // 3. Trucks that are no longer AT&T's.
   const lookback = attLookback(today)
-  const attDays = await attDaysByTruck(lookback.from, lookback.to)
-  const attTrucks = new Set([...attDays].filter(([, n]) => isAttTruck(n)).map(([t]) => t))
+  const curDays = await attDaysByTruck(lookback.current.from, lookback.current.to)
+  const priorDays = lookback.prior ? await attDaysByTruck(lookback.prior.from, lookback.prior.to) : new Map<string, number>()
+  const daysOf = (t: string) => ({ current: curDays.get(t) ?? 0, prior: priorDays.get(t) ?? 0 })
+  const attTrucks = new Set([...new Set([...curDays.keys(), ...priorDays.keys()])].filter(t => isAttTruck(daysOf(t), lookback)))
   let releasedPremise = 0
   const live: SoftHold[] = []
   for (const h of kept) {
     if (attTrucks.has(h.truck_number)) { live.push(h); continue }
     await release(h, 'att_soft_not_att_truck', {
-      days_160over90: attDays.get(h.truck_number) ?? 0, needs_more_than: ATT_MIN_DAYS, from: lookback.from, to: lookback.to,
+      days_160over90: daysOf(h.truck_number), needs_more_than: ATT_MIN_DAYS,
+      months: lookback.prior ? [lookback.prior.from.slice(0, 7), lookback.current.from.slice(0, 7)] : [lookback.current.from.slice(0, 7)],
+      prior_month_counts_through_day: PRIOR_MONTH_GRACE_DAY,
     })
     releasedPremise++
   }

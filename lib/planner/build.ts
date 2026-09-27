@@ -2,17 +2,21 @@
  * Ops planner — the pivot behind the Planner tab.
  *
  * Every truck-day in the window gets one entry per thing on it: a scheduled
- * shift (with its hours and driver), maintenance, a reservation, a committed
- * reservation, a client hold request, an AT&T soft hold, or nothing (open).
- * The pivot then groups those entries by truck, driver, client, campaign or
- * market.
- * A row is always one truck; grouping only adds the headers above it, so every
- * cell is a plain 8, 10 or 12 (or "R" for a reservation with no hours on file).
+ * shift (with its hours and driver), maintenance, a reservation (a client's
+ * hold request is one too), a committed reservation, an AT&T soft hold, or
+ * nothing (open).
+ *
+ * Each pivot is a tree of levels (PIVOT_LEVELS): truck → driver; driver →
+ * campaign → market → truck; client → campaign → market → asset; campaign →
+ * market → asset → driver; market → truck → campaign. The last level is the
+ * row with the day cells. Cells show the shift's 8 / 10 / 12 ("R" for a
+ * reservation with no hours on file) — except under the truck pivot, where
+ * the bars are labelled with the market instead.
  *
  * Pure: the API route loads the data and passes it in.
  */
 
-export type EntryKind = 'SCHEDULED' | 'MAINTENANCE' | 'COMMITTED' | 'RESERVATION' | 'REQUEST' | 'ATT_SOFT' | 'OPEN'
+export type EntryKind = 'SCHEDULED' | 'MAINTENANCE' | 'COMMITTED' | 'RESERVATION' | 'ATT_SOFT' | 'OPEN'
 
 export type PlannerShift = {
   truck: string
@@ -57,8 +61,6 @@ export type Entry = {
 
 export type Pivot = 'truck' | 'driver' | 'client' | 'campaign' | 'market'
 
-export type PlannerRow = { truck: string; cells: Record<string, Entry[]> }
-export type PlannerGroup = { key: string; label: string; unclassified: boolean; rows: PlannerRow[] }
 
 export const UNCLASSIFIED = 'Unclassified'
 export const OPEN_CAPACITY = 'Open capacity'
@@ -144,7 +146,8 @@ export function buildEntries(input: { trucks: string[]; days: string[]; shifts: 
   const soft: PlannerHold[] = []
   for (const h of input.holds) {
     if (h.status === 'ATT_SOFT') { soft.push(h); continue }
-    const kind: EntryKind = h.status === 'COMMITTED' ? 'COMMITTED' : h.source === 'CLIENT' ? 'REQUEST' : 'RESERVATION'
+    // A client's hold request is a reservation like any other.
+    const kind: EntryKind = h.status === 'COMMITTED' ? 'COMMITTED' : 'RESERVATION'
     for (let d = h.start < days[0] ? days[0] : h.start; d <= h.end && d <= days[days.length - 1]; d = addDays(d, 1)) {
       push({
         kind, truck: h.truck, date: d,
@@ -154,7 +157,7 @@ export function buildEntries(input: { trucks: string[]; days: string[]; shifts: 
         campaign: reservationCampaign(h),
         market: normalizeMarket(h.market),
         barKey: `H|${h.id}`,
-        detail: [kind === 'COMMITTED' ? 'Committed (won)' : kind === 'REQUEST' ? 'Client request' : 'Reservation', h.market, h.client].filter(Boolean).join(' · '),
+        detail: [kind === 'COMMITTED' ? 'Committed (won)' : h.source === 'CLIENT' ? 'Reservation (client request)' : 'Reservation', h.market, h.client].filter(Boolean).join(' · '),
       })
     }
   }
@@ -181,55 +184,126 @@ export function buildEntries(input: { trucks: string[]; days: string[]; shifts: 
   return out
 }
 
-/** The group an entry falls under for a pivot. */
-export function groupOf(e: Entry, pivot: Pivot): { key: string; unclassified: boolean } {
-  switch (pivot) {
-    case 'truck': return { key: 'Fleet', unclassified: false }
-    case 'driver':
-      // Only scheduled shifts carry a driver; everything else is unclassified.
-      return e.driver ? { key: e.driver, unclassified: false } : { key: e.kind === 'OPEN' ? OPEN_CAPACITY : UNCLASSIFIED, unclassified: true }
-    case 'client': return { key: e.client, unclassified: e.kind === 'OPEN' }
-    case 'campaign': return { key: e.campaign, unclassified: e.kind === 'OPEN' }
-    case 'market':
-      // AT&T soft holds (and the odd reservation) carry no market.
-      if (e.kind === 'OPEN') return { key: OPEN_CAPACITY, unclassified: true }
-      return e.market ? { key: e.market, unclassified: false } : { key: UNCLASSIFIED, unclassified: true }
+// ---------------------------------------------------------------------------
+// Pivot tree
+// ---------------------------------------------------------------------------
+
+export type Dimension = 'truck' | 'driver' | 'client' | 'campaign' | 'market'
+
+/** The levels of each pivot, top to bottom; the last is the row with the day cells. */
+export const PIVOT_LEVELS: Record<Pivot, Dimension[]> = {
+  truck:    ['truck', 'driver'],
+  driver:   ['driver', 'campaign', 'market', 'truck'],
+  client:   ['client', 'campaign', 'market', 'truck'],
+  campaign: ['campaign', 'market', 'truck', 'driver'],
+  market:   ['market', 'truck', 'campaign'],
+}
+
+export const UNASSIGNED = 'Unassigned'
+export const NO_MARKET = 'No market'
+export const OPEN_ROW = 'Open'
+
+export type PlannerNode = {
+  /** Unique across the tree: the path of values from the top. */
+  key: string
+  dim: Dimension
+  value: string
+  depth: number
+  /** Sorts last and reads as "not really a group": Unclassified, Unassigned, No market, Open. */
+  unclassified: boolean
+  children: PlannerNode[]
+  /** Leaf rows only: the entries on each day. */
+  cells: Record<string, Entry[]>
+  /** Trucks under this node on each day (non-open entries; open entries in the open group). */
+  trucksByDay: Record<string, number>
+}
+
+/** An entry's value at one level. Missing drivers and markets get a stated placeholder, never a guess. */
+function valueOf(e: Entry, dim: Dimension, depth: number): { value: string; unclassified: boolean } {
+  switch (dim) {
+    case 'truck': return { value: e.truck, unclassified: false }
+    case 'driver': return e.driver ? { value: e.driver, unclassified: false } : { value: depth === 0 ? UNCLASSIFIED : UNASSIGNED, unclassified: true }
+    case 'client': return { value: e.client, unclassified: false }
+    case 'campaign': return { value: e.campaign, unclassified: false }
+    case 'market': return e.market ? { value: e.market, unclassified: false } : { value: depth === 0 ? UNCLASSIFIED : NO_MARKET, unclassified: true }
   }
 }
 
 /**
- * Group entries for a pivot. Each group's rows are the trucks with anything in
- * that group, one row per truck, sorted by truck number; each row's cells hold
- * only that group's entries. Groups sort by name, with unclassified and open
- * capacity last.
+ * The path an entry takes down a pivot. Open days carry no driver, client,
+ * campaign or market, so they get a short path of their own: under the truck
+ * pivot a truck's "Open" row, elsewhere an "Open capacity" group of trucks.
  */
-export function pivotEntries(entries: Entry[], pivot: Pivot, kinds?: Set<EntryKind>): PlannerGroup[] {
-  const groups = new Map<string, { unclassified: boolean; rows: Map<string, PlannerRow> }>()
+function pathOf(e: Entry, pivot: Pivot): { dim: Dimension; value: string; unclassified: boolean }[] {
+  if (e.kind === 'OPEN') {
+    return pivot === 'truck'
+      ? [{ dim: 'truck', value: e.truck, unclassified: false }, { dim: 'driver', value: OPEN_ROW, unclassified: true }]
+      : [{ dim: PIVOT_LEVELS[pivot][0], value: OPEN_CAPACITY, unclassified: true }, { dim: 'truck', value: e.truck, unclassified: false }]
+  }
+  return PIVOT_LEVELS[pivot].map((dim, depth) => ({ dim, ...valueOf(e, dim, depth) }))
+}
+
+const sortNodes = (a: PlannerNode, b: PlannerNode) =>
+  Number(a.value === OPEN_CAPACITY || a.value === OPEN_ROW) - Number(b.value === OPEN_CAPACITY || b.value === OPEN_ROW)
+  || Number(a.unclassified) - Number(b.unclassified)
+  || a.value.localeCompare(b.value, undefined, { numeric: true })
+
+/** Build the pivot tree. `kinds` filters which entries are shown. */
+export function pivotTree(entries: Entry[], pivot: Pivot, kinds?: Set<EntryKind>): PlannerNode[] {
+  const root: PlannerNode = { key: '', dim: 'truck', value: '', depth: -1, unclassified: false, children: [], cells: {}, trucksByDay: {} }
+  const index = new Map<string, PlannerNode>()
+  const dayTrucks = new Map<string, Map<string, Set<string>>>() // node key → date → trucks
   for (const e of entries) {
     if (kinds && !kinds.has(e.kind)) continue
-    const g = groupOf(e, pivot)
-    let group = groups.get(g.key)
-    if (!group) { group = { unclassified: g.unclassified, rows: new Map() }; groups.set(g.key, group) }
-    let row = group.rows.get(e.truck)
-    if (!row) { row = { truck: e.truck, cells: {} }; group.rows.set(e.truck, row) }
-    ;(row.cells[e.date] ??= []).push(e)
+    let parent = root
+    const path = pathOf(e, pivot)
+    path.forEach((step, depth) => {
+      const key = `${parent.key}/${step.dim}:${step.value}`
+      let node = index.get(key)
+      if (!node) {
+        node = { key, dim: step.dim, value: step.value, depth, unclassified: step.unclassified, children: [], cells: {}, trucksByDay: {} }
+        index.set(key, node)
+        parent.children.push(node)
+      }
+      const byDay = dayTrucks.get(key) ?? new Map<string, Set<string>>()
+      dayTrucks.set(key, byDay)
+      byDay.set(e.date, (byDay.get(e.date) ?? new Set()).add(e.truck))
+      if (depth === path.length - 1) (node.cells[e.date] ??= []).push(e)
+      parent = node
+    })
   }
-  const rank = (k: string, u: boolean) => (k === OPEN_CAPACITY ? 2 : u ? 1 : 0)
-  return [...groups.entries()]
-    .map(([key, g]) => ({ key, label: key, unclassified: g.unclassified, rows: [...g.rows.values()].sort((a, b) => a.truck.localeCompare(b.truck)) }))
-    .sort((a, b) => rank(a.key, a.unclassified) - rank(b.key, b.unclassified) || a.label.localeCompare(b.label))
+  for (const [key, byDay] of dayTrucks) {
+    const node = index.get(key)!
+    for (const [d, t] of byDay) node.trucksByDay[d] = t.size
+  }
+  const sortDeep = (n: PlannerNode) => { n.children.sort(sortNodes); n.children.forEach(sortDeep) }
+  sortDeep(root)
+  return root.children
+}
+
+/** Leaf rows under a node, in display order. */
+export function leaves(n: PlannerNode): PlannerNode[] {
+  return n.children.length === 0 ? [n] : n.children.flatMap(leaves)
+}
+
+/** The label a bar carries under the truck pivot: where the truck is. */
+export function marketLabel(e: Entry): string {
+  if (e.kind === 'OPEN') return ''
+  if (e.kind === 'ATT_SOFT') return 'AT&T soft hold'
+  if (e.kind === 'MAINTENANCE') return e.market ? `Maintenance · ${e.market}` : 'Maintenance'
+  return e.market || e.campaign
 }
 
 /** What a cell shows: hours, or "R" for a reservation with no hours on file; empty for open and non-hour entries. */
 export function cellText(e: Entry): string {
   if (e.hours !== null) return String(e.hours)
-  if (e.kind === 'RESERVATION' || e.kind === 'COMMITTED' || e.kind === 'REQUEST') return 'R'
+  if (e.kind === 'RESERVATION' || e.kind === 'COMMITTED') return 'R'
   if (e.kind === 'MAINTENANCE') return 'M'
   return ''
 }
 
 /** The entry a cell is coloured by when several share it: real work first. */
-export const KIND_PRIORITY: EntryKind[] = ['SCHEDULED', 'MAINTENANCE', 'COMMITTED', 'RESERVATION', 'REQUEST', 'ATT_SOFT', 'OPEN']
+export const KIND_PRIORITY: EntryKind[] = ['SCHEDULED', 'MAINTENANCE', 'COMMITTED', 'RESERVATION', 'ATT_SOFT', 'OPEN']
 export function primary(entries: Entry[]): Entry {
   return [...entries].sort((a, b) => KIND_PRIORITY.indexOf(a.kind) - KIND_PRIORITY.indexOf(b.kind))[0]
 }

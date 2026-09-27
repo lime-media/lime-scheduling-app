@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { buildEntries, cellText, normalizeMarket, pivotEntries, plannerWindow, primary, shiftHours, OPEN_CAPACITY, UNCLASSIFIED, type PlannerHold, type PlannerShift } from '@/lib/planner/build'
+import { buildEntries, cellText, leaves, marketLabel, normalizeMarket, pivotTree, plannerWindow, primary, shiftHours, OPEN_CAPACITY, UNASSIGNED, UNCLASSIFIED, type PlannerHold, type PlannerNode, type PlannerShift } from '@/lib/planner/build'
 
 section('planner: window')
 {
@@ -49,33 +49,52 @@ eq('split shifts on one day add up', cellText(primary(at('1261', '2026-09-29')))
 eq('maintenance shows M, not hours', [primary(at('1261', '2026-09-30')).kind, cellText(primary(at('1261', '2026-09-30')))], ['MAINTENANCE', 'M'])
 eq('a reservation with no hours on file shows R', cellText(primary(at('1262', '2026-10-05'))), 'R')
 eq('a committed reservation with quoted hours shows them', [primary(at('1262', '2026-10-12')).kind, cellText(primary(at('1262', '2026-10-12')))], ['COMMITTED', '10'])
-eq('a client hold is a request', primary(at('1263', '2026-10-06')).kind, 'REQUEST')
+eq('a client hold request is a reservation', primary(at('1263', '2026-10-06')).kind, 'RESERVATION')
 eq('the AT&T soft hold fills the gap days', primary(at('1263', '2026-10-07')).kind, 'ATT_SOFT')
-eq('but not a day something real is on', at('1263', '2026-10-06').map(e => e.kind), ['REQUEST'])
+eq('but not a day something real is on', at('1263', '2026-10-06').map(e => e.kind), ['RESERVATION'])
 eq('nothing booked is open', primary(at('1261', '2026-10-20')).kind, 'OPEN')
 eq('every truck-day is accounted for', new Set(entries.map(e => `${e.truck}|${e.date}`)).size, 3 * 56)
 
-section('planner: pivots')
-{
-  const byDriver = pivotEntries(entries, 'driver')
-  eq('driver pivot: the driver, then Unclassified, then open capacity', byDriver.map(g => g.label), ['Driver D1', UNCLASSIFIED, OPEN_CAPACITY])
-  eq('reservations have no driver, so they are Unclassified', byDriver.find(g => g.label === UNCLASSIFIED)!.rows.map(r => r.truck), ['1262', '1263'])
-  const byCampaign = pivotEntries(entries, 'campaign')
-  eq('campaign: program for booked, opportunity or reservation otherwise',
-    byCampaign.map(g => g.label).filter(l => l !== OPEN_CAPACITY).sort(),
-    ['AT&T soft hold', 'Acme - Fall Push', 'Reservation – Acme – Austin, TX', 'Toyota Fall', 'Truck Maintenance'])
-  const byClient = pivotEntries(entries, 'client')
-  eq('client pivot rows are one per truck', byClient.find(g => g.label === 'Acme')!.rows.map(r => r.truck), ['1262', '1263'])
-  eq('a client row only holds that client\'s days', Object.keys(byClient.find(g => g.label === 'Toyota')!.rows[0].cells).sort(), ['2026-09-28', '2026-09-29'])
-  eq('truck pivot: one row per truck', pivotEntries(entries, 'truck')[0].rows.map(r => r.truck), ['1261', '1262', '1263'])
-  eq('status filters apply', pivotEntries(entries, 'truck', new Set(['SCHEDULED']))[0].rows.map(r => r.truck), ['1261'])
+// A tree as nested labels, for readable expectations.
+const shape = (ns: PlannerNode[]): unknown[] => ns.map(n => (n.children.length ? { [n.value]: shape(n.children) } : n.value))
+const find = (ns: PlannerNode[], ...path: string[]): PlannerNode => {
+  let cur = ns.find(n => n.value === path[0])!
+  for (const p of path.slice(1)) cur = cur.children.find(n => n.value === p)!
+  return cur
 }
 
-section('planner: market pivot')
+section('planner: pivot trees')
 {
-  const byMarket = pivotEntries(entries, 'market')
-  eq('markets, then Unclassified (the soft hold has none), then open capacity', byMarket.map(g => g.label), ['Austin, TX', 'Dallas, TX', UNCLASSIFIED, OPEN_CAPACITY])
-  eq('Dallas holds the scheduled truck', byMarket.find(g => g.label === 'Dallas, TX')!.rows.map(r => r.truck), ['1261'])
-  eq('Austin holds both reservation trucks', byMarket.find(g => g.label === 'Austin, TX')!.rows.map(r => r.truck), ['1262', '1263'])
+  const truck = pivotTree(entries, 'truck')
+  eq('truck → driver (reservations Unassigned, open days their own row)', shape(truck), [
+    { '1261': ['Driver D1', 'Open'] },
+    { '1262': [UNASSIGNED, 'Open'] },
+    { '1263': [UNASSIGNED, 'Open'] },
+  ])
+  eq('truck view bars carry the market', marketLabel(primary(find(truck, '1261', 'Driver D1').cells['2026-09-28'])), 'Dallas, TX')
+  eq('an AT&T soft hold bar says so', marketLabel(primary(find(truck, '1263', UNASSIGNED).cells['2026-10-07'])), 'AT&T soft hold')
+
+  const driver = pivotTree(entries, 'driver')
+  eq('driver → campaign → market → truck', shape(driver).slice(0, 1), [
+    { 'Driver D1': [{ 'Toyota Fall': [{ 'Dallas, TX': ['1261'] }] }, { 'Truck Maintenance': [{ 'Dallas, TX': ['1261'] }] }] },
+  ])
+  eq('reservations have no driver: Unclassified at the top', driver.map(n => n.value), ['Driver D1', UNCLASSIFIED, OPEN_CAPACITY])
+
+  const client = pivotTree(entries, 'client')
+  eq('client → campaign → market → asset', shape([find(client, 'Acme')]), [
+    { Acme: [{ 'Acme - Fall Push': [{ 'Austin, TX': ['1262'] }] }, { 'Reservation – Acme – Austin, TX': [{ 'Austin, TX': ['1262', '1263'] }] }] },
+  ])
+
+  const campaign = pivotTree(entries, 'campaign')
+  eq('campaign → market → asset → driver', shape([find(campaign, 'Toyota Fall')]), [{ 'Toyota Fall': [{ 'Dallas, TX': [{ '1261': ['Driver D1'] }] }] }])
+  eq('a reservation\'s driver level says Unassigned', leaves(find(campaign, 'Acme - Fall Push')).map(n => n.value), [UNASSIGNED])
+
+  const market = pivotTree(entries, 'market')
+  eq('market → truck → campaign', shape([find(market, 'Dallas, TX')]), [{ 'Dallas, TX': [{ '1261': ['Toyota Fall', 'Truck Maintenance'] }] }])
+  eq('no market at the top is Unclassified; open capacity last', market.map(n => n.value), ['Austin, TX', 'Dallas, TX', UNCLASSIFIED, OPEN_CAPACITY])
+
+  eq('open capacity lists the trucks', find(market, OPEN_CAPACITY).children.map(n => n.value), ['1261', '1262', '1263'])
+  eq('group rows count trucks per day (1262 reserved, 1263 requested)', find(client, 'Acme').trucksByDay['2026-10-06'], 2)
+  eq('status filters apply', shape(pivotTree(entries, 'truck', new Set(['SCHEDULED']))), [{ '1261': ['Driver D1'] }])
   eq('one spelling per market', normalizeMarket('  Boston ,MA '), 'Boston, MA')
 }

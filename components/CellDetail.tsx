@@ -126,7 +126,7 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onHoldDeleted }: Ce
             {status === 'HOLD_TENTATIVE' && (
               <button
                 onClick={handleUpgrade}
-                className="w-full bg-green-200 hover:bg-green-300 text-green-900 text-sm py-2 rounded-lg font-medium transition-colors"
+                className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 text-sm py-2 rounded-lg font-medium transition-colors"
               >
                 Mark committed (won)
               </button>
@@ -189,7 +189,7 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onHoldDeleted }: Ce
             {status === 'HOLD_TENTATIVE' && (
               <button
                 onClick={handleUpgrade}
-                className="w-full bg-green-200 hover:bg-green-300 text-green-900 text-sm py-2 rounded-lg font-medium transition-colors"
+                className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 text-sm py-2 rounded-lg font-medium transition-colors"
               >
                 Mark committed (won)
               </button>

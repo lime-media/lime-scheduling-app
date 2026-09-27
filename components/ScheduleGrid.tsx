@@ -105,7 +105,7 @@ const STATUS_LABELS: Record<string, string> = {
   ATT_SOFT:           'ATT Hold',
   MAINTENANCE:        'Maintenance',
   DEPARTING:          'Departing',
-  HOLD_REQUEST:       'Requested',
+  HOLD_REQUEST:       RESERVATION_LABEL, // a client's hold request is a reservation
 }
 
 function getDates(from: Date, to: Date): Date[] {
@@ -832,10 +832,10 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
 
                         // Diagonal stripe background for conflict cells (hold + schedule overlap)
                         const conflictStyle = cell.conflictProgram ? {
-                          // Reservation (yellow) or committed (soft green) stripes over the scheduled colour (slate).
+                          // Reservation (yellow) or committed (soft gray) stripes over the scheduled gray.
                           background: status === 'COMMITTED_NOT_SET'
-                            ? 'repeating-linear-gradient(135deg,#bbf7d0 0px,#86efac 4px,#64748b 4px,#64748b 8px)'
-                            : 'repeating-linear-gradient(135deg,#fde68a 0px,#fbbf24 4px,#64748b 4px,#64748b 8px)',
+                            ? 'repeating-linear-gradient(135deg,#f3f4f6 0px,#e5e7eb 4px,#9ca3af 4px,#9ca3af 8px)'
+                            : 'repeating-linear-gradient(135deg,#fde68a 0px,#fbbf24 4px,#9ca3af 4px,#9ca3af 8px)',
                         } : undefined
 
                         const isDeparting  = status === 'DEPARTING' && !!cell.departing_to

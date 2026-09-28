@@ -89,6 +89,9 @@ export default function InternalQuotePage() {
   const [form, setForm] = useState({ market: '', start_date: '', end_date: '', truck_count: undefined as number | undefined, days_per_week: 5 as 5 | 6 | 7, operating_hours: 8 as 8 | 10 | 12 })
   const [quoteLoading, setQuoteLoading] = useState(false)
   const [quoteResult, setQuoteResult] = useState<QuoteResponse | null>(null)
+  // A markup typed but not yet re-priced: the prices on screen are not the
+  // prices that would be booked, so booking waits until they match.
+  const markupPending = isBrandDirect && quoteResult !== null && markupPct !== (quoteResult.pricing.brandMarkupPct ?? 0)
   const [quoteError, setQuoteError] = useState<string | null>(null)
   // Internal-only breakdown shown under the headline. Never sent to clients.
   const [quoteErrorDetail, setQuoteErrorDetail] = useState<string | null>(null)
@@ -147,7 +150,7 @@ export default function InternalQuotePage() {
     } finally {
       setQuoteLoading(false)
     }
-  }, [quoteLoading, form, account?.id, isBrandDirect, markupPct])
+  }, [quoteLoading, form, account?.id, isBrandDirect, markupPct, quoteResult?.pricing.quoteOnlyRequired])
 
   // Changing the Brand Direct markup re-prices the quote on the server, so
   // every line on screen is the real, folded-in price.
@@ -159,7 +162,20 @@ export default function InternalQuotePage() {
   const [repriceToken, setRepriceToken] = useState(0)
   useEffect(() => { if (repriceToken) submitQuote(undefined, { reprice: true }) }, [repriceToken]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const placeHold = useCallback(async () => {
+  // The total on screen, exactly as the pricing summary adds it up. Sent with
+  // the booking so the server refuses a price the rep has not seen.
+  const shownTotal = (): number | null => {
+    if (!quoteResult) return null
+    const { pricing, features } = quoteResult
+    let media = pricing.baseMedia
+    if (toggles.shadowFencing) media += features.shadowFencing.cost
+    if (toggles.smartDirectional) media += features.smartDirectional.cost
+    if (toggles.deviceId) media += features.deviceId.cost
+    if (features.studies.available && toggles.studies.length > 0) media += toggles.studies.length * features.studies.costPerStudy
+    return media + quoteResult.transportCharge
+  }
+
+  const placeHold = useCallback(async (expectedOverride?: number) => {
     if (holdLoading || !quoteResult || !account) return
     setHoldLoading(true)
 
@@ -185,16 +201,24 @@ export default function InternalQuotePage() {
           quote_only: quoteOnly,
           days_per_week: form.days_per_week,
           operating_hours: form.operating_hours,
+          expected_total: expectedOverride ?? shownTotal(),
         }),
       })
       const data = await res.json()
+      if (res.status === 409 && data.priceChanged) {
+        setHoldLoading(false)
+        const ok = confirm(`The price on fresh data is ${fmtMoney(data.priceChanged.now)}, not ${fmtMoney(data.priceChanged.was)} as shown.\n\nBook at ${fmtMoney(data.priceChanged.now)}?`)
+        if (ok) return placeHold(data.priceChanged.now)
+        setHoldResult({ ok: false, message: 'Nothing was booked. Re-quote to see the current price.' })
+        return
+      }
       setHoldResult({ ok: res.ok, message: data.message || data.error || 'Unknown error' })
     } catch {
       setHoldResult({ ok: false, message: 'Network error.' })
     } finally {
       setHoldLoading(false)
     }
-  }, [holdLoading, quoteResult, account, form, toggles, isBrandDirect, markupPct, stage, quoteOnly])
+  }, [holdLoading, quoteResult, account, form, toggles, isBrandDirect, markupPct, stage, quoteOnly]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (status === 'loading' || !session) return null
 
@@ -581,9 +605,9 @@ export default function InternalQuotePage() {
                       {'\u2713'} {holdResult.message}
                     </div>
                   ) : (
-                    <button onClick={placeHold} disabled={holdLoading || !account || holdResult?.ok === true}
+                    <button onClick={() => placeHold()} disabled={holdLoading || quoteLoading || markupPending || !account || holdResult?.ok === true}
                       className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium transition-colors">
-                      {!account ? 'Select a client above to place hold' : holdLoading ? 'Submitting...'
+                      {!account ? 'Select a client above to place hold' : markupPending ? 'Update the price for the new markup first' : holdLoading ? 'Submitting...'
                         : quoteOnly ? `Log quote in Salesforce (no reservation) \u2014 ${fmtMoney(total)}`
                         : `Place Hold \u2014 ${fmtMoney(total)}`}
                     </button>

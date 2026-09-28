@@ -49,3 +49,19 @@ section('Quote only: review fixes')
   const planner = fs.readFileSync('components/PlannerTab.tsx', 'utf8')
   eq('switching quote-only on/off starts a new booking attempt', planner.includes('useEffect(() => { bookingId.current = newBookingId(); setHoldResult(null) }, [quoteOnly])'), true)
 }
+
+section('Quote only: cannot be reinstated into a live hold')
+{
+  const route = fs.readFileSync('app/api/hold-requests/[id]/route.ts', 'utf8')
+  const reinstate = route.slice(route.indexOf("if (action === 'reinstate')"))
+  eq('the reinstate action refuses quote-only logs first', reinstate.indexOf('QUOTE_ONLY_ORIGINATION') > -1 && reinstate.indexOf('QUOTE_ONLY_ORIGINATION') < reinstate.indexOf("status: 'HOLD'"), true)
+}
+
+section('Single-market booking: the price shown is the price booked')
+{
+  const route = fs.readFileSync('app/api/quote/hold/route.ts', 'utf8')
+  eq('the server refuses a total the rep did not see', /Math\.abs\(serverTotal - expected_total\) >= 1/.test(route), true)
+  const page = fs.readFileSync('app/quote/page.tsx', 'utf8')
+  eq('the page sends the total it shows', page.includes('expected_total: expectedOverride ?? shownTotal()'), true)
+  eq('booking waits while a markup change is not re-priced', page.includes('markupPending ||'), true)
+}

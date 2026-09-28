@@ -8,7 +8,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
-import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
+import { isSfdcConfigured, sfdcQuery, SAFE_EMAIL } from '@/lib/salesforceClient'
 
 export const dynamic = 'force-dynamic'
 
@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
   if (!isSfdcConfigured()) return NextResponse.json({ configured: false, matches: {} })
 
   const users = await prisma.user.findMany({ select: { email: true } })
-  const emails = [...new Set(users.map(u => u.email.trim().toLowerCase()).filter(e => /^[^\s'@]+@[^\s'@]+$/.test(e)))]
+  const emails = [...new Set(users.map(u => u.email.trim().toLowerCase()).filter(e => SAFE_EMAIL.test(e)))]
   const matches: Record<string, { id: string; name: string } | null> = Object.fromEntries(emails.map(e => [e, null]))
   try {
     for (let i = 0; i < emails.length; i += 100) {

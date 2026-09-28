@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { soqlString, sfdcQuery, isSfdcConfigured } from '@/lib/salesforceClient'
 import { clientTypeOf } from '@/lib/pricing/brandMarkup'
 import { getToken } from 'next-auth/jwt'
-import { sfdcQuery, isSfdcConfigured } from '@/lib/salesforceClient'
 
 /**
  * GET /api/sfdc/accounts?q=search_term
@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const escaped = q.replace(/'/g, "\\'")
+    const escaped = soqlString(q)
     const records = await sfdcQuery<{ Id: string; Name: string; Client_Type2__c: string | null }>(
       `SELECT Id, Name, Client_Type2__c FROM Account WHERE Name LIKE '%${escaped}%' ORDER BY Name LIMIT 20`
     )

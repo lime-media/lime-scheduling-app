@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
     market, state, start_date, end_date, truck_count,
     sfdc_account_id, sfdc_account_name,
     shadow_fencing, smart_directional, device_id, studies: rawStudies,
-    days_per_week, operating_hours, brand_markup_pct, stage, quote_only,
+    days_per_week, operating_hours, brand_markup_pct, stage, quote_only, expected_total,
   } = body
   // Low conviction: log a priced opportunity, reserve nothing (lib/quoteOnly.ts).
   const quoteOnly = quote_only === true
@@ -134,6 +134,15 @@ export async function POST(req: NextRequest) {
   const transportCharge = transport.charge
   const serverTotal = mediaTotal + transportCharge
 
+  // The price the rep saw must be the price booked (the Brand Direct markup
+  // or the fleet may have changed since the quote was shown).
+  if (typeof expected_total === 'number' && Math.abs(serverTotal - expected_total) >= 1) {
+    return NextResponse.json({
+      error: 'The price changed since the quote was shown.',
+      priceChanged: { was: expected_total, now: Math.round(serverTotal * 100) / 100 },
+    }, { status: 409 })
+  }
+
   let pricingTier = 'Custom'
   if (!includeSF && !includeSD && !includeDID && studies.length === 0) pricingTier = 'Good'
   else if (includeSF && !includeSD && !includeDID && studies.length === 0) pricingTier = 'Better'
@@ -226,6 +235,7 @@ export async function POST(req: NextRequest) {
 
   // Create Salesforce Opportunity
   let sfdcOpportunityId: string | null = null
+  let sfdcError: string | null = null
   if (isSfdcConfigured()) {
     try {
       const parsedFeatures = parseQuoteFeatures(featuresJson)
@@ -269,22 +279,29 @@ export async function POST(req: NextRequest) {
           data: { sfdc_opportunity_id: result.id },
         })
       } else {
+        sfdcError = 'Salesforce rejected the opportunity'
         console.error('[quote/hold] SFDC opportunity creation failed:', result.errors)
       }
     } catch (err) {
+      sfdcError = 'Salesforce could not be reached'
       console.error('[quote/hold] SFDC opportunity creation error:', err)
     }
   }
 
+  // Never silent: if the opportunity was not created, the rep is told.
+  const sfdcNote = sfdcOpportunityId ? 'Salesforce opportunity created.'
+    : sfdcError ? `${sfdcError}: no opportunity was created. Create it in Salesforce by hand.`
+    : ''
   return NextResponse.json({
     ok: true,
+    sfdcError,
     created: created.length,
     campaignGroupId,
     sfdcOpportunityId,
     quoteOnly,
     message: quoteOnly
-      ? `Quote logged for ${sfdc_account_name || 'client'}; no trucks reserved.${selectedTrucks.length ? '' : ' No truck was free, so transport is not priced.'} ${sfdcOpportunityId ? 'Salesforce opportunity created.' : ''}`
-      : `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}. ${sfdcOpportunityId ? 'Salesforce opportunity created.' : ''}`,
+      ? `Quote logged for ${sfdc_account_name || 'client'}; no trucks reserved.${selectedTrucks.length ? '' : ' No truck was free, so transport is not priced.'} ${sfdcNote}`
+      : `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}. ${sfdcNote}`,
     _internal: {
       chainFlags: successorImpact,
       _warning: 'INTERNAL ONLY — downstream deadhead, recorded not billed',

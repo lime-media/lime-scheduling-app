@@ -196,7 +196,9 @@ export function computeQuote(input: QuoteInput): QuoteResult {
   const shadowFencing = Math.max(sfRaw, sfFloor)
   const shadowFencingFloored = sfRaw < sfFloor
 
-  const digitalImpressions = (shadowFencing / SHADOW_FENCING_CPM) * 1000
+  // Impressions follow the media buy, not the Brand Direct price: take the
+  // markup back out before dividing by the CPM.
+  const digitalImpressions = ((shadowFencing / (1 + markupPct / 100)) / SHADOW_FENCING_CPM) * 1000
 
   const sdDaily = up(rateOverrides?.smart_directional_daily ?? SMART_DIRECTIONAL_PER_TRUCK_DAY)
   const smartDirectional = includeSmartDirectional ? truckDays * sdDaily : 0

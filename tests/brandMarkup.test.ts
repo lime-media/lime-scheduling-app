@@ -44,3 +44,9 @@ section('Brand Direct: invisible on the quote record')
   eq('the Salesforce notes never mention it', /brand/i.test(notes), false)
   eq('the lines simply add up', notes.includes('Total: $14,630'), true)
 }
+
+section('Brand Direct: impressions follow the media buy, not the price')
+{
+  const input = { truckCount: 2, days: 10, marketSizeTierId: 3 }
+  eq('same impressions with or without the markup', Math.round(computeQuote({ ...input, markupPct: 10 }).better.digitalImpressions), Math.round(computeQuote(input).better.digitalImpressions))
+}

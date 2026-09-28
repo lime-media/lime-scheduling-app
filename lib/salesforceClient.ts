@@ -212,6 +212,9 @@ export function isSfdcConfigured(): boolean {
 // Owners and client type
 // ---------------------------------------------------------------------------
 
+export { soqlString, SAFE_EMAIL } from './soql'
+import { SAFE_EMAIL } from './soql'
+
 const ownerCache = new Map<string, { id: string | null; at: number }>()
 const OWNER_TTL_MS = 60 * 60 * 1000
 
@@ -222,7 +225,7 @@ const OWNER_TTL_MS = 60 * 60 * 1000
  */
 export async function findSfdcUserIdByEmail(email: string | null | undefined): Promise<string | null> {
   const e = (email ?? '').trim().toLowerCase()
-  if (!e || !/^[^\s'@]+@[^\s'@]+$/.test(e)) return null
+  if (!e || !SAFE_EMAIL.test(e)) return null
   const hit = ownerCache.get(e)
   if (hit && Date.now() - hit.at < OWNER_TTL_MS) return hit.id
   const rows = await sfdcQuery<{ Id: string }>(
@@ -236,12 +239,14 @@ export async function findSfdcUserIdByEmail(email: string | null | undefined): P
 /** An account's owner and client type, for opportunity ownership and Brand Direct pricing. */
 export async function getSfdcAccountInfo(accountId: string): Promise<{ ownerId: string | null; clientType: 'Agency' | 'Brand Direct' } | null> {
   if (!/^[A-Za-z0-9]{15,18}$/.test(accountId)) return null
-  const rows = await sfdcQuery<{ OwnerId: string | null; Client_Type2__c: string | null }>(
-    `SELECT OwnerId, Client_Type2__c FROM Account WHERE Id = '${accountId}' LIMIT 1`,
+  const rows = await sfdcQuery<{ OwnerId: string | null; Owner?: { IsActive?: boolean } | null; Client_Type2__c: string | null }>(
+    `SELECT OwnerId, Owner.IsActive, Client_Type2__c FROM Account WHERE Id = '${accountId}' LIMIT 1`,
   )
   if (!rows[0]) return null
   return {
-    ownerId: rows[0].OwnerId ?? null,
+    // An inactive owner cannot own a new opportunity (Salesforce rejects it),
+    // so it is not offered as a fallback owner.
+    ownerId: rows[0].Owner?.IsActive === false ? null : rows[0].OwnerId ?? null,
     clientType: String(rows[0].Client_Type2__c ?? '').trim().toLowerCase() === 'brand direct' ? 'Brand Direct' : 'Agency',
   }
 }

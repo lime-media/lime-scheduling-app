@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { isAttClient } from '@/lib/attSoftRules'
 import { query, getPool } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
@@ -118,6 +119,10 @@ export async function GET(req: NextRequest) {
         standard_market_name: normalizeMarket(r.standard_market_name) || undefined,
         state:                String(r.state   ?? ''),
         program:              String(r.program ?? ''),
+        // A flag, not the client name: whether this is AT&T work (any
+        // 160over90 program), which the grid needs to show AT&T soft holds
+        // as booked rather than available.
+        att:                  isAttClient(r.client),
         shift_start:          toDateStr(r.shift_start),
         shift_end:            toDateStr(r.shift_end),
       }))

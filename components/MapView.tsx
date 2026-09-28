@@ -1,6 +1,8 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { softHoldYieldsOn } from '@/lib/attSoftRules'
+import { PIN, STATUS_BADGE as SHARED_BADGE, CLIENT_BADGE, RESERVATION_LABEL, COMMITTED_LABEL, ATT_SOFT_LABEL, BOOKED_LABEL } from '@/lib/statusColors'
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -10,52 +12,59 @@ import { getMarketCoords } from '@/lib/marketCoordinates'
 import { US_STATE_NAMES, US_STATE_ABBREVIATIONS } from '@/lib/usStates'
 import { SearchableSelect } from '@/components/SearchableSelect'
 
-type SchedEntry = { truck_number: string; shift_start: string; shift_end: string; market: string; program: string; standard_market_name?: string; state?: string }
+// `att` is set by both schedule routes: whether the shift is AT&T work (any 160over90 program).
+type SchedEntry = { truck_number: string; shift_start: string; shift_end: string; market: string; program: string; att: boolean; standard_market_name?: string; state?: string }
 type HoldEntry  = { truck_number: string; start_date: string; end_date: string; status: string; market: string; client_name: string }
 
 // ── Status config ─────────────────────────────────────────────────────────────
 
 const STATUS_COLORS: Record<TruckLocation['status'], string> = {
-  SCHEDULED_LED: '#16a34a',
-  HOLD:          '#ca8a04',
-  COMMITTED:     '#dc2626',
-  EMPTY:         '#9ca3af',
+  SCHEDULED_LED: PIN.scheduled,
+  HOLD:          PIN.reservation,
+  COMMITTED:     PIN.committed,
+  ATT_SOFT:      PIN.att,
+  EMPTY:         PIN.available,
 }
 
 // Client view: available = green, anything booked = gray
 const STATUS_COLORS_CLIENT: Record<TruckLocation['status'], string> = {
-  SCHEDULED_LED: '#9ca3af',
-  HOLD:          '#9ca3af',
-  COMMITTED:     '#9ca3af',
-  EMPTY:         '#16a34a',
+  SCHEDULED_LED: PIN.booked,
+  HOLD:          PIN.booked,
+  COMMITTED:     PIN.booked,
+  ATT_SOFT:      PIN.booked,
+  EMPTY:         PIN.available,
 }
 
 const STATUS_LABELS: Record<TruckLocation['status'], string> = {
   SCHEDULED_LED: 'Scheduled',
-  HOLD:          'On Hold',
-  COMMITTED:     'Committed',
+  HOLD:          RESERVATION_LABEL,
+  COMMITTED:     COMMITTED_LABEL,
+  ATT_SOFT:      ATT_SOFT_LABEL,
   EMPTY:         'Available',
 }
 
 const STATUS_LABELS_CLIENT: Record<TruckLocation['status'], string> = {
-  SCHEDULED_LED: 'Booked',
-  HOLD:          'Booked',
-  COMMITTED:     'Booked',
+  SCHEDULED_LED: BOOKED_LABEL,
+  HOLD:          BOOKED_LABEL,
+  COMMITTED:     BOOKED_LABEL,
+  ATT_SOFT:      BOOKED_LABEL,
   EMPTY:         'Available',
 }
 
 const STATUS_BADGE: Record<TruckLocation['status'], string> = {
-  SCHEDULED_LED: 'bg-green-100 text-green-800',
-  HOLD:          'bg-yellow-100 text-yellow-800',
-  COMMITTED:     'bg-red-100 text-red-800',
-  EMPTY:         'bg-gray-100 text-gray-600',
+  SCHEDULED_LED: SHARED_BADGE.SCHEDULED_LED,
+  HOLD:          SHARED_BADGE.HOLD_TENTATIVE,
+  COMMITTED:     SHARED_BADGE.COMMITTED_NOT_SET,
+  ATT_SOFT:      SHARED_BADGE.ATT_SOFT,
+  EMPTY:         SHARED_BADGE.EMPTY,
 }
 
 const STATUS_BADGE_CLIENT: Record<TruckLocation['status'], string> = {
-  SCHEDULED_LED: 'bg-gray-100 text-gray-600',
-  HOLD:          'bg-gray-100 text-gray-600',
-  COMMITTED:     'bg-gray-100 text-gray-600',
-  EMPTY:         'bg-green-100 text-green-800',
+  SCHEDULED_LED: CLIENT_BADGE.booked,
+  HOLD:          CLIENT_BADGE.booked,
+  COMMITTED:     CLIENT_BADGE.booked,
+  ATT_SOFT:      CLIENT_BADGE.booked,
+  EMPTY:         CLIENT_BADGE.available,
 }
 
 // ── Custom circular marker icon ───────────────────────────────────────────────
@@ -239,6 +248,7 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
   // Filters
   const [showScheduled, setShowScheduled] = useState(true)
   const [showHold,      setShowHold]      = useState(true)
+  const [showAtt,       setShowAtt]       = useState(true)
   const [showCommitted, setShowCommitted] = useState(true)
   const [showEmpty,     setShowEmpty]     = useState(true)
   const [stateFilter,   setStateFilter]   = useState('')
@@ -274,14 +284,27 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
   // Compute truck statuses for the selected date (overrides live status for future dates).
   // Mirrors getCellData priority: non-ATT hold > schedule > ATT_SOFT (with voiding) > empty.
   const displayTrucks = useMemo((): TruckLocation[] => {
-    if (selectedDate === todayStr || schedEntries.length === 0) return trucks
-
-    // Pre-compute non-ATT schedules per truck — needed to replicate ATT_SOFT voiding logic
+    // Non-AT&T schedules per truck, for the grid's soft-hold voiding rule. AT&T
+    // work is the `att` flag both schedule routes set (any 160over90 program),
+    // the same test the grid uses — not a program name containing "att".
     const nonAttScheds = new Map<string, Array<{ shift_start: string; shift_end: string }>>()
     for (const s of schedEntries) {
-      if (s.program?.toLowerCase().includes('att')) continue
+      if (s.att) continue
       if (!nonAttScheds.has(s.truck_number)) nonAttScheds.set(s.truck_number, [])
       nonAttScheds.get(s.truck_number)!.push({ shift_start: s.shift_start, shift_end: s.shift_end })
+    }
+    // An AT&T soft hold that covers the date, unless another client's shift is
+    // on that same day (per day, as on the grid — never the whole month).
+    const softHoldOn = (truck: string, date: string) => {
+      const h = holdEntries.find(x => x.truck_number === truck && x.status === 'ATT_SOFT' && x.start_date <= date && x.end_date >= date)
+      if (!h) return null
+      return softHoldYieldsOn(date, nonAttScheds.get(truck)) ? null : h
+    }
+
+    // Today: live positions and statuses, plus the soft holds the live feed
+    // leaves out, so the map and grid agree on today too.
+    if (selectedDate === todayStr || schedEntries.length === 0) {
+      return trucks.map(t => (t.status === 'EMPTY' && softHoldOn(t.truck_number, todayStr) ? { ...t, status: 'ATT_SOFT' as const } : t))
     }
 
     const isDriveDay = (s: SchedEntry) => s.program?.toLowerCase().includes('drive day') ?? false
@@ -337,20 +360,11 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
         return { ...t, ...pinCoords(mkt, city, state), status: 'SCHEDULED_LED', market: mkt, city, state, program: mainSched.program || null, client: null, hold_end_date: null }
       }
 
-      // 3. ATT_SOFT hold — show as Booked only if NOT voided by any non-ATT schedule
-      const attHold = holdEntries.find(
-        (h) => h.truck_number === t.truck_number && h.status === 'ATT_SOFT' && h.start_date <= selectedDate && h.end_date >= selectedDate
-      )
+      // 3. AT&T soft hold — its own status (blue, as on the grid), unless another client's shift voids it
+      const attHold = softHoldOn(t.truck_number, selectedDate)
       if (attHold) {
-        const truckNonAtt = nonAttScheds.get(t.truck_number) ?? []
-        const voided = truckNonAtt.some(
-          (s) => s.shift_start <= attHold.end_date && s.shift_end >= attHold.start_date
-        )
-        if (!voided) {
-          const { city, state } = parseCityState(attHold.market)
-          return { ...t, ...pinCoords(attHold.market, city, state), status: 'HOLD', market: attHold.market || null, city, state, program: null, client: null, hold_end_date: attHold.end_date }
-        }
-        // Voided — fall through to EMPTY
+        const { city, state } = parseCityState(attHold.market)
+        return { ...t, ...pinCoords(attHold.market, city, state), status: 'ATT_SOFT', market: attHold.market || null, city, state, program: null, client: null, hold_end_date: attHold.end_date }
       }
 
       // For departing trucks: show upcoming real working shift market (skip drive days —
@@ -372,6 +386,7 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
   const filtered = displayTrucks.filter((t) => {
     if (!showScheduled && t.status === 'SCHEDULED_LED') return false
     if (!showHold      && t.status === 'HOLD')          return false
+    if (!showAtt       && t.status === 'ATT_SOFT')      return false
     if (!showCommitted && t.status === 'COMMITTED')      return false
     if (!showEmpty     && t.status === 'EMPTY')          return false
     if (stateFilter && t.state !== stateFilter)          return false
@@ -413,18 +428,19 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
               <input
                 type="checkbox"
                 checked={showScheduled || showHold}
-                onChange={(e) => { setShowScheduled(e.target.checked); setShowHold(e.target.checked) }}
+                onChange={(e) => { setShowScheduled(e.target.checked); setShowHold(e.target.checked); setShowCommitted(e.target.checked); setShowAtt(e.target.checked) }}
                 className="rounded"
               />
               <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: colors['SCHEDULED_LED'] }} />
-              <span className="text-sm text-gray-700">Booked</span>
+              <span className="text-sm text-gray-700">{BOOKED_LABEL}</span>
             </label>
           </>
         ) : (
           ([
             { key: 'SCHEDULED_LED' as const, label: 'Scheduled', checked: showScheduled, set: setShowScheduled },
-            { key: 'HOLD'          as const, label: 'On Hold',   checked: showHold,      set: setShowHold      },
-            { key: 'COMMITTED'     as const, label: 'Committed', checked: showCommitted, set: setShowCommitted },
+            { key: 'HOLD'          as const, label: RESERVATION_LABEL, checked: showHold,      set: setShowHold      },
+            { key: 'COMMITTED'     as const, label: COMMITTED_LABEL,   checked: showCommitted, set: setShowCommitted },
+            { key: 'ATT_SOFT'      as const, label: ATT_SOFT_LABEL,    checked: showAtt,       set: setShowAtt       },
             { key: 'EMPTY'         as const, label: 'Available', checked: showEmpty,     set: setShowEmpty     },
           ] as const).map(({ key, label, checked, set }) => (
             <label key={key} className="flex items-center gap-2 cursor-pointer select-none">
@@ -561,10 +577,10 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
           >
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full bg-gray-400" />
                 <div className="w-2 h-2 rounded-full bg-green-500" />
+                <div className="w-2 h-2 rounded-full bg-gray-400" />
                 <div className="w-2 h-2 rounded-full bg-yellow-400" />
-                <div className="w-2 h-2 rounded-full bg-red-500" />
+                <div className="w-2 h-2 rounded-full bg-gray-300" />
               </div>
               <span className="text-sm font-semibold text-gray-900">
                 {filtered.length} truck{filtered.length !== 1 ? 's' : ''}

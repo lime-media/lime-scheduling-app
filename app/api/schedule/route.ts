@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { isAttClient } from '@/lib/attSoftRules'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query } from '@/lib/mssql'
@@ -140,6 +141,9 @@ export async function GET(request: Request) {
         standard_market_name: normalizeMarket(r.standard_market_name) || undefined,
         state:               String(r.state               ?? ''),
         program:             String(r.program             ?? ''),
+        // Whether this is AT&T work (any 160over90 program), for the grid's
+        // soft-hold display. A flag, not the client name.
+        att:                 isAttClient(r.client),
         shift_start:         toDateStr(r.shift_start),
         shift_end:           toDateStr(r.shift_end),
       }))

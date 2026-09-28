@@ -1,6 +1,7 @@
 'use client'
 
 import { format, parseISO } from 'date-fns'
+import { STATUS_BADGE, UNKNOWN_BADGE, RESERVATION_LABEL, COMMITTED_LABEL, ATT_SOFT_LABEL, type DisplayStatus } from '@/lib/statusColors'
 import toast from 'react-hot-toast'
 import type { ScheduleRow } from './ScheduleGrid'
 
@@ -8,29 +9,21 @@ interface CellDetailProps {
   cell: ScheduleRow | null
   lastKnownMarket: string
   onClose: () => void
-  onPlaceHold: () => void
   onHoldDeleted: () => void
 }
 
-const STATUS_BADGE: Record<string, string> = {
-  EMPTY:             'bg-gray-100 text-gray-600',
-  SCHEDULED_LED:     'bg-green-100 text-green-800',
-  HOLD_TENTATIVE:    'bg-yellow-100 text-yellow-800',
-  COMMITTED_NOT_SET: 'bg-red-100 text-red-800',
-  ATT_SOFT:          'bg-blue-100 text-blue-800',
-  MAINTENANCE:       'bg-orange-100 text-orange-800',
-}
-
-const STATUS_LABELS: Record<string, string> = {
+const STATUS_LABELS: Record<DisplayStatus, string> = {
   EMPTY:             'Available',
+  DEPARTING:         'Available (departing)',
   SCHEDULED_LED:     'Scheduled',
-  HOLD_TENTATIVE:    'On Hold',
-  COMMITTED_NOT_SET: 'Committed',
-  ATT_SOFT:          'ATT Soft Hold',
+  HOLD_TENTATIVE:    RESERVATION_LABEL,
+  HOLD_REQUEST:      RESERVATION_LABEL,
+  COMMITTED_NOT_SET: COMMITTED_LABEL,
+  ATT_SOFT:          ATT_SOFT_LABEL,
   MAINTENANCE:       'Under Maintenance',
 }
 
-export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHoldDeleted }: CellDetailProps) {
+export function CellDetail({ cell, lastKnownMarket, onClose, onHoldDeleted }: CellDetailProps) {
 
   const handleRelease = async () => {
     if (!cell?.hold_id) return
@@ -56,11 +49,11 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
       body: JSON.stringify({ status: 'COMMITTED' }),
     })
     if (res.ok) {
-      toast.success('Upgraded to Committed')
+      toast.success('Marked committed (won)')
       onHoldDeleted()
     } else {
       const err = await res.json()
-      toast.error(err.error || 'Failed to upgrade hold')
+      toast.error(err.error || 'Failed to mark committed')
     }
   }
 
@@ -109,7 +102,7 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
 
       {/* Status badge */}
       <div className="px-4 pt-3">
-        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.EMPTY}`}>
+        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? UNKNOWN_BADGE}`}>
           {STATUS_LABELS[status] ?? status}
         </span>
       </div>
@@ -184,32 +177,22 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onPlaceHold, onHold
 
       {/* Action buttons */}
       <div className="px-4 pb-4 flex flex-col gap-2">
-        {/* Place Hold — shown for available cells */}
-        {status === 'EMPTY' && (
-          <button
-            onClick={onPlaceHold}
-            className="w-full bg-green-700 hover:bg-green-800 text-white text-sm py-2 rounded-lg font-medium transition-colors"
-          >
-            Place Hold
-          </button>
-        )}
-
         {/* Hold management buttons */}
         {isHold && (
           <>
             {status === 'HOLD_TENTATIVE' && (
               <button
                 onClick={handleUpgrade}
-                className="w-full bg-red-600 hover:bg-red-700 text-white text-sm py-2 rounded-lg font-medium transition-colors"
+                className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 text-sm py-2 rounded-lg font-medium transition-colors"
               >
-                Commit
+                Mark committed (won)
               </button>
             )}
             <button
               onClick={handleRelease}
               className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm py-2 rounded-lg font-medium transition-colors"
             >
-              Release Hold
+              Release Reservation
             </button>
           </>
         )}

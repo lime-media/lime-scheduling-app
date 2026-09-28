@@ -1,9 +1,9 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { softHoldYieldsOn } from '@/lib/attSoftRules'
+import { GRID_COLORS, CLIENT_GRID_COLORS, RESERVATION_LABEL, COMMITTED_LABEL, ATT_SOFT_LABEL, BOOKED_LABEL, type DisplayStatus } from '@/lib/statusColors'
 import { format, addDays, startOfDay, parseISO, isSameDay } from 'date-fns'
-import toast from 'react-hot-toast'
-import { HoldModal } from './HoldModal'
 import { CellDetail } from './CellDetail'
 import { getNearbyMarkets, getMarketCoords, haversineDistance } from '@/lib/marketCoordinates'
 
@@ -26,6 +26,13 @@ export type ScheduleBlock = {
   standard_market_name?: string
   state: string
   program: string
+  /**
+   * AT&T work: any 160over90 program. Required, and set by every schedule
+   * route (internal and client): the grid uses it to decide whether a real
+   * shift covers an AT&T soft hold, and a missing flag would read as
+   * "not AT&T" and paint AT&T-held days as available.
+   */
+  att: boolean
   shift_start: string        // YYYY-MM-DD
   shift_end: string          // YYYY-MM-DD
 }
@@ -57,7 +64,7 @@ export type HoldRequestBlock = {
   company_name: string
 }
 
-// ── Internal synthesised row type (used by CellDetail / HoldModal) ────────────
+// ── Internal synthesised row type (used by CellDetail) ─────────────────────────
 
 export type ScheduleRow = {
   truck_number: string
@@ -65,7 +72,7 @@ export type ScheduleRow = {
   state: string
   program: string
   formatted_location: string
-  display_status: 'EMPTY' | 'SCHEDULED_LED' | 'HOLD_TENTATIVE' | 'COMMITTED_NOT_SET' | 'ATT_SOFT' | 'MAINTENANCE' | 'DEPARTING' | 'HOLD_REQUEST'
+  display_status: DisplayStatus
   calendar_date: string
   shift_start: string | null
   shift_end: string | null
@@ -93,40 +100,18 @@ type Filters = {
   dateTo: string
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  EMPTY:              'bg-gray-200 hover:bg-gray-300',
-  SCHEDULED_LED:      'bg-green-500 hover:bg-green-600',
-  HOLD_TENTATIVE:     'bg-yellow-400 hover:bg-yellow-500',
-  COMMITTED_NOT_SET:  'bg-red-500 hover:bg-red-600',
-  ATT_SOFT:           'bg-blue-400 hover:bg-blue-500',
-  MAINTENANCE:        'bg-orange-400 hover:bg-orange-500',
-  DEPARTING:          'bg-gray-200 hover:bg-gray-300',
-  HOLD_REQUEST:       'bg-yellow-400 hover:bg-yellow-500',
-}
+const STATUS_COLORS = GRID_COLORS
+const CLIENT_STATUS_COLORS = CLIENT_GRID_COLORS
 
-
-// Client view: available = green, anything booked/unavailable = gray
-const CLIENT_STATUS_COLORS: Record<string, string> = {
-  EMPTY:              'bg-green-500 hover:bg-green-600',
-  SCHEDULED_LED:      'bg-gray-300 hover:bg-gray-400',
-  HOLD_TENTATIVE:     'bg-gray-300 hover:bg-gray-400',
-  COMMITTED_NOT_SET:  'bg-gray-300 hover:bg-gray-400',
-  ATT_SOFT:           'bg-gray-300 hover:bg-gray-400',
-  MAINTENANCE:        'bg-gray-300 hover:bg-gray-400',
-  DEPARTING:          'bg-green-500 hover:bg-green-600',
-  HOLD_REQUEST:       'bg-yellow-400 hover:bg-yellow-500',
-}
-
-
-const STATUS_LABELS: Record<string, string> = {
+const STATUS_LABELS: Record<DisplayStatus, string> = {
   EMPTY:              'Available',
   SCHEDULED_LED:      'Scheduled',
-  HOLD_TENTATIVE:     'On Hold',
-  COMMITTED_NOT_SET:  'Committed',
-  ATT_SOFT:           'ATT Hold',
+  HOLD_TENTATIVE:     RESERVATION_LABEL,
+  COMMITTED_NOT_SET:  COMMITTED_LABEL,
+  ATT_SOFT:           ATT_SOFT_LABEL,
   MAINTENANCE:        'Maintenance',
   DEPARTING:          'Departing',
-  HOLD_REQUEST:       'Requested',
+  HOLD_REQUEST:       RESERVATION_LABEL, // a client's hold request is a reservation
 }
 
 function getDates(from: Date, to: Date): Date[] {
@@ -168,8 +153,6 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
   const [selectedCell, setSelectedCell] = useState<ScheduleRow | null>(null)
   const [dragStart, setDragStart] = useState<{ truck: string; dateIdx: number } | null>(null)
   const [dragEnd,   setDragEnd]   = useState<{ truck: string; dateIdx: number } | null>(null)
-  const [showHoldModal, setShowHoldModal] = useState(false)
-  const [holdRange, setHoldRange] = useState<{ truck: string; start: Date; end: Date } | null>(null)
 
   const isDragging    = useRef(false)
   const hasMoved      = useRef(false)
@@ -349,11 +332,13 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
     return m
   }, [schedules, holds, holdRequests])
 
-  // Pre-compute non-ATT schedules per truck for ATT_SOFT voiding logic
+  // Pre-compute non-AT&T schedules per truck for ATT_SOFT voiding logic.
+  // AT&T work is any 160over90 program (the `att` flag from /api/schedule),
+  // not a program name containing "att" — which also matched "Seattle".
   const nonAttSchedulesByTruck = useMemo(() => {
     const m = new Map<string, Array<{ shift_start: string; shift_end: string }>>()
     for (const block of schedules) {
-      if (block.program?.toLowerCase().includes('att')) continue
+      if (block.att) continue
       if (!m.has(block.truck_number)) m.set(block.truck_number, [])
       m.get(block.truck_number)!.push({ shift_start: block.shift_start, shift_end: block.shift_end })
     }
@@ -594,15 +579,11 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
       }
     }
 
-    // 4. ATT soft hold (lowest priority — yields to any schedule or regular hold)
-    //    If the truck has any non-ATT scheduled block overlapping this hold's period,
-    //    treat the hold as void and show white/available instead of soft blue.
+    // 4. AT&T soft hold (lowest priority — yields to any schedule or regular hold).
+    //    It gives way only on the days another client's shift is on, never for
+    //    the whole month: a one-day job elsewhere must not turn the month green.
     if (entry.attHold) {
-      const holdStart = entry.attHold.start_date
-      const holdEnd   = entry.attHold.end_date
-      const voided = nonAttSchedulesByTruck.get(truckNum)?.some(
-        (s) => s.shift_start <= holdEnd && s.shift_end >= holdStart
-      )
+      const voided = softHoldYieldsOn(dateStr, nonAttSchedulesByTruck.get(truckNum))
       if (voided) {
         if (entry.holdReq) return { ...base, display_status: 'HOLD_REQUEST', hold_id: entry.holdReq.id, client_name: entry.holdReq.company_name, hold_notes: entry.holdReq.notes }
         return withDeparting(base)
@@ -675,6 +656,10 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
   }
 
   const handleMouseEnter = (truckNum: string, dateIdx: number) => {
+    // Dragging across dates only exists to request a hold, which is a client
+    // action. Internal users place holds from the quote tools, not the grid, so
+    // for them a press is always a click that opens the cell detail.
+    if (!clientView) return
     if (!isDragging.current || !dragStart || dragStart.truck !== truckNum) return
     if (pendingCell.current?.display_status === 'SCHEDULED_LED' ||
         pendingCell.current?.display_status === 'MAINTENANCE') return
@@ -703,30 +688,14 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
       const maxIdx = Math.max(dragStart.dateIdx, dragEnd.dateIdx)
 
       if (hasMoved.current && minIdx !== maxIdx) {
-        // Block hold if any date in the range already has a schedule block
-        const truckNum = dragStart.truck
-        let schedConflict: { date: Date; program: string } | null = null
-        for (let i = minIdx; i <= maxIdx; i++) {
-          const entry = dataMap.get(`${truckNum}__${format(dates[i], 'yyyy-MM-dd')}`)
-          if (entry?.sched) { schedConflict = { date: dates[i], program: entry.sched.program }; break }
-        }
-
+        // Only reachable in client view — see handleMouseEnter.
         if (onCellRangeSelected && clientView) {
+          const truckNum = dragStart.truck
           // Block if any date in the range is near-term
           const hasNearTerm = Array.from({ length: maxIdx - minIdx + 1 }, (_, i) => format(dates[minIdx + i], 'yyyy-MM-dd')).some(d => nearTermDates.has(d))
           if (hasNearTerm) { setDragStart(null); setDragEnd(null); hasMoved.current = false; return }
           const market = truckMarketLookup.get(truckNum) ?? ''
           onCellRangeSelected(truckNum, format(dates[minIdx], 'yyyy-MM-dd'), format(dates[maxIdx], 'yyyy-MM-dd'), market)
-        } else if (schedConflict) {
-          const isMaint = schedConflict.program?.toLowerCase() === 'truck maintenance'
-          toast.error(
-            isMaint
-              ? `Truck ${truckNum} is under maintenance on ${format(schedConflict.date, 'MMM d')} — holds cannot be placed`
-              : `Cannot place hold — Truck ${truckNum} is already scheduled for "${schedConflict.program}" on ${format(schedConflict.date, 'MMM d')}`
-          )
-        } else {
-          setHoldRange({ truck: truckNum, start: dates[minIdx], end: dates[maxIdx] })
-          setShowHoldModal(true)
         }
       } else {
         setSelectedCell(pendingCell.current)
@@ -736,54 +705,12 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
     setDragStart(null)
     setDragEnd(null)
     hasMoved.current = false
-  }, [dragStart, dragEnd, dates, dataMap, onCellRangeSelected, clientView, truckMarketLookup, nearTermDates])
+  }, [dragStart, dragEnd, dates, onCellRangeSelected, clientView, truckMarketLookup, nearTermDates])
 
   useEffect(() => {
     window.addEventListener('mouseup', handleMouseUp)
     return () => window.removeEventListener('mouseup', handleMouseUp)
   }, [handleMouseUp])
-
-  // ── Hold submission ───────────────────────────────────────────────────────
-
-  const handleHoldSubmit = async (formData: {
-    client_name: string
-    market: string
-    state: string
-    status: string
-    notes: string
-  }) => {
-    if (!holdRange) return
-    const res = await fetch('/api/holds', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        truck_number: holdRange.truck,
-        start_date:   format(holdRange.start, 'yyyy-MM-dd'),
-        end_date:     format(holdRange.end,   'yyyy-MM-dd'),
-        ...formData,
-      }),
-    })
-    if (res.ok) {
-      toast.success('Hold placed successfully')
-      onHoldCreated()
-      setShowHoldModal(false)
-      setHoldRange(null)
-    } else {
-      const err = await res.json()
-      toast.error(err.error || 'Failed to place hold')
-    }
-  }
-
-  const handlePanelPlaceHold = () => {
-    if (!selectedCell) return
-    const date = new Date(selectedCell.calendar_date)
-    setHoldRange({
-      truck: selectedCell.truck_number,
-      start: startOfDay(date),
-      end:   startOfDay(date),
-    })
-    setShowHoldModal(true)
-  }
 
   const todayIdx = dates.findIndex((d) => isSameDay(d, today))
 
@@ -792,7 +719,7 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
     : ''
 
   const displayLabels = clientView
-    ? { ...STATUS_LABELS, SCHEDULED_LED: 'Booked', HOLD_TENTATIVE: 'Booked', COMMITTED_NOT_SET: 'Booked', ATT_SOFT: 'Booked', MAINTENANCE: 'Booked' }
+    ? { ...STATUS_LABELS, SCHEDULED_LED: BOOKED_LABEL, HOLD_TENTATIVE: BOOKED_LABEL, HOLD_REQUEST: BOOKED_LABEL, COMMITTED_NOT_SET: BOOKED_LABEL, ATT_SOFT: BOOKED_LABEL, MAINTENANCE: BOOKED_LABEL }
     : STATUS_LABELS
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -906,10 +833,12 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
                           selectedCell.calendar_date === format(date, 'yyyy-MM-dd')
 
                         // Diagonal stripe background for conflict cells (hold + schedule overlap)
-                        const conflictStyle = cell.conflictProgram ? {
+                        // Internal only: a client sees a conflicted day as plain Booked.
+                        const conflictStyle = cell.conflictProgram && !clientView ? {
+                          // Reservation (yellow) or committed (soft gray) stripes over the scheduled gray.
                           background: status === 'COMMITTED_NOT_SET'
-                            ? 'repeating-linear-gradient(135deg,#fca5a5 0px,#ef4444 4px,#22c55e 4px,#22c55e 8px)'
-                            : 'repeating-linear-gradient(135deg,#fde68a 0px,#fbbf24 4px,#22c55e 4px,#22c55e 8px)',
+                            ? 'repeating-linear-gradient(135deg,#f3f4f6 0px,#e5e7eb 4px,#9ca3af 4px,#9ca3af 8px)'
+                            : 'repeating-linear-gradient(135deg,#fde68a 0px,#fbbf24 4px,#9ca3af 4px,#9ca3af 8px)',
                         } : undefined
 
                         const isDeparting  = status === 'DEPARTING' && !!cell.departing_to
@@ -931,10 +860,10 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
                                 ? 'ring-2 ring-red-500 ring-inset brightness-90'
                                 : inDrag
                                 ? 'ring-2 ring-blue-400 ring-inset brightness-90'
-                                : cell.conflictProgram
+                                : cell.conflictProgram && !clientView
                                 ? ''
                                 : (clientView ? CLIENT_STATUS_COLORS : STATUS_COLORS)[status]
-                            } ${isToday ? 'border-l-2 border-l-green-700' : ''} ${groupTopBorder}${showDeptText ? ' relative overflow-visible group/dp' : isNearTerm ? ' relative' : ''}`}
+                            } ${isToday ? 'border-l-2 border-l-gray-900' : ''} ${groupTopBorder}${showDeptText ? ' relative overflow-visible group/dp' : isNearTerm ? ' relative' : ''}`}
                             style={conflictStyle}
                             onMouseDown={clientView && !onCellRangeSelected ? undefined : () => handleMouseDown(truckNum, dateIdx, cell)}
                             onMouseEnter={clientView && !onCellRangeSelected ? undefined : () => handleMouseEnter(truckNum, dateIdx)}
@@ -978,25 +907,9 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
           cell={selectedCell}
           lastKnownMarket={panelLastMarket}
           onClose={() => setSelectedCell(null)}
-          onPlaceHold={handlePanelPlaceHold}
           onHoldDeleted={() => {
             onHoldCreated()
             setSelectedCell(null)
-          }}
-        />
-      )}
-
-      {/* Hold modal — internal users only */}
-      {!clientView && showHoldModal && holdRange && (
-        <HoldModal
-          truck={holdRange.truck}
-          startDate={holdRange.start}
-          endDate={holdRange.end}
-          markets={markets}
-          onSubmit={handleHoldSubmit}
-          onClose={() => {
-            setShowHoldModal(false)
-            setHoldRange(null)
           }}
         />
       )}

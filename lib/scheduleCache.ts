@@ -13,6 +13,7 @@ import { reconcileSfdcOpportunities, closeOpportunityAsLost } from '@/lib/sfdcOp
 import { warnExpiringHolds } from '@/lib/holdExpiryWarnings'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
+import { syncAttSoftHolds } from '@/lib/attSoftHolds'
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────
 
@@ -26,6 +27,8 @@ function toDateStr(val: unknown): string {
 
 export interface RefreshSummary {
   att_soft_released:     number
+  att_soft_created:      number
+  att_soft_warnings:     string[]
   sfdc_committed:        number
   sfdc_released:         number
   sfdc_checked:          number
@@ -53,10 +56,15 @@ export interface RefreshSummary {
 export async function refreshCache(): Promise<RefreshSummary> {
   console.log('[scheduleCache] refreshing...')
 
-  const att_soft_released = await releaseAttSoftHolds().catch((err) => {
-    console.error('[scheduleCache] ATT_SOFT release check failed:', err)
-    return 0
+  // AT&T soft holds: release prior months, duplicates and stale ones, and keep
+  // the current month plus the next two filled (lib/attSoftHolds.ts).
+  const att = await syncAttSoftHolds().catch((err) => {
+    console.error('[scheduleCache] ATT_SOFT sync failed:', err)
+    return null
   })
+  const att_soft_released = att ? att.releasedPriorMonths + att.releasedDuplicates + att.releasedPremise : 0
+  const att_soft_created = att?.created ?? 0
+  const att_soft_warnings = att ? att.warnings : ['AT&T soft-hold sync failed; see the log']
 
   // Before expiry: a Closed Won Opportunity sitting past its Hold Exp should be
   // committed, not expired out from under itself.
@@ -139,6 +147,8 @@ export async function refreshCache(): Promise<RefreshSummary> {
 
   return {
     att_soft_released,
+    att_soft_created,
+    att_soft_warnings,
     sfdc_committed:       sfdc.committed,
     sfdc_released:        sfdc.released,
     sfdc_checked:         sfdc.checked,
@@ -149,89 +159,6 @@ export async function refreshCache(): Promise<RefreshSummary> {
     expiry_warning_recipients: warnings.recipients,
     conflicts_auto_resolved:   reconciled.resolved,
   }
-}
-
-// ── ATT soft-hold release ───────────────────────────────────────────────────────
-
-function isAttProgram(program: unknown): boolean {
-  return String(program ?? '').trim().toUpperCase().startsWith('ATT')
-}
-
-async function releaseHold(hold: { id: string; truck_number: string; created_by: string }, reason: string, scheduledProgram: string): Promise<void> {
-  await prisma.auditLog.create({
-    data: {
-      action:       'DELETE_HOLD',
-      truck_number: hold.truck_number,
-      user_id:      hold.created_by,
-      hold_id:      hold.id,
-      details:      JSON.stringify({ reason, scheduled_program: scheduledProgram }),
-    },
-  })
-  await prisma.hold.delete({ where: { id: hold.id } })
-  console.log(`[att-sync] released ATT_SOFT hold: truck ${hold.truck_number} — ${reason} ("${scheduledProgram}")`)
-}
-
-/**
- * Deletes an ATT_SOFT hold in either of two cases:
- *  1. A real shift now overlaps the hold's date range and it isn't ATT — the
- *     hold's premise (truck idle / ATT-only) no longer holds.
- *  2. The truck's shift immediately before the hold started was never
- *     actually ATT — re-validates att-sync's own creation criteria, so a hold
- *     created from a stale lookback (e.g. skipping a same-month shift dated
- *     after the sync's run time) self-heals instead of lingering forever.
- * An ATT shift in either check leaves the hold in place.
- */
-export async function releaseAttSoftHolds(): Promise<number> {
-  const softHolds = await prisma.hold.findMany({ where: { status: 'ATT_SOFT' } })
-  if (softHolds.length === 0) return 0
-
-  let released = 0
-
-  for (const hold of softHolds) {
-    const startStr = toDateStr(hold.start_date)
-    const endStr   = toDateStr(hold.end_date)
-
-    // ps.start_time only — ps.end_time bleeds into the next calendar day for
-    // overnight shifts, so it's unsafe for date-range filtering.
-    const overlapping = await query<{ program: string }[]>(
-      `
-      SELECT cp.program
-      FROM dbo.program_schedule ps
-      JOIN dbo.trucks          t  ON t.truck_uid          = ps.truck_uid
-      JOIN dbo.client_programs cp ON cp.client_program_uid = ps.client_program_uid
-      WHERE t.truck_number = @truckNumber
-        AND CAST(ps.start_time AS DATE) BETWEEN @startDate AND @endDate
-      `,
-      { truckNumber: hold.truck_number, startDate: startStr, endDate: endStr }
-    )
-
-    const nonAttOverlap = overlapping.find((r) => !isAttProgram(r.program))
-    if (nonAttOverlap) {
-      await releaseHold(hold, 'att_soft_superseded_by_non_att_shift', nonAttOverlap.program)
-      released++
-      continue
-    }
-
-    const priorShift = await query<{ program: string }[]>(
-      `
-      SELECT TOP 1 cp.program
-      FROM dbo.program_schedule ps
-      JOIN dbo.trucks          t  ON t.truck_uid          = ps.truck_uid
-      JOIN dbo.client_programs cp ON cp.client_program_uid = ps.client_program_uid
-      WHERE t.truck_number = @truckNumber
-        AND CAST(ps.start_time AS DATE) < @startDate
-      ORDER BY ps.start_time DESC
-      `,
-      { truckNumber: hold.truck_number, startDate: startStr }
-    )
-
-    if (priorShift.length > 0 && !isAttProgram(priorShift[0].program)) {
-      await releaseHold(hold, 'att_soft_premise_invalid_prior_shift_not_att', priorShift[0].program)
-      released++
-    }
-  }
-
-  return released
 }
 
 // ── SFDC hold expiry ────────────────────────────────────────────────────────────

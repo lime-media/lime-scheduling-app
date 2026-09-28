@@ -56,8 +56,15 @@ export async function loadFleetTimelines(opts: {
   hiddenTrucks?: Set<string>
   /** Omit this hold from the timelines — used when re-evaluating that hold. */
   excludeHoldId?: string
+  /**
+   * Explicit schedule window (YYYY-MM-DD, inclusive) instead of the rolling
+   * -30/+63 days. For planning programs that run past the rolling window; the
+   * windowed load also carries each job's booking client.
+   */
+  window?: { start: string; end: string }
 } = {}): Promise<FleetTimelines> {
   const hidden = opts.hiddenTrucks ?? new Set<string>()
+  const window = opts.window
 
   // Ask the database what it can give us before asking for it.
   const withBounds = await hasMarketBounds()
@@ -67,7 +74,12 @@ export async function loadFleetTimelines(opts: {
     // against the authoritative list rather than the hardcoded file.
     loadStandardMarketCoords(),
     Promise.all([
-    query<Record<string, unknown>[]>(scheduledWithMarketQuery(withBounds)),
+    window
+      ? query<Record<string, unknown>[]>(scheduledWithMarketQuery(withBounds, true), {
+          windowStart: window.start,
+          windowEnd: window.end,
+        })
+      : query<Record<string, unknown>[]>(scheduledWithMarketQuery(withBounds)),
     prisma.hold.findMany({ where: activeHoldWhere(), orderBy: { start_date: 'asc' } }),
     getLiveVehicleLocations().catch(() => new Map<string, SamsaraVehicleLocation>()),
     ] as const),
@@ -87,6 +99,7 @@ export async function loadFleetTimelines(opts: {
       market: normalizeMarket(row.standard_market_name || row.market),
       state: String(row.state ?? ''),
       program: String(row.program ?? ''),
+      client: window ? String(row.client ?? '') : undefined,
       // Only when the database supplied them AND they are real numbers; a
       // market row with null bounds behaves exactly like the columns being absent.
       lat: Number.isFinite(lat) && row.market_lat != null ? lat : undefined,

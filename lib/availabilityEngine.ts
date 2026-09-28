@@ -18,6 +18,7 @@
  */
 
 import { query } from '@/lib/mssql'
+import { HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
 import { prisma } from '@/lib/prisma'
 import { CHAT_CONTEXT_QUERY } from '@/lib/scheduleQuery'
 import { getMarketCoords } from '@/lib/marketCoordinates'
@@ -41,7 +42,8 @@ import { findWindowClash } from '@/lib/truckTimeline'
 // Constants
 // ---------------------------------------------------------------------------
 
-const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
+/** Trucks never offered for booking. Defined in lib/hiddenTrucks.ts; re-exported for existing callers. */
+export { HIDDEN_TRUCKS }
 
 // ---------------------------------------------------------------------------
 // Types

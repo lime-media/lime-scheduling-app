@@ -28,6 +28,7 @@ function toDateStr(val: unknown): string {
 export interface RefreshSummary {
   att_soft_released:     number
   att_soft_created:      number
+  att_soft_warnings:     string[]
   sfdc_committed:        number
   sfdc_released:         number
   sfdc_checked:          number
@@ -63,6 +64,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
   })
   const att_soft_released = att ? att.releasedPriorMonths + att.releasedDuplicates + att.releasedPremise : 0
   const att_soft_created = att?.created ?? 0
+  const att_soft_warnings = att ? att.warnings : ['AT&T soft-hold sync failed; see the log']
 
   // Before expiry: a Closed Won Opportunity sitting past its Hold Exp should be
   // committed, not expired out from under itself.
@@ -146,6 +148,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
   return {
     att_soft_released,
     att_soft_created,
+    att_soft_warnings,
     sfdc_committed:       sfdc.committed,
     sfdc_released:        sfdc.released,
     sfdc_checked:         sfdc.checked,

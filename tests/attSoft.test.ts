@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { attLookback, isAttClient, isAttTruck, softHoldWindow, softHoldYieldsOn } from '@/lib/attSoftRules'
+import { attLookback, isAttClient, isAttTruck, releaseBlockedReason, softHoldWindow, softHoldYieldsOn } from '@/lib/attSoftRules'
 
 section('AT&T soft holds: who is AT&T')
 eq('160over90 is AT&T, whatever the program is called', isAttClient('160over90'), true)
@@ -61,3 +61,16 @@ section('AT&T soft holds: give way per day, never the whole month')
   eq('the rest of the month stays held', ['2026-10-01', '2026-10-13', '2026-10-16', '2026-10-31'].map(d => softHoldYieldsOn(d, other)), [false, false, false, false])
   eq('no other work: held every day', softHoldYieldsOn('2026-10-20', undefined), false)
 }
+
+section('AT&T soft holds: client match survives edits to the client record')
+eq('"160over90 Inc" is still AT&T', isAttClient('160over90 Inc'), true)
+eq('"160 Over 90" is still AT&T', isAttClient('160 Over 90'), true)
+eq('"160over90, Inc." is still AT&T', isAttClient('160over90, Inc.'), true)
+eq('an unrelated client is not', isAttClient('Over 90 Media'), false)
+
+section('AT&T soft holds: safety valve on releases')
+eq('no AT&T trucks at all: release nothing', releaseBlockedReason({ attTrucks: 0, softHolds: 60, wouldRelease: 60 }) !== null, true)
+eq('a mass release is blocked (75 of 90)', releaseBlockedReason({ attTrucks: 15, softHolds: 90, wouldRelease: 75 }) !== null, true)
+eq('a normal roster change goes through (3 of 60)', releaseBlockedReason({ attTrucks: 57, softHolds: 60, wouldRelease: 3 }), null)
+eq('small fleets are not blocked by the share alone (6 of 12)', releaseBlockedReason({ attTrucks: 6, softHolds: 12, wouldRelease: 6 }), null)
+eq('nothing to release, nothing to block', releaseBlockedReason({ attTrucks: 0, softHolds: 0, wouldRelease: 0 }), null)

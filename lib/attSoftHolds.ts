@@ -22,18 +22,25 @@
  *   1. Releases soft holds from months before the current one.
  *   2. Removes duplicate soft holds (same truck, same start), keeping the
  *      oldest. Two grid loads at the same moment used to create two.
- *   3. Releases soft holds on trucks that are no longer AT&T's.
+ *   3. Releases soft holds on trucks that are no longer AT&T's — unless the
+ *      run looks wrong (no AT&T trucks at all, or a mass release), in which
+ *      case it releases none and reports why (see releaseBlockedReason).
  *   4. Gives every AT&T truck a soft hold for each month of the window it
  *      does not already have.
  *
- * Every release is written to the audit log with its reason.
+ * Every release is written to the audit log with its reason. Releases delete
+ * only a row that is STILL a soft hold (an operator may have just promoted it
+ * to a real hold), tolerate a row a concurrent run already removed, and never
+ * abort the rest of the sync. Nothing is released for "not AT&T's" in a run
+ * that could not create holds (no user to record them against).
  */
 
 import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
-import { ATT_CLIENT, ATT_MIN_DAYS, PRIOR_MONTH_GRACE_DAY, attLookback, isAttClient, isAttTruck, softHoldWindow } from '@/lib/attSoftRules'
+import { ATT_CLIENT, ATT_MIN_DAYS, PRIOR_MONTH_GRACE_DAY, attLookback, isAttClient, isAttTruck, normalizeClient, releaseBlockedReason, softHoldWindow } from '@/lib/attSoftRules'
+import { HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
 
 export { ATT_CLIENT, isAttClient, softHoldWindow }
 
@@ -42,19 +49,34 @@ const utc = (s: string) => new Date(s + 'T00:00:00Z')
 
 type SoftHold = { id: string; truck_number: string; created_by: string; start_date: Date; end_date: Date; created_at: Date }
 
-async function release(hold: SoftHold, reason: string, detail: Record<string, unknown> = {}): Promise<void> {
-  await prisma.auditLog.create({
-    data: {
-      action: 'DELETE_HOLD',
-      truck_number: hold.truck_number,
-      user_id: hold.created_by,
-      hold_id: hold.id,
-      details: JSON.stringify({ reason, ...detail }),
-    },
-  })
-  await prisma.hold.delete({ where: { id: hold.id } })
-  console.log(`[att-soft] released ${hold.truck_number} ${iso(hold.start_date)}..${iso(hold.end_date)}: ${reason}`)
+/**
+ * Delete one soft hold, if it is still a soft hold. Returns whether it was
+ * removed. A concurrent sync (cron + grid load) may already have deleted it;
+ * an operator may have turned it into a real hold — neither is an error.
+ */
+async function release(hold: SoftHold, reason: string, detail: Record<string, unknown> = {}): Promise<boolean> {
+  try {
+    const { count } = await prisma.hold.deleteMany({ where: { id: hold.id, status: 'ATT_SOFT' } })
+    if (count === 0) return false
+    await prisma.auditLog.create({
+      data: {
+        action: 'DELETE_HOLD',
+        truck_number: hold.truck_number,
+        user_id: hold.created_by,
+        hold_id: hold.id,
+        details: JSON.stringify({ reason, ...detail }),
+      },
+    })
+    console.log(`[att-soft] released ${hold.truck_number} ${iso(hold.start_date)}..${iso(hold.end_date)}: ${reason}`)
+    return true
+  } catch (err) {
+    console.error(`[att-soft] release of ${hold.id} (${hold.truck_number}) failed:`, err)
+    return false
+  }
 }
+
+/** The SQL twin of isAttClient: normalised, "contains". */
+const ATT_CLIENT_SQL = `LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(cl.client, ' ', ''), '-', ''), '.', ''), ',', ''), '_', '')) LIKE @clientLike`
 
 /** Days each active truck worked (or is scheduled) for 160over90 in [from, to]. */
 async function attDaysByTruck(from: string, to: string): Promise<Map<string, number>> {
@@ -67,12 +89,13 @@ async function attDaysByTruck(from: string, to: string): Promise<Map<string, num
     JOIN dbo.clients         cl ON cl.client_uid         = cp.client_uid
     WHERE COALESCE(t.is_deleted, 0) = 0
       AND CAST(ps.start_time AS DATE) BETWEEN @from AND @to
-      AND LOWER(LTRIM(RTRIM(cl.client))) = @client
+      AND ${ATT_CLIENT_SQL}
     GROUP BY t.truck_number
     `,
-    { from, to, client: ATT_CLIENT.toLowerCase() },
+    { from, to, clientLike: `%${normalizeClient(ATT_CLIENT)}%` },
   )
-  return new Map(rows.map(r => [r.truck_number, Number(r.days)]))
+  // Hidden trucks (test and retired units) never get soft holds.
+  return new Map(rows.filter(r => !HIDDEN_TRUCKS.has(String(r.truck_number))).map(r => [String(r.truck_number), Number(r.days)]))
 }
 
 export type SoftHoldSyncResult = {
@@ -83,6 +106,8 @@ export type SoftHoldSyncResult = {
   /** Trucks that currently count as AT&T's. */
   attTrucks: number
   window: string[]
+  /** Why part of the run was skipped, if it was. Surfaced by the cron and the sync route. */
+  warnings: string[]
 }
 
 /**
@@ -97,10 +122,20 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
   const today = opts.today ?? iso(new Date())
   const window = softHoldWindow(today)
   const monthStart = window[0].start.slice(0, 8) + '01'
+  const warnings: string[] = []
 
-  // 1. Prior months.
+  // Who new holds are recorded against — known BEFORE anything is released,
+  // so a run that cannot create never releases trucks as "not AT&T's".
+  let createdBy = opts.createdBy
+  if (!createdBy) {
+    const svc = await prisma.user.findFirst({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } })
+    createdBy = svc?.id
+  }
+
+  // 1. Prior months — safe to clear in any run.
   const past = await prisma.hold.findMany({ where: { status: 'ATT_SOFT', end_date: { lt: utc(monthStart) } } })
-  for (const h of past) await release(h, 'att_soft_prior_month')
+  let releasedPriorMonths = 0
+  for (const h of past) if (await release(h, 'att_soft_prior_month')) releasedPriorMonths++
 
   // 2. Duplicates: same truck, same start date; keep the oldest.
   const current = await prisma.hold.findMany({ where: { status: 'ATT_SOFT' }, orderBy: { created_at: 'asc' } })
@@ -109,9 +144,15 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
   const kept: SoftHold[] = []
   for (const h of current) {
     const key = `${h.truck_number}|${iso(h.start_date)}`
-    if (seen.has(key)) { await release(h, 'att_soft_duplicate'); releasedDuplicates++; continue }
+    if (seen.has(key)) { if (await release(h, 'att_soft_duplicate')) releasedDuplicates++; continue }
     seen.add(key)
     kept.push(h)
+  }
+
+  if (!createdBy) {
+    warnings.push('No user to record new soft holds against (the Salesforce integration user is missing): nothing was released as "not AT&T\'s" and nothing was created.')
+    console.error('[att-soft]', warnings[warnings.length - 1])
+    return finish()
   }
 
   // 3. Trucks that are no longer AT&T's.
@@ -120,30 +161,33 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
   const priorDays = lookback.prior ? await attDaysByTruck(lookback.prior.from, lookback.prior.to) : new Map<string, number>()
   const daysOf = (t: string) => ({ current: curDays.get(t) ?? 0, prior: priorDays.get(t) ?? 0 })
   const attTrucks = new Set([...new Set([...curDays.keys(), ...priorDays.keys()])].filter(t => isAttTruck(daysOf(t), lookback)))
+  const toRelease = kept.filter(h => !attTrucks.has(h.truck_number))
+  const blocked = releaseBlockedReason({ attTrucks: attTrucks.size, softHolds: kept.length, wouldRelease: toRelease.length })
   let releasedPremise = 0
-  const live: SoftHold[] = []
-  for (const h of kept) {
-    if (attTrucks.has(h.truck_number)) { live.push(h); continue }
-    await release(h, 'att_soft_not_att_truck', {
-      days_160over90: daysOf(h.truck_number), needs_more_than: ATT_MIN_DAYS,
-      months: lookback.prior ? [lookback.prior.from.slice(0, 7), lookback.current.from.slice(0, 7)] : [lookback.current.from.slice(0, 7)],
-      prior_month_counts_through_day: PRIOR_MONTH_GRACE_DAY,
-    })
-    releasedPremise++
+  const live: SoftHold[] = kept.filter(h => attTrucks.has(h.truck_number))
+  if (blocked) {
+    // Keep every soft hold; a person should look before trucks are handed back.
+    warnings.push(`Soft-hold release skipped: ${blocked}. Check the 160over90 schedule and client record.`)
+    console.error('[att-soft]', warnings[warnings.length - 1])
+    live.push(...toRelease)
+  } else {
+    for (const h of toRelease) {
+      const ok = await release(h, 'att_soft_not_att_truck', {
+        days_160over90: daysOf(h.truck_number), needs_more_than: ATT_MIN_DAYS,
+        months: lookback.prior ? [lookback.prior.from.slice(0, 7), lookback.current.from.slice(0, 7)] : [lookback.current.from.slice(0, 7)],
+        prior_month_counts_through_day: PRIOR_MONTH_GRACE_DAY,
+      })
+      if (ok) releasedPremise++
+    }
   }
 
   // 4. Create what the window is missing.
-  let createdBy = opts.createdBy
-  if (!createdBy) {
-    const svc = await prisma.user.findFirst({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } })
-    createdBy = svc?.id
-  }
   let created = 0
-  if (createdBy) {
-    for (const m of window) {
-      for (const truck_number of [...attTrucks].sort()) {
-        const covered = live.some(h => h.truck_number === truck_number && iso(h.start_date) <= m.end && iso(h.end_date) >= m.start)
-        if (covered) continue
+  for (const m of window) {
+    for (const truck_number of [...attTrucks].sort()) {
+      const covered = live.some(h => h.truck_number === truck_number && iso(h.start_date) <= m.end && iso(h.end_date) >= m.start)
+      if (covered) continue
+      try {
         const h = await prisma.hold.create({
           // MIRROR PATH — no feasibility gate by design. This reflects AT&T's
           // standing reservation; infeasible holds are reported by
@@ -162,13 +206,16 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
         })
         live.push(h)
         created++
+      } catch (err) {
+        console.error(`[att-soft] create for ${truck_number} ${m.label} failed:`, err)
       }
     }
-  } else {
-    console.error('[att-soft] no user to record new soft holds against; creation skipped')
   }
+  return finish(attTrucks.size, releasedPremise, created)
 
-  const result = { releasedPriorMonths: past.length, releasedDuplicates, releasedPremise, created, attTrucks: attTrucks.size, window: window.map(w => `${w.start}..${w.end}`) }
-  console.log('[att-soft] sync', JSON.stringify(result))
-  return result
+  function finish(attCount = 0, premise = 0, made = 0): SoftHoldSyncResult {
+    const result = { releasedPriorMonths, releasedDuplicates, releasedPremise: premise, created: made, attTrucks: attCount, window: window.map(w => `${w.start}..${w.end}`), warnings }
+    console.log('[att-soft] sync', JSON.stringify(result))
+    return result
+  }
 }

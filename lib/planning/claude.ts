@@ -1,7 +1,7 @@
 /**
- * The Claude layer of the multi-market planner.
+ * The Claude layer of the multi-market quote.
  *
- * Claude does the three things code cannot do well, and nothing else:
+ * Claude does the two things code cannot do well, and nothing else:
  *
  *   1. extractFootprint — read a footprint that is not a clean CSV (a PDF, an
  *      email, a sheet laid out for people) into DMA / ZIP rows, plus whatever
@@ -11,20 +11,15 @@
  *      ZIPs ("San Angelo" ZIPs that are San Antonio), a ZIP whose digits look
  *      transposed. Every suggested ZIP is then checked in code against the
  *      Census centroids before it is shown as verified.
- *   3. writePlanSummary — turn the plan's numbers into a write-up. Every number
- *      in the text is checked against the plan; any that is not in it is
- *      reported, never passed off as the plan's.
  *
- * All fleet maths stays in planner.ts. Claude is never asked to count trucks,
- * price anything or choose a truck.
+ * Routing and pricing stay in order.ts and quote.ts. Claude is never asked to
+ * count trucks, price anything or choose a truck.
  */
 
 import Anthropic from '@anthropic-ai/sdk'
 import { jsonSchemaOutputFormat } from '@anthropic-ai/sdk/helpers/json-schema'
 import { haversineDistance } from '@/lib/marketCoordinates'
 import type { Area, AreaFlag, Centroids, ZipRow } from './areas'
-import type { PlanResponse } from './run'
-import { findLeaks } from './leaks'
 
 export const PLANNER_MODEL = 'claude-opus-5'
 
@@ -260,211 +255,3 @@ export function verifyFinding(
     : { ...base, verified: false, verification: `${f.suggested_zip} exists but is ${Math.round(nearest)} mi from the rest of ${dma}.` }
 }
 
-// ---------------------------------------------------------------------------
-// 3. Write-up
-// ---------------------------------------------------------------------------
-
-const WRITEUP_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['client_markdown', 'internal_markdown'],
-  properties: {
-    client_markdown: { type: 'string', description: 'The client-facing proposal, Markdown' },
-    internal_markdown: { type: 'string', description: 'The internal summary for the sales lead, Markdown' },
-  },
-} as const
-
-const WRITEUP_SYSTEM = `You write planning summaries for Lime Media's sales team. Lime Media runs LED billboard trucks. You are given a fleet plan that code has already computed. Your job is to explain it, not to change it.
-
-Use only the numbers in the plan you are given. Do not compute new ones: no sums, differences, percentages or averages that are not already in the plan. If a number you want is not there, leave it out.
-
-Write two separate texts.
-
-client_markdown: a short proposal the rep can adapt. Say what we can offer: how many areas, how many hours each week, starting when (from the chosen plan), and at what weekly price. If the plan's model differs from what the client asked for, say so plainly and why, in one or two sentences. Mention any list corrections they need to confirm. Nothing internal, ever: no truck numbers, no transport or repositioning cost, no capacity or other clients, no AT&T or Alloy Build.
-
-internal_markdown: for the sales lead. Cover the chosen start date and the transport we absorb for it, what an earlier or later date would cost (from the start-date options), what it leaves for other clients, the reservations assumed (AT&T, Alloy Build), the warnings, and the decisions still open. End with a table of the assigned trucks: route, truck number, start date. Short paragraphs and a few bullets.
-
-Plain, specific sentences. No filler, no exclamation marks.`
-
-export type WriteUp = {
-  client: string
-  internal: string
-  /** Numbers in either text that are not in the plan. */
-  unverifiedNumbers: string[]
-  /** Terms that must never appear in the client text; the tab re-checks edits against these. */
-  clientForbidden: string[]
-  /** Forbidden terms actually found in the client text as drafted. */
-  clientLeaks: string[]
-}
-
-export async function writePlanSummary(opts: {
-  plan: PlanResponse
-  areaCount: number
-  zipCount: number
-  flagsSummary: string[]
-  clientRequest?: string
-  /** The start-date row the rep chose. */
-  selectedOption?: number
-}): Promise<WriteUp> {
-  const facts = planFacts(opts)
-  const msg = await anthropic().messages
-    .stream({
-      model: PLANNER_MODEL,
-      max_tokens: 16000,
-      system: WRITEUP_SYSTEM,
-      output_config: { effort: 'medium', format: jsonSchemaOutputFormat(WRITEUP_SCHEMA) },
-      messages: [{ role: 'user', content: `Plan:\n\n${JSON.stringify(facts, null, 1)}` }],
-    })
-    .finalMessage()
-  assertUsable(msg, 'write this summary')
-  const out = msg.parsed_output
-  if (!out) throw new Error('Claude returned an unreadable write-up.')
-
-  const client = out.client_markdown.trim()
-  const internal = out.internal_markdown.trim()
-  const verifiable = verifiableFacts(facts)
-  const forbidden = clientForbiddenTerms(opts.plan, opts.selectedOption)
-  return {
-    client,
-    internal,
-    unverifiedNumbers: [...new Set([...unverifiedNumbers(client, verifiable), ...unverifiedNumbers(internal, verifiable)])],
-    clientForbidden: forbidden,
-    clientLeaks: findLeaks(client, forbidden),
-  }
-}
-
-/**
- * Terms that must never reach a client: every assigned truck number, the
- * transport we absorb, and the names of other commitments.
- */
-export function clientForbiddenTerms(plan: PlanResponse, selectedOption?: number): string[] {
-  const chosen = plan.dateOptions[selectedOption ?? plan.defaultOption] ?? plan.dateOptions[0]
-  const trucks = (chosen?.liveBy.assignments ?? []).map(a => a.truckNumber).filter((t): t is string => !!t)
-  const money = plan.dateOptions.flatMap(o => (o.liveBy.feasible && o.liveBy.repositionCost > 0 ? [o.liveBy.repositionCost.toLocaleString('en-US')] : []))
-  return [...new Set([
-    ...trucks,
-    ...money.map(m => `$${m}`),
-    'AT&T', 'ATT', 'Alloy', '160over90', 'soft hold',
-    // A trailing * matches the stem: absorbed, repositioning, ...
-    'absorb*', 'reposition*', 'deadhead*', 'capacity', 'other clients', 'maintenance',
-  ])]
-}
-
-
-/** The plan reduced to what a write-up may cite — already rounded and labelled. */
-export function planFacts(opts: { plan: PlanResponse; areaCount: number; zipCount: number; flagsSummary: string[]; clientRequest?: string; selectedOption?: number }) {
-  const { plan } = opts
-  const chosen = plan.dateOptions[opts.selectedOption ?? plan.defaultOption] ?? plan.dateOptions[0]
-  const ms = chosen?.liveBy.milestones ?? []
-  return {
-    client_request: opts.clientRequest ?? null,
-    areas: opts.areaCount,
-    zips: opts.zipCount,
-    list_corrections: opts.flagsSummary,
-    model: plan.settings.model === '3x12' ? 'three 12-hour days per area per week' : 'five 8-hour days per area per week',
-    trucks: plan.routes.length,
-    paired_routes: plan.routes.filter(r => r.areaIds.length === 2).length,
-    single_area_routes: plan.routes.filter(r => r.areaIds.length === 1).length,
-    chosen_plan: chosen ? {
-      everything_live_by: chosen.date,
-      fully_live: chosen.liveBy.feasible,
-      first_start: ms[0]?.date ?? null,
-      routes_live_on_first_start: ms[0]?.routesLive ?? 0,
-      milestones: ms,
-      transport_absorbed: chosen.liveBy.repositionCost,
-      moves_beyond_service_area: chosen.liveBy.movesOverServiceArea,
-      // Internal only — the client section must not list trucks.
-      assigned_trucks: chosen.liveBy.assignments.map(a => ({ route: a.routeName, truck: a.truckNumber, starts: a.start, coming_from: a.originLabel })),
-    } : null,
-    price_per_week: plan.pricing.chosen.totalPerWeek,
-    price_per_quarter: plan.pricing.chosen.totalPerQuarter,
-    rate_per_truck_day: plan.pricing.chosen.effectiveDailyRate,
-    rate_per_truck_hour: plan.pricing.chosen.perTruckHour,
-    hours_per_area_per_week: plan.settings.model === '3x12' ? 36 : 40,
-    days_per_area_per_week: plan.settings.model === '3x12' ? 3 : 5,
-    hours_per_day: plan.settings.model === '3x12' ? 12 : 8,
-    days_per_week: 7,
-    drivers_per_paired_route: 2,
-    weeks_per_quarter: 13,
-    alternative_model: {
-      model: plan.pricing.other.model === '3x12' ? 'three 12-hour days' : 'five 8-hour days',
-      trucks: plan.capacity.rows[1]?.programTrucks,
-      price_per_week: plan.pricing.other.totalPerWeek,
-    },
-    start_date_options: plan.dateOptions.map(o => ({
-      everything_live_by: o.date,
-      possible: o.liveBy.feasible,
-      transport_absorbed: o.liveBy.feasible ? o.liveBy.repositionCost : null,
-      short_by_routes: o.liveBy.feasible ? 0 : o.liveBy.shortBy,
-      routes_live_on_first_day: o.liveBy.milestones[0]?.routesLive ?? 0,
-    })),
-    capacity: {
-      active_trucks: plan.capacity.activeTrucks,
-      maintenance_reserve: plan.capacity.maintenanceReserve,
-      att_trucks_low: plan.capacity.reservedLow,
-      att_trucks_high: plan.capacity.reservedHigh,
-      alloy_build_trucks_reserved: plan.capacity.renewingTrucks,
-      left_for_other_clients: plan.capacity.rows.map(r => ({ model: r.model, low: r.leftLow, high: r.leftHigh })),
-      history_last_52_weeks: plan.capacity.history,
-    },
-    reserved_trucks: plan.fleet.reserved.length,
-    warnings: plan.warnings,
-  }
-}
-
-/**
- * The facts a number may be verified against: the plan's own figures only.
- * The client's request and the list corrections are text that came from the
- * uploaded file (or Claude's reading of it), so a number planted in a file
- * could otherwise vouch for itself.
- */
-export function verifiableFacts(facts: ReturnType<typeof planFacts>) {
-  const plan: Partial<typeof facts> = { ...facts }
-  delete plan.client_request
-  delete plan.list_corrections
-  return plan
-}
-
-/**
- * Numbers in the text that do not appear in the facts.
- *
- * Tolerant of formatting ($297,000 vs 297000, "36-hour"), but not of
- * arithmetic, and not of small numbers: truck, route and area counts are
- * exactly the figures that matter, so every number must come from the plan.
- * The plan carries the schedule constants a sentence needs (3 days, 12 hours,
- * 7-day week, 2 drivers) so that ordinary sentences still pass.
- */
-export function unverifiedNumbers(text: string, facts: unknown): string[] {
-  const known = new Set<string>()
-  const walk = (v: unknown) => {
-    if (typeof v === 'number') known.add(String(Math.round(v * 100) / 100))
-    else if (typeof v === 'string') {
-      for (const m of v.match(/\d[\d,]*(?:\.\d+)?/g) ?? []) known.add(String(Number(m.replace(/,/g, ''))))
-      const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v)
-      if (d) { known.add(String(Number(d[2]))); known.add(String(Number(d[3]))); known.add(d[1]) }
-    } else if (Array.isArray(v)) v.forEach(walk)
-    else if (v && typeof v === 'object') Object.values(v).forEach(walk)
-  }
-  walk(facts)
-  // Derived forms the prose legitimately uses.
-  for (const k of [...known]) {
-    const n = Number(k)
-    if (n >= 1000) { known.add(String(Math.round(n / 1000))); known.add(String(Math.round(n / 100) / 10)) } // $297K, $3.9M-style
-    if (n >= 1_000_000) known.add(String(Math.round(n / 100_000) / 10))
-  }
-
-  // Percentages are checked against percentages only: a "10" from a date
-  // must not vouch for "10%".
-  const percents = new Set((JSON.stringify(facts).match(/\d+(?:\.\d+)?%/g) ?? []))
-
-  const out: string[] = []
-  for (const m of text.matchAll(/\$?\d[\d,]*(?:\.\d+)?%?/g)) {
-    const raw = m[0]
-    const n = Number(raw.replace(/[$,%]/g, ''))
-    if (!Number.isFinite(n)) continue
-    if (raw.endsWith('%')) { if (!percents.has(raw)) out.push(raw); continue }
-    if (known.has(String(Math.round(n * 100) / 100))) continue
-    out.push(raw)
-  }
-  return [...new Set(out)]
-}

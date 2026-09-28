@@ -93,7 +93,10 @@ export type CreateOpportunityInput = {
   holdExp?: string            // YYYY-MM-DD
   truckNumbers?: string[]     // e.g. ['0044', '0751']
   ledRevenue?: number
+  /** Activation_Notes__c holds 500 characters; longer text is cut. */
   activationNotes?: string
+  /** Opportunity Description (32,000 characters). */
+  description?: string
 }
 
 export type SfdcOpportunityResult = {
@@ -123,7 +126,8 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
   if (input.truckNumbers && input.truckNumbers.length > 0) {
     body.LED_Trucks__c = input.truckNumbers.map(t => `LED-${t}`).join(';')
   }
-  if (input.activationNotes) body.Activation_Notes__c = input.activationNotes
+  if (input.activationNotes) body.Activation_Notes__c = input.activationNotes.length > 500 ? input.activationNotes.slice(0, 497) + '...' : input.activationNotes
+  if (input.description) body.Description = input.description.slice(0, 32000)
   // LED_Revenue__c is a read-only field (formula/rollup) — use Amount instead
 
   const res = await sfdcFetch('/sobjects/Opportunity', {

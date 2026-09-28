@@ -101,3 +101,126 @@ export function isAttTruck(days: { current: number; prior: number }, lookback: R
 export function softHoldYieldsOn(date: string, otherClientShifts: { shift_start: string; shift_end: string }[] | undefined): boolean {
   return (otherClientShifts ?? []).some(s => s.shift_start <= date && s.shift_end >= date)
 }
+
+/**
+ * The parts of [start, end] not covered by any of `taken` — the days a truck
+ * still needs a soft hold for, after its existing soft holds and any dates
+ * someone released for a booking. Dates are YYYY-MM-DD. Pure.
+ */
+export function freeRanges(start: string, end: string, taken: { start: string; end: string }[]): { start: string; end: string }[] {
+  const next = (d: string) => iso(new Date(utc(d).getTime() + 864e5))
+  const prev = (d: string) => iso(new Date(utc(d).getTime() - 864e5))
+  const blocks = taken.filter(t => t.end >= start && t.start <= end).sort((a, b) => a.start.localeCompare(b.start))
+  const out: { start: string; end: string }[] = []
+  let cursor = start
+  for (const b of blocks) {
+    if (b.start > cursor) out.push({ start: cursor, end: prev(b.start) < end ? prev(b.start) : end })
+    if (b.end >= cursor) cursor = next(b.end)
+    if (cursor > end) return out
+  }
+  if (cursor <= end) out.push({ start: cursor, end })
+  return out
+}
+
+/** Release rows (lib/attSoftRelease.ts) carry this origination. */
+export const ATT_RELEASE_ORIGINATION = 'att_soft_release'
+
+/** A release is for one booking: at most this many days at a time. */
+export const ATT_RELEASE_MAX_DAYS = 31
+
+/** The words shown before any release of an AT&T soft hold. Exactly as operations asked. */
+export const ATT_RELEASE_WARNING =
+  'Ensure with operations this works, and it only releases for the specific dates of the new booking so that there is no conflict.'
+
+/**
+ * The parts of [holdStart, holdEnd] left after removing [start, end]: zero,
+ * one or two ranges. Pure, so it can be tested.
+ */
+export function carve(holdStart: string, holdEnd: string, start: string, end: string): { start: string; end: string }[] {
+  if (end < holdStart || start > holdEnd) return [{ start: holdStart, end: holdEnd }]
+  const out: { start: string; end: string }[] = []
+  if (start > holdStart) out.push({ start: holdStart, end: addDaysIso(start, -1) })
+  if (end < holdEnd) out.push({ start: addDaysIso(end, 1), end: holdEnd })
+  return out
+}
+
+const addDaysIso = (d: string, n: number) => iso(new Date(utc(d).getTime() + n * 864e5))
+
+/** Why a release range is refused, or null when it is fine: valid dates, one booking long. */
+export function validateReleaseRange(start: string, end: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || end < start) {
+    return 'Release dates must be YYYY-MM-DD, end on or after start.'
+  }
+  const n = Math.round((utc(end).getTime() - utc(start).getTime()) / 864e5) + 1
+  if (n > ATT_RELEASE_MAX_DAYS) return `A release covers one booking: at most ${ATT_RELEASE_MAX_DAYS} days. Release longer bookings in parts, with operations.`
+  return null
+}
+
+type Range = { start: string; end: string }
+type Where = { market: string; state: string }
+
+/**
+ * Sync step 3b: which live soft holds sit over a release record, and the
+ * pieces each one is cut down to. A release is final, so a soft hold written
+ * over one (a release that landed mid-sync) is cut back around it.
+ */
+export function planReleaseCuts(
+  soft: ({ id: string; truck_number: string } & Range)[],
+  releases: ({ truck_number: string } & Range)[],
+): { id: string; keep: Range[] }[] {
+  const out: { id: string; keep: Range[] }[] = []
+  for (const h of soft) {
+    const over = releases.filter(r => r.truck_number === h.truck_number && r.start <= h.end && r.end >= h.start)
+    if (!over.length) continue
+    let keep: Range[] = [{ start: h.start, end: h.end }]
+    for (const r of over) keep = keep.flatMap(p => carve(p.start, p.end, r.start, r.end))
+    out.push({ id: h.id, keep })
+  }
+  return out
+}
+
+/**
+ * Sync step 3c: soft holds written without a market get the market of the
+ * truck's latest 160over90 work, so the strand check can protect them.
+ */
+export function planMarketBackfill(
+  soft: { id: string; truck_number: string; market: string }[],
+  lastMarket: Map<string, Where>,
+): ({ id: string } & Where)[] {
+  return soft.flatMap(h => {
+    const where = lastMarket.get(h.truck_number)
+    return !h.market && where?.market ? [{ id: h.id, ...where }] : []
+  })
+}
+
+/**
+ * Sync step 4: the soft holds to create. For each AT&T truck and window
+ * month, only the days neither soft-held nor released for a booking, each
+ * carrying the truck's latest 160over90 market.
+ */
+export function planSoftHoldFill(opts: {
+  window: (Range & { label: string })[]
+  trucks: string[]
+  live: ({ truck_number: string } & Range)[]
+  releases: ({ truck_number: string } & Range)[]
+  lastMarket: Map<string, Where>
+}): ({ truck_number: string; label: string } & Range & Where)[] {
+  const of = (rows: ({ truck_number: string } & Range)[], t: string) => rows.filter(r => r.truck_number === t)
+  const out: ({ truck_number: string; label: string } & Range & Where)[] = []
+  for (const m of opts.window) {
+    for (const truck_number of [...opts.trucks].sort()) {
+      const where = opts.lastMarket.get(truck_number) ?? { market: '', state: '' }
+      for (const g of freeRanges(m.start, m.end, [...of(opts.live, truck_number), ...of(opts.releases, truck_number)])) {
+        out.push({ truck_number, label: m.label, ...g, ...where })
+      }
+    }
+  }
+  return out
+}
+
+/** Can this record be reinstated as a live hold? Release records never can. */
+export function reinstateBlockedByRelease(origination: string | null | undefined): string | null {
+  return origination === ATT_RELEASE_ORIGINATION
+    ? 'This is an AT&T soft-hold release record, not a reservation. Undo it from the Conflicts page.'
+    : null
+}

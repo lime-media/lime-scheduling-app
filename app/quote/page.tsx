@@ -1,5 +1,7 @@
 'use client'
 
+import toast from 'react-hot-toast'
+import { ATT_RELEASE_WARNING } from '@/lib/attSoftRules'
 import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
@@ -173,6 +175,32 @@ export default function InternalQuotePage() {
     if (toggles.deviceId) media += features.deviceId.cost
     if (features.studies.available && toggles.studies.length > 0) media += toggles.studies.length * features.studies.costPerStudy
     return media + quoteResult.transportCharge
+  }
+
+  // Release a truck's AT&T soft hold for THIS booking's dates only, after the
+  // operations warning, then re-quote so the truck can be used.
+  const [releasing, setReleasing] = useState<string | null>(null)
+  const releaseForBooking = async (truckNumber: string) => {
+    if (!form.start_date || !form.end_date) return
+    if (!confirm(ATT_RELEASE_WARNING)) return
+    setReleasing(truckNumber)
+    try {
+      const res = await fetch('/api/holds/att-soft/release', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          truck_number: truckNumber, start_date: form.start_date, end_date: form.end_date,
+          context: `Quote: ${account?.name ?? 'no client'}, ${quoteResult?.market || form.market}, ${form.start_date} to ${form.end_date}`,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Release failed')
+      toast.success(data.message)
+      submitQuote()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Release failed')
+    } finally {
+      setReleasing(null)
+    }
   }
 
   const placeHold = useCallback(async (expectedOverride?: number) => {
@@ -408,11 +436,18 @@ export default function InternalQuotePage() {
                   <p className="font-medium">
                     {quoteResult.availability.requiresOverride!.length} truck{quoteResult.availability.requiresOverride!.length !== 1 ? 's' : ''} available only by releasing a soft hold
                   </p>
-                  <p className="text-purple-600 mt-0.5">Not included in this quote. Release the AT&amp;T soft hold first to use {quoteResult.availability.requiresOverride!.length !== 1 ? 'them' : 'it'}.</p>
+                  <p className="text-purple-600 mt-0.5">Not included in this quote. Release the AT&amp;T soft hold for this booking&apos;s dates to use {quoteResult.availability.requiresOverride!.length !== 1 ? 'them' : 'it'}.</p>
                   {quoteResult.availability.requiresOverride!.map((t) => (
-                    <p key={t.truckNumber} className="text-purple-600 mt-1">
-                      <span className="font-medium">Truck {t.truckNumber}</span> ({t.from}) — {t.detail}
-                    </p>
+                    <div key={t.truckNumber} className="mt-1.5 flex items-start gap-2">
+                      <p className="flex-1 text-purple-600">
+                        <span className="font-medium">Truck {t.truckNumber}</span> ({t.from}) — {t.detail}
+                      </p>
+                      <button type="button" disabled={releasing === t.truckNumber}
+                        onClick={() => releaseForBooking(t.truckNumber)}
+                        className="shrink-0 rounded border border-purple-300 bg-white px-2 py-0.5 font-medium text-purple-800 hover:bg-purple-100 disabled:opacity-50">
+                        {releasing === t.truckNumber ? 'Releasing…' : 'Release for this booking'}
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}

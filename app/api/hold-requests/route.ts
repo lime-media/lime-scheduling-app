@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { ATT_RELEASE_ORIGINATION } from '@/lib/attSoftRules'
 import { QUOTE_ONLY_LIST_DAYS, QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
@@ -35,6 +36,8 @@ export async function GET() {
         // (their updated_at never moves, so the expired window would drop them).
         { origination: QUOTE_ONLY_ORIGINATION, created_at: { gte: new Date(Date.now() - QUOTE_ONLY_LIST_DAYS * 864e5) } },
       ],
+      // AT&T soft-hold release records are not reservations (lib/attSoftRelease.ts).
+      NOT: { origination: ATT_RELEASE_ORIGINATION },
     },
     orderBy:  { created_at: 'desc' },
     include:  {

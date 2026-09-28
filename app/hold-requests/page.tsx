@@ -1,5 +1,6 @@
 'use client'
 
+import { ATT_RELEASE_WARNING } from '@/lib/attSoftRules'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
@@ -243,8 +244,31 @@ export default function HoldRequestsPage() {
       return
     }
 
+    // Any chosen truck that is AT&T soft-held for this request: warn, then
+    // release the soft hold for this request's dates only, before swapping.
+    const needsRelease = truckChanges.filter(r => {
+      const t = availableTrucksMap.get(r.id)?.find(x => x.truckNumber === selectedTrucks.get(r.id))
+      return t?.requiresOverride
+    })
+    if (needsRelease.length > 0 && !confirm(ATT_RELEASE_WARNING)) return
+
     setSaving(true)
     try {
+      for (const r of needsRelease) {
+        const res = await fetch('/api/holds/att-soft/release', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            truck_number: selectedTrucks.get(r.id), start_date: r.start_date, end_date: r.end_date,
+            context: `Client request: ${r.company_name}, ${r.market}, ${r.start_date} to ${r.end_date}`,
+          }),
+        })
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          toast.error(err.error || 'Could not release the AT&T soft hold')
+          return
+        }
+      }
+
       // Truck swaps
       if (truckChanges.length > 0) {
         const results = await Promise.all(

@@ -28,18 +28,21 @@
  *   4. Gives every AT&T truck a soft hold for each month of the window it
  *      does not already have.
  *
- * Every release is written to the audit log with its reason. Releases delete
+ * Every release is written to the audit log with its reason. A soft hold a
+ * person released for a booking (lib/attSoftRelease.ts) stays released: step
+ * 4 never re-creates it over those dates. Releases delete
  * only a row that is STILL a soft hold (an operator may have just promoted it
  * to a real hold), tolerate a row a concurrent run already removed, and never
  * abort the rest of the sync. Nothing is released for "not AT&T's" in a run
  * that could not create holds (no user to record them against).
  */
 
+import { ATT_RELEASE_ORIGINATION } from '@/lib/attSoftRules'
 import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
-import { ATT_CLIENT, ATT_MIN_DAYS, PRIOR_MONTH_GRACE_DAY, attLookback, isAttClient, isAttTruck, normalizeClient, releaseBlockedReason, softHoldWindow } from '@/lib/attSoftRules'
+import { ATT_CLIENT, ATT_MIN_DAYS, PRIOR_MONTH_GRACE_DAY, attLookback, freeRanges, isAttClient, isAttTruck, normalizeClient, releaseBlockedReason, softHoldWindow } from '@/lib/attSoftRules'
 import { HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
 
 export { ATT_CLIENT, isAttClient, softHoldWindow }
@@ -155,7 +158,8 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
     return finish()
   }
 
-  // 3. Trucks that are no longer AT&T's.
+  // 3. Trucks that are no longer AT&T's. (The pieces a release leaves either
+  // side of a booking are ordinary soft holds and follow the same rule.)
   const lookback = attLookback(today)
   const curDays = await attDaysByTruck(lookback.current.from, lookback.current.to)
   const priorDays = lookback.prior ? await attDaysByTruck(lookback.prior.from, lookback.prior.to) : new Map<string, number>()
@@ -181,33 +185,43 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
     }
   }
 
-  // 4. Create what the window is missing.
+  // 4. Fill the window. For each truck and month, only the days not already
+  // soft-held AND not released by someone for a booking (release rows,
+  // lib/attSoftRelease.ts) get a soft hold — so a manual release sticks, and
+  // the rest of that month is still reserved for AT&T.
+  const releasedRows = await prisma.hold.findMany({
+    where: { origination: ATT_RELEASE_ORIGINATION, end_date: { gte: utc(window[0].start) } },
+    select: { truck_number: true, start_date: true, end_date: true },
+  })
+  const rangesFor = (rows: { truck_number: string; start_date: Date; end_date: Date }[], truck: string) =>
+    rows.filter(r => r.truck_number === truck).map(r => ({ start: iso(r.start_date), end: iso(r.end_date) }))
   let created = 0
   for (const m of window) {
     for (const truck_number of [...attTrucks].sort()) {
-      const covered = live.some(h => h.truck_number === truck_number && iso(h.start_date) <= m.end && iso(h.end_date) >= m.start)
-      if (covered) continue
-      try {
-        const h = await prisma.hold.create({
-          // MIRROR PATH — no feasibility gate by design. This reflects AT&T's
-          // standing reservation; infeasible holds are reported by
-          // GET /api/holds/infeasible instead of being blocked.
-          data: {
-            truck_number,
-            status: 'ATT_SOFT',
-            client_name: 'AT&T',
-            market: '',
-            state: '',
-            notes: `Auto soft hold – AT&T (160over90) – ${m.label}`,
-            start_date: utc(m.start),
-            end_date: utc(m.end),
-            created_by: createdBy,
-          },
-        })
-        live.push(h)
-        created++
-      } catch (err) {
-        console.error(`[att-soft] create for ${truck_number} ${m.label} failed:`, err)
+      const gaps = freeRanges(m.start, m.end, [...rangesFor(live, truck_number), ...rangesFor(releasedRows, truck_number)])
+      for (const g of gaps) {
+        try {
+          const h = await prisma.hold.create({
+            // MIRROR PATH — no feasibility gate by design. This reflects AT&T's
+            // standing reservation; infeasible holds are reported by
+            // GET /api/holds/infeasible instead of being blocked.
+            data: {
+              truck_number,
+              status: 'ATT_SOFT',
+              client_name: 'AT&T',
+              market: '',
+              state: '',
+              notes: `Auto soft hold – AT&T (160over90) – ${m.label}`,
+              start_date: utc(g.start),
+              end_date: utc(g.end),
+              created_by: createdBy,
+            },
+          })
+          live.push(h)
+          created++
+        } catch (err) {
+          console.error(`[att-soft] create for ${truck_number} ${g.start}..${g.end} failed:`, err)
+        }
       }
     }
   }

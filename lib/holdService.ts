@@ -42,17 +42,29 @@ export async function createHold(params: CreateHoldParams): Promise<CreateHoldRe
   } = params
 
   // Check for conflicts with existing holds on same truck + date range.
-  // ATT_SOFT holds are soft placeholders and released holds (status EXPIRED,
-  // or expires_at already passed) no longer reserve the truck — none of them
-  // block regular hold creation.
+  // Released holds (status EXPIRED, or expires_at already passed) no longer
+  // reserve the truck. AT&T soft holds DO block here: this path serves the
+  // internal holds API and the partner/MCP API, and neither may book over
+  // AT&T. A person releases the soft hold for a booking's dates in the app
+  // first (lib/attSoftRelease.ts), after checking with operations.
   const conflictingHolds = await prisma.hold.findMany({
     where: {
       truck_number,
-      ...activeHoldWhere({ excludeAttSoft: true }),
+      ...activeHoldWhere(),
       start_date: { lte: new Date(end_date) },
       end_date:   { gte: new Date(start_date) },
     },
   })
+
+  if (conflictingHolds.some(h => h.status === 'ATT_SOFT')) {
+    return {
+      success: false,
+      error: {
+        type: 'hold_conflict',
+        message: `Truck ${truck_number} is reserved for AT&T (soft hold) on these dates. It can only be released for a booking from the app, after checking with operations.`,
+      },
+    }
+  }
 
   if (conflictingHolds.length > 0) {
     return {
@@ -102,7 +114,9 @@ export async function createHold(params: CreateHoldParams): Promise<CreateHoldRe
         startDate: start_date,
         endDate: end_date,
       })
-      if (!feasibility.ok && !feasibility.overridable) {
+      // Refused even when only an AT&T soft hold is in the way (overridable):
+      // this path is the holds and partner/MCP APIs, which never displace AT&T.
+      if (!feasibility.ok) {
         return {
           success: false,
           error: {

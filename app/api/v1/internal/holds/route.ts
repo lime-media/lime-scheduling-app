@@ -64,11 +64,12 @@ export async function POST(req: NextRequest) {
 
     const expiresAt = computeHoldExpiresAt(start_date)
 
-    // Conflict check — same as the app_user path via createHold()
+    // Conflict check — same as the app_user path via createHold(). AT&T soft
+    // holds block too: the partner/MCP API may never book over AT&T.
     const conflicts = await prisma.hold.findMany({
       where: {
         truck_number,
-        ...activeHoldWhere({ excludeAttSoft: true }),
+        ...activeHoldWhere(),
         start_date: { lte: new Date(end_date) },
         end_date: { gte: new Date(start_date) },
       },
@@ -76,7 +77,9 @@ export async function POST(req: NextRequest) {
     if (conflicts.length > 0) {
       const c = conflicts[0]
       return NextResponse.json({
-        error: `Truck ${truck_number} already has a ${c.status} for "${c.client_name}" from ${c.start_date.toISOString().split('T')[0]} to ${c.end_date.toISOString().split('T')[0]}.`,
+        error: c.status === 'ATT_SOFT'
+          ? `Truck ${truck_number} is not available on these dates.`
+          : `Truck ${truck_number} already has a ${c.status} for "${c.client_name}" from ${c.start_date.toISOString().split('T')[0]} to ${c.end_date.toISOString().split('T')[0]}.`,
       }, { status: 409 })
     }
 
@@ -90,9 +93,10 @@ export async function POST(req: NextRequest) {
         startDate: start_date,
         endDate: end_date,
       })
-      if (!feasibility.ok && !feasibility.overridable) {
+      // Refused even when the only blocker is an AT&T soft hold it would strand.
+      if (!feasibility.ok) {
         return NextResponse.json({
-          error: `Cannot place hold — ${feasibility.detail ?? 'truck cannot serve these dates'}`,
+          error: feasibility.overridable ? `Truck ${truck_number} is not available on these dates.` : `Cannot place hold — ${feasibility.detail ?? 'truck cannot serve these dates'}`,
           reason: feasibility.reason,
         }, { status: 409 })
       }

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { ATT_RELEASE_ORIGINATION } from '@/lib/attSoftRules'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
@@ -31,6 +32,8 @@ export async function GET() {
         { status: { not: 'EXPIRED' } },
         { status: 'EXPIRED', updated_at: { gte: expiredCutoff } },
       ],
+      // AT&T soft-hold release records are not reservations (lib/attSoftRelease.ts).
+      NOT: { origination: ATT_RELEASE_ORIGINATION },
     },
     orderBy:  { created_at: 'desc' },
     include:  {

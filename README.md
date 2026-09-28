@@ -86,6 +86,8 @@ The AI is instructed never to guess or infer a truck's location — it can only 
 | COMMITTED | This app (Prisma) | **Committed (won)**, soft gray: won in Salesforce (Closed Won sets it) but not yet on the LED schedule. Blocks the truck and never auto-expires |
 | ATT_SOFT | This app (Prisma, auto-created) | AT&T soft hold (blue): trucks with more than 5 days of 160over90 work (any program) in the current month, or through the 10th in the prior month (each month on its own), for the current month (from today) and the next two. A day or two on another client does not release it; from the 11th, no 160over90 shifts this month does. See `lib/attSoftHolds.ts` |
 
+**Releasing an AT&T soft hold** is always for a specific booking and only for its dates: from the Quote Builder ("Release for this booking"), a client-request truck swap, the schedule grid's cell panel, or the Conflicts page. Anyone signed in may do it after the warning to check with operations; the soft hold is cut around the booking's dates and the release is recorded so the hourly sync never puts it back (`lib/attSoftRelease.ts`). The partner/MCP and internal holds APIs can never book over, or strand, a soft hold. The Conflicts page lists soft holds that still clash with a reservation, to release or dismiss.
+
 Colours are shared across the internal and client views (`lib/statusColors.ts`): **green = available** in both; internally, scheduled is the client view's gray, committed (won) a softer gray, reservations (including client hold requests) yellow, AT&T soft holds blue, maintenance orange. The client view shows anything booked as gray.
 
 ---

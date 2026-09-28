@@ -5,6 +5,7 @@ import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
 import { Navbar } from '@/components/Navbar'
+import { AttSoftConflicts } from '@/components/AttSoftConflicts'
 
 type InfeasibleHold = {
   holdId:       string
@@ -222,6 +223,9 @@ export default function ConflictsPage() {
               </table>
             </div>
           )}
+
+          {/* ---- AT&T soft holds with a conflict -------------------------- */}
+          <AttSoftConflicts />
 
           {/* ---- Holds that cannot be served ------------------------------ */}
           <div className="flex items-center gap-3 mt-10 mb-4">

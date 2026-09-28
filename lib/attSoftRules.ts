@@ -101,3 +101,44 @@ export function isAttTruck(days: { current: number; prior: number }, lookback: R
 export function softHoldYieldsOn(date: string, otherClientShifts: { shift_start: string; shift_end: string }[] | undefined): boolean {
   return (otherClientShifts ?? []).some(s => s.shift_start <= date && s.shift_end >= date)
 }
+
+/**
+ * The parts of [start, end] not covered by any of `taken` — the days a truck
+ * still needs a soft hold for, after its existing soft holds and any dates
+ * someone released for a booking. Dates are YYYY-MM-DD. Pure.
+ */
+export function freeRanges(start: string, end: string, taken: { start: string; end: string }[]): { start: string; end: string }[] {
+  const next = (d: string) => iso(new Date(utc(d).getTime() + 864e5))
+  const prev = (d: string) => iso(new Date(utc(d).getTime() - 864e5))
+  const blocks = taken.filter(t => t.end >= start && t.start <= end).sort((a, b) => a.start.localeCompare(b.start))
+  const out: { start: string; end: string }[] = []
+  let cursor = start
+  for (const b of blocks) {
+    if (b.start > cursor) out.push({ start: cursor, end: prev(b.start) < end ? prev(b.start) : end })
+    if (b.end >= cursor) cursor = next(b.end)
+    if (cursor > end) return out
+  }
+  if (cursor <= end) out.push({ start: cursor, end })
+  return out
+}
+
+/** Release rows (lib/attSoftRelease.ts) carry this origination. */
+export const ATT_RELEASE_ORIGINATION = 'att_soft_release'
+
+/** The words shown before any release of an AT&T soft hold. Exactly as operations asked. */
+export const ATT_RELEASE_WARNING =
+  'Ensure with operations this works, and it only releases for the specific dates of the new booking so that there is no conflict.'
+
+/**
+ * The parts of [holdStart, holdEnd] left after removing [start, end]: zero,
+ * one or two ranges. Pure, so it can be tested.
+ */
+export function carve(holdStart: string, holdEnd: string, start: string, end: string): { start: string; end: string }[] {
+  if (end < holdStart || start > holdEnd) return [{ start: holdStart, end: holdEnd }]
+  const out: { start: string; end: string }[] = []
+  if (start > holdStart) out.push({ start: holdStart, end: addDaysIso(start, -1) })
+  if (end < holdEnd) out.push({ start: addDaysIso(end, 1), end: holdEnd })
+  return out
+}
+
+const addDaysIso = (d: string, n: number) => iso(new Date(utc(d).getTime() + n * 864e5))

@@ -6,6 +6,8 @@
  * This endpoint is used by the internal /quote page.
  */
 
+import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
+import { brandMarkupFor, withMarkup } from '@/lib/pricing/brandMarkup'
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { checkAvailability, legsFromTrucks } from '@/lib/availabilityEngine'
@@ -43,6 +45,10 @@ export async function POST(req: NextRequest) {
     operating_hours?: number
     sfdc_account_id?: string
     sfdc_account_name?: string
+    /** Seller's Brand Direct markup; applied only if Salesforce says the account is Brand Direct. */
+    brand_markup_pct?: number
+    /** Price it even without enough trucks — it can then only be logged as a quote, never reserved. */
+    quote_only?: boolean
   }
 
   try {
@@ -146,7 +152,7 @@ export async function POST(req: NextRequest) {
     })
   }
 
-  if (!availability.sufficient) {
+  if (!availability.sufficient && body.quote_only !== true) {
     return NextResponse.json({
       availability: {
         requested: truck_count,
@@ -169,6 +175,12 @@ export async function POST(req: NextRequest) {
     .filter(t => !t.requiresOverride)
     .slice(0, truck_count)
 
+  // Brand Direct: folded into every price (see lib/pricing/brandMarkup.ts).
+  const accountInfo = body.sfdc_account_id && isSfdcConfigured()
+    ? await getSfdcAccountInfo(body.sfdc_account_id).catch((err) => { console.error('[quote] account lookup failed:', err); return null })
+    : null
+  const markupPct = brandMarkupFor(accountInfo?.clientType, body.brand_markup_pct)
+
   const quote = computeQuote({
     truckCount: truck_count,
     days,
@@ -178,6 +190,7 @@ export async function POST(req: NextRequest) {
     includeDeviceId,
     studies,
     rateOverrides,
+    markupPct,
   })
 
   const transport = priceTransport({
@@ -190,6 +203,7 @@ export async function POST(req: NextRequest) {
       airfare: rateOverrides?.transport_airfare,
       hotelPerNight: rateOverrides?.transport_hotel_per_night,
     },
+    markupPct,
   })
 
   const totalTransportCharge = transport.charge
@@ -249,13 +263,19 @@ export async function POST(req: NextRequest) {
       truckCount: truck_count,
       baseMedia: quote.good.baseMedia,
       pricingBasis: agreementName ? `agreement: ${agreementName}` : 'standard',
+      // Internal page only: the Brand Direct markup folded into every price above.
+      clientType: accountInfo?.clientType ?? null,
+      // Not enough trucks free: priced on request, and can only be logged as a
+      // quote (no reservation). Transport covers only the trucks that are free.
+      quoteOnlyRequired: !availability.sufficient,
+      brandMarkupPct: markupPct,
       marketSizeTier: quote.input.marketSizeTier,
       schedule: { daysPerWeek, operatingHours, activationDays: days },
     },
     features: {
       shadowFencing: { included: includeShadowFencing, cost: quote.better.shadowFencing, floored: quote.better.shadowFencingFloored, digitalImpressions: quote.better.digitalImpressions },
-      smartDirectional: { included: includeSmartDirectional, cost: includeSmartDirectional ? quote.better.smartDirectional : quote.input.truckDays * (rateOverrides?.smart_directional_daily ?? 250) },
-      deviceId: { included: includeDeviceId, cost: includeDeviceId ? quote.better.deviceId : (rateOverrides?.device_id_flat ?? 2500) },
+      smartDirectional: { included: includeSmartDirectional, cost: includeSmartDirectional ? quote.better.smartDirectional : quote.input.truckDays * withMarkup(rateOverrides?.smart_directional_daily ?? 250, markupPct) },
+      deviceId: { included: includeDeviceId, cost: includeDeviceId ? quote.better.deviceId : withMarkup(rateOverrides?.device_id_flat ?? 2500, markupPct) },
       studies: { available: quote.best.reachOk, selected: studies, costPerStudy: quote.best.studyCost, estimatedImpressions: quote.best.estimatedImpressions, reachMinimum: 1_200_000 },
     },
     transport: {

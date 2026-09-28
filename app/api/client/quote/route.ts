@@ -8,6 +8,8 @@
  * route measures nothing and decides nothing about transport on its own.
  */
 
+import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
+import { brandMarkupFor, withMarkup } from '@/lib/pricing/brandMarkup'
 import { NextRequest, NextResponse } from 'next/server'
 import { getClientSession } from '@/lib/clientAuth'
 import { checkAvailability, legsFromTrucks } from '@/lib/availabilityEngine'
@@ -194,6 +196,13 @@ export async function POST(req: NextRequest) {
     .filter(t => !t.requiresOverride)
     .slice(0, truck_count)
 
+  // Brand Direct accounts are priced with the markup folded into every price,
+  // at the default rate (clients cannot change it and never see it).
+  const accountInfo = session.sfdcAccountId && isSfdcConfigured()
+    ? await getSfdcAccountInfo(session.sfdcAccountId).catch(() => null)
+    : null
+  const markupPct = brandMarkupFor(accountInfo?.clientType)
+
   // Compute media pricing
   const quote = computeQuote({
     truckCount: truck_count,
@@ -204,6 +213,7 @@ export async function POST(req: NextRequest) {
     includeDeviceId,
     studies,
     rateOverrides,
+    markupPct,
   })
 
   // Transport — priced by the single engine in lib/pricing/transport.ts
@@ -217,6 +227,7 @@ export async function POST(req: NextRequest) {
       airfare: rateOverrides?.transport_airfare,
       hotelPerNight: rateOverrides?.transport_hotel_per_night,
     },
+    markupPct,
   })
 
   const totalTransportCharge = transport.charge
@@ -228,7 +239,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Feature costs
-  const featureCosts = buildFeaturesResponse(quote, includeShadowFencing, includeSmartDirectional, includeDeviceId, studies, rateOverrides)
+  const featureCosts = buildFeaturesResponse(quote, includeShadowFencing, includeSmartDirectional, includeDeviceId, studies, rateOverrides, markupPct)
 
   // Compute media total based on selected features
   let mediaTotal = quote.good.baseMedia
@@ -364,6 +375,7 @@ function buildFeaturesResponse(
   includeDeviceId: boolean,
   studies: StudyType[],
   rateOverrides: Awaited<ReturnType<typeof resolveRateOverrides>>,
+  markupPct: number,
 ) {
   return {
     shadowFencing: {
@@ -376,13 +388,13 @@ function buildFeaturesResponse(
       included: includeSmartDirectional,
       cost: quote.better.smartDirectionalIncluded
         ? quote.better.smartDirectional
-        : quote.input.truckDays * (rateOverrides?.smart_directional_daily ?? 250),
+        : quote.input.truckDays * withMarkup(rateOverrides?.smart_directional_daily ?? 250, markupPct),
     },
     deviceId: {
       included: includeDeviceId,
       cost: quote.better.deviceIdIncluded
         ? quote.better.deviceId
-        : (rateOverrides?.device_id_flat ?? 2500),
+        : withMarkup(rateOverrides?.device_id_flat ?? 2500, markupPct),
     },
     studies: {
       available: quote.best.reachOk,

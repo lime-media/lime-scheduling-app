@@ -34,6 +34,8 @@
  * Description as quoted but not booked.
  */
 
+import { QUOTE_ONLY_GROUP_PREFIX, QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
+import { openStage } from '@/lib/sfdcStages'
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import type { Prisma } from '@prisma/client'
@@ -41,7 +43,7 @@ import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { computeHoldExpiresAt } from '@/lib/holdExpiry'
-import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
+import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { rotationStints, type OrderLine } from '@/lib/planning/order'
 import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuote, type QuoteRequest } from '@/lib/planning/quote'
@@ -59,6 +61,10 @@ type HoldBody = QuoteRequest & {
   requestId?: string
   /** The total the rep saw for the selected markets; booking stops if the fresh price differs. */
   expectedTotal?: number
+  /** Opportunity stage the seller chose: Cold, Warm or Hot (never closed). */
+  stage?: string
+  /** Low conviction: log a priced opportunity, reserve nothing (lib/quoteOnly.ts). */
+  quoteOnly?: boolean
 }
 
 const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
@@ -96,10 +102,14 @@ export async function POST(req: NextRequest) {
   const invalid = validateQuoteRequest(body)
   if (invalid) return NextResponse.json({ error: invalid }, { status: 400 })
 
-  const groupPrefix = `mm_${body.requestId}_`
+  const quoteOnly = body.quoteOnly === true
+  // Quote-only logs and real bookings live in separate id spaces, so a real
+  // booking can never be mistaken for an earlier quote-only log of the same
+  // quote (or the reverse) and answered "already placed" with nothing held.
+  const groupPrefix = `${quoteOnly ? QUOTE_ONLY_GROUP_PREFIX : 'mm_'}${body.requestId}_`
 
   try {
-    // A retry of an attempt that already booked: return what it booked.
+    // A retry of an attempt that already went through: return what it did.
     const earlier = await prisma.hold.findMany({
       where: { campaign_group_id: { startsWith: groupPrefix } },
       select: { truck_number: true, market: true, start_date: true, end_date: true, sfdc_opportunity_id: true },
@@ -109,9 +119,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         ok: true,
         alreadyPlaced: true,
+        quoteOnly,
         created: earlier.map(h => ({ truckNumber: h.truck_number, market: h.market, start: h.start_date.toISOString().slice(0, 10), end: h.end_date.toISOString().slice(0, 10) })),
         sfdcOpportunityId: earlier.find(h => h.sfdc_opportunity_id)?.sfdc_opportunity_id ?? null,
-        message: `These holds were already placed: ${earlier.length} holds on ${trucks} truck${trucks === 1 ? '' : 's'}. Nothing new was booked.`,
+        message: quoteOnly
+          ? `This quote was already logged (${earlier.length} market${earlier.length === 1 ? '' : 's'}). Nothing new was logged; no trucks are reserved.`
+          : `These holds were already placed: ${earlier.length} holds on ${trucks} truck${trucks === 1 ? '' : 's'}. Nothing new was booked.`,
       })
     }
 
@@ -124,7 +137,9 @@ export async function POST(req: NextRequest) {
     // Route the selected markets from fresh data.
     let booking = await buildMultiMarketQuote(body, chosen, { alternatives: false })
     const asQuoted = booking.quote
-    if (booking.plan.shortfalls.length > 0) {
+    // A quote-only log reserves nothing, so markets the fleet cannot cover are
+    // logged at their quoted price like the rest — nothing to confirm or trim.
+    if (booking.plan.shortfalls.length > 0 && !quoteOnly) {
       if (!body.allowPartial) {
         return NextResponse.json({
           error: 'Not every selected market can be covered right now.',
@@ -171,10 +186,11 @@ export async function POST(req: NextRequest) {
     }))))
 
     // All or nothing: any stretch that now clashes stops the whole booking.
+    // (A quote-only log blocks no truck, so there is nothing to clash with.)
     const truckNumbers = [...new Set(stretches.map(x => x.truckNumber))]
-    const from = stretches.reduce((m, x) => (x.stint.start < m ? x.stint.start : m), stretches[0].stint.start)
-    const to = stretches.reduce((m, x) => (x.stint.end > m ? x.stint.end : m), stretches[0].stint.end)
-    const existing = await prisma.hold.findMany({
+    const from = stretches.reduce((m, x) => (x.stint.start < m ? x.stint.start : m), stretches[0]?.stint.start ?? '')
+    const to = stretches.reduce((m, x) => (x.stint.end > m ? x.stint.end : m), stretches[0]?.stint.end ?? '')
+    const existing = quoteOnly || stretches.length === 0 ? [] : await prisma.hold.findMany({
       where: {
         truck_number: { in: truckNumbers },
         ...activeHoldWhere({ excludeAttSoft: true }),
@@ -204,7 +220,39 @@ export async function POST(req: NextRequest) {
     // with its own total wherever holds are grouped.
     const groupOf = new Map(quote.lines.map((l, i) => [l.id, `${groupPrefix}${i + 1}`]))
 
-    const rows: Prisma.HoldCreateManyInput[] = stretches.map(({ truckNumber, stint, partner, expiresAt }) => {
+    // Quote only: ONE record per selected market, as quoted — whether or not
+    // the fleet could cover it — so every logged market is on record (and the
+    // retry guard above always finds it). Not linked to the client portal.
+    const trucksOf = (lineId: string) => [...new Set(stretches.filter(x => x.stint.lineId === lineId).map(x => x.truckNumber))]
+    const quoteOnlyRows: Prisma.HoldCreateManyInput[] = quote.lines.map(lq => {
+      const where = place.get(lq.id)!
+      const assigned = trucksOf(lq.id)
+      return {
+        truck_number: assigned[0] ?? QUOTE_ONLY_NO_TRUCK,
+        client_name: accountName,
+        market: where.market,
+        state: where.state,
+        start_date: new Date(lq.startDate),
+        end_date: new Date(lq.endDate),
+        status: QUOTE_ONLY_STATUS,
+        source: 'INTERNAL',
+        origination: QUOTE_ONLY_ORIGINATION,
+        notes: `${QUOTE_ONLY_NOTE} ${lq.market}, part of a ${quote.summary.markets}-market quote for ${accountName}: ${lq.trucks} truck${lq.trucks === 1 ? '' : 's'} quoted`
+          + (assigned.length ? `, priced on ${assigned.join(', ')}` : '')
+          + (lq.missing ? `, ${lq.missing} with no truck available` : '') + '.',
+        created_by: createdBy,
+        client_user_id: null,
+        pricing_tier: tier,
+        quoted_total: lq.total,
+        daily_rate: lq.effectiveDailyRate,
+        features: JSON.stringify(lineFeatures(lq, body.features)),
+        truck_count: lq.trucks,
+        campaign_group_id: groupOf.get(lq.id)!,
+        expires_at: new Date(),
+      }
+    })
+
+    const rows: Prisma.HoldCreateManyInput[] = quoteOnly ? quoteOnlyRows : stretches.map(({ truckNumber, stint, partner, expiresAt }) => {
       const lq = lineById.get(stint.lineId)!
       const where = place.get(stint.lineId)!
       return {
@@ -252,22 +300,34 @@ export async function POST(req: NextRequest) {
         const starts = quote.lines.map(l => l.delivery.firstDay ?? l.startDate).sort()
         const ends = quote.lines.map(l => l.delivery.lastDay ?? l.endDate).sort()
         const description = [
-          'Booked:',
+          ...(quoteOnly ? [`Quote only (low conviction): no trucks reserved. ${quote.lines.reduce((n, l) => n + l.trucks, 0)} trucks quoted across ${quote.lines.length} market${quote.lines.length === 1 ? '' : 's'}${truckNumbers.length ? `, priced on ${truckNumbers.join(', ')}` : ''}${quote.lines.some(l => l.missing) ? `; ${quote.lines.reduce((n, l) => n + l.missing, 0)} with no truck available` : ''}.`, ''] : []),
+          // Internal record only: every price below already includes it.
+          ...(quote.brandMarkupPct ? [`Brand Direct pricing: +${quote.brandMarkupPct}% folded into every line item.`, ''] : []),
+          quoteOnly ? 'Quoted (no reservation):' : 'Booked:',
           ...quote.lines.map(l => `${describe(l)}, ${money(l.total)}`),
           ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(l.total)}`)] : []),
           ...(unavailable.length ? ['', 'Quoted but no truck available:', ...unavailable] : []),
         ].join('\n')
+        // Owned by the rep who booked it (matched by email), else the account owner.
+        const accountInfo = await getSfdcAccountInfo(body.sfdcAccountId).catch(() => null)
+        const owner = await resolveOpportunityOwner({ creatorEmail: token.email as string | undefined, accountOwnerId: accountInfo?.ownerId })
         const result = await createOpportunity({
           accountId: body.sfdcAccountId,
+          ownerId: owner.ownerId ?? undefined,
+          clientType: accountInfo?.clientType,
           name: `${accountName} - Multi-market (${quote.summary.markets} markets) - ${starts[0]} to ${ends[ends.length - 1]}`.slice(0, 120),
-          stageName: 'WARM',
+          stageName: openStage(body.stage),
           closeDate: starts[0],
           amount: quote.summary.grandTotal,
           market: fitNames(quote.lines.map(l => l.market), 255),
-          holdStart: starts[0],
-          holdStop: ends[ends.length - 1],
-          holdExp: new Date(Math.min(...stretches.map(x => x.expiresAt.getTime()))).toISOString().split('T')[0],
-          truckNumbers,
+          // Quote only: no LED truck / hold fields — Salesforce would turn them
+          // back into reservations. The trucks priced are in the Description.
+          ...(quoteOnly || stretches.length === 0 ? {} : {
+            holdStart: starts[0],
+            holdStop: ends[ends.length - 1],
+            holdExp: new Date(Math.min(...stretches.map(x => x.expiresAt.getTime()))).toISOString().split('T')[0],
+            truckNumbers,
+          }),
           activationNotes: `Multi-market: ${quote.lines.length} market${quote.lines.length === 1 ? '' : 's'} booked, ${money(quote.summary.grandTotal)}.`
             + (notSelected.length ? ` ${notSelected.length} quoted but not selected.` : '')
             + (unavailable.length ? ` ${unavailable.length} quoted but no truck available.` : '')
@@ -294,7 +354,11 @@ export async function POST(req: NextRequest) {
       campaignGroupPrefix: groupPrefix,
       sfdcOpportunityId,
       bookedTotal: quote.summary.grandTotal,
-      message: `Placed ${rows.length} hold${rows.length === 1 ? '' : 's'} on ${truckNumbers.length} truck${truckNumbers.length === 1 ? '' : 's'} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} for ${accountName} (${money(quote.summary.grandTotal)}).`
+      quoteOnly,
+      message: quoteOnly
+        ? `Quote logged for ${accountName} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} (${money(quote.summary.grandTotal)}); no trucks reserved.`
+          + (sfdcOpportunityId ? ' Salesforce opportunity created.' : sfdcError ? ` ${sfdcError}.` : '')
+        : `Placed ${rows.length} hold${rows.length === 1 ? '' : 's'} on ${truckNumbers.length} truck${truckNumbers.length === 1 ? '' : 's'} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} for ${accountName} (${money(quote.summary.grandTotal)}).`
         + (sfdcOpportunityId ? ' Salesforce opportunity created' + (leftOut ? ', with the markets not booked listed in its Description.' : '.')
           : sfdcError ? ` ${sfdcError}; the holds are placed. Create the opportunity by hand (holds grouped under ${groupPrefix}*).` : ''),
     })

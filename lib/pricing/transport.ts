@@ -40,6 +40,7 @@
  * onto the per-truck model 2026-09-11.
  */
 
+import { withMarkup } from './brandMarkup'
 import { TRANSPORT_CONFIG, SERVICE_AREA_RADIUS_MILES } from './config'
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,8 @@ export type TransportOrder = {
   /** Rate agreement: always absorb transport for this client. */
   transportIncluded?: boolean
   overrides?: TransportCostOverrides | null
+  /** Brand Direct premium, in percent, folded into each billed leg. 0 = none. */
+  markupPct?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -224,7 +227,7 @@ export function priceTransport(order: TransportOrder): TransportResult {
   const pricedLegs: PricedLeg[] = repoLegs.map(l => ({
     distanceMiles: l.distanceMiles,
     transportDays: transportDaysFromDistance(l.distanceMiles),
-    charge: absorbed ? 0 : chargeForLeg(l.distanceMiles, overrides),
+    charge: absorbed ? 0 : withMarkup(chargeForLeg(l.distanceMiles, overrides), order.markupPct ?? 0),
     truckNumber: l.truckNumber,
     fromMarket: l.fromMarket,
   }))

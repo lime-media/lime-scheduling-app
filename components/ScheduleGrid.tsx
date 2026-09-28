@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { ScheduleHoverCard, type ScheduleHoverApi } from '@/components/ScheduleHoverCard'
 import { softHoldYieldsOn } from '@/lib/attSoftRules'
 import { GRID_COLORS, CLIENT_GRID_COLORS, RESERVATION_LABEL, COMMITTED_LABEL, ATT_SOFT_LABEL, BOOKED_LABEL, type DisplayStatus } from '@/lib/statusColors'
 import { format, addDays, startOfDay, parseISO, isSameDay } from 'date-fns'
@@ -86,6 +87,9 @@ export type ScheduleRow = {
   hold_notes?: string
   hold_created_by?: string
   hold_origination?: string
+  /** The reservation's own date range (holds, committed, AT&T soft holds, requests). */
+  hold_start?: string
+  hold_end?: string
   /** Set when a hold and a schedule block occupy the same cell — conflict indicator */
   conflictProgram?: string
   departing_to?: string
@@ -157,6 +161,7 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
   const isDragging    = useRef(false)
   const hasMoved      = useRef(false)
   const pendingCell   = useRef<ScheduleRow | null>(null)
+  const hoverApi      = useRef<ScheduleHoverApi | null>(null)
   const dragStartRef  = useRef<{ truck: string; dateIdx: number } | null>(null)
 
   // ── Per-truck derived data ────────────────────────────────────────────────
@@ -548,6 +553,8 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
         hold_notes:      entry.hold.notes,
         hold_created_by: entry.hold.user_name ?? entry.hold.created_by,
         hold_origination: entry.hold.origination,
+        hold_start:      entry.hold.start_date,
+        hold_end:        entry.hold.end_date,
         conflictProgram: entry.sched?.program,
       }
     }
@@ -595,6 +602,8 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
         client_name:     entry.attHold.client_name,
         hold_notes:      entry.attHold.notes,
         hold_created_by: entry.attHold.user_name ?? entry.attHold.created_by,
+        hold_start:      entry.attHold.start_date,
+        hold_end:        entry.attHold.end_date,
       }
     }
 
@@ -606,6 +615,8 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
         hold_id:        entry.holdReq.id,
         client_name:    entry.holdReq.company_name,
         hold_notes:     entry.holdReq.notes,
+        hold_start:     entry.holdReq.start_date,
+        hold_end:       entry.holdReq.end_date,
       }
     }
 
@@ -728,7 +739,7 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
     <div className="flex gap-3">
 
       {/* Scrollable schedule grid */}
-      <div className="select-none">
+      <div className="select-none" onMouseLeave={() => hoverApi.current?.hide()}>
         <table className="border-separate border-spacing-0">
           <thead>
             <tr>
@@ -866,8 +877,15 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
                             } ${isToday ? 'border-l-2 border-l-gray-900' : ''} ${groupTopBorder}${showDeptText ? ' relative overflow-visible group/dp' : isNearTerm ? ' relative' : ''}`}
                             style={conflictStyle}
                             onMouseDown={clientView && !onCellRangeSelected ? undefined : () => handleMouseDown(truckNum, dateIdx, cell)}
-                            onMouseEnter={clientView && !onCellRangeSelected ? undefined : () => handleMouseEnter(truckNum, dateIdx)}
-                            title={showDeptText ? undefined : tooltip}
+                            onMouseEnter={clientView && !onCellRangeSelected ? undefined : (ev) => {
+                              handleMouseEnter(truckNum, dateIdx)
+                              // Internal: the day's details in a hover card. Departing cells keep their own card.
+                              if (!clientView && !showDeptText) hoverApi.current?.show(cell, statusLabel, ev.clientX, ev.clientY)
+                            }}
+                            onMouseMove={clientView || showDeptText ? undefined : (ev) => hoverApi.current?.move(ev.clientX, ev.clientY)}
+                            onMouseLeave={clientView ? undefined : () => hoverApi.current?.hide()}
+                            // The client view keeps the plain tooltip; internal users get the card.
+                            title={showDeptText || !clientView ? undefined : tooltip}
                           >
                             {isNearTerm && (
                               <div className="absolute inset-0 pointer-events-none" style={{
@@ -900,6 +918,8 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
           </tbody>
         </table>
       </div>
+
+      {!clientView && <ScheduleHoverCard apiRef={hoverApi} />}
 
       {/* Side panel — internal users only */}
       {!clientView && (

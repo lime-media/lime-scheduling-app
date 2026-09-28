@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { buildEntries, cellText, leaves, marketLabel, normalizeMarket, pivotTree, plannerWindow, primary, shiftHours, OPEN_CAPACITY, UNASSIGNED, UNCLASSIFIED, type PlannerHold, type PlannerNode, type PlannerShift } from '@/lib/planner/build'
+import { buildEntries, cellText, describeEntry, entryMatches, leaves, marketLabel, normalizeMarket, pivotTree, truckDayTop, plannerWindow, primary, shiftHours, OPEN_CAPACITY, UNASSIGNED, UNCLASSIFIED, type PlannerHold, type PlannerNode, type PlannerShift } from '@/lib/planner/build'
 
 section('planner: window')
 {
@@ -97,4 +97,27 @@ section('planner: pivot trees')
   eq('group rows count trucks per day (1262 reserved, 1263 requested)', find(client, 'Acme').trucksByDay['2026-10-06'], 2)
   eq('status filters apply', shape(pivotTree(entries, 'truck', new Set(['SCHEDULED']))), [{ '1261': ['Driver D1'] }])
   eq('one spelling per market', normalizeMarket('  Boston ,MA '), 'Boston, MA')
+}
+
+section('planner: review fixes')
+{
+  // Opportunity names with "/" must not merge with deeper paths.
+  const slashy = buildEntries({ trucks: ['1'], days: plannerWindow('2026-09-27').days, shifts: [], holds: [
+    { id: 'x', truck: '1', start: '2026-10-05', end: '2026-10-05', status: 'HOLD', source: 'INTERNAL', client: 'AT&T', market: 'Dallas, TX', hours: null, opportunityId: '006X', opportunityName: 'AT&T / Hispanic Q3', campaignGroupId: null },
+    { id: 'y', truck: '1', start: '2026-10-06', end: '2026-10-06', status: 'HOLD', source: 'INTERNAL', client: 'AT&T', market: 'Dallas, TX', hours: null, opportunityId: '006Y', opportunityName: 'AT&T', campaignGroupId: null },
+  ] })
+  const byCampaign = pivotTree(slashy, 'campaign').filter(n => n.value !== OPEN_CAPACITY)
+  eq('"AT&T / Hispanic Q3" and "AT&T" stay separate campaigns', byCampaign.map(n => n.value), ['AT&T', 'AT&T / Hispanic Q3'])
+  eq('and their keys differ', new Set(byCampaign.map(n => n.key)).size, 2)
+
+  const openOff = pivotTree(entries, 'truck', new Set(['SCHEDULED']), ['1261', '1262', '1263'])
+  eq('turning Open off keeps idle trucks in the roster', openOff.map(n => n.value), ['1261', '1262', '1263'])
+
+  const strips = truckDayTop(entries)
+  eq('the truck strip is truck-wide: 1262 shows its reservation even under another group', strips.get('1262')?.['2026-10-05']?.kind, 'RESERVATION')
+  eq('committed with no hours reads C, not R', cellText({ ...primary(at('1262', '2026-10-05')), kind: 'COMMITTED', hours: null }), 'C')
+  eq('leaf counts are precomputed', pivotTree(entries, 'truck')[0].leafCount, 2)
+  eq('each cell\'s display entry is precomputed', find(pivotTree(entries, 'truck'), '1261', 'Driver D1').top['2026-09-29'].hours, 12)
+  eq('search matches any field', [entryMatches(primary(at('1261', '2026-09-28')), 'toyota'), entryMatches(primary(at('1261', '2026-09-28')), 'acme')], [true, false])
+  eq('cells describe themselves for screen readers', describeEntry(primary(at('1261', '2026-09-28'))), 'Truck 1261: Scheduled, 8 hours, Toyota Fall, Toyota, Dallas, TX, driver Driver D1')
 }

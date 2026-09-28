@@ -64,6 +64,22 @@ export const LEGEND_SWATCH = {
   ATT_SOFT:           'bg-blue-400',
 } as const
 
+/**
+ * Text on a solid cell of each status (used where cells carry numbers or
+ * labels, e.g. the Planner). Every pairing is at least 4.5:1 — dark text on
+ * orange, not white (white on orange-400 is about 2.2:1).
+ */
+export const CELL_TEXT: Record<DisplayStatus, string> = {
+  EMPTY:              'text-green-950',
+  DEPARTING:          'text-green-950',
+  SCHEDULED_LED:      'text-gray-900',
+  HOLD_TENTATIVE:     'text-yellow-950',
+  HOLD_REQUEST:       'text-yellow-950',
+  COMMITTED_NOT_SET:  'text-gray-800',
+  ATT_SOFT:           'text-blue-950',
+  MAINTENANCE:        'text-orange-950',
+}
+
 // ── Status badges (pill backgrounds) ─────────────────────────────────────────
 
 export const STATUS_BADGE: Record<DisplayStatus, string> = {

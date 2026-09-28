@@ -214,6 +214,10 @@ export type PlannerNode = {
   children: PlannerNode[]
   /** Leaf rows only: the entries on each day. */
   cells: Record<string, Entry[]>
+  /** Leaf rows only: the entry each day is drawn with (computed once, not per render). */
+  top: Record<string, Entry>
+  /** Leaf rows beneath this node (1 for a leaf). */
+  leafCount: number
   /** Trucks under this node on each day (non-open entries; open entries in the open group). */
   trucksByDay: Record<string, number>
 }
@@ -248,25 +252,39 @@ const sortNodes = (a: PlannerNode, b: PlannerNode) =>
   || Number(a.unclassified) - Number(b.unclassified)
   || a.value.localeCompare(b.value, undefined, { numeric: true })
 
-/** Build the pivot tree. `kinds` filters which entries are shown. */
-export function pivotTree(entries: Entry[], pivot: Pivot, kinds?: Set<EntryKind>): PlannerNode[] {
-  const root: PlannerNode = { key: '', dim: 'truck', value: '', depth: -1, unclassified: false, children: [], cells: {}, trucksByDay: {} }
+/**
+ * Build the pivot tree. `kinds` filters which entries are shown. `trucks`,
+ * for the truck pivot, keeps every truck in the roster even when the filters
+ * leave it nothing to show (turning Open off must not make idle trucks vanish).
+ *
+ * Node keys escape each value, so a value containing "/" or ":" (opportunity
+ * names often do: "AT&T / Hispanic Q3") can never collide with a deeper path.
+ */
+export function pivotTree(entries: Entry[], pivot: Pivot, kinds?: Set<EntryKind>, trucks?: string[]): PlannerNode[] {
+  const blank = (key: string, dim: Dimension, value: string, depth: number, unclassified: boolean): PlannerNode =>
+    ({ key, dim, value, depth, unclassified, children: [], cells: {}, top: {}, leafCount: 0, trucksByDay: {} })
+  const root = blank('', 'truck', '', -1, false)
   const index = new Map<string, PlannerNode>()
   const dayTrucks = new Map<string, Map<string, Set<string>>>() // node key → date → trucks
+  const child = (parent: PlannerNode, dim: Dimension, value: string, depth: number, unclassified: boolean) => {
+    const key = `${parent.key}/${dim}:${encodeURIComponent(value)}`
+    let node = index.get(key)
+    if (!node) {
+      node = blank(key, dim, value, depth, unclassified)
+      index.set(key, node)
+      parent.children.push(node)
+    }
+    return node
+  }
+  if (pivot === 'truck') for (const t of trucks ?? []) child(root, 'truck', t, 0, false)
   for (const e of entries) {
     if (kinds && !kinds.has(e.kind)) continue
     let parent = root
     const path = pathOf(e, pivot)
     path.forEach((step, depth) => {
-      const key = `${parent.key}/${step.dim}:${step.value}`
-      let node = index.get(key)
-      if (!node) {
-        node = { key, dim: step.dim, value: step.value, depth, unclassified: step.unclassified, children: [], cells: {}, trucksByDay: {} }
-        index.set(key, node)
-        parent.children.push(node)
-      }
-      const byDay = dayTrucks.get(key) ?? new Map<string, Set<string>>()
-      dayTrucks.set(key, byDay)
+      const node = child(parent, step.dim, step.value, depth, step.unclassified)
+      const byDay = dayTrucks.get(node.key) ?? new Map<string, Set<string>>()
+      dayTrucks.set(node.key, byDay)
       byDay.set(e.date, (byDay.get(e.date) ?? new Set()).add(e.truck))
       if (depth === path.length - 1) (node.cells[e.date] ??= []).push(e)
       parent = node
@@ -276,9 +294,48 @@ export function pivotTree(entries: Entry[], pivot: Pivot, kinds?: Set<EntryKind>
     const node = index.get(key)!
     for (const [d, t] of byDay) node.trucksByDay[d] = t.size
   }
-  const sortDeep = (n: PlannerNode) => { n.children.sort(sortNodes); n.children.forEach(sortDeep) }
-  sortDeep(root)
+  const finish = (n: PlannerNode): number => {
+    n.children.sort(sortNodes)
+    if (n.children.length === 0) {
+      for (const [d, list] of Object.entries(n.cells)) n.top[d] = primary(list)
+      n.leafCount = 1
+    } else {
+      n.leafCount = n.children.reduce((sum, c) => sum + finish(c), 0)
+    }
+    return n.leafCount
+  }
+  root.children.forEach(finish)
+  root.children.sort(sortNodes)
   return root.children
+}
+
+/**
+ * What each truck is doing each day across the WHOLE order — not just the
+ * group it sits under — for the thin strip on a truck's own row. Scoping it to
+ * the group made a truck working Dallas Mon-Wed and Austin Thu-Fri look idle
+ * on Thu-Fri under "Dallas".
+ */
+export function truckDayTop(entries: Entry[], kinds?: Set<EntryKind>): Map<string, Record<string, Entry>> {
+  const all = new Map<string, Record<string, Entry[]>>()
+  for (const e of entries) {
+    if (kinds && !kinds.has(e.kind)) continue
+    const t = all.get(e.truck) ?? {}
+    ;(t[e.date] ??= []).push(e)
+    all.set(e.truck, t)
+  }
+  const out = new Map<string, Record<string, Entry>>()
+  for (const [truck, days] of all) {
+    const top: Record<string, Entry> = {}
+    for (const [d, list] of Object.entries(days)) top[d] = primary(list)
+    out.set(truck, top)
+  }
+  return out
+}
+
+/** Whether an entry matches a search, on any of the fields the pivots use. */
+export function entryMatches(e: Entry, q: string): boolean {
+  if (!q) return true
+  return [e.truck, e.driver ?? '', e.client, e.campaign, e.market].some(v => v.toLowerCase().includes(q))
 }
 
 /** Leaf rows under a node, in display order. */
@@ -297,9 +354,21 @@ export function marketLabel(e: Entry): string {
 /** What a cell shows: hours, or "R" for a reservation with no hours on file; empty for open and non-hour entries. */
 export function cellText(e: Entry): string {
   if (e.hours !== null) return String(e.hours)
-  if (e.kind === 'RESERVATION' || e.kind === 'COMMITTED') return 'R'
+  if (e.kind === 'RESERVATION') return 'R'
+  if (e.kind === 'COMMITTED') return 'C'
   if (e.kind === 'MAINTENANCE') return 'M'
   return ''
+}
+
+/** The same facts in words, for screen readers and keyboard users. */
+export function describeEntry(e: Entry): string {
+  const what = { SCHEDULED: 'Scheduled', MAINTENANCE: 'Maintenance', COMMITTED: 'Committed (won)', RESERVATION: 'Reservation', ATT_SOFT: 'AT&T soft hold', OPEN: 'Open' }[e.kind]
+  if (e.kind === 'OPEN') return `Truck ${e.truck}: open`
+  return [
+    `Truck ${e.truck}: ${what}`,
+    e.hours !== null ? `${e.hours} hours` : e.kind === 'RESERVATION' || e.kind === 'COMMITTED' ? 'hours not on file' : null,
+    e.campaign, e.client, e.market || null, e.driver ? `driver ${e.driver}` : null,
+  ].filter(Boolean).join(', ')
 }
 
 /** The entry a cell is coloured by when several share it: real work first. */

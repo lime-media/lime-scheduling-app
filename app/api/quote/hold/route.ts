@@ -12,7 +12,8 @@ import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { computeHoldExpiresAt } from '@/lib/holdExpiry'
-import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
+import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, resolveOpportunityOwner } from '@/lib/salesforceClient'
+import { brandMarkupAmount, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import {
@@ -36,7 +37,7 @@ export async function POST(req: NextRequest) {
     market, state, start_date, end_date, truck_count,
     sfdc_account_id, sfdc_account_name,
     shadow_fencing, smart_directional, device_id, studies: rawStudies,
-    days_per_week, operating_hours,
+    days_per_week, operating_hours, brand_markup_pct,
   } = body
 
   if (!market || !start_date || !end_date || !truck_count) {
@@ -103,6 +104,16 @@ export async function POST(req: NextRequest) {
   if (includeDID) mediaTotal += quote.better.deviceId
   if (quote.best.reachOk && studies.length > 0) mediaTotal += studies.length * quote.best.studyCost
 
+  // Brand Direct: a premium on media (not transport), only when Salesforce
+  // says the account is Brand Direct — the browser's word is not enough.
+  // The seller's percentage is kept to 0-50%; it starts at 10% on the page.
+  const accountInfo = sfdc_account_id && isSfdcConfigured()
+    ? await getSfdcAccountInfo(sfdc_account_id).catch((err) => { console.error('[quote/hold] account lookup failed:', err); return null })
+    : null
+  const brandMarkupPct = accountInfo?.clientType === 'Brand Direct' ? clampBrandMarkup(brand_markup_pct) : 0
+  const brandMarkup = brandMarkupAmount(mediaTotal, brandMarkupPct)
+  mediaTotal += brandMarkup
+
   const transport = priceTransport({
     activationDays,
     leadBusinessDays: availability.campaignFlags.leadBusinessDays,
@@ -149,6 +160,8 @@ export async function POST(req: NextRequest) {
     studies, studyCost: quote.best.studyCost,
     studiesTotal: quote.best.reachOk ? studies.length * quote.best.studyCost : 0,
     transportCharge,
+    brandMarkupPct: brandMarkupPct || undefined,
+    brandMarkup: brandMarkup || undefined,
     successorImpact,
   })
 
@@ -214,8 +227,12 @@ export async function POST(req: NextRequest) {
         ? buildActivationNotes(parsedFeatures, pricingTier)
         : undefined
 
+      // Owned by the rep who booked it (matched by email), else the account owner.
+      const owner = await resolveOpportunityOwner({ creatorEmail: token.email as string | undefined, accountOwnerId: accountInfo?.ownerId })
       const result = await createOpportunity({
         accountId: sfdc_account_id,
+        ownerId: owner.ownerId ?? undefined,
+        clientType: accountInfo?.clientType,
         name: `${sfdc_account_name || 'Client'} - ${market} - ${start_date} to ${end_date}`,
         stageName: 'WARM',
         closeDate: start_date,

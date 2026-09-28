@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
 import { createClientHold } from '@/lib/holdRequestService'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
-import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
+import { createOpportunity, isSfdcConfigured, getSfdcAccountInfo } from '@/lib/salesforceClient'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import {
   computeQuote,
@@ -293,8 +293,12 @@ async function handleAutoSelectHold(
         ? buildActivationNotes(parsedFeatures, pricingTier)
         : undefined
 
+      // A client's own request has no internal rep: the account's owner owns it.
+      const accountInfo = await getSfdcAccountInfo(session.sfdcAccountId).catch(() => null)
       const result = await createOpportunity({
         accountId: session.sfdcAccountId,
+        ownerId: accountInfo?.ownerId ?? undefined,
+        clientType: accountInfo?.clientType,
         name: oppName,
         stageName: 'WARM',
         closeDate: start_date,

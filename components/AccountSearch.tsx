@@ -4,7 +4,14 @@
 
 import { useState, useRef, useCallback } from 'react'
 
-export type SfdcAccount = { id: string; name: string }
+/** clientType is the account's Salesforce Client Type (blank = Agency). */
+export type SfdcAccount = { id: string; name: string; clientType?: 'Agency' | 'Brand Direct' }
+
+function BrandBadge({ a }: { a: SfdcAccount }) {
+  return a.clientType === 'Brand Direct'
+    ? <span className="ml-2 inline-flex px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-100 text-purple-800 align-middle">Brand Direct</span>
+    : null
+}
 
 export function AccountSearch({ selected, onSelect }: { selected: SfdcAccount | null; onSelect: (a: SfdcAccount | null) => void }) {
   const [query, setQuery] = useState('')
@@ -32,6 +39,7 @@ export function AccountSearch({ selected, onSelect }: { selected: SfdcAccount | 
       <div className="flex items-center gap-2">
         <div className="flex-1 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-sm font-medium text-green-800">
           {selected.name}
+          <BrandBadge a={selected} />
           <span className="text-green-500 text-xs ml-2">{selected.id}</span>
         </div>
         <button onClick={() => onSelect(null)} className="text-xs text-gray-500 hover:text-gray-700 transition-colors">Change</button>
@@ -59,6 +67,7 @@ export function AccountSearch({ selected, onSelect }: { selected: SfdcAccount | 
               className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-b border-gray-100 last:border-0 transition-colors"
             >
               <span className="font-medium text-gray-900">{a.name}</span>
+              <BrandBadge a={a} />
               <span className="text-gray-400 text-xs ml-2">{a.id}</span>
             </button>
           ))}

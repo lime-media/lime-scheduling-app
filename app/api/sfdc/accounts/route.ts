@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { clientTypeOf } from '@/lib/pricing/brandMarkup'
 import { getToken } from 'next-auth/jwt'
 import { sfdcQuery, isSfdcConfigured } from '@/lib/salesforceClient'
 
@@ -23,11 +24,12 @@ export async function GET(req: NextRequest) {
 
   try {
     const escaped = q.replace(/'/g, "\\'")
-    const records = await sfdcQuery<{ Id: string; Name: string }>(
-      `SELECT Id, Name FROM Account WHERE Name LIKE '%${escaped}%' ORDER BY Name LIMIT 20`
+    const records = await sfdcQuery<{ Id: string; Name: string; Client_Type2__c: string | null }>(
+      `SELECT Id, Name, Client_Type2__c FROM Account WHERE Name LIKE '%${escaped}%' ORDER BY Name LIMIT 20`
     )
     return NextResponse.json({
-      accounts: records.map(r => ({ id: r.Id, name: r.Name })),
+      // clientType: Account "Client Type" — Agency (also when blank) or Brand Direct.
+      accounts: records.map(r => ({ id: r.Id, name: r.Name, clientType: clientTypeOf(r.Client_Type2__c) })),
     })
   } catch (err) {
     console.error('[sfdc/accounts] search failed:', err)

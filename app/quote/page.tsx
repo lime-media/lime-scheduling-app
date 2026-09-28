@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, brandMarkupAmount, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
 import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
@@ -74,6 +75,10 @@ export default function InternalQuotePage() {
 
   // SFDC Account
   const [account, setAccount] = useState<SfdcAccount | null>(null)
+  // Brand Direct accounts carry a premium on media; the seller can change it.
+  const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
+  const isBrandDirect = account?.clientType === 'Brand Direct'
+  const markupPct = isBrandDirect ? clampBrandMarkup(brandMarkupPct) : 0
 
   // Quote form
   const [form, setForm] = useState({ market: '', start_date: '', end_date: '', truck_count: undefined as number | undefined, days_per_week: 5 as 5 | 6 | 7, operating_hours: 8 as 8 | 10 | 12 })
@@ -154,6 +159,8 @@ export default function InternalQuotePage() {
           smart_directional: toggles.smartDirectional,
           device_id: toggles.deviceId,
           studies: toggles.studies,
+          // Server re-checks the account is Brand Direct before applying it.
+          brand_markup_pct: isBrandDirect ? markupPct : undefined,
           days_per_week: form.days_per_week,
           operating_hours: form.operating_hours,
         }),
@@ -165,7 +172,7 @@ export default function InternalQuotePage() {
     } finally {
       setHoldLoading(false)
     }
-  }, [holdLoading, quoteResult, account, form, toggles])
+  }, [holdLoading, quoteResult, account, form, toggles, isBrandDirect, markupPct])
 
   if (status === 'loading' || !session) return null
 
@@ -219,7 +226,7 @@ export default function InternalQuotePage() {
         {/* Step 1: Client selection */}
         <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 mb-4">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
-          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setQuoteResult(null); setHoldResult(null) }} />
+          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
         </div>
 
         {/* Step 2: Campaign details */}
@@ -426,7 +433,8 @@ export default function InternalQuotePage() {
                   <button key={p.name} onClick={isAvailable ? p.onClick : undefined} disabled={!isAvailable}
                     className={`text-left rounded-xl border-2 p-3 transition-all ${isAvailable ? colors[p.color] : 'border-gray-200 bg-gray-50 opacity-60'} ${active ? 'ring-2 ring-offset-1 ring-green-500' : ''} ${isAvailable ? 'hover:shadow-md cursor-pointer' : 'cursor-not-allowed'}`}>
                     <span className={`text-[10px] font-bold text-white px-2 py-0.5 rounded-full ${isAvailable ? badges[p.color] : 'bg-gray-400'}`}>{p.name}</span>
-                    <div className={`text-lg font-bold mt-1.5 ${isAvailable ? 'text-gray-900' : 'text-gray-400'}`}>{fmtMoney(p.total)}</div>
+                    <div className={`text-lg font-bold mt-1.5 ${isAvailable ? 'text-gray-900' : 'text-gray-400'}`}>{fmtMoney(p.total + brandMarkupAmount(p.total, markupPct))}</div>
+                    {markupPct > 0 && <div className="text-[10px] text-purple-700">incl. +{markupPct}% Brand Direct</div>}
                     {quoteResult.transportCharge > 0 && <div className="text-[10px] text-gray-400">+ transport</div>}
                   </button>
                 )
@@ -481,7 +489,9 @@ export default function InternalQuotePage() {
               if (toggles.deviceId) mediaTotal += features.deviceId.cost
               if (features.studies.available && toggles.studies.length > 0) mediaTotal += toggles.studies.length * features.studies.costPerStudy
               const transport = quoteResult.transportCharge
-              const total = mediaTotal + transport
+              // Brand Direct: the premium is on media only, never on transport.
+              const markup = brandMarkupAmount(mediaTotal, markupPct)
+              const total = mediaTotal + markup + transport
 
               return (
                 <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4">
@@ -491,6 +501,22 @@ export default function InternalQuotePage() {
                     {toggles.smartDirectional && <div className="flex justify-between text-gray-600"><span>Smart Directional</span><span>+ {fmtMoney(features.smartDirectional.cost)}</span></div>}
                     {toggles.deviceId && <div className="flex justify-between text-gray-600"><span>Device ID Passback</span><span>+ {fmtMoney(features.deviceId.cost)}</span></div>}
                     {toggles.studies.length > 0 && features.studies.available && <div className="flex justify-between text-gray-600"><span>{toggles.studies.length} lift {toggles.studies.length === 1 ? 'study' : 'studies'}</span><span>+ {fmtMoney(toggles.studies.length * features.studies.costPerStudy)}</span></div>}
+                    {isBrandDirect && (
+                      <div className="flex justify-between items-center text-purple-800 pt-1.5 border-t border-gray-100">
+                        <label className="flex items-center gap-1.5">
+                          <span>Brand Direct markup</span>
+                          <span className="text-gray-400">+</span>
+                          <input type="number" min={0} max={MAX_BRAND_MARKUP_PCT} step={0.5} value={brandMarkupPct}
+                            onChange={e => setBrandMarkupPct(e.target.value === '' ? 0 : Number(e.target.value))}
+                            onBlur={() => setBrandMarkupPct(clampBrandMarkup(brandMarkupPct))}
+                            aria-label="Brand Direct markup percent"
+                            className="w-16 border border-purple-200 rounded px-1.5 py-0.5 text-right text-sm focus:outline-none focus:ring-2 focus:ring-purple-400" />
+                          <span>%</span>
+                          <span className="text-[11px] text-gray-400">on media</span>
+                        </label>
+                        <span>+ {fmtMoney(markup)}</span>
+                      </div>
+                    )}
                     {transport > 0 && <div className="flex justify-between text-gray-600 pt-1.5 border-t border-gray-100"><span>Transport</span><span>+ {fmtMoney(transport)}</span></div>}
                     <div className="flex justify-between font-bold text-gray-900 pt-2 border-t border-gray-200 text-base"><span>Total</span><span>{fmtMoney(total)}</span></div>
                   </div>

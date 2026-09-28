@@ -41,7 +41,7 @@ import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { computeHoldExpiresAt } from '@/lib/holdExpiry'
-import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
+import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { rotationStints, type OrderLine } from '@/lib/planning/order'
 import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuote, type QuoteRequest } from '@/lib/planning/quote'
@@ -257,8 +257,13 @@ export async function POST(req: NextRequest) {
           ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(l.total)}`)] : []),
           ...(unavailable.length ? ['', 'Quoted but no truck available:', ...unavailable] : []),
         ].join('\n')
+        // Owned by the rep who booked it (matched by email), else the account owner.
+        const accountInfo = await getSfdcAccountInfo(body.sfdcAccountId).catch(() => null)
+        const owner = await resolveOpportunityOwner({ creatorEmail: token.email as string | undefined, accountOwnerId: accountInfo?.ownerId })
         const result = await createOpportunity({
           accountId: body.sfdcAccountId,
+          ownerId: owner.ownerId ?? undefined,
+          clientType: accountInfo?.clientType,
           name: `${accountName} - Multi-market (${quote.summary.markets} markets) - ${starts[0]} to ${ends[ends.length - 1]}`.slice(0, 120),
           stageName: 'WARM',
           closeDate: starts[0],

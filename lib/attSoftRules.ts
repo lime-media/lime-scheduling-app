@@ -42,7 +42,38 @@ export function softHoldWindow(today: string): { start: string; end: string; lab
   })
 }
 
-export const isAttClient = (client: unknown): boolean => String(client ?? '').trim().toLowerCase() === ATT_CLIENT.toLowerCase()
+/**
+ * A client name reduced to lowercase letters and digits, so "160over90",
+ * "160 Over 90", "160over90, Inc." all compare the same.
+ */
+export const normalizeClient = (client: unknown): string => String(client ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+
+/**
+ * Whether a client is AT&T's agency. "Contains" after normalising, like the
+ * planner's reservation rule — so an edit to the client record ("160over90
+ * Inc") cannot make every AT&T truck look like someone else's. The SQL in
+ * lib/attSoftHolds.ts (ATT_CLIENT_SQL) applies the same test.
+ */
+export const isAttClient = (client: unknown): boolean => normalizeClient(client).includes(normalizeClient(ATT_CLIENT))
+
+/**
+ * Safety valve on releasing soft holds because trucks stopped counting as
+ * AT&T's: a run that would release more than this share of the soft holds
+ * (and more than MASS_RELEASE_MIN of them) releases none and reports why.
+ * A real roster change happens a few trucks at a time; a mass drop means the
+ * schedule has not landed yet or the data is wrong.
+ */
+export const MASS_RELEASE_SHARE = 0.25
+export const MASS_RELEASE_MIN = 10
+
+/** Why a run must not release soft holds for "not AT&T's", or null when it may. */
+export function releaseBlockedReason(opts: { attTrucks: number; softHolds: number; wouldRelease: number }): string | null {
+  if (opts.softHolds > 0 && opts.attTrucks === 0) return 'no truck counts as AT&T this run (the client match or the schedule query found nothing)'
+  if (opts.wouldRelease > MASS_RELEASE_MIN && opts.wouldRelease > opts.softHolds * MASS_RELEASE_SHARE) {
+    return `would release ${opts.wouldRelease} of ${opts.softHolds} soft holds at once (limit: ${Math.round(MASS_RELEASE_SHARE * 100)}% and more than ${MASS_RELEASE_MIN})`
+  }
+  return null
+}
 
 /** The months whose 160over90 days decide which trucks are AT&T's, as of `today`. */
 export function attLookback(today: string): { current: { from: string; to: string }; prior: { from: string; to: string } | null } {

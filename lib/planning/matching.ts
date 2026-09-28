@@ -9,8 +9,10 @@
  * reverse Cuthill–McKee keeps that state small.
  *
  * The search state is a BigInt bitmask, so there is no size cutoff. The work
- * is bounded adaptively: the search stops at MEMO_LIMIT states or
- * TIME_BUDGET_MS, whichever comes first. (A static k × 2^bandwidth precheck was
+ * is bounded by work, not by the clock: the search stops at MEMO_LIMIT states
+ * or STEP_LIMIT calls, whichever comes first. A wall-clock budget would let the
+ * same order get a different answer on a busier server — at quote time and
+ * again at booking — so the bound is deterministic. (A static k × 2^bandwidth precheck was
  * tried and removed: it is a worst-case bound, far above the states a real
  * map cluster reaches, so it rejected clusters that solved in milliseconds.)
  *
@@ -34,7 +36,7 @@ export type MatchResult = {
 }
 
 const MEMO_LIMIT = 500_000
-const TIME_BUDGET_MS = 1_500
+const STEP_LIMIT = 3_000_000
 const PAIR_VALUE = 1e7 // one more pair always beats any saving in miles
 
 export function maxPairing(n: number, edges: MatchEdge[]): MatchResult {
@@ -99,19 +101,20 @@ function solveExact(nodes: number[], adj: MatchEdge[][]): MatchEdge[] | null {
 
   const memo = new Map<string, { value: number; pick: number }>()
   let aborted = false
-  const deadline = Date.now() + TIME_BUDGET_MS
+  let steps = 0
   const bit = (n: number) => BigInt(1) << BigInt(n)
   const keyOf = (i: number, taken: bigint) => `${i}:${(taken >> BigInt(i + 1)).toString(36)}`
 
   // State: position i, plus which later nodes are already paired (bitmask).
   const solve = (i: number, taken: bigint): number => {
     if (aborted) return 0
+    if (++steps > STEP_LIMIT) { aborted = true; return 0 }
     if (i >= k) return 0
     if (taken & bit(i)) return solve(i + 1, taken)
     const key = keyOf(i, taken)
     const hit = memo.get(key)
     if (hit) return hit.value
-    if (memo.size > MEMO_LIMIT || (memo.size % 4096 === 0 && Date.now() > deadline)) { aborted = true; return 0 }
+    if (memo.size > MEMO_LIMIT) { aborted = true; return 0 }
 
     let best = solve(i + 1, taken) // leave i unpaired
     let pick = -1

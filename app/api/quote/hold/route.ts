@@ -6,6 +6,7 @@
  * Uses the availability engine to auto-select trucks.
  */
 
+import { openStage } from '@/lib/sfdcStages'
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
@@ -37,7 +38,7 @@ export async function POST(req: NextRequest) {
     market, state, start_date, end_date, truck_count,
     sfdc_account_id, sfdc_account_name,
     shadow_fencing, smart_directional, device_id, studies: rawStudies,
-    days_per_week, operating_hours, brand_markup_pct,
+    days_per_week, operating_hours, brand_markup_pct, stage,
   } = body
 
   if (!market || !start_date || !end_date || !truck_count) {
@@ -233,7 +234,8 @@ export async function POST(req: NextRequest) {
         // Internal record only (Salesforce): every price above already includes it.
         description: markupPct ? `Brand Direct pricing: +${markupPct}% folded into every line item.` : undefined,
         name: `${sfdc_account_name || 'Client'} - ${market} - ${start_date} to ${end_date}`,
-        stageName: 'WARM',
+        // The seller's choice of open stage; never a closed one.
+        stageName: openStage(stage),
         closeDate: start_date,
         amount: serverTotal,
         market,

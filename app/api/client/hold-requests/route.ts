@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
@@ -309,7 +310,7 @@ async function handleAutoSelectHold(
         ownerId: accountInfo?.ownerId ?? undefined,
         clientType: accountInfo?.clientType,
         name: oppName,
-        stageName: 'WARM',
+        stageName: DEFAULT_STAGE, // a client's own request: no seller to choose
         closeDate: start_date,
         amount: serverTotal,
         market,

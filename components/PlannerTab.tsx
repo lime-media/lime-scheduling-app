@@ -12,6 +12,7 @@
  * one Salesforce opportunity in one step.
  */
 
+import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
 import { useEffect, useRef, useState } from 'react'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
@@ -103,6 +104,8 @@ export function PlannerTab() {
   // Brand Direct accounts: a premium folded into every price (internal control only).
   const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
   const isBrandDirect = account?.clientType === 'Brand Direct'
+  // Opportunity stage for the order's opportunity: Cold, Warm or Hot (never closed).
+  const [stage, setStage] = useState<OpenStage>(DEFAULT_STAGE)
 
   // Intake
   const [showImport, setShowImport] = useState(false)
@@ -244,7 +247,7 @@ export function PlannerTab() {
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage }),
       })
       const data = await readJson(res)
       if (res.status === 409 && data.shortfalls) {
@@ -364,6 +367,17 @@ export function PlannerTab() {
           <label className="flex items-center gap-2"><input type="checkbox" checked={features.smartDirectional} onChange={e => setFeatures(f => ({ ...f, smartDirectional: e.target.checked }))} /> Smart directional</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={features.deviceId} onChange={e => setFeatures(f => ({ ...f, deviceId: e.target.checked }))} /> Device ID passback</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={alloyRenews} onChange={e => setAlloyRenews(e.target.checked)} /> Keep AT&amp;T Alloy Build trucks reserved</label>
+        </div>
+        <div className="mt-3 flex items-center gap-2 text-xs">
+          <span className="font-medium text-gray-600">Opportunity stage</span>
+          <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5" role="radiogroup" aria-label="Opportunity stage">
+            {OPEN_STAGES.map(s => (
+              <button key={s.value} type="button" role="radio" aria-checked={stage === s.value} onClick={() => setStage(s.value)}
+                className={`px-3 py-1 rounded-md font-medium transition-colors ${stage === s.value ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+                {s.label}
+              </button>
+            ))}
+          </div>
         </div>
         {isBrandDirect && (
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-purple-200 bg-purple-50 px-3 py-2 text-xs text-purple-900">

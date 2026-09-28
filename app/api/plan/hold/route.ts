@@ -34,6 +34,7 @@
  * Description as quoted but not booked.
  */
 
+import { openStage } from '@/lib/sfdcStages'
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import type { Prisma } from '@prisma/client'
@@ -59,6 +60,8 @@ type HoldBody = QuoteRequest & {
   requestId?: string
   /** The total the rep saw for the selected markets; booking stops if the fresh price differs. */
   expectedTotal?: number
+  /** Opportunity stage the seller chose: Cold, Warm or Hot (never closed). */
+  stage?: string
 }
 
 const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
@@ -267,7 +270,7 @@ export async function POST(req: NextRequest) {
           ownerId: owner.ownerId ?? undefined,
           clientType: accountInfo?.clientType,
           name: `${accountName} - Multi-market (${quote.summary.markets} markets) - ${starts[0]} to ${ends[ends.length - 1]}`.slice(0, 120),
-          stageName: 'WARM',
+          stageName: openStage(body.stage),
           closeDate: starts[0],
           amount: quote.summary.grandTotal,
           market: fitNames(quote.lines.map(l => l.market), 255),

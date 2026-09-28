@@ -1,5 +1,6 @@
 'use client'
 
+import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
 import { useSession } from 'next-auth/react'
@@ -77,6 +78,8 @@ export default function InternalQuotePage() {
   const [account, setAccount] = useState<SfdcAccount | null>(null)
   // Brand Direct accounts carry a premium on media; the seller can change it.
   const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
+  // Opportunity stage the seller wants the reservation's opportunity to start at.
+  const [stage, setStage] = useState<OpenStage>(DEFAULT_STAGE)
   const isBrandDirect = account?.clientType === 'Brand Direct'
   const markupPct = isBrandDirect ? clampBrandMarkup(brandMarkupPct) : 0
 
@@ -175,6 +178,7 @@ export default function InternalQuotePage() {
           studies: toggles.studies,
           // Server re-checks the account is Brand Direct before applying it.
           brand_markup_pct: isBrandDirect ? markupPct : undefined,
+          stage,
           days_per_week: form.days_per_week,
           operating_hours: form.operating_hours,
         }),
@@ -186,7 +190,7 @@ export default function InternalQuotePage() {
     } finally {
       setHoldLoading(false)
     }
-  }, [holdLoading, quoteResult, account, form, toggles, isBrandDirect, markupPct])
+  }, [holdLoading, quoteResult, account, form, toggles, isBrandDirect, markupPct, stage])
 
   if (status === 'loading' || !session) return null
 
@@ -535,6 +539,21 @@ export default function InternalQuotePage() {
                     {transport > 0 && <div className="flex justify-between text-gray-600 pt-1.5 border-t border-gray-100"><span>Transport</span><span>+ {fmtMoney(transport)}</span></div>}
                     <div className="flex justify-between font-bold text-gray-900 pt-2 border-t border-gray-200 text-base"><span>Total</span><span>{fmtMoney(total)}</span></div>
                   </div>
+
+                  {/* Opportunity stage — open stages only */}
+                  {!holdResult?.ok && (
+                    <div className="mt-4 flex items-center gap-2 text-xs">
+                      <span className="font-medium text-gray-600">Opportunity stage</span>
+                      <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5" role="radiogroup" aria-label="Opportunity stage">
+                        {OPEN_STAGES.map(s => (
+                          <button key={s.value} type="button" role="radio" aria-checked={stage === s.value} onClick={() => setStage(s.value)}
+                            className={`px-3 py-1 rounded-md font-medium transition-colors ${stage === s.value ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+                            {s.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Hold button */}
                   {holdResult?.ok ? (

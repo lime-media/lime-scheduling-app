@@ -76,6 +76,7 @@ export function Navbar() {
 
   const navLinks = [
     { href: '/',                       label: 'Schedule' },
+    { href: '/planner',                label: 'Planner' },
     { href: '/map',                    label: 'Map' },
     { href: '/ai',                     label: 'AI Assistant' },
     { href: '/hold-requests',          label: 'Reservations' },

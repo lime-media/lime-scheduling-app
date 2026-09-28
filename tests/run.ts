@@ -11,6 +11,7 @@ import './conflicts.test'
 import './planning.test'
 import './order.test'
 import './attSoft.test'
+import './planner.test'
 import { report } from './harness'
 
 process.exit(report())

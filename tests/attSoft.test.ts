@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { attLookback, isAttClient, isAttTruck, softHoldWindow } from '@/lib/attSoftRules'
+import { attLookback, isAttClient, isAttTruck, softHoldWindow, softHoldYieldsOn } from '@/lib/attSoftRules'
 
 section('AT&T soft holds: who is AT&T')
 eq('160over90 is AT&T, whatever the program is called', isAttClient('160over90'), true)
@@ -51,4 +51,13 @@ section('AT&T soft holds: every schedule route tells the grid which shifts are A
     const src = fs.readFileSync(route, 'utf8')
     eq(`${route} sets att from the client`, /att:\s*isAttClient\(r\.client\)/.test(src), true)
   }
+}
+
+section('AT&T soft holds: give way per day, never the whole month')
+{
+  // October soft hold; another client books the truck Oct 14-15 only.
+  const other = [{ shift_start: '2026-10-14', shift_end: '2026-10-15' }]
+  eq('the days of the other job give way', [softHoldYieldsOn('2026-10-14', other), softHoldYieldsOn('2026-10-15', other)], [true, true])
+  eq('the rest of the month stays held', ['2026-10-01', '2026-10-13', '2026-10-16', '2026-10-31'].map(d => softHoldYieldsOn(d, other)), [false, false, false, false])
+  eq('no other work: held every day', softHoldYieldsOn('2026-10-20', undefined), false)
 }

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { softHoldYieldsOn } from '@/lib/attSoftRules'
 import { GRID_COLORS, CLIENT_GRID_COLORS, RESERVATION_LABEL, COMMITTED_LABEL, ATT_SOFT_LABEL, BOOKED_LABEL, type DisplayStatus } from '@/lib/statusColors'
 import { format, addDays, startOfDay, parseISO, isSameDay } from 'date-fns'
 import { CellDetail } from './CellDetail'
@@ -578,15 +579,11 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
       }
     }
 
-    // 4. ATT soft hold (lowest priority — yields to any schedule or regular hold)
-    //    If the truck has any non-ATT scheduled block overlapping this hold's period,
-    //    treat the hold as void and show white/available instead of soft blue.
+    // 4. AT&T soft hold (lowest priority — yields to any schedule or regular hold).
+    //    It gives way only on the days another client's shift is on, never for
+    //    the whole month: a one-day job elsewhere must not turn the month green.
     if (entry.attHold) {
-      const holdStart = entry.attHold.start_date
-      const holdEnd   = entry.attHold.end_date
-      const voided = nonAttSchedulesByTruck.get(truckNum)?.some(
-        (s) => s.shift_start <= holdEnd && s.shift_end >= holdStart
-      )
+      const voided = softHoldYieldsOn(dateStr, nonAttSchedulesByTruck.get(truckNum))
       if (voided) {
         if (entry.holdReq) return { ...base, display_status: 'HOLD_REQUEST', hold_id: entry.holdReq.id, client_name: entry.holdReq.company_name, hold_notes: entry.holdReq.notes }
         return withDeparting(base)

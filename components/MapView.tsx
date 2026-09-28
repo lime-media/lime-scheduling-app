@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { softHoldYieldsOn } from '@/lib/attSoftRules'
 import { PIN, STATUS_BADGE as SHARED_BADGE, CLIENT_BADGE, RESERVATION_LABEL, COMMITTED_LABEL, ATT_SOFT_LABEL, BOOKED_LABEL } from '@/lib/statusColors'
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
@@ -292,12 +293,12 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
       if (!nonAttScheds.has(s.truck_number)) nonAttScheds.set(s.truck_number, [])
       nonAttScheds.get(s.truck_number)!.push({ shift_start: s.shift_start, shift_end: s.shift_end })
     }
-    // An AT&T soft hold that covers the date and that no other client's shift voids.
+    // An AT&T soft hold that covers the date, unless another client's shift is
+    // on that same day (per day, as on the grid — never the whole month).
     const softHoldOn = (truck: string, date: string) => {
       const h = holdEntries.find(x => x.truck_number === truck && x.status === 'ATT_SOFT' && x.start_date <= date && x.end_date >= date)
       if (!h) return null
-      const voided = (nonAttScheds.get(truck) ?? []).some(s => s.shift_start <= h.end_date && s.shift_end >= h.start_date)
-      return voided ? null : h
+      return softHoldYieldsOn(date, nonAttScheds.get(truck)) ? null : h
     }
 
     // Today: live positions and statuses, plus the soft holds the live feed

@@ -60,3 +60,13 @@ export function attLookback(today: string): { current: { from: string; to: strin
 export function isAttTruck(days: { current: number; prior: number }, lookback: ReturnType<typeof attLookback>): boolean {
   return days.current > ATT_MIN_DAYS || (lookback.prior !== null && days.prior > ATT_MIN_DAYS)
 }
+
+/**
+ * Whether an AT&T soft hold gives way on one day: only when another client's
+ * shift is on THAT day. Soft holds cover whole months, so voiding the whole
+ * hold for any overlapping shift would turn a month green for a one-day job
+ * elsewhere — the grid, map and planner all use this per-day rule.
+ */
+export function softHoldYieldsOn(date: string, otherClientShifts: { shift_start: string; shift_end: string }[] | undefined): boolean {
+  return (otherClientShifts ?? []).some(s => s.shift_start <= date && s.shift_end >= date)
+}

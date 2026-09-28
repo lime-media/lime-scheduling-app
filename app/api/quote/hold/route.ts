@@ -6,13 +6,16 @@
  * Uses the availability engine to auto-select trucks.
  */
 
+import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
+import { openStage } from '@/lib/sfdcStages'
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { computeHoldExpiresAt } from '@/lib/holdExpiry'
-import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
+import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, resolveOpportunityOwner } from '@/lib/salesforceClient'
+import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import {
@@ -36,8 +39,10 @@ export async function POST(req: NextRequest) {
     market, state, start_date, end_date, truck_count,
     sfdc_account_id, sfdc_account_name,
     shadow_fencing, smart_directional, device_id, studies: rawStudies,
-    days_per_week, operating_hours,
+    days_per_week, operating_hours, brand_markup_pct, stage, quote_only, expected_total,
   } = body
+  // Low conviction: log a priced opportunity, reserve nothing (lib/quoteOnly.ts).
+  const quoteOnly = quote_only === true
 
   if (!market || !start_date || !end_date || !truck_count) {
     return NextResponse.json({ error: 'market, start_date, end_date, truck_count required' }, { status: 400 })
@@ -69,7 +74,9 @@ export async function POST(req: NextRequest) {
     serviceAreaMiles: rateOverrides?.service_area_miles,
   })
 
-  if (selectedTrucks.length === 0) {
+  // A quote-only log reserves nothing, so it goes through even when no truck
+  // is free — that is exactly the low-conviction case it exists for.
+  if (selectedTrucks.length === 0 && !quoteOnly) {
     return NextResponse.json({ error: 'No trucks available' }, { status: 409 })
   }
 
@@ -90,11 +97,19 @@ export async function POST(req: NextRequest) {
     .map((s: string) => s.trim().toLowerCase())
     .filter((s: string): s is StudyType => (VALID_STUDIES as readonly string[]).includes(s))
 
+  // Brand Direct: folded into every price by the engine — only when
+  // Salesforce says the account is Brand Direct (the browser's word is not
+  // enough). The seller's percentage is kept to 0-50%; it starts at 10%.
+  const accountInfo = sfdc_account_id && isSfdcConfigured()
+    ? await getSfdcAccountInfo(sfdc_account_id).catch((err) => { console.error('[quote/hold] account lookup failed:', err); return null })
+    : null
+  const markupPct = brandMarkupFor(accountInfo?.clientType, brand_markup_pct)
+
   const marketSizeTierId = await resolveMarketSizeTierId(market)
   const quote = computeQuote({
     truckCount: truck_count, days: activationDays, operatingHours: opHours,
     marketSizeTierId, includeSmartDirectional: includeSD, includeDeviceId: includeDID, studies,
-    rateOverrides,
+    rateOverrides, markupPct,
   })
 
   let mediaTotal = quote.good.baseMedia
@@ -113,10 +128,20 @@ export async function POST(req: NextRequest) {
       airfare: rateOverrides?.transport_airfare,
       hotelPerNight: rateOverrides?.transport_hotel_per_night,
     },
+    markupPct,
   })
 
   const transportCharge = transport.charge
   const serverTotal = mediaTotal + transportCharge
+
+  // The price the rep saw must be the price booked (the Brand Direct markup
+  // or the fleet may have changed since the quote was shown).
+  if (typeof expected_total === 'number' && Math.abs(serverTotal - expected_total) >= 1) {
+    return NextResponse.json({
+      error: 'The price changed since the quote was shown.',
+      priceChanged: { was: expected_total, now: Math.round(serverTotal * 100) / 100 },
+    }, { status: 409 })
+  }
 
   let pricingTier = 'Custom'
   if (!includeSF && !includeSD && !includeDID && studies.length === 0) pricingTier = 'Good'
@@ -170,7 +195,9 @@ export async function POST(req: NextRequest) {
   const canonicalMarket = (await canonicalMarketName(market, resolvedState ?? undefined)) ?? market
 
   const created: string[] = []
-  for (const truck of selectedTrucks) {
+  // Quote only with no truck free: still one record of what was quoted.
+  const recordTrucks: { truckNumber: string }[] = quoteOnly && selectedTrucks.length === 0 ? [{ truckNumber: QUOTE_ONLY_NO_TRUCK }] : selectedTrucks
+  for (const truck of recordTrucks) {
     try {
       await prisma.hold.create({
         data: {
@@ -180,19 +207,20 @@ export async function POST(req: NextRequest) {
           state:             resolvedState ?? '',
           start_date:        new Date(start_date),
           end_date:          new Date(end_date),
-          status:            'HOLD',
+          status:            quoteOnly ? QUOTE_ONLY_STATUS : 'HOLD',
           source:            'INTERNAL',
-          origination:       'frontend',
-          notes:             `Internal quote for ${sfdc_account_name || 'Unknown'}`,
+          origination:       quoteOnly ? QUOTE_ONLY_ORIGINATION : 'frontend',
+          notes:             quoteOnly ? `${QUOTE_ONLY_NOTE} Internal quote for ${sfdc_account_name || 'Unknown'}` : `Internal quote for ${sfdc_account_name || 'Unknown'}`,
           created_by:        createdBy,
-          client_user_id:    linkedClient?.id ?? null,
+          // Quote-only logs are internal: never shown in the client portal.
+          client_user_id:    quoteOnly ? null : linkedClient?.id ?? null,
           pricing_tier:      pricingTier,
           quoted_total:      serverTotal,
           daily_rate:        quote.dailyRate,
           features:          featuresJson,
-          truck_count:       selectedTrucks.length,
+          truck_count:       quoteOnly ? truck_count : selectedTrucks.length,
           campaign_group_id: campaignGroupId,
-          expires_at:        expiresAt,
+          expires_at:        quoteOnly ? new Date() : expiresAt,
         },
       })
       created.push(truck.truckNumber)
@@ -207,6 +235,7 @@ export async function POST(req: NextRequest) {
 
   // Create Salesforce Opportunity
   let sfdcOpportunityId: string | null = null
+  let sfdcError: string | null = null
   if (isSfdcConfigured()) {
     try {
       const parsedFeatures = parseQuoteFeatures(featuresJson)
@@ -214,17 +243,32 @@ export async function POST(req: NextRequest) {
         ? buildActivationNotes(parsedFeatures, pricingTier)
         : undefined
 
+      // Owned by the rep who booked it (matched by email), else the account owner.
+      const owner = await resolveOpportunityOwner({ creatorEmail: token.email as string | undefined, accountOwnerId: accountInfo?.ownerId })
       const result = await createOpportunity({
         accountId: sfdc_account_id,
+        ownerId: owner.ownerId ?? undefined,
+        clientType: accountInfo?.clientType,
+        // Internal record only (Salesforce): every price above already includes it.
+        description: [
+          quoteOnly ? `Quote only (low conviction): no trucks reserved. ${truck_count} truck${truck_count === 1 ? '' : 's'} quoted, ${start_date} to ${end_date}`
+            + (selectedTrucks.length ? `, priced on ${selectedTrucks.map(t => t.truckNumber).join(', ')}.` : '; no truck was available, so transport is not priced.') : null,
+          markupPct ? `Brand Direct pricing: +${markupPct}% folded into every line item.` : null,
+        ].filter(Boolean).join('\n') || undefined,
         name: `${sfdc_account_name || 'Client'} - ${market} - ${start_date} to ${end_date}`,
-        stageName: 'WARM',
+        // The seller's choice of open stage; never a closed one.
+        stageName: openStage(stage),
         closeDate: start_date,
         amount: serverTotal,
         market,
-        holdStart: start_date,
-        holdStop: end_date,
-        holdExp: expiresAt.toISOString().split('T')[0],
-        truckNumbers: created,
+        // Quote only: no LED truck / hold fields — Salesforce would turn them
+        // back into reservations. The priced trucks and dates go in the Description.
+        ...(quoteOnly ? {} : {
+          holdStart: start_date,
+          holdStop: end_date,
+          holdExp: expiresAt.toISOString().split('T')[0],
+          truckNumbers: created,
+        }),
         activationNotes,
       })
 
@@ -235,19 +279,29 @@ export async function POST(req: NextRequest) {
           data: { sfdc_opportunity_id: result.id },
         })
       } else {
+        sfdcError = 'Salesforce rejected the opportunity'
         console.error('[quote/hold] SFDC opportunity creation failed:', result.errors)
       }
     } catch (err) {
+      sfdcError = 'Salesforce could not be reached'
       console.error('[quote/hold] SFDC opportunity creation error:', err)
     }
   }
 
+  // Never silent: if the opportunity was not created, the rep is told.
+  const sfdcNote = sfdcOpportunityId ? 'Salesforce opportunity created.'
+    : sfdcError ? `${sfdcError}: no opportunity was created. Create it in Salesforce by hand.`
+    : ''
   return NextResponse.json({
     ok: true,
+    sfdcError,
     created: created.length,
     campaignGroupId,
     sfdcOpportunityId,
-    message: `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}. ${sfdcOpportunityId ? 'Salesforce opportunity created.' : ''}`,
+    quoteOnly,
+    message: quoteOnly
+      ? `Quote logged for ${sfdc_account_name || 'client'}; no trucks reserved.${selectedTrucks.length ? '' : ' No truck was free, so transport is not priced.'} ${sfdcNote}`
+      : `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}. ${sfdcNote}`,
     _internal: {
       chainFlags: successorImpact,
       _warning: 'INTERNAL ONLY — downstream deadhead, recorded not billed',

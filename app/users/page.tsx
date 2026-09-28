@@ -85,6 +85,8 @@ export default function UsersPage() {
     return () => clearTimeout(t)
   }, [sfdcQuery])
 
+  const [sfdcMatches, setSfdcMatches] = useState<Record<string, { id: string; name: string } | null> | null>(null)
+  const [sfdcMatchState, setSfdcMatchState] = useState<'loading' | 'ok' | 'unconfigured' | 'error'>('loading')
   const isOps = session?.user?.role === 'OPERATIONS'
 
   async function fetchUsers() {
@@ -96,6 +98,15 @@ export default function UsersPage() {
     } finally {
       setLoading(false)
     }
+    // Which Salesforce user each internal user's opportunities are owned by (matched by email).
+    try {
+      const r = await fetch('/api/sfdc/user-matches')
+      if (!r.ok) { setSfdcMatchState('error'); return }
+      const d = await r.json()
+      if (d.configured === false) { setSfdcMatchState('unconfigured'); return }
+      setSfdcMatches(d.matches ?? {})
+      setSfdcMatchState('ok')
+    } catch { setSfdcMatchState('error') }
   }
 
   async function fetchClientUsers() {
@@ -370,7 +381,7 @@ export default function UsersPage() {
               <table className="w-full text-sm">
                 <thead className="bg-gray-50/80 border-b border-gray-200">
                   <tr>
-                    {['Name', 'Email', 'Role', 'Created', 'Actions'].map((h) => (
+                    {['Name', 'Email', 'Role', 'Salesforce owner', 'Created', 'Actions'].map((h) => (
                       <th key={h} className="text-left px-4 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wider">{h}</th>
                     ))}
                   </tr>
@@ -391,6 +402,14 @@ export default function UsersPage() {
                         }`}>
                           {user.role === 'OPERATIONS' ? 'Operations' : 'Sales'}
                         </span>
+                      </td>
+                      <td className="px-4 py-3 text-xs">
+                        {sfdcMatchState === 'unconfigured' ? <span className="text-gray-400" title="Salesforce is not connected on this deployment">Salesforce not connected</span>
+                          : sfdcMatchState === 'error' ? <span className="text-red-600" title="The Salesforce lookup failed; reload to try again">Couldn&apos;t check</span>
+                          : sfdcMatches === null ? <span className="text-gray-300">…</span>
+                          : sfdcMatches[user.email.trim().toLowerCase()]
+                            ? <span className="text-gray-700" title="Opportunities this user creates are owned by this Salesforce user">{sfdcMatches[user.email.trim().toLowerCase()]!.name}</span>
+                            : <span className="text-amber-700" title="No active Salesforce user has this email; their opportunities go to the account owner">No match: account owner</span>}
                       </td>
                       <td className="px-4 py-3 text-gray-500">
                         {new Date(user.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}

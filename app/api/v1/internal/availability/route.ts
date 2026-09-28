@@ -1,3 +1,4 @@
+import { partnerClashDetail } from '@/lib/bookingRefusals'
 import { NextResponse } from 'next/server'
 import { validateInternalApiKey } from '@/lib/internalAuth'
 import { query } from '@/lib/mssql'
@@ -194,10 +195,10 @@ export async function GET(request: Request) {
             feasibilityByTruck.set(num, {
               can_serve: false,
               reason: 'BOOKED',
-              detail: clash.source === 'SCHEDULE'
-                ? `Scheduled for "${clash.program || 'a program'}" in ${clash.market || 'another market'} from ${clash.start} to ${clash.end}.`
-                : `Already held (${clash.status ?? 'HOLD'}) from ${clash.start} to ${clash.end}.`,
-              requires_soft_hold_override: clash.yieldable,
+              detail: partnerClashDetail(clash),
+              // Kept for compatibility; always false. The partner/MCP API can
+              // never book over an AT&T soft hold (see lib/attSoftRelease.ts).
+              requires_soft_hold_override: false,
               departs_from: 'n/a',
               transport_days: 0,
               distance_miles: 0,
@@ -220,8 +221,9 @@ export async function GET(request: Request) {
           feasibilityByTruck.set(num, {
             can_serve: chain.feasible,
             reason: chain.blockedBy,
-            detail: chain.detail,
-            requires_soft_hold_override: !chain.feasible && chain.overridable,
+            // Stranding an AT&T soft hold is not offered to partners either.
+            detail: !chain.feasible && chain.overridable ? 'Not available on these dates.' : chain.detail,
+            requires_soft_hold_override: false,
             departs_from: chain.inbound.originLabel,
             transport_days: chain.inbound.transportDays,
             distance_miles: chain.inbound.distanceMiles,

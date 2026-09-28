@@ -97,6 +97,10 @@ export type CreateOpportunityInput = {
   activationNotes?: string
   /** Opportunity Description (32,000 characters). */
   description?: string
+  /** Salesforce User who owns the opportunity; omitted = the integration user. */
+  ownerId?: string
+  /** Opportunity Client Type (Agency / Brand Direct). */
+  clientType?: 'Agency' | 'Brand Direct'
 }
 
 export type SfdcOpportunityResult = {
@@ -120,6 +124,8 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
 
   if (input.amount != null) body.Amount = input.amount
   if (input.market) body.Markets__c = input.market
+  if (input.ownerId) body.OwnerId = input.ownerId
+  if (input.clientType) body.Client_Type__c = input.clientType
   if (input.holdStart) body.LED_Hold_Start__c = input.holdStart
   if (input.holdStop) body.LED_Hold_Stop__c = input.holdStop
   if (input.holdExp) body.LED_Hold_Exp__c = input.holdExp
@@ -200,4 +206,63 @@ export async function sfdcQuery<T = Record<string, unknown>>(soql: string): Prom
  */
 export function isSfdcConfigured(): boolean {
   return Boolean(SFDC_CLIENT_ID && SFDC_CLIENT_SECRET)
+}
+
+// ---------------------------------------------------------------------------
+// Owners and client type
+// ---------------------------------------------------------------------------
+
+export { soqlString, SAFE_EMAIL } from './soql'
+import { SAFE_EMAIL } from './soql'
+
+const ownerCache = new Map<string, { id: string | null; at: number }>()
+const OWNER_TTL_MS = 60 * 60 * 1000
+
+/**
+ * The active, standard Salesforce User with this email — how an internal app
+ * user is tied to their Salesforce user, so opportunities they create are
+ * owned by them rather than by the integration user. Null when none matches.
+ */
+export async function findSfdcUserIdByEmail(email: string | null | undefined): Promise<string | null> {
+  const e = (email ?? '').trim().toLowerCase()
+  if (!e || !SAFE_EMAIL.test(e)) return null
+  const hit = ownerCache.get(e)
+  if (hit && Date.now() - hit.at < OWNER_TTL_MS) return hit.id
+  const rows = await sfdcQuery<{ Id: string }>(
+    `SELECT Id FROM User WHERE Email = '${e}' AND IsActive = true AND UserType = 'Standard' ORDER BY LastLoginDate DESC NULLS LAST LIMIT 1`,
+  )
+  const id = rows[0]?.Id ?? null
+  ownerCache.set(e, { id, at: Date.now() })
+  return id
+}
+
+/** An account's owner and client type, for opportunity ownership and Brand Direct pricing. */
+export async function getSfdcAccountInfo(accountId: string): Promise<{ ownerId: string | null; clientType: 'Agency' | 'Brand Direct' } | null> {
+  if (!/^[A-Za-z0-9]{15,18}$/.test(accountId)) return null
+  const rows = await sfdcQuery<{ OwnerId: string | null; Owner?: { IsActive?: boolean } | null; Client_Type2__c: string | null }>(
+    `SELECT OwnerId, Owner.IsActive, Client_Type2__c FROM Account WHERE Id = '${accountId}' LIMIT 1`,
+  )
+  if (!rows[0]) return null
+  return {
+    // An inactive owner cannot own a new opportunity (Salesforce rejects it),
+    // so it is not offered as a fallback owner.
+    ownerId: rows[0].Owner?.IsActive === false ? null : rows[0].OwnerId ?? null,
+    clientType: String(rows[0].Client_Type2__c ?? '').trim().toLowerCase() === 'brand direct' ? 'Brand Direct' : 'Agency',
+  }
+}
+
+/**
+ * Who should own an opportunity: the internal user who created it (matched by
+ * email), else the account's owner, else the integration user (null). Never
+ * throws — ownership must not stop a booking.
+ */
+export async function resolveOpportunityOwner(opts: { creatorEmail?: string | null; accountOwnerId?: string | null }): Promise<{ ownerId: string | null; source: 'creator' | 'account_owner' | 'integration' }> {
+  try {
+    const mine = await findSfdcUserIdByEmail(opts.creatorEmail)
+    if (mine) return { ownerId: mine, source: 'creator' }
+  } catch (err) {
+    console.error('[sfdc] owner lookup failed:', err)
+  }
+  if (opts.accountOwnerId) return { ownerId: opts.accountOwnerId, source: 'account_owner' }
+  return { ownerId: null, source: 'integration' }
 }

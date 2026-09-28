@@ -1,5 +1,7 @@
 'use client'
 
+import { ATT_RELEASE_WARNING } from '@/lib/attSoftRules'
+import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 import toast from 'react-hot-toast'
@@ -242,8 +244,31 @@ export default function HoldRequestsPage() {
       return
     }
 
+    // Any chosen truck that is AT&T soft-held for this request: warn, then
+    // release the soft hold for this request's dates only, before swapping.
+    const needsRelease = truckChanges.filter(r => {
+      const t = availableTrucksMap.get(r.id)?.find(x => x.truckNumber === selectedTrucks.get(r.id))
+      return t?.requiresOverride
+    })
+    if (needsRelease.length > 0 && !confirm(ATT_RELEASE_WARNING)) return
+
     setSaving(true)
     try {
+      for (const r of needsRelease) {
+        const res = await fetch('/api/holds/att-soft/release', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            truck_number: selectedTrucks.get(r.id), start_date: r.start_date, end_date: r.end_date,
+            context: `Client request: ${r.company_name}, ${r.market}, ${r.start_date} to ${r.end_date}`,
+          }),
+        })
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          toast.error(err.error || 'Could not release the AT&T soft hold')
+          return
+        }
+      }
+
       // Truck swaps
       if (truckChanges.length > 0) {
         const results = await Promise.all(
@@ -361,7 +386,7 @@ export default function HoldRequestsPage() {
     }
   }
 
-  function Actions({ ids, status, groupKey, requests: actionRequests }: { ids: string[]; status: string; groupKey: string; requests?: HoldRequest[] }) {
+  function Actions({ ids, status, groupKey, requests: actionRequests, quoteOnly = false }: { ids: string[]; status: string; groupKey: string; requests?: HoldRequest[]; quoteOnly?: boolean }) {
     const busy = acting === groupKey
     if (status === 'EXTENSION_REQUESTED') {
       return (
@@ -384,6 +409,10 @@ export default function HoldRequestsPage() {
       )
     }
     if (status === 'EXPIRED') {
+      // A quote-only log is not a lapsed reservation: nothing to reinstate.
+      if (quoteOnly) {
+        return <span className="text-xs text-gray-400" title="Re-quote to reserve trucks">Quote only</span>
+      }
       return (
         <button
           disabled={busy}
@@ -499,7 +528,7 @@ export default function HoldRequestsPage() {
                       <PricingBadge tier={first.pricing_tier} total={first.quoted_total} />
                       <ExpirationBadge expiresAt={first.expires_at} status={first.status} />
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[first.status] ?? STATUS_BADGE.HOLD}`}>
-                        {STATUS_LABEL[first.status] ?? first.status}
+                        {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[first.status] ?? first.status)}
                       </span>
                     </div>
                   </div>
@@ -528,7 +557,7 @@ export default function HoldRequestsPage() {
                   {(first.status === 'HOLD' || first.status === 'COMMITTED' || first.status === 'EXTENSION_REQUESTED' || first.status === 'EXPIRED') && (
                     <div className="px-4 py-3 border-t border-gray-100 bg-gray-50/80 flex items-center gap-2">
                       {first.status === 'EXTENSION_REQUESTED' || first.status === 'EXPIRED' ? (
-                        <Actions ids={ids} status={first.status} groupKey={groupId} />
+                        <Actions ids={ids} status={first.status} groupKey={groupId} quoteOnly={groupItems.some(g => g.origination === QUOTE_ONLY_ORIGINATION)} />
                       ) : (
                         <button
                           onClick={() => openEdit(first)}
@@ -580,14 +609,14 @@ export default function HoldRequestsPage() {
                               </td>
                               <td className="px-4 py-3">
                                 <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[r.status] ?? STATUS_BADGE.HOLD}`}>
-                                  {STATUS_LABEL[r.status] ?? r.status}
+                                  {r.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[r.status] ?? r.status)}
                                 </span>
                               </td>
                               <td className="px-4 py-3">
                                 <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
                               </td>
                               <td className="px-4 py-3">
-                                <Actions ids={[r.id]} status={r.status} groupKey={r.id} requests={[r]} />
+                                <Actions ids={[r.id]} status={r.status} groupKey={r.id} requests={[r]} quoteOnly={r.origination === QUOTE_ONLY_ORIGINATION} />
                               </td>
                             </tr>
                             {parsedFeatures && (

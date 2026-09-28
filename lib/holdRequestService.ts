@@ -4,6 +4,7 @@ import { canonicalMarketName } from '@/lib/marketBounds'
 import { checkTruckFeasibility } from '@/lib/availabilityEngine'
 import { daysUntil, MIN_CLIENT_LEAD_DAYS } from '@/lib/pricing'
 import { activeHoldWhere } from '@/lib/holdFilters'
+import { clientBookingRefusal } from '@/lib/bookingRefusals'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { appendHoldRequestToSheet } from '@/lib/googleSheets'
 import type { ClientSession } from '@/lib/clientAuth'
@@ -72,19 +73,19 @@ export async function createClientHold(
     throw new Error('SFDC service user not found — cannot create client hold')
   }
 
-  // Conflict check — prevent double-booking
+  // Conflict check — prevent double-booking. AT&T soft holds count: a client
+  // can never book over AT&T (only staff can release one, for a booking). The
+  // message never names who holds the truck.
   const conflicts = await prisma.hold.findMany({
     where: {
       truck_number,
-      ...activeHoldWhere({ excludeAttSoft: true }),
+      ...activeHoldWhere(),
       start_date: { lte: new Date(end_date) },
       end_date: { gte: new Date(start_date) },
     },
   })
-  if (conflicts.length > 0) {
-    const c = conflicts[0]
-    throw new Error(`Truck ${truck_number} already booked for "${c.client_name}" from ${c.start_date.toISOString().split('T')[0]} to ${c.end_date.toISOString().split('T')[0]}`)
-  }
+  const conflictRefusal = clientBookingRefusal(truck_number, conflicts.length, null)
+  if (conflictRefusal) throw new Error(conflictRefusal)
 
   // The conflict query above sees the hold table ONLY — it knows nothing about
   // dbo.program_schedule, so on its own it would let a client book a truck that
@@ -107,9 +108,10 @@ export async function createClientHold(
     } catch (err) {
       console.error('[holdRequestService] FEASIBILITY_CHECK_FAILED (allowing hold):', err)
     }
-    if (feasibility && !feasibility.ok && !feasibility.overridable) {
-      throw new Error(feasibility.detail ?? `Truck ${truck_number} cannot serve these dates`)
-    }
+    // Refused even when only an AT&T soft hold would be stranded (overridable):
+    // clients never displace AT&T.
+    const refusal = clientBookingRefusal(truck_number, 0, feasibility)
+    if (refusal) throw new Error(refusal)
   }
 
   // Canonical market name — holds carry no standard_market_uid, so this string

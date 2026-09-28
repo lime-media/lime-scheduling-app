@@ -69,6 +69,9 @@ export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
 
   for (const h of holds) {
     if (!h.start_date || !h.end_date) continue
+    // AT&T soft holds are placeholders that give way day by day; their clashes
+    // with reservations have their own review (AT&T Soft Holds With a Conflict).
+    if (h.status === 'ATT_SOFT') continue
     if (h.end_date < today) continue // already in the past — nothing to fix
 
     const campaignCoords = await coordsFor(h.market)

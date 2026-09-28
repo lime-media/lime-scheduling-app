@@ -1,5 +1,7 @@
 'use client'
 
+import { useEffect, useState } from 'react'
+import { ATT_RELEASE_WARNING } from '@/lib/attSoftRules'
 import { format, parseISO } from 'date-fns'
 import { STATUS_BADGE, UNKNOWN_BADGE, RESERVATION_LABEL, COMMITTED_LABEL, ATT_SOFT_LABEL, type DisplayStatus } from '@/lib/statusColors'
 import toast from 'react-hot-toast'
@@ -25,11 +27,37 @@ const STATUS_LABELS: Record<DisplayStatus, string> = {
 
 export function CellDetail({ cell, lastKnownMarket, onClose, onHoldDeleted }: CellDetailProps) {
 
+  // AT&T soft hold: release only the dates of the booking that needs the
+  // truck (defaults to the day clicked), after the operations warning. The
+  // rest of the soft hold stays; the release sticks (lib/attSoftRelease.ts).
+  const [attFrom, setAttFrom] = useState('')
+  const [attTo, setAttTo] = useState('')
+  const [attBusy, setAttBusy] = useState(false)
+  useEffect(() => { setAttFrom(cell?.calendar_date ?? ''); setAttTo(cell?.calendar_date ?? '') }, [cell?.hold_id, cell?.calendar_date])
+  const handleAttRelease = async () => {
+    if (!cell || !attFrom || !attTo) return
+    if (attTo < attFrom) { toast.error('The end date is before the start date.'); return }
+    if (!confirm(ATT_RELEASE_WARNING)) return
+    setAttBusy(true)
+    try {
+      const res = await fetch('/api/holds/att-soft/release', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ truck_number: cell.truck_number, start_date: attFrom, end_date: attTo, context: `Schedule grid, ${attFrom} to ${attTo}` }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Release failed')
+      toast.success(data.message)
+      onHoldDeleted()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Release failed')
+    } finally {
+      setAttBusy(false)
+    }
+  }
+
   const handleRelease = async () => {
     if (!cell?.hold_id) return
-    const msg = cell.display_status === 'ATT_SOFT'
-      ? 'Release this AT&T soft hold for the whole month?'
-      : 'Release this hold?'
+    const msg = 'Release this hold?'
     if (!confirm(msg)) return
     const res = await fetch(`/api/holds/${cell.hold_id}`, { method: 'DELETE' })
     if (res.ok) {
@@ -199,12 +227,21 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onHoldDeleted }: Ce
 
         {/* ATT soft hold: release button */}
         {isATTSoft && (
-          <button
-            onClick={handleRelease}
-            className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm py-2 rounded-lg font-medium transition-colors"
-          >
-            Release ATT Hold
-          </button>
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-2 space-y-1.5">
+            <div className="text-xs font-medium text-blue-900">Release for a booking</div>
+            <div className="flex items-center gap-1 text-xs">
+              <input type="date" value={attFrom} onChange={e => setAttFrom(e.target.value)} aria-label="Release from"
+                className="w-full border border-blue-200 rounded px-1 py-0.5 bg-white" />
+              <span className="text-blue-700">to</span>
+              <input type="date" value={attTo} min={attFrom} onChange={e => setAttTo(e.target.value)} aria-label="Release to"
+                className="w-full border border-blue-200 rounded px-1 py-0.5 bg-white" />
+            </div>
+            <button onClick={handleAttRelease} disabled={attBusy || !attFrom || !attTo}
+              className="w-full bg-white hover:bg-blue-100 border border-blue-300 text-blue-900 text-sm py-1.5 rounded-lg font-medium transition-colors disabled:opacity-50">
+              {attBusy ? 'Releasing…' : 'Release these dates'}
+            </button>
+            <p className="text-[11px] text-blue-800">Only the booking&apos;s dates are released; the rest stays reserved for AT&amp;T.</p>
+          </div>
         )}
 
         {/* Scheduled: read-only, no hold action */}

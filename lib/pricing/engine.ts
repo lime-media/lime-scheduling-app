@@ -9,6 +9,7 @@
  * - Rate Agreement overrides
  */
 
+import { withMarkup } from './brandMarkup'
 import {
   RATE_CARD,
   SMART_DIRECTIONAL_PER_TRUCK_DAY,
@@ -39,6 +40,13 @@ export type QuoteInput = {
   includeDeviceId?: boolean
   studies?: StudyType[]
   rateOverrides?: RateOverrides | null
+  /**
+   * Brand Direct premium, in percent. Folded into every price the engine
+   * produces (the daily rate, hour surcharge, shadow fencing and its floor,
+   * smart directional, device ID, study cost), so each line item is simply
+   * higher and no separate markup line exists anywhere. 0 = none.
+   */
+  markupPct?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +156,10 @@ export function computeQuote(input: QuoteInput): QuoteResult {
     includeDeviceId = false,
     studies = [],
     rateOverrides = null,
+    markupPct = 0,
   } = input
+  // Every price below passes through this: folds a Brand Direct premium in.
+  const up = (n: number) => withMarkup(n, markupPct)
 
   if (truckCount < 1) throw new Error('truckCount must be at least 1')
   if (days < 1) throw new Error('days must be at least 1')
@@ -166,8 +177,8 @@ export function computeQuote(input: QuoteInput): QuoteResult {
   if (!marketSizeTier) throw new Error(`Invalid marketSizeTierId: ${marketSizeTierId}`)
 
   // Rate
-  const dailyRate = getDailyRate(days, truckCount, rateOverrides)
-  const hourSurchargeRate = rateOverrides?.hour_surcharge ?? HOUR_SURCHARGE_PER_HOUR
+  const dailyRate = up(getDailyRate(days, truckCount, rateOverrides))
+  const hourSurchargeRate = up(rateOverrides?.hour_surcharge ?? HOUR_SURCHARGE_PER_HOUR)
   const hourSurcharge = Math.max(0, operatingHours - STANDARD_HOURS) * hourSurchargeRate
   const effectiveDailyRate = dailyRate + hourSurcharge
 
@@ -180,17 +191,19 @@ export function computeQuote(input: QuoteInput): QuoteResult {
 
   // Tier 2 — Better
   const sfRate = rateOverrides?.shadow_fencing_pct ?? SHADOW_FENCING_RATE
-  const sfFloor = rateOverrides?.shadow_fencing_floor ?? SHADOW_FENCING_FLOOR
+  const sfFloor = up(rateOverrides?.shadow_fencing_floor ?? SHADOW_FENCING_FLOOR)
   const sfRaw = baseMedia * sfRate
   const shadowFencing = Math.max(sfRaw, sfFloor)
   const shadowFencingFloored = sfRaw < sfFloor
 
-  const digitalImpressions = (shadowFencing / SHADOW_FENCING_CPM) * 1000
+  // Impressions follow the media buy, not the Brand Direct price: take the
+  // markup back out before dividing by the CPM.
+  const digitalImpressions = ((shadowFencing / (1 + markupPct / 100)) / SHADOW_FENCING_CPM) * 1000
 
-  const sdDaily = rateOverrides?.smart_directional_daily ?? SMART_DIRECTIONAL_PER_TRUCK_DAY
+  const sdDaily = up(rateOverrides?.smart_directional_daily ?? SMART_DIRECTIONAL_PER_TRUCK_DAY)
   const smartDirectional = includeSmartDirectional ? truckDays * sdDaily : 0
 
-  const didFlat = rateOverrides?.device_id_flat ?? DEVICE_ID_PASSBACK_FLAT
+  const didFlat = up(rateOverrides?.device_id_flat ?? DEVICE_ID_PASSBACK_FLAT)
   const deviceId = includeDeviceId ? didFlat : 0
 
   const betterTotal = baseMedia + shadowFencing + smartDirectional + deviceId
@@ -209,7 +222,7 @@ export function computeQuote(input: QuoteInput): QuoteResult {
   // Tier 3 — Best
   const estimatedImpressions = truckCount * days * marketSizeTier.dailyA18
   const reachOk = estimatedImpressions >= STUDY_MIN_IMPRESSIONS
-  const studyCost = rateOverrides?.study_cost ?? STUDY_PRICE
+  const studyCost = up(rateOverrides?.study_cost ?? STUDY_PRICE)
   const studiesTotal = reachOk ? studies.length * studyCost : 0
 
   const best: TierBest = {

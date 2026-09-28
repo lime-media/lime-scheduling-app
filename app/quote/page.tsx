@@ -1,6 +1,10 @@
 'use client'
 
+import toast from 'react-hot-toast'
+import { ATT_RELEASE_WARNING } from '@/lib/attSoftRules'
+import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
 import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
@@ -21,7 +25,7 @@ type QuoteResponse = {
     excluded?: { truckNumber: string; from: string; reason: string; detail: string }[]
     requiresOverride?: { truckNumber: string; from: string; detail: string }[]
   }
-  pricing: { dailyRate: number; effectiveDailyRate: number; hourSurcharge: number; truckDays: number; days: number; calendarDays: number; truckCount: number; baseMedia: number; pricingBasis: string; marketSizeTier: { id: number; label: string }; schedule: { daysPerWeek: number; operatingHours: number; activationDays: number } }
+  pricing: { quoteOnlyRequired?: boolean; brandMarkupPct?: number; clientType?: string | null; dailyRate: number; effectiveDailyRate: number; hourSurcharge: number; truckDays: number; days: number; calendarDays: number; truckCount: number; baseMedia: number; pricingBasis: string; marketSizeTier: { id: number; label: string }; schedule: { daysPerWeek: number; operatingHours: number; activationDays: number } }
   features: {
     shadowFencing: { included: boolean; cost: number; floored: boolean; digitalImpressions: number }
     smartDirectional: { included: boolean; cost: number }
@@ -74,11 +78,22 @@ export default function InternalQuotePage() {
 
   // SFDC Account
   const [account, setAccount] = useState<SfdcAccount | null>(null)
+  // Brand Direct accounts carry a premium on media; the seller can change it.
+  const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
+  // Opportunity stage the seller wants the reservation's opportunity to start at.
+  const [stage, setStage] = useState<OpenStage>(DEFAULT_STAGE)
+  // Low conviction: log a priced opportunity without reserving any truck.
+  const [quoteOnly, setQuoteOnly] = useState(false)
+  const isBrandDirect = account?.clientType === 'Brand Direct'
+  const markupPct = isBrandDirect ? clampBrandMarkup(brandMarkupPct) : 0
 
   // Quote form
   const [form, setForm] = useState({ market: '', start_date: '', end_date: '', truck_count: undefined as number | undefined, days_per_week: 5 as 5 | 6 | 7, operating_hours: 8 as 8 | 10 | 12 })
   const [quoteLoading, setQuoteLoading] = useState(false)
   const [quoteResult, setQuoteResult] = useState<QuoteResponse | null>(null)
+  // A markup typed but not yet re-priced: the prices on screen are not the
+  // prices that would be booked, so booking waits until they match.
+  const markupPending = isBrandDirect && quoteResult !== null && markupPct !== (quoteResult.pricing.brandMarkupPct ?? 0)
   const [quoteError, setQuoteError] = useState<string | null>(null)
   // Internal-only breakdown shown under the headline. Never sent to clients.
   const [quoteErrorDetail, setQuoteErrorDetail] = useState<string | null>(null)
@@ -93,7 +108,9 @@ export default function InternalQuotePage() {
 
   const quoteRef = useRef<HTMLDivElement>(null)
 
-  const submitQuote = useCallback(async (marketOverride?: string) => {
+  // `reprice`: the same quote again with a new Brand Direct markup — keep the
+  // result and the seller's feature choices on screen while it refreshes.
+  const submitQuote = useCallback(async (marketOverride?: string, opts: { reprice?: boolean; quoteOnly?: boolean } = {}) => {
     const market = marketOverride || form.market
     const { start_date, end_date, truck_count } = form
     if (quoteLoading || !market.trim() || !start_date || !end_date || !truck_count) return
@@ -102,7 +119,7 @@ export default function InternalQuotePage() {
     setQuoteLoading(true)
     setQuoteError(null)
     setQuoteErrorDetail(null)
-    setQuoteResult(null)
+    if (!opts.reprice) setQuoteResult(null)
     setHoldResult(null)
     setMarketCandidates(null)
 
@@ -110,7 +127,7 @@ export default function InternalQuotePage() {
       const res = await fetch('/api/quote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, market, truck_count, sfdc_account_id: account?.id }),
+        body: JSON.stringify({ ...form, market, truck_count, sfdc_account_id: account?.id, brand_markup_pct: isBrandDirect ? markupPct : undefined, quote_only: opts.quoteOnly || quoteResult?.pricing.quoteOnlyRequired || undefined }),
       })
       const data = await res.json()
 
@@ -119,9 +136,12 @@ export default function InternalQuotePage() {
         setQuoteErrorDetail(data.detail ?? null)
       } else if (res.ok) {
         setQuoteResult(data)
+        if (data.pricing?.quoteOnlyRequired) setQuoteOnly(true)
         if (data.market) setForm(prev => ({ ...prev, market: data.market }))
-        setToggles({ shadowFencing: true, smartDirectional: false, deviceId: false, studies: [] })
-        setTimeout(() => quoteRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+        if (!opts.reprice) {
+          setToggles({ shadowFencing: true, smartDirectional: false, deviceId: false, studies: [] })
+          setTimeout(() => quoteRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+        }
       } else if (data.error === 'DISAMBIGUATION_REQUIRED') {
         setMarketCandidates(data.candidates)
       } else {
@@ -132,9 +152,58 @@ export default function InternalQuotePage() {
     } finally {
       setQuoteLoading(false)
     }
-  }, [quoteLoading, form])
+  }, [quoteLoading, form, account?.id, isBrandDirect, markupPct, quoteResult?.pricing.quoteOnlyRequired])
 
-  const placeHold = useCallback(async () => {
+  // Changing the Brand Direct markup re-prices the quote on the server, so
+  // every line on screen is the real, folded-in price.
+  const repriceWith = (pct: number) => {
+    const next = clampBrandMarkup(pct)
+    setBrandMarkupPct(next)
+    if (quoteResult && next !== quoteResult.pricing.brandMarkupPct) setRepriceToken(t => t + 1)
+  }
+  const [repriceToken, setRepriceToken] = useState(0)
+  useEffect(() => { if (repriceToken) submitQuote(undefined, { reprice: true }) }, [repriceToken]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The total on screen, exactly as the pricing summary adds it up. Sent with
+  // the booking so the server refuses a price the rep has not seen.
+  const shownTotal = (): number | null => {
+    if (!quoteResult) return null
+    const { pricing, features } = quoteResult
+    let media = pricing.baseMedia
+    if (toggles.shadowFencing) media += features.shadowFencing.cost
+    if (toggles.smartDirectional) media += features.smartDirectional.cost
+    if (toggles.deviceId) media += features.deviceId.cost
+    if (features.studies.available && toggles.studies.length > 0) media += toggles.studies.length * features.studies.costPerStudy
+    return media + quoteResult.transportCharge
+  }
+
+  // Release a truck's AT&T soft hold for THIS booking's dates only, after the
+  // operations warning, then re-quote so the truck can be used.
+  const [releasing, setReleasing] = useState<string | null>(null)
+  const releaseForBooking = async (truckNumber: string) => {
+    if (!form.start_date || !form.end_date) return
+    if (!confirm(ATT_RELEASE_WARNING)) return
+    setReleasing(truckNumber)
+    try {
+      const res = await fetch('/api/holds/att-soft/release', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          truck_number: truckNumber, start_date: form.start_date, end_date: form.end_date,
+          context: `Quote: ${account?.name ?? 'no client'}, ${quoteResult?.market || form.market}, ${form.start_date} to ${form.end_date}`,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Release failed')
+      toast.success(data.message)
+      submitQuote()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Release failed')
+    } finally {
+      setReleasing(null)
+    }
+  }
+
+  const placeHold = useCallback(async (expectedOverride?: number) => {
     if (holdLoading || !quoteResult || !account) return
     setHoldLoading(true)
 
@@ -154,18 +223,30 @@ export default function InternalQuotePage() {
           smart_directional: toggles.smartDirectional,
           device_id: toggles.deviceId,
           studies: toggles.studies,
+          // Server re-checks the account is Brand Direct before applying it.
+          brand_markup_pct: isBrandDirect ? markupPct : undefined,
+          stage,
+          quote_only: quoteOnly,
           days_per_week: form.days_per_week,
           operating_hours: form.operating_hours,
+          expected_total: expectedOverride ?? shownTotal(),
         }),
       })
       const data = await res.json()
+      if (res.status === 409 && data.priceChanged) {
+        setHoldLoading(false)
+        const ok = confirm(`The price on fresh data is ${fmtMoney(data.priceChanged.now)}, not ${fmtMoney(data.priceChanged.was)} as shown.\n\nBook at ${fmtMoney(data.priceChanged.now)}?`)
+        if (ok) return placeHold(data.priceChanged.now)
+        setHoldResult({ ok: false, message: 'Nothing was booked. Re-quote to see the current price.' })
+        return
+      }
       setHoldResult({ ok: res.ok, message: data.message || data.error || 'Unknown error' })
     } catch {
       setHoldResult({ ok: false, message: 'Network error.' })
     } finally {
       setHoldLoading(false)
     }
-  }, [holdLoading, quoteResult, account, form, toggles])
+  }, [holdLoading, quoteResult, account, form, toggles, isBrandDirect, markupPct, stage, quoteOnly]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (status === 'loading' || !session) return null
 
@@ -219,7 +300,7 @@ export default function InternalQuotePage() {
         {/* Step 1: Client selection */}
         <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 mb-4">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
-          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setQuoteResult(null); setHoldResult(null) }} />
+          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
         </div>
 
         {/* Step 2: Campaign details */}
@@ -281,6 +362,13 @@ export default function InternalQuotePage() {
             <p className="text-sm font-medium text-red-900">{quoteError}</p>
             {quoteErrorDetail && (
               <p className="text-xs text-red-700 mt-1">{quoteErrorDetail}</p>
+            )}
+            {/* Not enough trucks: it can still be priced and logged as a quote, reserving nothing. */}
+            {quoteErrorDetail && (
+              <button type="button" onClick={() => submitQuote(undefined, { quoteOnly: true })} disabled={quoteLoading}
+                className="mt-2 rounded border border-red-300 bg-white px-2.5 py-1 text-xs font-medium text-red-900 hover:bg-red-100 disabled:opacity-50">
+                Price it anyway (quote only, no reservation)
+              </button>
             )}
           </div>
         )}
@@ -348,11 +436,18 @@ export default function InternalQuotePage() {
                   <p className="font-medium">
                     {quoteResult.availability.requiresOverride!.length} truck{quoteResult.availability.requiresOverride!.length !== 1 ? 's' : ''} available only by releasing a soft hold
                   </p>
-                  <p className="text-purple-600 mt-0.5">Not included in this quote. Release the AT&amp;T soft hold first to use {quoteResult.availability.requiresOverride!.length !== 1 ? 'them' : 'it'}.</p>
+                  <p className="text-purple-600 mt-0.5">Not included in this quote. Release the AT&amp;T soft hold for this booking&apos;s dates to use {quoteResult.availability.requiresOverride!.length !== 1 ? 'them' : 'it'}.</p>
                   {quoteResult.availability.requiresOverride!.map((t) => (
-                    <p key={t.truckNumber} className="text-purple-600 mt-1">
-                      <span className="font-medium">Truck {t.truckNumber}</span> ({t.from}) — {t.detail}
-                    </p>
+                    <div key={t.truckNumber} className="mt-1.5 flex items-start gap-2">
+                      <p className="flex-1 text-purple-600">
+                        <span className="font-medium">Truck {t.truckNumber}</span> ({t.from}) — {t.detail}
+                      </p>
+                      <button type="button" disabled={releasing === t.truckNumber}
+                        onClick={() => releaseForBooking(t.truckNumber)}
+                        className="shrink-0 rounded border border-purple-300 bg-white px-2 py-0.5 font-medium text-purple-800 hover:bg-purple-100 disabled:opacity-50">
+                        {releasing === t.truckNumber ? 'Releasing…' : 'Release for this booking'}
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
@@ -400,6 +495,26 @@ export default function InternalQuotePage() {
                 </div>
               )}
             </div>
+
+            {/* Brand Direct — internal only. The markup is folded into every
+                price below; the client never sees it as a line. */}
+            {isBrandDirect && (
+              <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-purple-200 bg-purple-50 px-3 py-2 text-xs text-purple-900">
+                <span className="font-semibold">Brand Direct pricing</span>
+                <label className="flex items-center gap-1">
+                  +
+                  <input type="number" min={0} max={MAX_BRAND_MARKUP_PCT} step={0.5} value={brandMarkupPct}
+                    onChange={e => setBrandMarkupPct(e.target.value === '' ? 0 : Number(e.target.value))}
+                    onBlur={() => repriceWith(brandMarkupPct)}
+                    onKeyDown={e => { if (e.key === 'Enter') repriceWith(brandMarkupPct) }}
+                    aria-label="Brand Direct markup percent"
+                    className="w-16 border border-purple-200 rounded px-1.5 py-0.5 text-right text-sm bg-white focus:outline-none focus:ring-2 focus:ring-purple-400" />
+                  %
+                </label>
+                <span className="text-purple-700">included in every price below, transport too. Not shown to the client.</span>
+                {quoteLoading && <span className="text-purple-500">Updating…</span>}
+              </div>
+            )}
 
             {/* Summary line */}
             <div className="text-xs text-gray-500 mb-3">
@@ -495,15 +610,41 @@ export default function InternalQuotePage() {
                     <div className="flex justify-between font-bold text-gray-900 pt-2 border-t border-gray-200 text-base"><span>Total</span><span>{fmtMoney(total)}</span></div>
                   </div>
 
+                  {/* Opportunity stage — open stages only */}
+                  {!holdResult?.ok && (
+                    <div className="mt-4 flex items-center gap-2 text-xs">
+                      <span className="font-medium text-gray-600">Opportunity stage</span>
+                      <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5" role="radiogroup" aria-label="Opportunity stage">
+                        {OPEN_STAGES.map(s => (
+                          <button key={s.value} type="button" role="radio" aria-checked={stage === s.value} onClick={() => setStage(s.value)}
+                            className={`px-3 py-1 rounded-md font-medium transition-colors ${stage === s.value ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+                            {s.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {!holdResult?.ok && (
+                    <label className="mt-2 flex items-start gap-2 text-xs text-gray-700 cursor-pointer">
+                      <input type="checkbox" checked={quoteOnly || !!quoteResult.pricing.quoteOnlyRequired} disabled={!!quoteResult.pricing.quoteOnlyRequired}
+                        onChange={e => { setQuoteOnly(e.target.checked); setHoldResult(null) }} className="mt-0.5 rounded" />
+                      <span><span className="font-medium">Log quote only, no reservation</span>: creates the priced Salesforce opportunity but reserves no trucks (for low-conviction quotes).
+                        {quoteResult.pricing.quoteOnlyRequired && <span className="block text-amber-800">Not enough trucks are free for these dates, so this can only be logged as a quote.</span>}
+                      </span>
+                    </label>
+                  )}
+
                   {/* Hold button */}
                   {holdResult?.ok ? (
                     <div className="mt-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-800 font-medium">
                       {'\u2713'} {holdResult.message}
                     </div>
                   ) : (
-                    <button onClick={placeHold} disabled={holdLoading || !account || holdResult?.ok === true}
+                    <button onClick={() => placeHold()} disabled={holdLoading || quoteLoading || markupPending || !account || holdResult?.ok === true}
                       className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium transition-colors">
-                      {!account ? 'Select a client above to place hold' : holdLoading ? 'Submitting...' : `Place Hold \u2014 ${fmtMoney(total)}`}
+                      {!account ? 'Select a client above to place hold' : markupPending ? 'Update the price for the new markup first' : holdLoading ? 'Submitting...'
+                        : quoteOnly ? `Log quote in Salesforce (no reservation) \u2014 ${fmtMoney(total)}`
+                        : `Place Hold \u2014 ${fmtMoney(total)}`}
                     </button>
                   )}
                   {holdResult && !holdResult.ok && (

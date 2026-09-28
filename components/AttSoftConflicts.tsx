@@ -23,7 +23,10 @@ type Row = {
 const fmt = (d: string) => new Date(d + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
 const range = (a: string, b: string) => (a === b ? fmt(a) : `${fmt(a)} – ${fmt(b)}`)
 
+type Release = { id: string; truckNumber: string; start: string; end: string; by: string | null; at: string; notes: string }
+
 export function AttSoftConflicts() {
+  const [releases, setReleases] = useState<Release[]>([])
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -35,6 +38,8 @@ export function AttSoftConflicts() {
       const res = await fetch('/api/holds/att-soft/conflicts')
       if (!res.ok) throw new Error(`Check failed (${res.status}). This list may be incomplete.`)
       setRows((await res.json()).conflicts ?? [])
+      const rel = await fetch('/api/holds/att-soft/releases')
+      if (rel.ok) setReleases((await rel.json()).releases ?? [])
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Check failed. This list may be incomplete.')
     } finally {
@@ -60,6 +65,22 @@ export function AttSoftConflicts() {
       load()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Release failed')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const undo = async (r: Release) => {
+    if (!confirm(`Undo this release? Truck ${r.truckNumber} ${range(r.start, r.end)} goes back to AT&T at the next sync, if nothing else is booked there.`)) return
+    setBusy(r.id)
+    try {
+      const res = await fetch(`/api/holds/att-soft/release?id=${encodeURIComponent(r.id)}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Undo failed')
+      toast.success(data.message)
+      setReleases(prev => prev.filter(x => x.id !== r.id))
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Undo failed')
     } finally {
       setBusy(null)
     }
@@ -136,6 +157,42 @@ export function AttSoftConflicts() {
           </table>
         </div>
       )}
+
+      <div className="mt-8">
+        <h3 className="text-base font-semibold text-gray-900 mb-1">Released AT&amp;T soft holds</h3>
+        <p className="text-sm text-gray-500 mb-3">Dates released for a booking, still in effect. Undo puts them back to AT&amp;T at the next sync.</p>
+        {releases.length === 0 ? (
+          <div className="text-sm text-gray-500 bg-white border border-gray-200 rounded-xl px-4 py-4 text-center">No releases in effect.</div>
+        ) : (
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50/80 border-b border-gray-200">
+                <tr>
+                  {['Truck', 'Released dates', 'For', 'By', ''].map(h => (
+                    <th key={h} className="text-left px-4 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wider">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {releases.map(r => (
+                  <tr key={r.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-medium text-gray-900 tabular-nums">#{r.truckNumber}</td>
+                    <td className="px-4 py-3 text-gray-800 whitespace-nowrap">{range(r.start, r.end)}</td>
+                    <td className="px-4 py-3 text-gray-600">{r.notes.replace(/^AT&T soft hold released for /, '').replace(/ by [^.]*\.$/, '')}</td>
+                    <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{r.by ?? '—'} · {new Date(r.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</td>
+                    <td className="px-4 py-3 text-right">
+                      <button onClick={() => undo(r)} disabled={busy === r.id}
+                        className="rounded border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+                        Undo
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </section>
   )
 }

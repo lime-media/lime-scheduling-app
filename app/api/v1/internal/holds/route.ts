@@ -75,11 +75,9 @@ export async function POST(req: NextRequest) {
       },
     })
     if (conflicts.length > 0) {
-      const c = conflicts[0]
       return NextResponse.json({
-        error: c.status === 'ATT_SOFT'
-          ? `Truck ${truck_number} is not available on these dates.`
-          : `Truck ${truck_number} already has a ${c.status} for "${c.client_name}" from ${c.start_date.toISOString().split('T')[0]} to ${c.end_date.toISOString().split('T')[0]}.`,
+        // A client never learns who holds the truck (AT&T or anyone else).
+        error: `Truck ${truck_number} is not available on these dates.`,
       }, { status: 409 })
     }
 

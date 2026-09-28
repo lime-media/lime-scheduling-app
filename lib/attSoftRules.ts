@@ -125,6 +125,9 @@ export function freeRanges(start: string, end: string, taken: { start: string; e
 /** Release rows (lib/attSoftRelease.ts) carry this origination. */
 export const ATT_RELEASE_ORIGINATION = 'att_soft_release'
 
+/** A release is for one booking: at most this many days at a time. */
+export const ATT_RELEASE_MAX_DAYS = 31
+
 /** The words shown before any release of an AT&T soft hold. Exactly as operations asked. */
 export const ATT_RELEASE_WARNING =
   'Ensure with operations this works, and it only releases for the specific dates of the new booking so that there is no conflict.'
@@ -142,3 +145,13 @@ export function carve(holdStart: string, holdEnd: string, start: string, end: st
 }
 
 const addDaysIso = (d: string, n: number) => iso(new Date(utc(d).getTime() + n * 864e5))
+
+/** Why a release range is refused, or null when it is fine: valid dates, one booking long. */
+export function validateReleaseRange(start: string, end: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || end < start) {
+    return 'Release dates must be YYYY-MM-DD, end on or after start.'
+  }
+  const n = Math.round((utc(end).getTime() - utc(start).getTime()) / 864e5) + 1
+  if (n > ATT_RELEASE_MAX_DAYS) return `A release covers one booking: at most ${ATT_RELEASE_MAX_DAYS} days. Release longer bookings in parts, with operations.`
+  return null
+}

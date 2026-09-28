@@ -72,18 +72,19 @@ export async function createClientHold(
     throw new Error('SFDC service user not found — cannot create client hold')
   }
 
-  // Conflict check — prevent double-booking
+  // Conflict check — prevent double-booking. AT&T soft holds count: a client
+  // can never book over AT&T (only staff can release one, for a booking). The
+  // message never names who holds the truck.
   const conflicts = await prisma.hold.findMany({
     where: {
       truck_number,
-      ...activeHoldWhere({ excludeAttSoft: true }),
+      ...activeHoldWhere(),
       start_date: { lte: new Date(end_date) },
       end_date: { gte: new Date(start_date) },
     },
   })
   if (conflicts.length > 0) {
-    const c = conflicts[0]
-    throw new Error(`Truck ${truck_number} already booked for "${c.client_name}" from ${c.start_date.toISOString().split('T')[0]} to ${c.end_date.toISOString().split('T')[0]}`)
+    throw new Error(`Truck ${truck_number} is not available on these dates.`)
   }
 
   // The conflict query above sees the hold table ONLY — it knows nothing about

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { activeHoldWhere } from '@/lib/holdFilters'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
@@ -10,7 +11,10 @@ export async function GET() {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  // Live holds only. Nothing in the app calls this list today; it never
+  // returns expired rows (quote-only logs, released holds) as if they held a truck.
   const holds = await prisma.hold.findMany({
+    where: activeHoldWhere(),
     include: { user: { select: { name: true, email: true } } },
     orderBy: { created_at: 'desc' },
   })

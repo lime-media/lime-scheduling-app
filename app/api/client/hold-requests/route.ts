@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
+import { DEFAULT_STAGE } from '@/lib/sfdcStages'
+import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
 import { createClientHold } from '@/lib/holdRequestService'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
-import { createOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
+import { createOpportunity, isSfdcConfigured, getSfdcAccountInfo } from '@/lib/salesforceClient'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import {
   computeQuote,
@@ -23,7 +26,8 @@ export async function GET(req: NextRequest) {
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const holds = await prisma.hold.findMany({
-    where:   { client_user_id: session.id },
+    // Internal quote-only logs are never shown to the client.
+    where:   { client_user_id: session.id, NOT: { origination: QUOTE_ONLY_ORIGINATION } },
     orderBy: { created_at: 'desc' },
   })
 
@@ -160,6 +164,13 @@ async function handleAutoSelectHold(
     .map(s => s.trim().toLowerCase())
     .filter((s): s is StudyType => (VALID_STUDIES as readonly string[]).includes(s))
 
+  // Brand Direct accounts are priced with the markup folded into every price,
+  // at the default rate (clients cannot change it and never see it).
+  const accountInfo = session.sfdcAccountId && isSfdcConfigured()
+    ? await getSfdcAccountInfo(session.sfdcAccountId).catch(() => null)
+    : null
+  const markupPct = brandMarkupFor(accountInfo?.clientType)
+
   const quote = computeQuote({
     truckCount: truck_count,
     days: activationDays,
@@ -169,6 +180,7 @@ async function handleAutoSelectHold(
     includeDeviceId,
     studies,
     rateOverrides,
+    markupPct,
   })
 
   let mediaTotal = quote.good.baseMedia
@@ -189,6 +201,7 @@ async function handleAutoSelectHold(
       airfare: rateOverrides?.transport_airfare,
       hotelPerNight: rateOverrides?.transport_hotel_per_night,
     },
+    markupPct,
   })
 
   const transportCharge = transport.charge
@@ -293,10 +306,13 @@ async function handleAutoSelectHold(
         ? buildActivationNotes(parsedFeatures, pricingTier)
         : undefined
 
+      // A client's own request has no internal rep: the account's owner owns it.
       const result = await createOpportunity({
         accountId: session.sfdcAccountId,
+        ownerId: accountInfo?.ownerId ?? undefined,
+        clientType: accountInfo?.clientType,
         name: oppName,
-        stageName: 'WARM',
+        stageName: DEFAULT_STAGE, // a client's own request: no seller to choose
         closeDate: start_date,
         amount: serverTotal,
         market,

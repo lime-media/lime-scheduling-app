@@ -1,5 +1,6 @@
 'use client'
 
+import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 import toast from 'react-hot-toast'
@@ -499,7 +500,7 @@ export default function HoldRequestsPage() {
                       <PricingBadge tier={first.pricing_tier} total={first.quoted_total} />
                       <ExpirationBadge expiresAt={first.expires_at} status={first.status} />
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[first.status] ?? STATUS_BADGE.HOLD}`}>
-                        {STATUS_LABEL[first.status] ?? first.status}
+                        {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[first.status] ?? first.status)}
                       </span>
                     </div>
                   </div>
@@ -580,7 +581,7 @@ export default function HoldRequestsPage() {
                               </td>
                               <td className="px-4 py-3">
                                 <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[r.status] ?? STATUS_BADGE.HOLD}`}>
-                                  {STATUS_LABEL[r.status] ?? r.status}
+                                  {r.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[r.status] ?? r.status)}
                                 </span>
                               </td>
                               <td className="px-4 py-3">

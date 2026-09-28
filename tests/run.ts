@@ -14,6 +14,7 @@ import './attSoft.test'
 import './planner.test'
 import './brandMarkup.test'
 import './sfdcStages.test'
+import './quoteOnly.test'
 import { report } from './harness'
 
 process.exit(report())

@@ -80,6 +80,8 @@ export default function InternalQuotePage() {
   const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
   // Opportunity stage the seller wants the reservation's opportunity to start at.
   const [stage, setStage] = useState<OpenStage>(DEFAULT_STAGE)
+  // Low conviction: log a priced opportunity without reserving any truck.
+  const [quoteOnly, setQuoteOnly] = useState(false)
   const isBrandDirect = account?.clientType === 'Brand Direct'
   const markupPct = isBrandDirect ? clampBrandMarkup(brandMarkupPct) : 0
 
@@ -179,6 +181,7 @@ export default function InternalQuotePage() {
           // Server re-checks the account is Brand Direct before applying it.
           brand_markup_pct: isBrandDirect ? markupPct : undefined,
           stage,
+          quote_only: quoteOnly,
           days_per_week: form.days_per_week,
           operating_hours: form.operating_hours,
         }),
@@ -190,7 +193,7 @@ export default function InternalQuotePage() {
     } finally {
       setHoldLoading(false)
     }
-  }, [holdLoading, quoteResult, account, form, toggles, isBrandDirect, markupPct, stage])
+  }, [holdLoading, quoteResult, account, form, toggles, isBrandDirect, markupPct, stage, quoteOnly])
 
   if (status === 'loading' || !session) return null
 
@@ -554,6 +557,12 @@ export default function InternalQuotePage() {
                       </div>
                     </div>
                   )}
+                  {!holdResult?.ok && (
+                    <label className="mt-2 flex items-start gap-2 text-xs text-gray-700 cursor-pointer">
+                      <input type="checkbox" checked={quoteOnly} onChange={e => setQuoteOnly(e.target.checked)} className="mt-0.5 rounded" />
+                      <span><span className="font-medium">Log quote only, no reservation</span>: creates the priced Salesforce opportunity but reserves no trucks (for low-conviction quotes).</span>
+                    </label>
+                  )}
 
                   {/* Hold button */}
                   {holdResult?.ok ? (
@@ -563,7 +572,9 @@ export default function InternalQuotePage() {
                   ) : (
                     <button onClick={placeHold} disabled={holdLoading || !account || holdResult?.ok === true}
                       className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium transition-colors">
-                      {!account ? 'Select a client above to place hold' : holdLoading ? 'Submitting...' : `Place Hold \u2014 ${fmtMoney(total)}`}
+                      {!account ? 'Select a client above to place hold' : holdLoading ? 'Submitting...'
+                        : quoteOnly ? `Log quote in Salesforce (no reservation) \u2014 ${fmtMoney(total)}`
+                        : `Place Hold \u2014 ${fmtMoney(total)}`}
                     </button>
                   )}
                   {holdResult && !holdResult.ok && (

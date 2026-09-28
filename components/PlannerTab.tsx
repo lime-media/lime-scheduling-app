@@ -106,6 +106,8 @@ export function PlannerTab() {
   const isBrandDirect = account?.clientType === 'Brand Direct'
   // Opportunity stage for the order's opportunity: Cold, Warm or Hot (never closed).
   const [stage, setStage] = useState<OpenStage>(DEFAULT_STAGE)
+  // Low conviction: log a priced opportunity without reserving any truck.
+  const [quoteOnly, setQuoteOnly] = useState(false)
 
   // Intake
   const [showImport, setShowImport] = useState(false)
@@ -247,7 +249,7 @@ export function PlannerTab() {
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, quoteOnly }),
       })
       const data = await readJson(res)
       if (res.status === 409 && data.shortfalls) {
@@ -379,6 +381,10 @@ export function PlannerTab() {
             ))}
           </div>
         </div>
+        <label className="mt-2 flex items-start gap-2 text-xs text-gray-700 cursor-pointer">
+          <input type="checkbox" checked={quoteOnly} onChange={e => setQuoteOnly(e.target.checked)} className="mt-0.5 rounded" />
+          <span><span className="font-medium">Log quote only, no reservation</span>: creates the priced Salesforce opportunity but reserves no trucks (for low-conviction quotes).</span>
+        </label>
         {isBrandDirect && (
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-purple-200 bg-purple-50 px-3 py-2 text-xs text-purple-900">
             <span className="font-semibold">Brand Direct pricing</span>
@@ -412,6 +418,7 @@ export function PlannerTab() {
           selected={selected}
           onToggle={id => setSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })}
           onPlaceHolds={() => placeHolds(false)}
+          quoteOnly={quoteOnly}
           unplaced={built?.unplaced.map(u => u.label) ?? []}
         />
       )}
@@ -513,7 +520,7 @@ function ImportPanel(p: {
 
 // ---------------------------------------------------------------------------
 
-function QuoteResult({ quote, account, holding, holdResult, selected, onToggle, onPlaceHolds, unplaced }: {
+function QuoteResult({ quote, account, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
   quote: MultiMarketQuote
   account: SfdcAccount | null
   holding: boolean
@@ -521,6 +528,7 @@ function QuoteResult({ quote, account, holding, holdResult, selected, onToggle, 
   selected: Set<string>
   onToggle: (id: string) => void
   onPlaceHolds: () => void
+  quoteOnly: boolean
   unplaced: string[]
 }) {
   const { summary } = quote
@@ -567,7 +575,7 @@ function QuoteResult({ quote, account, holding, holdResult, selected, onToggle, 
               {quote.lines.map(l => (
                 <tr key={l.id} className={selected.has(l.id) ? '' : 'text-gray-400'}>
                   <td className={td}>
-                    <input type="checkbox" checked={selected.has(l.id)} disabled={booked || l.missing >= l.trucks} onChange={() => onToggle(l.id)}
+                    <input type="checkbox" checked={selected.has(l.id)} disabled={booked || (!quoteOnly && l.missing >= l.trucks)} onChange={() => onToggle(l.id)}
                       title={l.missing >= l.trucks ? 'No truck can cover this market' : 'Book this market'} />
                   </td>
                   <td className={td}>{l.market}</td>
@@ -617,7 +625,8 @@ function QuoteResult({ quote, account, holding, holdResult, selected, onToggle, 
               className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium">
               {!account ? 'Select a client above to place holds'
                 : chosen.length === 0 ? 'Select at least one market to book'
-                : holding ? 'Re-checking trucks and placing holds…'
+                : holding ? (quoteOnly ? 'Logging the quote…' : 'Re-checking trucks and placing holds…')
+                : quoteOnly ? `Log quote in Salesforce (no reservation) — ${chosen.length} of ${quote.lines.length} markets, ${fmtMoney(chosenTotal)}`
                 : `Place holds & create Salesforce opportunity — ${chosen.length} of ${quote.lines.length} markets, ${fmtMoney(chosenTotal)}`}
             </button>
             {chosen.length > 0 && chosen.length < quote.lines.length && (

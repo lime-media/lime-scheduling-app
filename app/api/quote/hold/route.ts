@@ -6,6 +6,7 @@
  * Uses the availability engine to auto-select trucks.
  */
 
+import { QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
 import { openStage } from '@/lib/sfdcStages'
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
@@ -38,8 +39,10 @@ export async function POST(req: NextRequest) {
     market, state, start_date, end_date, truck_count,
     sfdc_account_id, sfdc_account_name,
     shadow_fencing, smart_directional, device_id, studies: rawStudies,
-    days_per_week, operating_hours, brand_markup_pct, stage,
+    days_per_week, operating_hours, brand_markup_pct, stage, quote_only,
   } = body
+  // Low conviction: log a priced opportunity, reserve nothing (lib/quoteOnly.ts).
+  const quoteOnly = quote_only === true
 
   if (!market || !start_date || !end_date || !truck_count) {
     return NextResponse.json({ error: 'market, start_date, end_date, truck_count required' }, { status: 400 })
@@ -191,10 +194,10 @@ export async function POST(req: NextRequest) {
           state:             resolvedState ?? '',
           start_date:        new Date(start_date),
           end_date:          new Date(end_date),
-          status:            'HOLD',
+          status:            quoteOnly ? QUOTE_ONLY_STATUS : 'HOLD',
           source:            'INTERNAL',
-          origination:       'frontend',
-          notes:             `Internal quote for ${sfdc_account_name || 'Unknown'}`,
+          origination:       quoteOnly ? QUOTE_ONLY_ORIGINATION : 'frontend',
+          notes:             quoteOnly ? `${QUOTE_ONLY_NOTE} Internal quote for ${sfdc_account_name || 'Unknown'}` : `Internal quote for ${sfdc_account_name || 'Unknown'}`,
           created_by:        createdBy,
           client_user_id:    linkedClient?.id ?? null,
           pricing_tier:      pricingTier,
@@ -203,7 +206,7 @@ export async function POST(req: NextRequest) {
           features:          featuresJson,
           truck_count:       selectedTrucks.length,
           campaign_group_id: campaignGroupId,
-          expires_at:        expiresAt,
+          expires_at:        quoteOnly ? new Date() : expiresAt,
         },
       })
       created.push(truck.truckNumber)
@@ -232,17 +235,24 @@ export async function POST(req: NextRequest) {
         ownerId: owner.ownerId ?? undefined,
         clientType: accountInfo?.clientType,
         // Internal record only (Salesforce): every price above already includes it.
-        description: markupPct ? `Brand Direct pricing: +${markupPct}% folded into every line item.` : undefined,
+        description: [
+          quoteOnly ? `Quote only (low conviction): no trucks reserved. Priced for ${created.length} truck${created.length === 1 ? '' : 's'} (${created.join(', ')}), ${start_date} to ${end_date}.` : null,
+          markupPct ? `Brand Direct pricing: +${markupPct}% folded into every line item.` : null,
+        ].filter(Boolean).join('\n') || undefined,
         name: `${sfdc_account_name || 'Client'} - ${market} - ${start_date} to ${end_date}`,
         // The seller's choice of open stage; never a closed one.
         stageName: openStage(stage),
         closeDate: start_date,
         amount: serverTotal,
         market,
-        holdStart: start_date,
-        holdStop: end_date,
-        holdExp: expiresAt.toISOString().split('T')[0],
-        truckNumbers: created,
+        // Quote only: no LED truck / hold fields — Salesforce would turn them
+        // back into reservations. The priced trucks and dates go in the Description.
+        ...(quoteOnly ? {} : {
+          holdStart: start_date,
+          holdStop: end_date,
+          holdExp: expiresAt.toISOString().split('T')[0],
+          truckNumbers: created,
+        }),
         activationNotes,
       })
 
@@ -265,7 +275,10 @@ export async function POST(req: NextRequest) {
     created: created.length,
     campaignGroupId,
     sfdcOpportunityId,
-    message: `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}. ${sfdcOpportunityId ? 'Salesforce opportunity created.' : ''}`,
+    quoteOnly,
+    message: quoteOnly
+      ? `Quote logged for ${sfdc_account_name || 'client'}; no trucks reserved. ${sfdcOpportunityId ? 'Salesforce opportunity created.' : ''}`
+      : `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}. ${sfdcOpportunityId ? 'Salesforce opportunity created.' : ''}`,
     _internal: {
       chainFlags: successorImpact,
       _warning: 'INTERNAL ONLY — downstream deadhead, recorded not billed',

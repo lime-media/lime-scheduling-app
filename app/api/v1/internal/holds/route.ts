@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { createHold } from '@/lib/holdService'
+import { clientBookingRefusal } from '@/lib/bookingRefusals'
 import { checkTruckFeasibility } from '@/lib/availabilityEngine'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { appendHoldRequestToSheet } from '@/lib/googleSheets'
@@ -74,12 +75,8 @@ export async function POST(req: NextRequest) {
         end_date: { gte: new Date(start_date) },
       },
     })
-    if (conflicts.length > 0) {
-      return NextResponse.json({
-        // A client never learns who holds the truck (AT&T or anyone else).
-        error: `Truck ${truck_number} is not available on these dates.`,
-      }, { status: 409 })
-    }
+    const conflictRefusal = clientBookingRefusal(truck_number, conflicts.length, null)
+    if (conflictRefusal) return NextResponse.json({ error: conflictRefusal }, { status: 409 })
 
     // Chain feasibility — this is a booking DECISION made through MCP, not a
     // mirror of one made elsewhere, so it is gated like every other decision
@@ -92,12 +89,8 @@ export async function POST(req: NextRequest) {
         endDate: end_date,
       })
       // Refused even when the only blocker is an AT&T soft hold it would strand.
-      if (!feasibility.ok) {
-        return NextResponse.json({
-          error: feasibility.overridable ? `Truck ${truck_number} is not available on these dates.` : `Cannot place hold — ${feasibility.detail ?? 'truck cannot serve these dates'}`,
-          reason: feasibility.reason,
-        }, { status: 409 })
-      }
+      const refusal = clientBookingRefusal(truck_number, 0, feasibility)
+      if (refusal) return NextResponse.json({ error: refusal, reason: feasibility.reason }, { status: 409 })
     } catch (err) {
       console.error('[v1/internal/holds] FEASIBILITY_CHECK_FAILED (allowing hold):', err)
     }

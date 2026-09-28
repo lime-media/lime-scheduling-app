@@ -3,7 +3,8 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { attLookback, carve, freeRanges, isAttClient, isAttTruck, releaseBlockedReason, softHoldWindow, softHoldYieldsOn, validateReleaseRange, ATT_RELEASE_WARNING, ATT_RELEASE_MAX_DAYS } from '@/lib/attSoftRules'
+import { attLookback, carve, freeRanges, isAttClient, isAttTruck, planMarketBackfill, planReleaseCuts, planSoftHoldFill, reinstateBlockedByRelease, releaseBlockedReason, softHoldWindow, softHoldYieldsOn, validateReleaseRange, ATT_RELEASE_WARNING, ATT_RELEASE_MAX_DAYS } from '@/lib/attSoftRules'
+import { clientBookingRefusal, partnerClashDetail, staffBookingRefusal } from '@/lib/bookingRefusals'
 
 section('AT&T soft holds: who is AT&T')
 eq('160over90 is AT&T, whatever the program is called', isAttClient('160over90'), true)
@@ -96,30 +97,38 @@ section('AT&T soft holds: a release sticks; the rest of the month is still held'
   eq('nothing held or released: the whole month', freeRanges('2026-11-01', '2026-11-30', []), [{ start: '2026-11-01', end: '2026-11-30' }])
 }
 
-section('AT&T soft holds: the partner/MCP API can never book over one')
+section('AT&T soft holds: clients and partners can never book over one')
 {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const fs = require('fs') as typeof import('fs')
-  const service = fs.readFileSync('lib/holdService.ts', 'utf8')
-  const createHoldCheck = service.slice(service.indexOf('export async function createHold'), service.indexOf('Block hold placement if the truck already has a LED schedule'))
-  eq('createHold (holds + MCP internal users) counts soft holds as a conflict', !createHoldCheck.includes('excludeAttSoft: true') && createHoldCheck.includes("h.status === 'ATT_SOFT'"), true)
-  eq('createHold refuses when only a soft hold would be stranded', /\bif \(!feasibility\.ok\) \{/.test(service), true)
-  const mcp = fs.readFileSync('app/api/v1/internal/holds/route.ts', 'utf8')
-  eq('MCP client users: soft holds count as a conflict', !mcp.includes('excludeAttSoft: true'), true)
-  eq('MCP client users: no soft-hold strand either', /if \(!feasibility\.ok\) \{/.test(mcp), true)
-  const avail = fs.readFileSync('app/api/v1/internal/availability/route.ts', 'utf8')
-  eq('MCP availability never offers a soft-hold override', !/requires_soft_hold_override:\s*(clash\.yieldable|!chain)/.test(avail), true)
+  const soft = { ok: false, overridable: true, reason: 'STRANDS_SUCCESSOR', detail: 'Would strand ATT_SOFT in Denver, CO on 2026-10-13: needs 2 transport days but only 1 day follow this campaign.' }
+  const scheduled = { ok: false, overridable: false, reason: 'BOOKED', detail: 'Truck 412 is scheduled for "Acme Fall Tour" in Dallas from 2026-10-01 to 2026-10-09.' }
+  const tooFar = { ok: false, overridable: false, reason: 'INBOUND_TOO_FAR', detail: 'Needs 3 transport days from Denver, CO (900 mi) but only 1 day before start.' }
+  eq('a soft hold in the dates: refused, no name', clientBookingRefusal('412', 1, null), 'Truck 412 is not available on these dates.')
+  eq('a soft hold it would strand: refused (the gate that used to let it through)', clientBookingRefusal('412', 0, soft), 'Truck 412 is not available on these dates.')
+  eq('a scheduled program: refused without naming it', clientBookingRefusal('412', 0, scheduled), 'Truck 412 is not available on these dates.')
+  eq('a logistics refusal keeps its reason (no one is named in it)', clientBookingRefusal('412', 0, tooFar), tooFar.detail)
+  eq('feasible: goes ahead', clientBookingRefusal('412', 0, { ok: true }), null)
+  eq('feasibility lookup failed: goes ahead (fail-open, as everywhere)', clientBookingRefusal('412', 0, null), null)
+  const all = [clientBookingRefusal('412', 1, null), clientBookingRefusal('412', 0, soft), clientBookingRefusal('412', 0, scheduled)]
+  eq('no client refusal mentions AT&T or another client', all.some(m => /AT&T|ATT_SOFT|Acme/.test(m ?? '')), false)
 }
 
-section('AT&T soft holds: review fixes (#87)')
+section('AT&T soft holds: staff paths block too, and say why')
+{
+  eq('a soft hold in the dates: refused, names AT&T (staff must check with ops)', staffBookingRefusal('412', ['ATT_SOFT'], null)?.startsWith('Truck 412 is reserved for AT&T'), true)
+  eq('another hold: refused', staffBookingRefusal('412', ['HOLD'], null), 'Conflict: truck already has a hold in this date range')
+  eq('a soft hold it would strand: refused, even though overridable', staffBookingRefusal('412', [], { ok: false, overridable: true, detail: 'Would strand ATT_SOFT' }), 'Cannot place hold — Would strand ATT_SOFT')
+  eq('feasible: goes ahead', staffBookingRefusal('412', [], { ok: true }), null)
+}
+
+section('AT&T soft holds: partner availability names no one')
+eq('a soft hold', partnerClashDetail({ yieldable: true, start: '2026-10-01', end: '2026-10-31' }), 'Not available on these dates.')
+eq('another client\u2019s program: dates only', partnerClashDetail({ yieldable: false, start: '2026-10-01', end: '2026-10-09' }), 'Booked from 2026-10-01 to 2026-10-09.')
+
+section('AT&T soft holds: soft holds with a market make the strand check fire')
 {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const fs = require('fs') as typeof import('fs')
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { checkChainFeasibility } = require('@/lib/chainFeasibility') as typeof import('@/lib/chainFeasibility')
-
-  // A soft hold with a location now makes the strand check fire. Booking
-  // Dallas Oct 8-11 when AT&T needs the truck in Denver (~660 mi) on Oct 13.
+  // Booking Dallas Oct 8-11 when AT&T needs the truck in Denver (~660 mi) on Oct 13.
   const soft = (market: string, lat?: number, lng?: number) => ({ start: '2026-10-13', end: '2026-10-31', market, state: '', lat, lng, source: 'HOLD' as const, status: 'ATT_SOFT', yieldable: true })
   const run = (job: ReturnType<typeof soft>) => checkChainFeasibility({
     campaignStart: '2026-10-08', campaignEnd: '2026-10-11', campaignCoords: { lat: 32.78, lng: -96.8 },
@@ -128,21 +137,46 @@ section('AT&T soft holds: review fixes (#87)')
   const located = run(soft('Denver, CO', 39.74, -104.99))
   eq('a located soft hold that would be stranded is caught', [located.feasible, located.blockedBy, located.overridable], [false, 'STRANDS_SUCCESSOR', true])
   eq('without a location it was invisible (why soft holds now get one)', run(soft('')).feasible, true)
+}
 
-  const sync = fs.readFileSync('lib/attSoftHolds.ts', 'utf8')
-  eq("new soft holds carry the market of the truck's latest 160over90 work", sync.includes("market: lastMarket.get(truck_number)?.market ?? ''"), true)
-  eq('existing soft holds without a market are filled in', /h\.market \|\| !where/.test(sync), true)
-  eq('only genuine release records count (EXPIRED + release origination)', /origination: ATT_RELEASE_ORIGINATION, status: 'EXPIRED'/.test(sync), true)
-  eq('a soft hold over a release record is cut (a release that landed mid-sync)', sync.includes('3b. A release is final'), true)
+section('AT&T soft holds: the sync gives soft holds a market')
+{
+  const lastMarket = new Map([['412', { market: 'Denver', state: 'CO' }]])
+  eq('blank markets are filled from the latest 160over90 work', planMarketBackfill([
+    { id: 'a', truck_number: '412', market: '' },
+    { id: 'b', truck_number: '412', market: 'Austin' },
+    { id: 'c', truck_number: '999', market: '' },
+  ], lastMarket), [{ id: 'a', market: 'Denver', state: 'CO' }])
+  const fill = planSoftHoldFill({
+    window: [{ start: '2026-10-01', end: '2026-10-31', label: 'October 2026' }],
+    trucks: ['412', '999'], live: [], releases: [], lastMarket,
+  })
+  eq('new soft holds carry the market (blank only when none is known)', fill.map(f => [f.truck_number, f.market, f.state]), [['412', 'Denver', 'CO'], ['999', '', '']])
+}
 
-  const portal = fs.readFileSync('lib/holdRequestService.ts', 'utf8')
-  const portalCheck = portal.slice(portal.indexOf('// Conflict check'), portal.indexOf('The conflict query above'))
-  eq('client portal: soft holds block, and no one is named', !portalCheck.includes('excludeAttSoft') && !portalCheck.includes('client_name'), true)
-  const mcp = fs.readFileSync('app/api/v1/internal/holds/route.ts', 'utf8')
-  const mcpClient = mcp.slice(mcp.indexOf("if (actingUserType === 'client_user')"), mcp.indexOf('// Chain feasibility'))
-  eq('MCP client users never learn who holds the truck', !mcpClient.includes('c.client_name'), true)
-  const reinstate = fs.readFileSync('app/api/hold-requests/[id]/route.ts', 'utf8')
-  eq('a release record can never be reinstated into a live hold', reinstate.includes('if (hold.origination === ATT_RELEASE_ORIGINATION)'), true)
+section('AT&T soft holds: a release sticks, wherever and whenever it lands')
+{
+  const window = [
+    { start: '2026-09-28', end: '2026-09-30', label: 'September 2026' },
+    { start: '2026-10-01', end: '2026-10-31', label: 'October 2026' },
+    { start: '2026-11-01', end: '2026-11-30', label: 'November 2026' },
+  ]
+  const none = new Map<string, { market: string; state: string }>()
+  // Released before the sync ever reached November (no soft hold there yet).
+  const nov = [{ truck_number: '412', start: '2026-11-09', end: '2026-11-13' }]
+  const fill = planSoftHoldFill({ window, trucks: ['412'], live: [], releases: nov, lastMarket: none })
+  eq('a release beyond the window: the sync never fills those dates', fill.filter(f => f.start <= '2026-11-13' && f.end >= '2026-11-09'), [])
+  eq('...and still fills the rest of November', fill.filter(f => f.label === 'November 2026').map(f => [f.start, f.end]), [['2026-11-01', '2026-11-08'], ['2026-11-14', '2026-11-30']])
+  // A soft hold written over a release (the release landed mid-sync).
+  const oct = { id: 's1', truck_number: '412', start: '2026-10-01', end: '2026-10-31' }
+  eq('a soft hold over a release is cut back around it', planReleaseCuts([oct], [{ truck_number: '412', start: '2026-10-12', end: '2026-10-15' }]),
+    [{ id: 's1', keep: [{ start: '2026-10-01', end: '2026-10-11' }, { start: '2026-10-16', end: '2026-10-31' }] }])
+  eq('two releases in one month: both cut', planReleaseCuts([oct], [
+    { truck_number: '412', start: '2026-10-05', end: '2026-10-06' }, { truck_number: '412', start: '2026-10-20', end: '2026-10-22' },
+  ])[0].keep, [{ start: '2026-10-01', end: '2026-10-04' }, { start: '2026-10-07', end: '2026-10-19' }, { start: '2026-10-23', end: '2026-10-31' }])
+  eq('another truck\u2019s release: untouched', planReleaseCuts([oct], [{ truck_number: '999', start: '2026-10-12', end: '2026-10-15' }]), [])
+  eq('a release record can never be reinstated as a hold', reinstateBlockedByRelease('att_soft_release')?.includes('Undo it from the Conflicts page'), true)
+  eq('other expired holds still can', reinstateBlockedByRelease('frontend'), null)
 }
 
 section('AT&T soft holds: a release is for one booking')

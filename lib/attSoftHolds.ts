@@ -42,7 +42,7 @@ import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
-import { ATT_CLIENT, ATT_MIN_DAYS, PRIOR_MONTH_GRACE_DAY, attLookback, carve, freeRanges, isAttClient, isAttTruck, normalizeClient, releaseBlockedReason, softHoldWindow } from '@/lib/attSoftRules'
+import { ATT_CLIENT, ATT_MIN_DAYS, PRIOR_MONTH_GRACE_DAY, attLookback, isAttClient, isAttTruck, normalizeClient, planMarketBackfill, planReleaseCuts, planSoftHoldFill, releaseBlockedReason, softHoldWindow } from '@/lib/attSoftRules'
 import { HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
 
 export { ATT_CLIENT, isAttClient, softHoldWindow }
@@ -224,34 +224,34 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
 
   // 3b. A release is final: cut any soft hold that sits over a release record
   // (a release that landed while an earlier run was filling the window).
-  for (const r of releasedRows) {
-    const rs = iso(r.start_date), re = iso(r.end_date)
-    for (const h of [...live]) {
-      if (h.truck_number !== r.truck_number || iso(h.start_date) > re || iso(h.end_date) < rs) continue
-      try {
-        await prisma.$transaction(async tx => {
-          const { count } = await tx.hold.deleteMany({ where: { id: h.id, status: 'ATT_SOFT' } })
-          if (count === 0) return
-          for (const p of carve(iso(h.start_date), iso(h.end_date), rs, re)) {
-            live.push(await tx.hold.create({
-              data: { truck_number: h.truck_number, status: 'ATT_SOFT', client_name: h.client_name, market: h.market, state: h.state ?? '', notes: h.notes, start_date: utc(p.start), end_date: utc(p.end), created_by: h.created_by },
-            }))
-          }
-        })
-        live.splice(live.indexOf(h), 1)
-      } catch (err) {
-        console.error(`[att-soft] could not apply release to ${h.truck_number}:`, err)
-      }
+  const span = (r: { start_date: Date; end_date: Date }) => ({ start: iso(r.start_date), end: iso(r.end_date) })
+  const releases = releasedRows.map(r => ({ truck_number: r.truck_number, ...span(r) }))
+  for (const cut of planReleaseCuts(live.map(h => ({ id: h.id, truck_number: h.truck_number, ...span(h) })), releases)) {
+    const h = live.find(x => x.id === cut.id)!
+    try {
+      const pieces = await prisma.$transaction(async tx => {
+        const { count } = await tx.hold.deleteMany({ where: { id: h.id, status: 'ATT_SOFT' } })
+        if (count === 0) return null
+        const made: SoftHold[] = []
+        for (const p of cut.keep) {
+          made.push(await tx.hold.create({
+            data: { truck_number: h.truck_number, status: 'ATT_SOFT', client_name: h.client_name, market: h.market, state: h.state ?? '', notes: h.notes, start_date: utc(p.start), end_date: utc(p.end), created_by: h.created_by },
+          }))
+        }
+        return made
+      })
+      live.splice(live.indexOf(h), 1)
+      if (pieces) live.push(...pieces)
+    } catch (err) {
+      console.error(`[att-soft] could not apply release to ${h.truck_number}:`, err)
     }
   }
 
   // 3c. Soft holds say where the truck is expected: the market of its latest
   // 160over90 work. Fill it in on any that were written without one.
   const lastMarket = await attLastMarketByTruck(window[window.length - 1].end)
-  for (const h of live) {
-    const where = lastMarket.get(h.truck_number)
-    if (h.market || !where) continue
-    await prisma.hold.updateMany({ where: { id: h.id, status: 'ATT_SOFT', market: '' }, data: { market: where.market, state: where.state } }).catch(() => undefined)
+  for (const f of planMarketBackfill(live, lastMarket)) {
+    await prisma.hold.updateMany({ where: { id: f.id, status: 'ATT_SOFT', market: '' }, data: { market: f.market, state: f.state } }).catch(() => undefined)
   }
 
   // 4. Fill the window. For each truck and month, only the days not already
@@ -259,36 +259,32 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
   // manual release sticks, and the rest of that month is still reserved for
   // AT&T. Note: any soft hold shortened some other way (not by a release) is
   // filled back to the whole month here — releases are the way to free days.
-  const rangesFor = (rows: { truck_number: string; start_date: Date; end_date: Date }[], truck: string) =>
-    rows.filter(r => r.truck_number === truck).map(r => ({ start: iso(r.start_date), end: iso(r.end_date) }))
   let created = 0
-  for (const m of window) {
-    for (const truck_number of [...attTrucks].sort()) {
-      const gaps = freeRanges(m.start, m.end, [...rangesFor(live, truck_number), ...rangesFor(releasedRows, truck_number)])
-      for (const g of gaps) {
-        try {
-          const h = await prisma.hold.create({
-            // MIRROR PATH — no feasibility gate by design. This reflects AT&T's
-            // standing reservation; infeasible holds are reported by
-            // GET /api/holds/infeasible instead of being blocked.
-            data: {
-              truck_number,
-              status: 'ATT_SOFT',
-              client_name: 'AT&T',
-              market: lastMarket.get(truck_number)?.market ?? '',
-              state: lastMarket.get(truck_number)?.state ?? '',
-              notes: `Auto soft hold – AT&T (160over90) – ${m.label}`,
-              start_date: utc(g.start),
-              end_date: utc(g.end),
-              created_by: createdBy,
-            },
-          })
-          live.push(h)
-          created++
-        } catch (err) {
-          console.error(`[att-soft] create for ${truck_number} ${g.start}..${g.end} failed:`, err)
-        }
-      }
+  const fill = planSoftHoldFill({
+    window, trucks: [...attTrucks], lastMarket, releases,
+    live: live.map(h => ({ truck_number: h.truck_number, ...span(h) })),
+  })
+  for (const g of fill) {
+    try {
+      await prisma.hold.create({
+        // MIRROR PATH — no feasibility gate by design. This reflects AT&T's
+        // standing reservation; infeasible holds are reported by
+        // GET /api/holds/infeasible instead of being blocked.
+        data: {
+          truck_number: g.truck_number,
+          status: 'ATT_SOFT',
+          client_name: 'AT&T',
+          market: g.market,
+          state: g.state,
+          notes: `Auto soft hold – AT&T (160over90) – ${g.label}`,
+          start_date: utc(g.start),
+          end_date: utc(g.end),
+          created_by: createdBy,
+        },
+      })
+      created++
+    } catch (err) {
+      console.error(`[att-soft] create for ${g.truck_number} ${g.start}..${g.end} failed:`, err)
     }
   }
   return finish(attTrucks.size, releasedPremise, created)

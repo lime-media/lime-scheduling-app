@@ -108,8 +108,8 @@ export async function releaseAttSoftForBooking(opts: {
           action: 'RELEASE_ATT_SOFT',
           truck_number: truckNumber,
           user_id: userId,
-          hold_id: record.id,
-          details: JSON.stringify({ context, released: { start, end }, cut, replaced_hold_ids: replaced, created_hold_ids: createdIds, kept }),
+          // Ids in details, not hold_id: Undo deletes the record.
+          details: JSON.stringify({ context, release_id: record.id, released: { start, end }, cut, replaced_hold_ids: replaced, created_hold_ids: createdIds, kept }),
         },
       })
       return { released: { start, end }, cut, kept, releaseId: record.id }

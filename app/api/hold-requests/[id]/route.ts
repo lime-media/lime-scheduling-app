@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { ATT_RELEASE_ORIGINATION } from '@/lib/attSoftRules'
+import { reinstateBlockedByRelease } from '@/lib/attSoftRules'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
@@ -155,9 +155,8 @@ export async function PATCH(
     // it would silently turn it into a live hold. To reserve, re-quote.
     // A release record (lib/attSoftRelease.ts) is not a hold either: it only
     // stops the AT&T soft hold coming back. Undo it from the Conflicts page.
-    if (hold.origination === ATT_RELEASE_ORIGINATION) {
-      return NextResponse.json({ error: 'This is an AT&T soft-hold release record, not a reservation. Undo it from the Conflicts page.' }, { status: 400 })
-    }
+    const releaseRecord = reinstateBlockedByRelease(hold.origination)
+    if (releaseRecord) return NextResponse.json({ error: releaseRecord }, { status: 400 })
     if (hold.origination === QUOTE_ONLY_ORIGINATION) {
       return NextResponse.json(
         { error: 'This is a quote-only log, not an expired reservation. To reserve trucks, get a fresh quote and place the hold.' },

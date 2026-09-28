@@ -1,3 +1,4 @@
+import { partnerClashDetail } from '@/lib/bookingRefusals'
 import { NextResponse } from 'next/server'
 import { validateInternalApiKey } from '@/lib/internalAuth'
 import { query } from '@/lib/mssql'
@@ -194,11 +195,7 @@ export async function GET(request: Request) {
             feasibilityByTruck.set(num, {
               can_serve: false,
               reason: 'BOOKED',
-              detail: clash.yieldable
-                ? 'Not available on these dates.'
-                : clash.source === 'SCHEDULE'
-                ? `Scheduled for "${clash.program || 'a program'}" in ${clash.market || 'another market'} from ${clash.start} to ${clash.end}.`
-                : `Already held (${clash.status ?? 'HOLD'}) from ${clash.start} to ${clash.end}.`,
+              detail: partnerClashDetail(clash),
               // Kept for compatibility; always false. The partner/MCP API can
               // never book over an AT&T soft hold (see lib/attSoftRelease.ts).
               requires_soft_hold_override: false,

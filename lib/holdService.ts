@@ -3,6 +3,7 @@ import { activeHoldWhere } from '@/lib/holdFilters'
 import { query } from '@/lib/mssql'
 import { checkTruckFeasibility } from '@/lib/availabilityEngine'
 import { canonicalMarketName } from '@/lib/marketBounds'
+import { staffBookingRefusal } from '@/lib/bookingRefusals'
 
 export interface CreateHoldParams {
   truck_number: string
@@ -56,25 +57,8 @@ export async function createHold(params: CreateHoldParams): Promise<CreateHoldRe
     },
   })
 
-  if (conflictingHolds.some(h => h.status === 'ATT_SOFT')) {
-    return {
-      success: false,
-      error: {
-        type: 'hold_conflict',
-        message: `Truck ${truck_number} is reserved for AT&T (soft hold) on these dates. It can only be released for a booking from the app, after checking with operations.`,
-      },
-    }
-  }
-
-  if (conflictingHolds.length > 0) {
-    return {
-      success: false,
-      error: {
-        type: 'hold_conflict',
-        message: 'Conflict: truck already has a hold in this date range',
-      },
-    }
-  }
+  const conflictRefusal = staffBookingRefusal(truck_number, conflictingHolds.map(h => h.status), null)
+  if (conflictRefusal) return { success: false, error: { type: 'hold_conflict', message: conflictRefusal } }
 
   // Block hold placement if the truck already has a LED schedule in this date range
   try {
@@ -116,15 +100,8 @@ export async function createHold(params: CreateHoldParams): Promise<CreateHoldRe
       })
       // Refused even when only an AT&T soft hold is in the way (overridable):
       // this path is the holds and partner/MCP APIs, which never displace AT&T.
-      if (!feasibility.ok) {
-        return {
-          success: false,
-          error: {
-            type: 'feasibility_conflict',
-            message: `Cannot place hold — ${feasibility.detail ?? 'truck cannot serve these dates'}`,
-          },
-        }
-      }
+      const refusal = staffBookingRefusal(truck_number, [], feasibility)
+      if (refusal) return { success: false, error: { type: 'feasibility_conflict', message: refusal } }
     } catch (err) {
       // Deliberate fail-open: a logistics lookup outage must not stop a booking.
       // Tagged so it is greppable and distinguishable from a business rejection —

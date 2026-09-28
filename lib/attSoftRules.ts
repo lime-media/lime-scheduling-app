@@ -155,3 +155,72 @@ export function validateReleaseRange(start: string, end: string): string | null 
   if (n > ATT_RELEASE_MAX_DAYS) return `A release covers one booking: at most ${ATT_RELEASE_MAX_DAYS} days. Release longer bookings in parts, with operations.`
   return null
 }
+
+type Range = { start: string; end: string }
+type Where = { market: string; state: string }
+
+/**
+ * Sync step 3b: which live soft holds sit over a release record, and the
+ * pieces each one is cut down to. A release is final, so a soft hold written
+ * over one (a release that landed mid-sync) is cut back around it.
+ */
+export function planReleaseCuts(
+  soft: ({ id: string; truck_number: string } & Range)[],
+  releases: ({ truck_number: string } & Range)[],
+): { id: string; keep: Range[] }[] {
+  const out: { id: string; keep: Range[] }[] = []
+  for (const h of soft) {
+    const over = releases.filter(r => r.truck_number === h.truck_number && r.start <= h.end && r.end >= h.start)
+    if (!over.length) continue
+    let keep: Range[] = [{ start: h.start, end: h.end }]
+    for (const r of over) keep = keep.flatMap(p => carve(p.start, p.end, r.start, r.end))
+    out.push({ id: h.id, keep })
+  }
+  return out
+}
+
+/**
+ * Sync step 3c: soft holds written without a market get the market of the
+ * truck's latest 160over90 work, so the strand check can protect them.
+ */
+export function planMarketBackfill(
+  soft: { id: string; truck_number: string; market: string }[],
+  lastMarket: Map<string, Where>,
+): ({ id: string } & Where)[] {
+  return soft.flatMap(h => {
+    const where = lastMarket.get(h.truck_number)
+    return !h.market && where?.market ? [{ id: h.id, ...where }] : []
+  })
+}
+
+/**
+ * Sync step 4: the soft holds to create. For each AT&T truck and window
+ * month, only the days neither soft-held nor released for a booking, each
+ * carrying the truck's latest 160over90 market.
+ */
+export function planSoftHoldFill(opts: {
+  window: (Range & { label: string })[]
+  trucks: string[]
+  live: ({ truck_number: string } & Range)[]
+  releases: ({ truck_number: string } & Range)[]
+  lastMarket: Map<string, Where>
+}): ({ truck_number: string; label: string } & Range & Where)[] {
+  const of = (rows: ({ truck_number: string } & Range)[], t: string) => rows.filter(r => r.truck_number === t)
+  const out: ({ truck_number: string; label: string } & Range & Where)[] = []
+  for (const m of opts.window) {
+    for (const truck_number of [...opts.trucks].sort()) {
+      const where = opts.lastMarket.get(truck_number) ?? { market: '', state: '' }
+      for (const g of freeRanges(m.start, m.end, [...of(opts.live, truck_number), ...of(opts.releases, truck_number)])) {
+        out.push({ truck_number, label: m.label, ...g, ...where })
+      }
+    }
+  }
+  return out
+}
+
+/** Can this record be reinstated as a live hold? Release records never can. */
+export function reinstateBlockedByRelease(origination: string | null | undefined): string | null {
+  return origination === ATT_RELEASE_ORIGINATION
+    ? 'This is an AT&T soft-hold release record, not a reservation. Undo it from the Conflicts page.'
+    : null
+}

@@ -74,8 +74,9 @@ export async function POST(req: Request) {
       action: DISMISS,
       truck_number: soft.truck_number,
       user_id: session.user.id,
-      hold_id: body.softHoldId,
-      details: JSON.stringify({ key: `${body.softHoldId}|${body.reservationId}`, reservation_id: body.reservationId }),
+      // Ids live in details, not hold_id: the soft hold is later deleted (released,
+      // expired) and the audit row must never stand in the way of that.
+      details: JSON.stringify({ key: `${body.softHoldId}|${body.reservationId}`, soft_hold_id: body.softHoldId, reservation_id: body.reservationId }),
     },
   })
   return NextResponse.json({ ok: true })

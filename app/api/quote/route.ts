@@ -47,6 +47,8 @@ export async function POST(req: NextRequest) {
     sfdc_account_name?: string
     /** Seller's Brand Direct markup; applied only if Salesforce says the account is Brand Direct. */
     brand_markup_pct?: number
+    /** Price it even without enough trucks — it can then only be logged as a quote, never reserved. */
+    quote_only?: boolean
   }
 
   try {
@@ -150,7 +152,7 @@ export async function POST(req: NextRequest) {
     })
   }
 
-  if (!availability.sufficient) {
+  if (!availability.sufficient && body.quote_only !== true) {
     return NextResponse.json({
       availability: {
         requested: truck_count,
@@ -263,6 +265,9 @@ export async function POST(req: NextRequest) {
       pricingBasis: agreementName ? `agreement: ${agreementName}` : 'standard',
       // Internal page only: the Brand Direct markup folded into every price above.
       clientType: accountInfo?.clientType ?? null,
+      // Not enough trucks free: priced on request, and can only be logged as a
+      // quote (no reservation). Transport covers only the trucks that are free.
+      quoteOnlyRequired: !availability.sufficient,
       brandMarkupPct: markupPct,
       marketSizeTier: quote.input.marketSizeTier,
       schedule: { daysPerWeek, operatingHours, activationDays: days },

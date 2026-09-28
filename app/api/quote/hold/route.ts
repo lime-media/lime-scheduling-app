@@ -6,7 +6,7 @@
  * Uses the availability engine to auto-select trucks.
  */
 
-import { QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
+import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
 import { openStage } from '@/lib/sfdcStages'
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
@@ -74,7 +74,9 @@ export async function POST(req: NextRequest) {
     serviceAreaMiles: rateOverrides?.service_area_miles,
   })
 
-  if (selectedTrucks.length === 0) {
+  // A quote-only log reserves nothing, so it goes through even when no truck
+  // is free — that is exactly the low-conviction case it exists for.
+  if (selectedTrucks.length === 0 && !quoteOnly) {
     return NextResponse.json({ error: 'No trucks available' }, { status: 409 })
   }
 
@@ -184,7 +186,9 @@ export async function POST(req: NextRequest) {
   const canonicalMarket = (await canonicalMarketName(market, resolvedState ?? undefined)) ?? market
 
   const created: string[] = []
-  for (const truck of selectedTrucks) {
+  // Quote only with no truck free: still one record of what was quoted.
+  const recordTrucks: { truckNumber: string }[] = quoteOnly && selectedTrucks.length === 0 ? [{ truckNumber: QUOTE_ONLY_NO_TRUCK }] : selectedTrucks
+  for (const truck of recordTrucks) {
     try {
       await prisma.hold.create({
         data: {
@@ -199,12 +203,13 @@ export async function POST(req: NextRequest) {
           origination:       quoteOnly ? QUOTE_ONLY_ORIGINATION : 'frontend',
           notes:             quoteOnly ? `${QUOTE_ONLY_NOTE} Internal quote for ${sfdc_account_name || 'Unknown'}` : `Internal quote for ${sfdc_account_name || 'Unknown'}`,
           created_by:        createdBy,
-          client_user_id:    linkedClient?.id ?? null,
+          // Quote-only logs are internal: never shown in the client portal.
+          client_user_id:    quoteOnly ? null : linkedClient?.id ?? null,
           pricing_tier:      pricingTier,
           quoted_total:      serverTotal,
           daily_rate:        quote.dailyRate,
           features:          featuresJson,
-          truck_count:       selectedTrucks.length,
+          truck_count:       quoteOnly ? truck_count : selectedTrucks.length,
           campaign_group_id: campaignGroupId,
           expires_at:        quoteOnly ? new Date() : expiresAt,
         },
@@ -236,7 +241,8 @@ export async function POST(req: NextRequest) {
         clientType: accountInfo?.clientType,
         // Internal record only (Salesforce): every price above already includes it.
         description: [
-          quoteOnly ? `Quote only (low conviction): no trucks reserved. Priced for ${created.length} truck${created.length === 1 ? '' : 's'} (${created.join(', ')}), ${start_date} to ${end_date}.` : null,
+          quoteOnly ? `Quote only (low conviction): no trucks reserved. ${truck_count} truck${truck_count === 1 ? '' : 's'} quoted, ${start_date} to ${end_date}`
+            + (selectedTrucks.length ? `, priced on ${selectedTrucks.map(t => t.truckNumber).join(', ')}.` : '; no truck was available, so transport is not priced.') : null,
           markupPct ? `Brand Direct pricing: +${markupPct}% folded into every line item.` : null,
         ].filter(Boolean).join('\n') || undefined,
         name: `${sfdc_account_name || 'Client'} - ${market} - ${start_date} to ${end_date}`,
@@ -277,7 +283,7 @@ export async function POST(req: NextRequest) {
     sfdcOpportunityId,
     quoteOnly,
     message: quoteOnly
-      ? `Quote logged for ${sfdc_account_name || 'client'}; no trucks reserved. ${sfdcOpportunityId ? 'Salesforce opportunity created.' : ''}`
+      ? `Quote logged for ${sfdc_account_name || 'client'}; no trucks reserved.${selectedTrucks.length ? '' : ' No truck was free, so transport is not priced.'} ${sfdcOpportunityId ? 'Salesforce opportunity created.' : ''}`
       : `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}. ${sfdcOpportunityId ? 'Salesforce opportunity created.' : ''}`,
     _internal: {
       chainFlags: successorImpact,

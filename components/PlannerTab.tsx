@@ -72,6 +72,9 @@ function ScheduleSelect({ start, end, value, onChange }: { start: string; end: s
   )
 }
 
+/** One id per booking attempt; retries reuse it, a new attempt gets a new one. */
+const newBookingId = () => (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`).replace(/[^A-Za-z0-9_-]/g, '')
+
 let rowSeq = 0
 const newRow = (defaults: Partial<QuoteRow> = {}): QuoteRow => ({
   id: `r${++rowSeq}`, market: '', startDate: '', endDate: '', trucks: 1, daysPerWeek: 5, hours: 8, ...defaults,
@@ -108,6 +111,10 @@ export function PlannerTab() {
   const [stage, setStage] = useState<OpenStage>(DEFAULT_STAGE)
   // Low conviction: log a priced opportunity without reserving any truck.
   const [quoteOnly, setQuoteOnly] = useState(false)
+  // Switching between "log quote only" and a real booking is a different
+  // booking attempt: new id, and any earlier result no longer applies. (The
+  // server also keeps the two in separate id spaces.)
+  useEffect(() => { bookingId.current = newBookingId(); setHoldResult(null) }, [quoteOnly])
 
   // Intake
   const [showImport, setShowImport] = useState(false)
@@ -133,7 +140,7 @@ export function PlannerTab() {
   const showQuote = (q: MultiMarketQuote) => {
     setQuote(q)
     setSelected(new Set(q.lines.filter(l => l.missing < l.trucks).map(l => l.id)))
-    bookingId.current = (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`).replace(/[^A-Za-z0-9_-]/g, '')
+    bookingId.current = newBookingId()
   }
 
   // A quote is only good for the inputs it was built from. Any change to the

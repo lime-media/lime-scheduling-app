@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
@@ -25,7 +26,8 @@ export async function GET(req: NextRequest) {
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const holds = await prisma.hold.findMany({
-    where:   { client_user_id: session.id },
+    // Internal quote-only logs are never shown to the client.
+    where:   { client_user_id: session.id, NOT: { origination: QUOTE_ONLY_ORIGINATION } },
     orderBy: { created_at: 'desc' },
   })
 

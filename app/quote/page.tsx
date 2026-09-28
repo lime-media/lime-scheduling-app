@@ -23,7 +23,7 @@ type QuoteResponse = {
     excluded?: { truckNumber: string; from: string; reason: string; detail: string }[]
     requiresOverride?: { truckNumber: string; from: string; detail: string }[]
   }
-  pricing: { brandMarkupPct?: number; clientType?: string | null; dailyRate: number; effectiveDailyRate: number; hourSurcharge: number; truckDays: number; days: number; calendarDays: number; truckCount: number; baseMedia: number; pricingBasis: string; marketSizeTier: { id: number; label: string }; schedule: { daysPerWeek: number; operatingHours: number; activationDays: number } }
+  pricing: { quoteOnlyRequired?: boolean; brandMarkupPct?: number; clientType?: string | null; dailyRate: number; effectiveDailyRate: number; hourSurcharge: number; truckDays: number; days: number; calendarDays: number; truckCount: number; baseMedia: number; pricingBasis: string; marketSizeTier: { id: number; label: string }; schedule: { daysPerWeek: number; operatingHours: number; activationDays: number } }
   features: {
     shadowFencing: { included: boolean; cost: number; floored: boolean; digitalImpressions: number }
     smartDirectional: { included: boolean; cost: number }
@@ -105,7 +105,7 @@ export default function InternalQuotePage() {
 
   // `reprice`: the same quote again with a new Brand Direct markup — keep the
   // result and the seller's feature choices on screen while it refreshes.
-  const submitQuote = useCallback(async (marketOverride?: string, opts: { reprice?: boolean } = {}) => {
+  const submitQuote = useCallback(async (marketOverride?: string, opts: { reprice?: boolean; quoteOnly?: boolean } = {}) => {
     const market = marketOverride || form.market
     const { start_date, end_date, truck_count } = form
     if (quoteLoading || !market.trim() || !start_date || !end_date || !truck_count) return
@@ -122,7 +122,7 @@ export default function InternalQuotePage() {
       const res = await fetch('/api/quote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, market, truck_count, sfdc_account_id: account?.id, brand_markup_pct: isBrandDirect ? markupPct : undefined }),
+        body: JSON.stringify({ ...form, market, truck_count, sfdc_account_id: account?.id, brand_markup_pct: isBrandDirect ? markupPct : undefined, quote_only: opts.quoteOnly || quoteResult?.pricing.quoteOnlyRequired || undefined }),
       })
       const data = await res.json()
 
@@ -131,6 +131,7 @@ export default function InternalQuotePage() {
         setQuoteErrorDetail(data.detail ?? null)
       } else if (res.ok) {
         setQuoteResult(data)
+        if (data.pricing?.quoteOnlyRequired) setQuoteOnly(true)
         if (data.market) setForm(prev => ({ ...prev, market: data.market }))
         if (!opts.reprice) {
           setToggles({ shadowFencing: true, smartDirectional: false, deviceId: false, studies: [] })
@@ -309,6 +310,13 @@ export default function InternalQuotePage() {
             <p className="text-sm font-medium text-red-900">{quoteError}</p>
             {quoteErrorDetail && (
               <p className="text-xs text-red-700 mt-1">{quoteErrorDetail}</p>
+            )}
+            {/* Not enough trucks: it can still be priced and logged as a quote, reserving nothing. */}
+            {quoteErrorDetail && (
+              <button type="button" onClick={() => submitQuote(undefined, { quoteOnly: true })} disabled={quoteLoading}
+                className="mt-2 rounded border border-red-300 bg-white px-2.5 py-1 text-xs font-medium text-red-900 hover:bg-red-100 disabled:opacity-50">
+                Price it anyway (quote only, no reservation)
+              </button>
             )}
           </div>
         )}
@@ -559,8 +567,11 @@ export default function InternalQuotePage() {
                   )}
                   {!holdResult?.ok && (
                     <label className="mt-2 flex items-start gap-2 text-xs text-gray-700 cursor-pointer">
-                      <input type="checkbox" checked={quoteOnly} onChange={e => setQuoteOnly(e.target.checked)} className="mt-0.5 rounded" />
-                      <span><span className="font-medium">Log quote only, no reservation</span>: creates the priced Salesforce opportunity but reserves no trucks (for low-conviction quotes).</span>
+                      <input type="checkbox" checked={quoteOnly || !!quoteResult.pricing.quoteOnlyRequired} disabled={!!quoteResult.pricing.quoteOnlyRequired}
+                        onChange={e => { setQuoteOnly(e.target.checked); setHoldResult(null) }} className="mt-0.5 rounded" />
+                      <span><span className="font-medium">Log quote only, no reservation</span>: creates the priced Salesforce opportunity but reserves no trucks (for low-conviction quotes).
+                        {quoteResult.pricing.quoteOnlyRequired && <span className="block text-amber-800">Not enough trucks are free for these dates, so this can only be logged as a quote.</span>}
+                      </span>
                     </label>
                   )}
 

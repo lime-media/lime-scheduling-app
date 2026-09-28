@@ -13,7 +13,7 @@ import { canonicalMarketName } from '@/lib/marketBounds'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { computeHoldExpiresAt } from '@/lib/holdExpiry'
 import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, resolveOpportunityOwner } from '@/lib/salesforceClient'
-import { brandMarkupAmount, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
+import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import {
@@ -91,11 +91,19 @@ export async function POST(req: NextRequest) {
     .map((s: string) => s.trim().toLowerCase())
     .filter((s: string): s is StudyType => (VALID_STUDIES as readonly string[]).includes(s))
 
+  // Brand Direct: folded into every price by the engine — only when
+  // Salesforce says the account is Brand Direct (the browser's word is not
+  // enough). The seller's percentage is kept to 0-50%; it starts at 10%.
+  const accountInfo = sfdc_account_id && isSfdcConfigured()
+    ? await getSfdcAccountInfo(sfdc_account_id).catch((err) => { console.error('[quote/hold] account lookup failed:', err); return null })
+    : null
+  const markupPct = brandMarkupFor(accountInfo?.clientType, brand_markup_pct)
+
   const marketSizeTierId = await resolveMarketSizeTierId(market)
   const quote = computeQuote({
     truckCount: truck_count, days: activationDays, operatingHours: opHours,
     marketSizeTierId, includeSmartDirectional: includeSD, includeDeviceId: includeDID, studies,
-    rateOverrides,
+    rateOverrides, markupPct,
   })
 
   let mediaTotal = quote.good.baseMedia
@@ -103,16 +111,6 @@ export async function POST(req: NextRequest) {
   if (includeSD) mediaTotal += quote.better.smartDirectional
   if (includeDID) mediaTotal += quote.better.deviceId
   if (quote.best.reachOk && studies.length > 0) mediaTotal += studies.length * quote.best.studyCost
-
-  // Brand Direct: a premium on media (not transport), only when Salesforce
-  // says the account is Brand Direct — the browser's word is not enough.
-  // The seller's percentage is kept to 0-50%; it starts at 10% on the page.
-  const accountInfo = sfdc_account_id && isSfdcConfigured()
-    ? await getSfdcAccountInfo(sfdc_account_id).catch((err) => { console.error('[quote/hold] account lookup failed:', err); return null })
-    : null
-  const brandMarkupPct = accountInfo?.clientType === 'Brand Direct' ? clampBrandMarkup(brand_markup_pct) : 0
-  const brandMarkup = brandMarkupAmount(mediaTotal, brandMarkupPct)
-  mediaTotal += brandMarkup
 
   const transport = priceTransport({
     activationDays,
@@ -124,6 +122,7 @@ export async function POST(req: NextRequest) {
       airfare: rateOverrides?.transport_airfare,
       hotelPerNight: rateOverrides?.transport_hotel_per_night,
     },
+    markupPct,
   })
 
   const transportCharge = transport.charge
@@ -160,8 +159,6 @@ export async function POST(req: NextRequest) {
     studies, studyCost: quote.best.studyCost,
     studiesTotal: quote.best.reachOk ? studies.length * quote.best.studyCost : 0,
     transportCharge,
-    brandMarkupPct: brandMarkupPct || undefined,
-    brandMarkup: brandMarkup || undefined,
     successorImpact,
   })
 
@@ -233,6 +230,8 @@ export async function POST(req: NextRequest) {
         accountId: sfdc_account_id,
         ownerId: owner.ownerId ?? undefined,
         clientType: accountInfo?.clientType,
+        // Internal record only (Salesforce): every price above already includes it.
+        description: markupPct ? `Brand Direct pricing: +${markupPct}% folded into every line item.` : undefined,
         name: `${sfdc_account_name || 'Client'} - ${market} - ${start_date} to ${end_date}`,
         stageName: 'WARM',
         closeDate: start_date,

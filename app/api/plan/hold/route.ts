@@ -252,6 +252,8 @@ export async function POST(req: NextRequest) {
         const starts = quote.lines.map(l => l.delivery.firstDay ?? l.startDate).sort()
         const ends = quote.lines.map(l => l.delivery.lastDay ?? l.endDate).sort()
         const description = [
+          // Internal record only: every price below already includes it.
+          ...(quote.brandMarkupPct ? [`Brand Direct pricing: +${quote.brandMarkupPct}% folded into every line item.`, ''] : []),
           'Booked:',
           ...quote.lines.map(l => `${describe(l)}, ${money(l.total)}`),
           ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(l.total)}`)] : []),

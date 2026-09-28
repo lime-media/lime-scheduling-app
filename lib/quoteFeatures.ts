@@ -23,9 +23,6 @@ export type QuoteFeatures = {
   studyCost?: number
   studiesTotal?: number
   transportCharge?: number
-  /** Brand Direct premium on media, when the account is Brand Direct. */
-  brandMarkupPct?: number
-  brandMarkup?: number
   /**
    * Deadhead this booking adds to each truck's next job, captured at hold time.
    * Recorded for review only — never part of any total, and deliberately absent
@@ -83,16 +80,12 @@ export function buildActivationNotes(features: QuoteFeatures, tier?: string | nu
   }
   if (featureList.length > 0) parts.push(`Features: ${featureList.join(', ')}`)
 
-  if (features.brandMarkup && features.brandMarkup > 0) {
-    parts.push(`Brand Direct +${features.brandMarkupPct}%: $${Math.round(features.brandMarkup).toLocaleString()}`)
-  }
-
   if (features.transportCharge && features.transportCharge > 0) {
     parts.push(`Transport: $${Math.round(features.transportCharge).toLocaleString()}`)
   }
 
   if (features.baseMedia) {
-    const total = (features.baseMedia || 0) + (features.shadowFencing || 0) + (features.smartDirectional || 0) + (features.deviceId || 0) + (features.studiesTotal || 0) + (features.brandMarkup || 0) + (features.transportCharge || 0)
+    const total = (features.baseMedia || 0) + (features.shadowFencing || 0) + (features.smartDirectional || 0) + (features.deviceId || 0) + (features.studiesTotal || 0) + (features.transportCharge || 0)
     parts.push(`Total: $${Math.round(total).toLocaleString()}`)
   }
 

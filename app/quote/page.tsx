@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, brandMarkupAmount, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
+import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
 import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
@@ -22,7 +22,7 @@ type QuoteResponse = {
     excluded?: { truckNumber: string; from: string; reason: string; detail: string }[]
     requiresOverride?: { truckNumber: string; from: string; detail: string }[]
   }
-  pricing: { dailyRate: number; effectiveDailyRate: number; hourSurcharge: number; truckDays: number; days: number; calendarDays: number; truckCount: number; baseMedia: number; pricingBasis: string; marketSizeTier: { id: number; label: string }; schedule: { daysPerWeek: number; operatingHours: number; activationDays: number } }
+  pricing: { brandMarkupPct?: number; clientType?: string | null; dailyRate: number; effectiveDailyRate: number; hourSurcharge: number; truckDays: number; days: number; calendarDays: number; truckCount: number; baseMedia: number; pricingBasis: string; marketSizeTier: { id: number; label: string }; schedule: { daysPerWeek: number; operatingHours: number; activationDays: number } }
   features: {
     shadowFencing: { included: boolean; cost: number; floored: boolean; digitalImpressions: number }
     smartDirectional: { included: boolean; cost: number }
@@ -98,7 +98,9 @@ export default function InternalQuotePage() {
 
   const quoteRef = useRef<HTMLDivElement>(null)
 
-  const submitQuote = useCallback(async (marketOverride?: string) => {
+  // `reprice`: the same quote again with a new Brand Direct markup — keep the
+  // result and the seller's feature choices on screen while it refreshes.
+  const submitQuote = useCallback(async (marketOverride?: string, opts: { reprice?: boolean } = {}) => {
     const market = marketOverride || form.market
     const { start_date, end_date, truck_count } = form
     if (quoteLoading || !market.trim() || !start_date || !end_date || !truck_count) return
@@ -107,7 +109,7 @@ export default function InternalQuotePage() {
     setQuoteLoading(true)
     setQuoteError(null)
     setQuoteErrorDetail(null)
-    setQuoteResult(null)
+    if (!opts.reprice) setQuoteResult(null)
     setHoldResult(null)
     setMarketCandidates(null)
 
@@ -115,7 +117,7 @@ export default function InternalQuotePage() {
       const res = await fetch('/api/quote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, market, truck_count, sfdc_account_id: account?.id }),
+        body: JSON.stringify({ ...form, market, truck_count, sfdc_account_id: account?.id, brand_markup_pct: isBrandDirect ? markupPct : undefined }),
       })
       const data = await res.json()
 
@@ -125,8 +127,10 @@ export default function InternalQuotePage() {
       } else if (res.ok) {
         setQuoteResult(data)
         if (data.market) setForm(prev => ({ ...prev, market: data.market }))
-        setToggles({ shadowFencing: true, smartDirectional: false, deviceId: false, studies: [] })
-        setTimeout(() => quoteRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+        if (!opts.reprice) {
+          setToggles({ shadowFencing: true, smartDirectional: false, deviceId: false, studies: [] })
+          setTimeout(() => quoteRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+        }
       } else if (data.error === 'DISAMBIGUATION_REQUIRED') {
         setMarketCandidates(data.candidates)
       } else {
@@ -137,7 +141,17 @@ export default function InternalQuotePage() {
     } finally {
       setQuoteLoading(false)
     }
-  }, [quoteLoading, form])
+  }, [quoteLoading, form, account?.id, isBrandDirect, markupPct])
+
+  // Changing the Brand Direct markup re-prices the quote on the server, so
+  // every line on screen is the real, folded-in price.
+  const repriceWith = (pct: number) => {
+    const next = clampBrandMarkup(pct)
+    setBrandMarkupPct(next)
+    if (quoteResult && next !== quoteResult.pricing.brandMarkupPct) setRepriceToken(t => t + 1)
+  }
+  const [repriceToken, setRepriceToken] = useState(0)
+  useEffect(() => { if (repriceToken) submitQuote(undefined, { reprice: true }) }, [repriceToken]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const placeHold = useCallback(async () => {
     if (holdLoading || !quoteResult || !account) return
@@ -408,6 +422,26 @@ export default function InternalQuotePage() {
               )}
             </div>
 
+            {/* Brand Direct — internal only. The markup is folded into every
+                price below; the client never sees it as a line. */}
+            {isBrandDirect && (
+              <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-purple-200 bg-purple-50 px-3 py-2 text-xs text-purple-900">
+                <span className="font-semibold">Brand Direct pricing</span>
+                <label className="flex items-center gap-1">
+                  +
+                  <input type="number" min={0} max={MAX_BRAND_MARKUP_PCT} step={0.5} value={brandMarkupPct}
+                    onChange={e => setBrandMarkupPct(e.target.value === '' ? 0 : Number(e.target.value))}
+                    onBlur={() => repriceWith(brandMarkupPct)}
+                    onKeyDown={e => { if (e.key === 'Enter') repriceWith(brandMarkupPct) }}
+                    aria-label="Brand Direct markup percent"
+                    className="w-16 border border-purple-200 rounded px-1.5 py-0.5 text-right text-sm bg-white focus:outline-none focus:ring-2 focus:ring-purple-400" />
+                  %
+                </label>
+                <span className="text-purple-700">included in every price below, transport too. Not shown to the client.</span>
+                {quoteLoading && <span className="text-purple-500">Updating…</span>}
+              </div>
+            )}
+
             {/* Summary line */}
             <div className="text-xs text-gray-500 mb-3">
               {quoteResult.pricing.truckCount} truck{quoteResult.pricing.truckCount === 1 ? '' : 's'} × {quoteResult.pricing.days} activation day{quoteResult.pricing.days === 1 ? '' : 's'}
@@ -433,8 +467,7 @@ export default function InternalQuotePage() {
                   <button key={p.name} onClick={isAvailable ? p.onClick : undefined} disabled={!isAvailable}
                     className={`text-left rounded-xl border-2 p-3 transition-all ${isAvailable ? colors[p.color] : 'border-gray-200 bg-gray-50 opacity-60'} ${active ? 'ring-2 ring-offset-1 ring-green-500' : ''} ${isAvailable ? 'hover:shadow-md cursor-pointer' : 'cursor-not-allowed'}`}>
                     <span className={`text-[10px] font-bold text-white px-2 py-0.5 rounded-full ${isAvailable ? badges[p.color] : 'bg-gray-400'}`}>{p.name}</span>
-                    <div className={`text-lg font-bold mt-1.5 ${isAvailable ? 'text-gray-900' : 'text-gray-400'}`}>{fmtMoney(p.total + brandMarkupAmount(p.total, markupPct))}</div>
-                    {markupPct > 0 && <div className="text-[10px] text-purple-700">incl. +{markupPct}% Brand Direct</div>}
+                    <div className={`text-lg font-bold mt-1.5 ${isAvailable ? 'text-gray-900' : 'text-gray-400'}`}>{fmtMoney(p.total)}</div>
                     {quoteResult.transportCharge > 0 && <div className="text-[10px] text-gray-400">+ transport</div>}
                   </button>
                 )
@@ -489,9 +522,7 @@ export default function InternalQuotePage() {
               if (toggles.deviceId) mediaTotal += features.deviceId.cost
               if (features.studies.available && toggles.studies.length > 0) mediaTotal += toggles.studies.length * features.studies.costPerStudy
               const transport = quoteResult.transportCharge
-              // Brand Direct: the premium is on media only, never on transport.
-              const markup = brandMarkupAmount(mediaTotal, markupPct)
-              const total = mediaTotal + markup + transport
+              const total = mediaTotal + transport
 
               return (
                 <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4">
@@ -501,22 +532,6 @@ export default function InternalQuotePage() {
                     {toggles.smartDirectional && <div className="flex justify-between text-gray-600"><span>Smart Directional</span><span>+ {fmtMoney(features.smartDirectional.cost)}</span></div>}
                     {toggles.deviceId && <div className="flex justify-between text-gray-600"><span>Device ID Passback</span><span>+ {fmtMoney(features.deviceId.cost)}</span></div>}
                     {toggles.studies.length > 0 && features.studies.available && <div className="flex justify-between text-gray-600"><span>{toggles.studies.length} lift {toggles.studies.length === 1 ? 'study' : 'studies'}</span><span>+ {fmtMoney(toggles.studies.length * features.studies.costPerStudy)}</span></div>}
-                    {isBrandDirect && (
-                      <div className="flex justify-between items-center text-purple-800 pt-1.5 border-t border-gray-100">
-                        <label className="flex items-center gap-1.5">
-                          <span>Brand Direct markup</span>
-                          <span className="text-gray-400">+</span>
-                          <input type="number" min={0} max={MAX_BRAND_MARKUP_PCT} step={0.5} value={brandMarkupPct}
-                            onChange={e => setBrandMarkupPct(e.target.value === '' ? 0 : Number(e.target.value))}
-                            onBlur={() => setBrandMarkupPct(clampBrandMarkup(brandMarkupPct))}
-                            aria-label="Brand Direct markup percent"
-                            className="w-16 border border-purple-200 rounded px-1.5 py-0.5 text-right text-sm focus:outline-none focus:ring-2 focus:ring-purple-400" />
-                          <span>%</span>
-                          <span className="text-[11px] text-gray-400">on media</span>
-                        </label>
-                        <span>+ {fmtMoney(markup)}</span>
-                      </div>
-                    )}
                     {transport > 0 && <div className="flex justify-between text-gray-600 pt-1.5 border-t border-gray-100"><span>Transport</span><span>+ {fmtMoney(transport)}</span></div>}
                     <div className="flex justify-between font-bold text-gray-900 pt-2 border-t border-gray-200 text-base"><span>Total</span><span>{fmtMoney(total)}</span></div>
                   </div>

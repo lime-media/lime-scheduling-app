@@ -12,6 +12,7 @@
  * one Salesforce opportunity in one step.
  */
 
+import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
 import { useEffect, useRef, useState } from 'react'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
@@ -99,6 +100,9 @@ export function PlannerTab() {
   const [rowErrors, setRowErrors] = useState<RowError[]>([])
   const [features, setFeatures] = useState({ shadowFencing: true, smartDirectional: false, deviceId: false })
   const [alloyRenews, setAlloyRenews] = useState(false)
+  // Brand Direct accounts: a premium folded into every price (internal control only).
+  const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
+  const isBrandDirect = account?.clientType === 'Brand Direct'
 
   // Intake
   const [showImport, setShowImport] = useState(false)
@@ -132,7 +136,9 @@ export function PlannerTab() {
   // something other than what is on screen.
   useEffect(() => {
     setQuote(null); setHoldResult(null)
-  }, [rows, features, alloyRenews, account])
+  }, [rows, features, alloyRenews, account, brandMarkupPct])
+  // A new client starts at the default markup.
+  useEffect(() => { setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT) }, [account?.id])
 
   const updateRow = (id: string, patch: Partial<QuoteRow>) => {
     setRows(rs => rs.map(r => (r.id === id ? { ...r, ...patch } : r)))
@@ -210,6 +216,8 @@ export function PlannerTab() {
     sfdcAccountName: account?.name,
     features,
     alloyRenews,
+    // The server applies it only if Salesforce says the account is Brand Direct.
+    brandMarkupPct: isBrandDirect ? clampBrandMarkup(brandMarkupPct) : undefined,
   })
 
   const getQuote = async () => {
@@ -357,6 +365,21 @@ export function PlannerTab() {
           <label className="flex items-center gap-2"><input type="checkbox" checked={features.deviceId} onChange={e => setFeatures(f => ({ ...f, deviceId: e.target.checked }))} /> Device ID passback</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={alloyRenews} onChange={e => setAlloyRenews(e.target.checked)} /> Keep AT&amp;T Alloy Build trucks reserved</label>
         </div>
+        {isBrandDirect && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-purple-200 bg-purple-50 px-3 py-2 text-xs text-purple-900">
+            <span className="font-semibold">Brand Direct pricing</span>
+            <label className="flex items-center gap-1">
+              +
+              <input type="number" min={0} max={MAX_BRAND_MARKUP_PCT} step={0.5} value={brandMarkupPct}
+                onChange={e => setBrandMarkupPct(e.target.value === '' ? 0 : Number(e.target.value))}
+                onBlur={() => setBrandMarkupPct(clampBrandMarkup(brandMarkupPct))}
+                aria-label="Brand Direct markup percent"
+                className="w-16 border border-purple-200 rounded px-1.5 py-0.5 text-right text-sm bg-white focus:outline-none focus:ring-2 focus:ring-purple-400" />
+              %
+            </label>
+            <span className="text-purple-700">included in every price, transport too. Not shown to the client.</span>
+          </div>
+        )}
         <div className="flex mt-4">
           <button onClick={getQuote} disabled={quoting || !ready}
             className="ml-auto bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-5 py-2.5 text-sm font-medium">
@@ -503,6 +526,7 @@ function QuoteResult({ quote, account, holding, holdResult, selected, onToggle, 
         </div>
         <p className="text-xs text-gray-500 mb-3">
           {summary.markets} markets · {summary.trucksUsed} trucks · {summary.drivers} drivers · pricing: {quote.pricingBasis}
+          {quote.brandMarkupPct > 0 && <> · <span className="text-purple-700">Brand Direct +{quote.brandMarkupPct}% included</span></>}
         </p>
 
         {unplaced.length > 0 && (

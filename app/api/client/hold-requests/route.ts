@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
 import { createClientHold } from '@/lib/holdRequestService'
@@ -160,6 +161,13 @@ async function handleAutoSelectHold(
     .map(s => s.trim().toLowerCase())
     .filter((s): s is StudyType => (VALID_STUDIES as readonly string[]).includes(s))
 
+  // Brand Direct accounts are priced with the markup folded into every price,
+  // at the default rate (clients cannot change it and never see it).
+  const accountInfo = session.sfdcAccountId && isSfdcConfigured()
+    ? await getSfdcAccountInfo(session.sfdcAccountId).catch(() => null)
+    : null
+  const markupPct = brandMarkupFor(accountInfo?.clientType)
+
   const quote = computeQuote({
     truckCount: truck_count,
     days: activationDays,
@@ -169,6 +177,7 @@ async function handleAutoSelectHold(
     includeDeviceId,
     studies,
     rateOverrides,
+    markupPct,
   })
 
   let mediaTotal = quote.good.baseMedia
@@ -189,6 +198,7 @@ async function handleAutoSelectHold(
       airfare: rateOverrides?.transport_airfare,
       hotelPerNight: rateOverrides?.transport_hotel_per_night,
     },
+    markupPct,
   })
 
   const transportCharge = transport.charge
@@ -294,7 +304,6 @@ async function handleAutoSelectHold(
         : undefined
 
       // A client's own request has no internal rep: the account's owner owns it.
-      const accountInfo = await getSfdcAccountInfo(session.sfdcAccountId).catch(() => null)
       const result = await createOpportunity({
         accountId: session.sfdcAccountId,
         ownerId: accountInfo?.ownerId ?? undefined,

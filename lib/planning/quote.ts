@@ -13,6 +13,8 @@
  * start. Every figure comes from the same engine and pricing.
  */
 
+import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
+import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
 import {
   computeQuote, priceTransport,
   resolveCampaignCoords, resolveMarketSizeTierId, businessDaysBetween,
@@ -54,6 +56,8 @@ export type QuoteRequest = {
   reserveSoftHolds?: boolean
   alloyRenews?: boolean
   hopLimitRoadMiles?: number
+  /** Seller's Brand Direct markup; applied only if Salesforce says the account is Brand Direct. */
+  brandMarkupPct?: number
 }
 
 export type RowError = { rowId: string; message: string; candidates?: string[] }
@@ -177,6 +181,9 @@ export type MultiMarketQuote = {
   alternatives: Alternative[]
   reserved: ReservedTruck[]
   pricingBasis: string
+  /** Internal: the Brand Direct markup folded into every price (0 for agencies). */
+  brandMarkupPct: number
+  clientType: 'Agency' | 'Brand Direct' | null
   warnings: string[]
 }
 
@@ -249,6 +256,7 @@ async function priceLines(
   features: QuoteRequest['features'],
   overrides: RateOverrides | null,
   tiers: Map<string, number>,
+  markupPct = 0,
 ): Promise<LineQuote[]> {
   const legs = legsByLine(plan)
   const trucks = trucksByLine(plan)
@@ -272,6 +280,7 @@ async function priceLines(
       includeSmartDirectional: features.smartDirectional,
       includeDeviceId: features.deviceId,
       rateOverrides: overrides,
+      markupPct,
     })
     const sf = features.shadowFencing ? q.better.shadowFencing : 0
     const sd = features.smartDirectional ? q.better.smartDirectional : 0
@@ -285,6 +294,7 @@ async function priceLines(
       legs: lineLegs.map(l => ({ distanceMiles: l.distanceMiles, needsRepositioning: l.transportDays > 0, truckNumber: l.truckNumber, fromMarket: l.fromLabel })),
       transportIncluded: overrides?.transport_included,
       overrides: { dayRate: overrides?.transport_day_rate, airfare: overrides?.transport_airfare, hotelPerNight: overrides?.transport_hotel_per_night },
+      markupPct,
     })
     const absorbedCost = t.outcome === 'ABSORBED' ? Math.round(lineLegs.reduce((s, l) => s + l.absorbedCost, 0)) : 0
 
@@ -376,6 +386,11 @@ export async function buildMultiMarketQuote(req: QuoteRequest, lines: OrderLine[
     renewingPrograms: req.alloyRenews ? ['Alloy Build'] : [],
   }
   const { overrides, basis } = await rateOverridesFor(req.sfdcAccountId)
+  // Brand Direct: folded into every market's prices (lib/pricing/brandMarkup.ts).
+  const accountInfo = req.sfdcAccountId && isSfdcConfigured()
+    ? await getSfdcAccountInfo(req.sfdcAccountId).catch((err) => { console.error('[plan/quote] account lookup failed:', err); return null })
+    : null
+  const markupPct = brandMarkupFor(accountInfo?.clientType, req.brandMarkupPct)
   const s: EngineSettings = {
     ...DEFAULT_ENGINE,
     today,
@@ -389,10 +404,10 @@ export async function buildMultiMarketQuote(req: QuoteRequest, lines: OrderLine[
 
   const run = (ls: OrderLine[], settings = s) => planOrder(ls, fleet.trucks, settings)
   const plan = run(lines)
-  const priced = await priceLines(lines, plan, req.features, overrides, tiers)
+  const priced = await priceLines(lines, plan, req.features, overrides, tiers, markupPct)
   const summary = summarize(priced, plan)
 
-  const alternatives = opts.alternatives === false ? [] : await buildAlternatives(lines, plan, summary, { run, price: (ls, p) => priceLines(ls, p, req.features, overrides, tiers), s, trucks: fleet.trucks })
+  const alternatives = opts.alternatives === false ? [] : await buildAlternatives(lines, plan, summary, { run, price: (ls, p) => priceLines(ls, p, req.features, overrides, tiers, markupPct), s, trucks: fleet.trucks })
 
   const warnings: string[] = []
   if (plan.approximateClusters > 0) warnings.push('Some markets were too many to pair exactly in the time allowed. The truck count is still the minimum, but the weekly hops may not be the shortest possible.')
@@ -416,7 +431,7 @@ export async function buildMultiMarketQuote(req: QuoteRequest, lines: OrderLine[
   }
 
   return {
-    quote: { lines: priced, summary, itineraries: itineraries(plan), alternatives, reserved: fleet.reserved, pricingBasis: basis, warnings },
+    quote: { lines: priced, summary, itineraries: itineraries(plan), alternatives, reserved: fleet.reserved, pricingBasis: basis, brandMarkupPct: markupPct, clientType: accountInfo?.clientType ?? null, warnings },
     lines,
     plan,
   }

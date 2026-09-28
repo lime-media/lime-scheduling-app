@@ -1,27 +1,46 @@
 /**
- * Brand Direct markup — pure-function coverage.
+ * Brand Direct markup — folded into every price, never shown as a line.
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { brandMarkupAmount, clampBrandMarkup, clientTypeOf, DEFAULT_BRAND_MARKUP_PCT } from '@/lib/pricing/brandMarkup'
+import { brandMarkupFor, clampBrandMarkup, clientTypeOf, withMarkup, DEFAULT_BRAND_MARKUP_PCT } from '@/lib/pricing/brandMarkup'
+import { computeQuote } from '@/lib/pricing/engine'
+import { priceTransport } from '@/lib/pricing/transport'
 import { buildActivationNotes } from '@/lib/quoteFeatures'
 
-section('Brand Direct: which accounts')
-eq('Brand Direct is Brand Direct', clientTypeOf('Brand Direct'), 'Brand Direct')
-eq('Agency is Agency', clientTypeOf('Agency'), 'Agency')
-eq('blank (most accounts) is Agency, the Salesforce default', clientTypeOf(null), 'Agency')
-
-section('Brand Direct: the markup')
-eq('starts at +10%', DEFAULT_BRAND_MARKUP_PCT, 10)
-eq('10% of $12,000 media', brandMarkupAmount(12000, 10), 1200)
-eq('the seller can change it', brandMarkupAmount(12000, 7.5), 900)
-eq('no markup is allowed', brandMarkupAmount(12000, 0), 0)
+section('Brand Direct: which accounts, and how much')
+eq('Brand Direct is Brand Direct; blank or Agency is Agency', [clientTypeOf('Brand Direct'), clientTypeOf('Agency'), clientTypeOf(null)], ['Brand Direct', 'Agency', 'Agency'])
+eq('Brand Direct starts at +10%', brandMarkupFor('Brand Direct'), DEFAULT_BRAND_MARKUP_PCT)
+eq('the seller can change it', brandMarkupFor('Brand Direct', 7.5), 7.5)
+eq('an Agency never gets one, whatever the browser sends', brandMarkupFor('Agency', 25), 0)
+eq('unknown account type: none', brandMarkupFor(null, 25), 0)
 eq('kept to 0-50%', [clampBrandMarkup(-5), clampBrandMarkup(80), clampBrandMarkup(12.25)], [0, 50, 12.3])
-eq('missing or junk means the default', [clampBrandMarkup(undefined), clampBrandMarkup('abc')], [10, 10])
 
-section('Brand Direct: shown in the Salesforce notes and counted in the total')
+section('Brand Direct: folded into every line item')
 {
-  const notes = buildActivationNotes({ baseMedia: 10000, shadowFencing: 2500, brandMarkupPct: 10, brandMarkup: 1250, transportCharge: 800 }, 'Better')
-  eq('the markup line is there', notes.includes('Brand Direct +10%: $1,250'), true)
-  eq('and the total includes it (10,000 + 2,500 + 1,250 + 800)', notes.includes('Total: $14,550'), true)
+  const input = { truckCount: 2, days: 10, operatingHours: 10, marketSizeTierId: 3, includeSmartDirectional: true, includeDeviceId: true, studies: ['brand_lift' as const] }
+  const plain = computeQuote(input)
+  const brand = computeQuote({ ...input, markupPct: 10 })
+  const ratio = (a: number, b: number) => Math.round((a / b) * 1000) / 1000
+  eq('daily rate +10%', ratio(brand.dailyRate, plain.dailyRate), 1.1)
+  eq('hour surcharge +10%', ratio(brand.hourSurcharge, plain.hourSurcharge), 1.1)
+  eq('base media +10%', ratio(brand.good.baseMedia, plain.good.baseMedia), 1.1)
+  eq('shadow fencing +10%', ratio(brand.better.shadowFencing, plain.better.shadowFencing), 1.1)
+  eq('smart directional +10%', ratio(brand.better.smartDirectional, plain.better.smartDirectional), 1.1)
+  eq('device ID +10%', ratio(brand.better.deviceId, plain.better.deviceId), 1.1)
+  eq('study cost +10%', ratio(brand.best.studyCost, plain.best.studyCost), 1.1)
+  eq('no markup means the old prices exactly', computeQuote({ ...input, markupPct: 0 }).best.total, plain.best.total)
+
+  const legs = [{ distanceMiles: 600, needsRepositioning: true }]
+  const t0 = priceTransport({ activationDays: 3, leadBusinessDays: 3, legs })
+  const t1 = priceTransport({ activationDays: 3, leadBusinessDays: 3, legs, markupPct: 10 })
+  eq('billed transport +10%', ratio(t1.charge, t0.charge), 1.1)
+  eq('with the helper the same everywhere', withMarkup(1000, 10), 1100)
+}
+
+section('Brand Direct: invisible on the quote record')
+{
+  const notes = buildActivationNotes({ baseMedia: 11000, shadowFencing: 2750, transportCharge: 880 }, 'Better')
+  eq('the Salesforce notes never mention it', /brand/i.test(notes), false)
+  eq('the lines simply add up', notes.includes('Total: $14,630'), true)
 }

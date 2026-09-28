@@ -50,9 +50,6 @@ export function QuoteBreakdown({ features }: { features: QuoteFeatures }) {
       amount: features.studiesTotal,
     })
   }
-  if (features.brandMarkup && features.brandMarkup > 0) {
-    lines.push({ label: `Brand Direct (+${features.brandMarkupPct}% on media)`, amount: features.brandMarkup })
-  }
   if (features.transportCharge && features.transportCharge > 0) {
     lines.push({ label: 'Transport', amount: features.transportCharge })
   }

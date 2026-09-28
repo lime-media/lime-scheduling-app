@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
-import { GRID_COLORS, CLIENT_GRID_COLORS, RESERVATION_LABEL, COMMITTED_LABEL } from '@/lib/statusColors'
+import { GRID_COLORS, CLIENT_GRID_COLORS, RESERVATION_LABEL, COMMITTED_LABEL, ATT_SOFT_LABEL, BOOKED_LABEL, type DisplayStatus } from '@/lib/statusColors'
 import { format, addDays, startOfDay, parseISO, isSameDay } from 'date-fns'
 import { CellDetail } from './CellDetail'
 import { getNearbyMarkets, getMarketCoords, haversineDistance } from '@/lib/marketCoordinates'
@@ -25,8 +25,13 @@ export type ScheduleBlock = {
   standard_market_name?: string
   state: string
   program: string
-  /** AT&T work: any 160over90 program (set by /api/schedule; absent on client routes). */
-  att?: boolean
+  /**
+   * AT&T work: any 160over90 program. Required, and set by every schedule
+   * route (internal and client): the grid uses it to decide whether a real
+   * shift covers an AT&T soft hold, and a missing flag would read as
+   * "not AT&T" and paint AT&T-held days as available.
+   */
+  att: boolean
   shift_start: string        // YYYY-MM-DD
   shift_end: string          // YYYY-MM-DD
 }
@@ -66,7 +71,7 @@ export type ScheduleRow = {
   state: string
   program: string
   formatted_location: string
-  display_status: 'EMPTY' | 'SCHEDULED_LED' | 'HOLD_TENTATIVE' | 'COMMITTED_NOT_SET' | 'ATT_SOFT' | 'MAINTENANCE' | 'DEPARTING' | 'HOLD_REQUEST'
+  display_status: DisplayStatus
   calendar_date: string
   shift_start: string | null
   shift_end: string | null
@@ -97,12 +102,12 @@ type Filters = {
 const STATUS_COLORS = GRID_COLORS
 const CLIENT_STATUS_COLORS = CLIENT_GRID_COLORS
 
-const STATUS_LABELS: Record<string, string> = {
+const STATUS_LABELS: Record<DisplayStatus, string> = {
   EMPTY:              'Available',
   SCHEDULED_LED:      'Scheduled',
   HOLD_TENTATIVE:     RESERVATION_LABEL,
   COMMITTED_NOT_SET:  COMMITTED_LABEL,
-  ATT_SOFT:           'ATT Hold',
+  ATT_SOFT:           ATT_SOFT_LABEL,
   MAINTENANCE:        'Maintenance',
   DEPARTING:          'Departing',
   HOLD_REQUEST:       RESERVATION_LABEL, // a client's hold request is a reservation
@@ -717,7 +722,7 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
     : ''
 
   const displayLabels = clientView
-    ? { ...STATUS_LABELS, SCHEDULED_LED: 'Booked', HOLD_TENTATIVE: 'Booked', COMMITTED_NOT_SET: 'Booked', ATT_SOFT: 'Booked', MAINTENANCE: 'Booked' }
+    ? { ...STATUS_LABELS, SCHEDULED_LED: BOOKED_LABEL, HOLD_TENTATIVE: BOOKED_LABEL, HOLD_REQUEST: BOOKED_LABEL, COMMITTED_NOT_SET: BOOKED_LABEL, ATT_SOFT: BOOKED_LABEL, MAINTENANCE: BOOKED_LABEL }
     : STATUS_LABELS
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -831,7 +836,8 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
                           selectedCell.calendar_date === format(date, 'yyyy-MM-dd')
 
                         // Diagonal stripe background for conflict cells (hold + schedule overlap)
-                        const conflictStyle = cell.conflictProgram ? {
+                        // Internal only: a client sees a conflicted day as plain Booked.
+                        const conflictStyle = cell.conflictProgram && !clientView ? {
                           // Reservation (yellow) or committed (soft gray) stripes over the scheduled gray.
                           background: status === 'COMMITTED_NOT_SET'
                             ? 'repeating-linear-gradient(135deg,#f3f4f6 0px,#e5e7eb 4px,#9ca3af 4px,#9ca3af 8px)'
@@ -857,7 +863,7 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
                                 ? 'ring-2 ring-red-500 ring-inset brightness-90'
                                 : inDrag
                                 ? 'ring-2 ring-blue-400 ring-inset brightness-90'
-                                : cell.conflictProgram
+                                : cell.conflictProgram && !clientView
                                 ? ''
                                 : (clientView ? CLIENT_STATUS_COLORS : STATUS_COLORS)[status]
                             } ${isToday ? 'border-l-2 border-l-gray-900' : ''} ${groupTopBorder}${showDeptText ? ' relative overflow-visible group/dp' : isNearTerm ? ' relative' : ''}`}

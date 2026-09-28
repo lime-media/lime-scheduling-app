@@ -1,7 +1,7 @@
 'use client'
 
 import { format, parseISO } from 'date-fns'
-import { STATUS_BADGE, RESERVATION_LABEL, COMMITTED_LABEL } from '@/lib/statusColors'
+import { STATUS_BADGE, UNKNOWN_BADGE, RESERVATION_LABEL, COMMITTED_LABEL, ATT_SOFT_LABEL, type DisplayStatus } from '@/lib/statusColors'
 import toast from 'react-hot-toast'
 import type { ScheduleRow } from './ScheduleGrid'
 
@@ -12,12 +12,14 @@ interface CellDetailProps {
   onHoldDeleted: () => void
 }
 
-const STATUS_LABELS: Record<string, string> = {
+const STATUS_LABELS: Record<DisplayStatus, string> = {
   EMPTY:             'Available',
+  DEPARTING:         'Available (departing)',
   SCHEDULED_LED:     'Scheduled',
   HOLD_TENTATIVE:    RESERVATION_LABEL,
+  HOLD_REQUEST:      RESERVATION_LABEL,
   COMMITTED_NOT_SET: COMMITTED_LABEL,
-  ATT_SOFT:          'ATT Soft Hold',
+  ATT_SOFT:          ATT_SOFT_LABEL,
   MAINTENANCE:       'Under Maintenance',
 }
 
@@ -100,7 +102,7 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onHoldDeleted }: Ce
 
       {/* Status badge */}
       <div className="px-4 pt-3">
-        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.EMPTY}`}>
+        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? UNKNOWN_BADGE}`}>
           {STATUS_LABELS[status] ?? status}
         </span>
       </div>
@@ -123,14 +125,6 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onHoldDeleted }: Ce
         {/* Hold / committed details */}
         {isHold && (
           <>
-            {status === 'HOLD_TENTATIVE' && (
-              <button
-                onClick={handleUpgrade}
-                className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 text-sm py-2 rounded-lg font-medium transition-colors"
-              >
-                Mark committed (won)
-              </button>
-            )}
             {cell.client_name   && <Row label="Client"  value={cell.client_name} />}
             {market             && <Row label="Market"  value={market} />}
             {cell.hold_notes    && <Row label="Notes"   value={cell.hold_notes} />}

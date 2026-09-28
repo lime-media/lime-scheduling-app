@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import toast from 'react-hot-toast'
 import { format, addDays, startOfDay } from 'date-fns'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -89,6 +90,9 @@ export default function DashboardPage() {
         if (r.ok) {
           const data = await r.json()
           if (data.created > 0 || data.released > 0) fetchSchedule()
+          // A skipped release (mass drop, no AT&T trucks found, no service user)
+          // needs a person to look; say so rather than only logging it.
+          if (Array.isArray(data.warnings) && data.warnings.length) toast(data.warnings.join('\n'), { icon: '⚠️', duration: 10000 })
         }
       } catch {
         // Non-critical — grid still works without ATT sync

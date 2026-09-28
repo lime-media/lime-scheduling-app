@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { softHoldYieldsOn } from '@/lib/attSoftRules'
+import { GRID_COLORS, CLIENT_GRID_COLORS, RESERVATION_LABEL, COMMITTED_LABEL, ATT_SOFT_LABEL, BOOKED_LABEL, type DisplayStatus } from '@/lib/statusColors'
 import { format, addDays, startOfDay, parseISO, isSameDay } from 'date-fns'
 import { CellDetail } from './CellDetail'
 import { getNearbyMarkets, getMarketCoords, haversineDistance } from '@/lib/marketCoordinates'
@@ -24,6 +26,13 @@ export type ScheduleBlock = {
   standard_market_name?: string
   state: string
   program: string
+  /**
+   * AT&T work: any 160over90 program. Required, and set by every schedule
+   * route (internal and client): the grid uses it to decide whether a real
+   * shift covers an AT&T soft hold, and a missing flag would read as
+   * "not AT&T" and paint AT&T-held days as available.
+   */
+  att: boolean
   shift_start: string        // YYYY-MM-DD
   shift_end: string          // YYYY-MM-DD
 }
@@ -63,7 +72,7 @@ export type ScheduleRow = {
   state: string
   program: string
   formatted_location: string
-  display_status: 'EMPTY' | 'SCHEDULED_LED' | 'HOLD_TENTATIVE' | 'COMMITTED_NOT_SET' | 'ATT_SOFT' | 'MAINTENANCE' | 'DEPARTING' | 'HOLD_REQUEST'
+  display_status: DisplayStatus
   calendar_date: string
   shift_start: string | null
   shift_end: string | null
@@ -91,40 +100,18 @@ type Filters = {
   dateTo: string
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  EMPTY:              'bg-gray-200 hover:bg-gray-300',
-  SCHEDULED_LED:      'bg-green-500 hover:bg-green-600',
-  HOLD_TENTATIVE:     'bg-yellow-400 hover:bg-yellow-500',
-  COMMITTED_NOT_SET:  'bg-red-500 hover:bg-red-600',
-  ATT_SOFT:           'bg-blue-400 hover:bg-blue-500',
-  MAINTENANCE:        'bg-orange-400 hover:bg-orange-500',
-  DEPARTING:          'bg-gray-200 hover:bg-gray-300',
-  HOLD_REQUEST:       'bg-yellow-400 hover:bg-yellow-500',
-}
+const STATUS_COLORS = GRID_COLORS
+const CLIENT_STATUS_COLORS = CLIENT_GRID_COLORS
 
-
-// Client view: available = green, anything booked/unavailable = gray
-const CLIENT_STATUS_COLORS: Record<string, string> = {
-  EMPTY:              'bg-green-500 hover:bg-green-600',
-  SCHEDULED_LED:      'bg-gray-300 hover:bg-gray-400',
-  HOLD_TENTATIVE:     'bg-gray-300 hover:bg-gray-400',
-  COMMITTED_NOT_SET:  'bg-gray-300 hover:bg-gray-400',
-  ATT_SOFT:           'bg-gray-300 hover:bg-gray-400',
-  MAINTENANCE:        'bg-gray-300 hover:bg-gray-400',
-  DEPARTING:          'bg-green-500 hover:bg-green-600',
-  HOLD_REQUEST:       'bg-yellow-400 hover:bg-yellow-500',
-}
-
-
-const STATUS_LABELS: Record<string, string> = {
+const STATUS_LABELS: Record<DisplayStatus, string> = {
   EMPTY:              'Available',
   SCHEDULED_LED:      'Scheduled',
-  HOLD_TENTATIVE:     'On Hold',
-  COMMITTED_NOT_SET:  'Committed',
-  ATT_SOFT:           'ATT Hold',
+  HOLD_TENTATIVE:     RESERVATION_LABEL,
+  COMMITTED_NOT_SET:  COMMITTED_LABEL,
+  ATT_SOFT:           ATT_SOFT_LABEL,
   MAINTENANCE:        'Maintenance',
   DEPARTING:          'Departing',
-  HOLD_REQUEST:       'Requested',
+  HOLD_REQUEST:       RESERVATION_LABEL, // a client's hold request is a reservation
 }
 
 function getDates(from: Date, to: Date): Date[] {
@@ -345,11 +332,13 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
     return m
   }, [schedules, holds, holdRequests])
 
-  // Pre-compute non-ATT schedules per truck for ATT_SOFT voiding logic
+  // Pre-compute non-AT&T schedules per truck for ATT_SOFT voiding logic.
+  // AT&T work is any 160over90 program (the `att` flag from /api/schedule),
+  // not a program name containing "att" — which also matched "Seattle".
   const nonAttSchedulesByTruck = useMemo(() => {
     const m = new Map<string, Array<{ shift_start: string; shift_end: string }>>()
     for (const block of schedules) {
-      if (block.program?.toLowerCase().includes('att')) continue
+      if (block.att) continue
       if (!m.has(block.truck_number)) m.set(block.truck_number, [])
       m.get(block.truck_number)!.push({ shift_start: block.shift_start, shift_end: block.shift_end })
     }
@@ -590,15 +579,11 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
       }
     }
 
-    // 4. ATT soft hold (lowest priority — yields to any schedule or regular hold)
-    //    If the truck has any non-ATT scheduled block overlapping this hold's period,
-    //    treat the hold as void and show white/available instead of soft blue.
+    // 4. AT&T soft hold (lowest priority — yields to any schedule or regular hold).
+    //    It gives way only on the days another client's shift is on, never for
+    //    the whole month: a one-day job elsewhere must not turn the month green.
     if (entry.attHold) {
-      const holdStart = entry.attHold.start_date
-      const holdEnd   = entry.attHold.end_date
-      const voided = nonAttSchedulesByTruck.get(truckNum)?.some(
-        (s) => s.shift_start <= holdEnd && s.shift_end >= holdStart
-      )
+      const voided = softHoldYieldsOn(dateStr, nonAttSchedulesByTruck.get(truckNum))
       if (voided) {
         if (entry.holdReq) return { ...base, display_status: 'HOLD_REQUEST', hold_id: entry.holdReq.id, client_name: entry.holdReq.company_name, hold_notes: entry.holdReq.notes }
         return withDeparting(base)
@@ -734,7 +719,7 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
     : ''
 
   const displayLabels = clientView
-    ? { ...STATUS_LABELS, SCHEDULED_LED: 'Booked', HOLD_TENTATIVE: 'Booked', COMMITTED_NOT_SET: 'Booked', ATT_SOFT: 'Booked', MAINTENANCE: 'Booked' }
+    ? { ...STATUS_LABELS, SCHEDULED_LED: BOOKED_LABEL, HOLD_TENTATIVE: BOOKED_LABEL, HOLD_REQUEST: BOOKED_LABEL, COMMITTED_NOT_SET: BOOKED_LABEL, ATT_SOFT: BOOKED_LABEL, MAINTENANCE: BOOKED_LABEL }
     : STATUS_LABELS
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -848,10 +833,12 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
                           selectedCell.calendar_date === format(date, 'yyyy-MM-dd')
 
                         // Diagonal stripe background for conflict cells (hold + schedule overlap)
-                        const conflictStyle = cell.conflictProgram ? {
+                        // Internal only: a client sees a conflicted day as plain Booked.
+                        const conflictStyle = cell.conflictProgram && !clientView ? {
+                          // Reservation (yellow) or committed (soft gray) stripes over the scheduled gray.
                           background: status === 'COMMITTED_NOT_SET'
-                            ? 'repeating-linear-gradient(135deg,#fca5a5 0px,#ef4444 4px,#22c55e 4px,#22c55e 8px)'
-                            : 'repeating-linear-gradient(135deg,#fde68a 0px,#fbbf24 4px,#22c55e 4px,#22c55e 8px)',
+                            ? 'repeating-linear-gradient(135deg,#f3f4f6 0px,#e5e7eb 4px,#9ca3af 4px,#9ca3af 8px)'
+                            : 'repeating-linear-gradient(135deg,#fde68a 0px,#fbbf24 4px,#9ca3af 4px,#9ca3af 8px)',
                         } : undefined
 
                         const isDeparting  = status === 'DEPARTING' && !!cell.departing_to
@@ -873,10 +860,10 @@ export function ScheduleGrid({ trucks, schedules, holds, holdRequests = [], filt
                                 ? 'ring-2 ring-red-500 ring-inset brightness-90'
                                 : inDrag
                                 ? 'ring-2 ring-blue-400 ring-inset brightness-90'
-                                : cell.conflictProgram
+                                : cell.conflictProgram && !clientView
                                 ? ''
                                 : (clientView ? CLIENT_STATUS_COLORS : STATUS_COLORS)[status]
-                            } ${isToday ? 'border-l-2 border-l-green-700' : ''} ${groupTopBorder}${showDeptText ? ' relative overflow-visible group/dp' : isNearTerm ? ' relative' : ''}`}
+                            } ${isToday ? 'border-l-2 border-l-gray-900' : ''} ${groupTopBorder}${showDeptText ? ' relative overflow-visible group/dp' : isNearTerm ? ' relative' : ''}`}
                             style={conflictStyle}
                             onMouseDown={clientView && !onCellRangeSelected ? undefined : () => handleMouseDown(truckNum, dateIdx, cell)}
                             onMouseEnter={clientView && !onCellRangeSelected ? undefined : () => handleMouseEnter(truckNum, dateIdx)}

@@ -15,7 +15,8 @@ export interface TruckLocation {
   city:              string
   state:             string
   last_updated:      string
-  status:            'SCHEDULED_LED' | 'HOLD' | 'COMMITTED' | 'EMPTY'
+  // ATT_SOFT is set by the map itself from schedule + hold data (never by this route).
+  status:            'SCHEDULED_LED' | 'HOLD' | 'COMMITTED' | 'ATT_SOFT' | 'EMPTY'
   program:           string | null
   market:            string | null
   client:            string | null

@@ -130,11 +130,23 @@ section('order: holds by market for a shared truck')
   eq('a market on its own truck: one hold', rotationStints(buildJobs([line('den', 'den', '2026-10-12', '2026-11-08', 1, 5, 8)], S).jobs[0]).length, 1)
 }
 
-section('order: billed days')
-eq('3 days a week, two weeks', lineActivationDays({ startDate: '2026-10-12', endDate: '2026-10-25', daysPerWeek: 3 }), 6)
-eq('3 days a week, part week', lineActivationDays({ startDate: '2026-10-12', endDate: '2026-10-21', daysPerWeek: 3 }), 6)
-eq('Mon-Fri as the single quote', lineActivationDays({ startDate: '2026-09-01', endDate: '2026-09-14', daysPerWeek: 5 }), 10)
-eq('every day as the single quote', lineActivationDays({ startDate: '2026-09-01', endDate: '2026-09-03', daysPerWeek: 7 }), 3)
+// lineActivationDays is the REQUESTED figure: what the schedule asks for over
+// the date range. It is not what is billed. The bill is the days the plan's
+// trucks actually work (deliveredTruckDays); on a shared truck the two differ
+// in a part week. Asserting the requested figure alone is what once hid a
+// billing defect, so the billed figure is pinned beside it here, and against
+// the rotation for every span in the next section.
+section('order: requested days (not the bill)')
+eq('requested: 3 days a week, two weeks', lineActivationDays({ startDate: '2026-10-12', endDate: '2026-10-25', daysPerWeek: 3 }), 6)
+eq('requested: 3 days a week, Oct 12-21', lineActivationDays({ startDate: '2026-10-12', endDate: '2026-10-21', daysPerWeek: 3 }), 6)
+{
+  const a = line('dal', 'dal', '2026-10-12', '2026-10-21')
+  const b = line('ftw', 'ftw', '2026-10-12', '2026-10-21')
+  const billed = deliveredTruckDays(planOrder([a, b], [truck('1261', 'dal'), truck('1262', 'ftw')], S))
+  eq('billed for the same range on a shared truck: what each market gets', [billed.get('dal'), billed.get('ftw')], [3, 6])
+}
+eq('requested: Mon-Fri as the single quote', lineActivationDays({ startDate: '2026-09-01', endDate: '2026-09-14', daysPerWeek: 5 }), 10)
+eq('requested: every day as the single quote', lineActivationDays({ startDate: '2026-09-01', endDate: '2026-09-03', daysPerWeek: 7 }), 3)
 
 // ---------------------------------------------------------------------------
 section('order: billing matches what the rotation delivers, for any span')
@@ -201,6 +213,21 @@ section('order: a chain no truck can take stays as whole as it can')
   const plan = planOrder([l1, l2, l3], [truck('1261', 'dal', [busy('2026-10-19', '2026-10-25', 'dal')])], S)
   eq('the truck keeps the first two jobs together', plan.trucks.map(t => t.jobs.length), [2])
   eq('only the third is short', plan.shortfalls.map(x => x.lineId), ['c'])
+}
+
+section('order: leftovers are re-planned against the trucks still free')
+{
+  // Three back-to-back Dallas weeks and two trucks: 1261 is busy week 2,
+  // 1262 is busy week 1. No truck can take all three, and splitting the chain
+  // in halves ([a, b] + [c]) used to leave a week uncovered. Re-planning
+  // against the free trucks covers all three weeks with the two trucks.
+  const a = line('a', 'dal', '2026-10-05', '2026-10-11', 1, 5, 8)
+  const b = line('b', 'dal', '2026-10-12', '2026-10-18', 1, 5, 8)
+  const c = line('c', 'dal', '2026-10-19', '2026-10-25', 1, 5, 8)
+  const plan = planOrder([a, b, c], [truck('1261', 'dal', [busy('2026-10-12', '2026-10-18', 'dal')]), truck('1262', 'dal', [busy('2026-10-05', '2026-10-11', 'dal')])], S)
+  eq('nothing short', plan.shortfalls, [])
+  eq('two trucks', plan.trucks.length, 2)
+  eq('every week on exactly one truck', plan.trucks.flatMap(t => t.jobs.map(j => j.lines[0].id)).sort(), ['a', 'b', 'c'])
 }
 
 section('booking: what a client can see, and Salesforce text')

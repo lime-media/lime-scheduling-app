@@ -312,17 +312,42 @@ export function planOrder(lines: OrderLine[], trucks: PlanTruck[], s: EngineSett
     return leftover
   }
 
-  // Whole chains first. A chain no truck can take is split in half and tried
-  // again, so as much of it as possible stays on one truck, down to single jobs.
-  let unserved = assignRound(chains)
-  while (unserved.some(c => c.length > 1) && pool.length > 0) {
-    unserved = assignRound(unserved.flatMap(c => (c.length > 1 ? [c.slice(0, Math.ceil(c.length / 2)), c.slice(Math.ceil(c.length / 2))] : [c])))
+  // Whole chains first (the optimal chaining, assigned at least cost).
+  // Whatever no truck could take is then re-planned against the trucks still
+  // free: each truck builds the longest run of those jobs it can actually do,
+  // and the truck covering the most jobs (then the least transport) takes its
+  // run. Repeat until nothing more fits.
+  //
+  // This is a greedy re-plan, not an exact one: the first round's chains are
+  // not revisited, so on rare inputs the order can use a truck more than the
+  // true minimum. It can only over-count trucks, never promise work a truck
+  // cannot do — every run still passes fitTruck.
+  let unserved = assignRound(chains).flat()
+  while (unserved.length > 0 && pool.length > 0) {
+    let best: { truck: number; run: Job[]; fit: Fit } | null = null
+    for (let t = 0; t < pool.length; t++) {
+      const run: Job[] = []
+      let fit: Fit | null = null
+      for (const j of [...unserved].sort((a, b) => a.start.localeCompare(b.start))) {
+        const last = run[run.length - 1]
+        if (last && !canFollow(last, j, s)) continue
+        const f = fitTruck(pool[t], [...run, j], s)
+        if (f) { run.push(j); fit = f }
+      }
+      if (!fit) continue
+      if (!best || run.length > best.run.length || (run.length === best.run.length && fit.cost < best.fit.cost)) best = { truck: t, run, fit }
+    }
+    if (!best) break
+    assigned.push(toTruckPlan(pool[best.truck], best.run, best.fit, s))
+    const taken = new Set(best.run)
+    unserved = unserved.filter(j => !taken.has(j))
+    pool = pool.filter((_, i) => i !== best!.truck)
   }
 
   // What could not be done, per line, with the nearest feasible alternative.
   // Only trucks this order has not already taken can make up a shortfall.
   const missing = new Map<string, number>()
-  for (const c of unserved) for (const j of c) for (const l of j.lines) missing.set(l.id, (missing.get(l.id) ?? 0) + 1)
+  for (const j of unserved) for (const l of j.lines) missing.set(l.id, (missing.get(l.id) ?? 0) + 1)
   const shortfalls: Shortfall[] = [...missing].map(([lineId, count]) => {
     const line = lines.find(l => l.id === lineId)!
     let earliest: string | null = null

@@ -38,3 +38,17 @@ section('AT&T soft holds: which trucks are AT&T\'s')
   eq('after the 10th, no 160over90 shifts this month: released', isAttTruck({ current: 0, prior: 20 }, late), false)
   eq('a truck on AT&T all month with 2 days elsewhere keeps it', isAttTruck({ current: 18, prior: 0 }, late), true)
 }
+
+section('AT&T soft holds: every schedule route tells the grid which shifts are AT&T')
+{
+  // The grid and map treat a shift without `att: true` as another client's
+  // work, which voids the AT&T soft hold and shows the day as available. Both
+  // routes that feed them must set the flag; the client route once did not,
+  // and the client view offered AT&T-held days for booking.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const fs = require('fs') as typeof import('fs')
+  for (const route of ['app/api/schedule/route.ts', 'app/api/client/schedule/route.ts']) {
+    const src = fs.readFileSync(route, 'utf8')
+    eq(`${route} sets att from the client`, /att:\s*isAttClient\(r\.client\)/.test(src), true)
+  }
+}

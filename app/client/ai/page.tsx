@@ -570,32 +570,35 @@ function QuoteBox({
             />
           </div>
         </div>
-        {/* Schedule options — shown when campaign is longer than 6 days */}
-        {form.start_date && form.end_date && (() => {
-          const calDays = Math.round((new Date(form.end_date + 'T00:00:00Z').getTime() - new Date(form.start_date + 'T00:00:00Z').getTime()) / 86400000) + 1
-          // A short range runs, and is billed, every day it covers.
-          if (calDays <= 6) return <p className="mt-3 text-xs text-gray-500">Runs every day: {calDays} day{calDays === 1 ? '' : 's'}.</p>
+        {/* Hours are chosen for every campaign. The weekly schedule only for
+            7+ days: a shorter range runs, and is billed, every day it covers. */}
+        {(() => {
+          const calDays = form.start_date && form.end_date
+            ? Math.round((new Date(form.end_date + 'T00:00:00Z').getTime() - new Date(form.start_date + 'T00:00:00Z').getTime()) / 86400000) + 1
+            : 0
           const btnClass = (active: boolean) =>
             `px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
               active ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
             }`
           return (
             <div className="mt-3 flex flex-wrap items-center gap-4">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-medium text-gray-600">Schedule:</span>
-                <button type="button" className={btnClass(form.days_per_week === 5)} onClick={() => onChange({ days_per_week: 5 })}>Mon-Fri</button>
-                <button type="button" className={btnClass(form.days_per_week === 6)} onClick={() => onChange({ days_per_week: 6 })}>Mon-Sat</button>
-                <button type="button" className={btnClass(form.days_per_week === 7)} onClick={() => onChange({ days_per_week: 7 })}>7 days</button>
-              </div>
+              {calDays > 6 ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-gray-600">Schedule:</span>
+                  <button type="button" className={btnClass(form.days_per_week === 5)} onClick={() => onChange({ days_per_week: 5 })}>Mon-Fri</button>
+                  <button type="button" className={btnClass(form.days_per_week === 6)} onClick={() => onChange({ days_per_week: 6 })}>Mon-Sat</button>
+                  <button type="button" className={btnClass(form.days_per_week === 7)} onClick={() => onChange({ days_per_week: 7 })}>7 days</button>
+                </div>
+              ) : calDays > 0 ? (
+                <span className="text-xs text-gray-500">Runs every day: {calDays} day{calDays === 1 ? '' : 's'}</span>
+              ) : null}
               <div className="flex items-center gap-2">
                 <span className="text-xs font-medium text-gray-600">Hours:</span>
                 <button type="button" className={btnClass(form.operating_hours === 8)} onClick={() => onChange({ operating_hours: 8 })}>8 hr</button>
                 <button type="button" className={btnClass(form.operating_hours === 10)} onClick={() => onChange({ operating_hours: 10 })}>10 hr</button>
                 <button type="button" className={btnClass(form.operating_hours === 12)} onClick={() => onChange({ operating_hours: 12 })}>12 hr</button>
               </div>
-              <span className="text-xs text-gray-400">
-                {calDays} calendar days
-              </span>
+              {calDays > 6 && <span className="text-xs text-gray-400">{calDays} calendar days</span>}
             </div>
           )
         })()}

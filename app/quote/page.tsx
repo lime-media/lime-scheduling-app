@@ -325,13 +325,10 @@ export default function InternalQuotePage() {
             </div>
           </div>
 
-          {/* A short range runs, and is billed, every day it covers. */}
-          {calDays > 0 && calDays <= 6 && (
-            <p className="mt-3 text-xs text-gray-500">Runs every day: {calDays} day{calDays === 1 ? '' : 's'}.</p>
-          )}
-          {/* Schedule options for long campaigns */}
-          {calDays > 6 && (
-            <div className="mt-3 flex flex-wrap items-center gap-4">
+          {/* Hours are chosen for every campaign. The weekly schedule only for
+              7+ days: a shorter range runs, and is billed, every day it covers. */}
+          <div className="mt-3 flex flex-wrap items-center gap-4">
+            {calDays > 6 ? (
               <div className="flex items-center gap-2">
                 <span className="text-xs font-medium text-gray-600">Schedule:</span>
                 {([5, 6, 7] as const).map(d => (
@@ -341,18 +338,20 @@ export default function InternalQuotePage() {
                   </button>
                 ))}
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-medium text-gray-600">Hours:</span>
-                {([8, 10, 12] as const).map(h => (
-                  <button key={h} type="button" onClick={() => setForm(p => ({ ...p, operating_hours: h }))}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${form.operating_hours === h ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}>
-                    {h} hr
-                  </button>
-                ))}
-              </div>
-              <span className="text-xs text-gray-400">{calDays} calendar days</span>
+            ) : calDays > 0 ? (
+              <span className="text-xs text-gray-500">Runs every day: {calDays} day{calDays === 1 ? '' : 's'}</span>
+            ) : null}
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-gray-600">Hours:</span>
+              {([8, 10, 12] as const).map(h => (
+                <button key={h} type="button" onClick={() => setForm(p => ({ ...p, operating_hours: h }))}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${form.operating_hours === h ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}>
+                  {h} hr
+                </button>
+              ))}
             </div>
-          )}
+            {calDays > 6 && <span className="text-xs text-gray-400">{calDays} calendar days</span>}
+          </div>
 
           <button onClick={() => submitQuote()} disabled={quoteLoading || !complete}
             className="mt-4 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-2.5 text-sm font-medium transition-colors">

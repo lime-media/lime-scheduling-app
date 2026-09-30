@@ -15,7 +15,7 @@ import {
   countCalendarDays,
   daysUntil,
   MIN_CLIENT_LEAD_DAYS,
-  defaultDaysPerWeek,
+  billedDaysPerWeek,
   VALID_STUDIES,
   type StudyType,
 } from '@/lib/pricing'
@@ -153,7 +153,7 @@ async function handleAutoSelectHold(
 
   // ── Server-side price recomputation ──────────────────────────────────────
   const calendarDays = countCalendarDays(start_date, end_date)
-  const daysPerWeek = body.days_per_week ?? defaultDaysPerWeek(calendarDays)
+  const daysPerWeek = billedDaysPerWeek(start_date, end_date, body.days_per_week)
   const operatingHours = body.operating_hours ?? 8
   const activationDays = countActivationDays(start_date, end_date, daysPerWeek)
 

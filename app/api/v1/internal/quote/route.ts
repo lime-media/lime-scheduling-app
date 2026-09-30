@@ -8,7 +8,7 @@ import {
   marginCheck,
   countActivationDays,
   countCalendarDays,
-  defaultDaysPerWeek,
+  billedDaysPerWeek,
   resolveNearestAcceptedMarket,
   type QuoteInput,
   type RateOverrides,
@@ -86,7 +86,7 @@ export async function POST(request: Request) {
 
   // Bill activation days, not the calendar span — same rule as every other
   // quoting surface. A two-week Mon-Fri campaign is 10 days, not 14.
-  const daysPerWeek = body.days_per_week ?? defaultDaysPerWeek(calendarDays)
+  const daysPerWeek = billedDaysPerWeek(start_date, end_date, body.days_per_week)
   const days = countActivationDays(start_date, end_date, daysPerWeek)
 
   try {

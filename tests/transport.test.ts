@@ -7,7 +7,7 @@ import {
   priceTransport, chargeForLeg, estimatedLegs, needsRepositioning,
   transportDaysFromDistance, type TruckLeg,
 } from '@/lib/pricing/transport'
-import { countActivationDays, countCalendarDays, defaultDaysPerWeek }
+import { billedDaysPerWeek, countActivationDays, countCalendarDays, defaultDaysPerWeek }
   from '@/lib/pricing/schedule'
 
 
@@ -106,4 +106,19 @@ eq('Mon-Sat activation days', countActivationDays('2026-09-01', '2026-09-14', 6)
 eq('7-day = calendar', countActivationDays('2026-09-01', '2026-09-14', 7), 14)
 eq('short campaign defaults to 7d/wk', defaultDaysPerWeek(6), 7)
 eq('long campaign defaults to 5d/wk', defaultDaysPerWeek(7), 5)
+
+section('a short range bills every day it covers, whatever schedule was sent')
+{
+  // The pages hide their schedule buttons for 6 days or fewer but still sent
+  // their Mon-Fri default: Fri Oct 2 - Sat Oct 3 2026 was quoted as 1 day.
+  const billed = (s: string, e: string, sent?: number) => countActivationDays(s, e, billedDaysPerWeek(s, e, sent))
+  eq('Fri-Sat, Mon-Fri sent: 2 days (was 1)', billed('2026-10-02', '2026-10-03', 5), 2)
+  eq('Sat-Sun, Mon-Fri sent: 2 days (was 0, and the quote failed)', billed('2026-10-03', '2026-10-04', 5), 2)
+  eq('a single Sunday: 1 day', billed('2026-10-04', '2026-10-04', 5), 1)
+  eq('6 days Mon-Sat, Mon-Fri sent: 6 days', billed('2026-10-05', '2026-10-10', 5), 6)
+  eq('nothing sent: every day', billed('2026-10-02', '2026-10-03'), 2)
+  eq('7+ days: the schedule asked for is kept (two weeks Mon-Fri = 10)', billed('2026-09-01', '2026-09-14', 5), 10)
+  eq('7+ days, nothing sent: Mon-Fri', billed('2026-09-01', '2026-09-14'), 10)
+  eq('7+ days, 7 days asked for: every day', billed('2026-09-01', '2026-09-14', 7), 14)
+}
 

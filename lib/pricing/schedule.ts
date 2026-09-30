@@ -15,6 +15,23 @@ export function defaultDaysPerWeek(calendarDays: number): 5 | 7 {
   return calendarDays <= 6 ? 7 : 5
 }
 
+/** A range this short (calendar days) always runs, and bills, every day. */
+export const SHORT_RANGE_MAX_DAYS = 6
+
+/**
+ * The weekly schedule a campaign is billed on. The ONE rule every quote path
+ * (internal, multi-market, client portal, partner/MCP, hold placement) uses:
+ * a range of SHORT_RANGE_MAX_DAYS or fewer runs every day it covers,
+ * whatever schedule was sent — a rep who picks Fri-Sat gets two days, never
+ * one (the quote pages hide their schedule buttons for short ranges, so a
+ * schedule sent with one is just a form default). Longer ranges use the
+ * schedule asked for, Mon-Fri if none.
+ */
+export function billedDaysPerWeek(startStr: string, endStr: string, requested?: number | null): number {
+  if (countCalendarDays(startStr, endStr) <= SHORT_RANGE_MAX_DAYS) return 7
+  return requested ?? 5
+}
+
 /** Inclusive calendar span between two YYYY-MM-DD dates. */
 export function countCalendarDays(startStr: string, endStr: string): number {
   const start = new Date(startStr + 'T00:00:00Z')

@@ -19,7 +19,7 @@ import {
   computeQuote, priceTransport,
   resolveCampaignCoords, resolveMarketSizeTierId, businessDaysBetween,
 } from '@/lib/pricing'
-import { countCalendarDays } from '@/lib/pricing/schedule'
+import { billedDaysPerWeek, countCalendarDays } from '@/lib/pricing/schedule'
 import { resolveDefaultRateOverrides, resolveRateOverridesBySfdcAccount, resolveMarketInputAll } from '@/lib/pricing/resolvers'
 import type { RateOverrides } from '@/lib/pricing/config'
 import { canonicalMarketName, loadStandardMarketCoords, titleCaseMarket } from '@/lib/marketBounds'
@@ -191,14 +191,6 @@ export type MultiMarketQuote = {
 
 const EXCLUDED_STATES = new Set(['AK', 'HI'])
 
-/**
- * What the single-market quote bills a range of 6 days or fewer on: the page
- * (app/quote/page.tsx) always sends days_per_week, and for short ranges that
- * is its hidden default of 5. Kept identical so the same campaign prices the
- * same on both tabs; change both together.
- */
-export const SHORT_RANGE_DAYS_PER_WEEK = 5
-
 export async function resolveRows(rows: QuoteRow[]): Promise<{ lines: OrderLine[]; errors: RowError[] }> {
   const lines: OrderLine[] = []
   const errors: RowError[] = []
@@ -227,10 +219,8 @@ export async function resolveRows(rows: QuoteRow[]): Promise<{ lines: OrderLine[
     }
     const st = (standardMarket ?? market).split(',').pop()?.trim().toUpperCase()
     if (st && EXCLUDED_STATES.has(st)) { errors.push({ rowId: r.id, message: `${market} is outside the contiguous 48 states.` }); continue }
-    // Priced exactly as the single-market quote prices it: for a range of 6
-    // days or fewer that page hides its schedule buttons and sends its
-    // default, Mon-Fri, so a short range bills its weekdays.
-    const daysPerWeek = countCalendarDays(r.startDate, r.endDate) <= 6 ? SHORT_RANGE_DAYS_PER_WEEK : r.daysPerWeek
+    // The same rule as every other quote path: a short range runs every day.
+    const daysPerWeek = billedDaysPerWeek(r.startDate, r.endDate, r.daysPerWeek)
     lines.push({ id: r.id, market, lat, lng, startDate: r.startDate, endDate: r.endDate, trucks: Math.floor(r.trucks), daysPerWeek, hours: r.hours, standardMarket })
   }
   return { lines, errors }

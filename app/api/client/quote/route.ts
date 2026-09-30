@@ -20,7 +20,7 @@ import {
   daysUntil,
   MIN_CLIENT_LEAD_DAYS,
   countActivationDays,
-  defaultDaysPerWeek,
+  billedDaysPerWeek,
   VALID_STUDIES,
   type StudyType,
 } from '@/lib/pricing'
@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
   // - Campaigns 6 days or less: every day (default days_per_week=7)
   // - Campaigns 7+ days: Mon-Fri schedule (default days_per_week=5)
   // - Client can opt into 6 or 7 day weeks for longer campaigns
-  const daysPerWeek = body.days_per_week ?? defaultDaysPerWeek(calendarDays)
+  const daysPerWeek = billedDaysPerWeek(start_date, end_date, body.days_per_week)
   const operatingHours = body.operating_hours ?? 8
 
   // Count actual activation days based on the schedule pattern

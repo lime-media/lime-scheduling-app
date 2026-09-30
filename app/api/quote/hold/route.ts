@@ -23,7 +23,7 @@ import {
   priceTransport,
   countActivationDays,
   countCalendarDays,
-  defaultDaysPerWeek,
+  billedDaysPerWeek,
   VALID_STUDIES,
   type StudyType,
 } from '@/lib/pricing'
@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
 
   // ── Server-side price recomputation ──────────────────────────────────────
   const calendarDays = countCalendarDays(start_date, end_date)
-  const dpw = days_per_week ?? defaultDaysPerWeek(calendarDays)
+  const dpw = billedDaysPerWeek(start_date, end_date, days_per_week)
   const opHours = operating_hours ?? 8
   const activationDays = countActivationDays(start_date, end_date, dpw)
 

@@ -12,6 +12,7 @@
  * one Salesforce opportunity in one step.
  */
 
+import { SHORT_RANGE_MAX_DAYS } from '@/lib/pricing/schedule'
 import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
 import { useEffect, useRef, useState } from 'react'
@@ -64,7 +65,7 @@ const scheduleLabel = (dpw: number) => (dpw === 3 ? '3 days/wk' : dpw === 5 ? 'M
 /** Like the single-market quote: a range of 6 days or fewer is priced Mon-Fri; longer ranges pick a schedule. */
 function ScheduleSelect({ start, end, value, onChange }: { start: string; end: string; value: number; onChange: (v: number) => void }) {
   const cal = calendarDays(start, end)
-  if (cal > 0 && cal <= 6) return <div className="text-xs text-gray-500 px-1 py-2 whitespace-nowrap" title="Priced as the single-market quote prices a short range">Mon-Fri ({cal} cal days)</div>
+  if (cal > 0 && cal <= SHORT_RANGE_MAX_DAYS) return <div className="text-xs text-gray-500 px-1 py-2 whitespace-nowrap" title="A range of 6 days or fewer runs, and is billed, every day">Every day ({cal} day{cal === 1 ? '' : 's'})</div>
   return (
     <select className={input + ' min-w-[12rem]'} value={value} onChange={e => onChange(Number(e.target.value))}>
       {SCHEDULE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}

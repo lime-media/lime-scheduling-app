@@ -15,7 +15,7 @@ import {
   computeQuote,
   priceTransport,
   countActivationDays,
-  defaultDaysPerWeek,
+  billedDaysPerWeek,
   VALID_STUDIES,
   type StudyType,
 } from '@/lib/pricing'
@@ -98,7 +98,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid date range' }, { status: 400 })
   }
 
-  const daysPerWeek = body.days_per_week ?? defaultDaysPerWeek(calendarDays)
+  const daysPerWeek = billedDaysPerWeek(start_date, end_date, body.days_per_week)
   const operatingHours = body.operating_hours ?? 8
 
   const days = countActivationDays(start_date, end_date, daysPerWeek)

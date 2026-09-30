@@ -573,7 +573,8 @@ function QuoteBox({
         {/* Schedule options — shown when campaign is longer than 6 days */}
         {form.start_date && form.end_date && (() => {
           const calDays = Math.round((new Date(form.end_date + 'T00:00:00Z').getTime() - new Date(form.start_date + 'T00:00:00Z').getTime()) / 86400000) + 1
-          if (calDays <= 6) return null
+          // A short range runs, and is billed, every day it covers.
+          if (calDays <= 6) return <p className="mt-3 text-xs text-gray-500">Runs every day: {calDays} day{calDays === 1 ? '' : 's'}.</p>
           const btnClass = (active: boolean) =>
             `px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
               active ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'

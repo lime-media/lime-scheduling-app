@@ -325,6 +325,10 @@ export default function InternalQuotePage() {
             </div>
           </div>
 
+          {/* A short range runs, and is billed, every day it covers. */}
+          {calDays > 0 && calDays <= 6 && (
+            <p className="mt-3 text-xs text-gray-500">Runs every day: {calDays} day{calDays === 1 ? '' : 's'}.</p>
+          )}
           {/* Schedule options for long campaigns */}
           {calDays > 6 && (
             <div className="mt-3 flex flex-wrap items-center gap-4">

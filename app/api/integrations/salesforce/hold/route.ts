@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
-import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
+import { SFDC_SERVICE_USER_EMAIL, appOwnsOpportunity } from '@/lib/sfdcIntegration'
 import { endOfDayUtc } from '@/lib/dateOnly'
 import { HOLD_EXPIRATION_HOURS } from '@/lib/holdExpiry'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
@@ -27,6 +27,13 @@ export async function POST(req: NextRequest) {
 
   if (!opportunityId || !accountName || !trucks || !holdStart || !holdStop) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
+  }
+
+  // An Opportunity the app created (quote tools) is already reserved here by
+  // the app's own holds; its push is an echo, never a second reservation.
+  const linked = await prisma.hold.findMany({ where: { sfdc_opportunity_id: opportunityId }, select: { source: true } })
+  if (appOwnsOpportunity(linked.map(h => h.source))) {
+    return NextResponse.json({ opportunityId, skipped: 'app_owned', detail: 'This Opportunity was created by the scheduling app, which already holds its trucks.' })
   }
 
   const serviceUser = await prisma.user.findUnique({ where: { email: SFDC_SERVICE_USER_EMAIL } })

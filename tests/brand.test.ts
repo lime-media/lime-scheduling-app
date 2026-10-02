@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { cleanBrand, opportunityName } from '@/lib/brand'
+import { brandChange, cleanBrand, opportunityName } from '@/lib/brand'
 
 section('brand: only the brand is saved')
 eq('a plain brand', cleanBrand('  Nike  '), 'Nike')
@@ -22,3 +22,10 @@ section('brand: it leads the Opportunity name')
 eq('brand first', opportunityName('Nike', 'Rolling Adz', 'Des Moines, IA - 2026-10-02 to 2026-10-03'), 'Nike / Rolling Adz - Des Moines, IA - 2026-10-02 to 2026-10-03')
 eq('no brand: as before', opportunityName('', 'Rolling Adz', 'Des Moines, IA - 2026-10-02 to 2026-10-03'), 'Rolling Adz - Des Moines, IA - 2026-10-02 to 2026-10-03')
 eq('Salesforce limit of 120', opportunityName('B'.repeat(50), 'A'.repeat(60), 'x'.repeat(40)).length, 120)
+
+section('brand: the page says why the saved value differs')
+eq('nothing changed', brandChange('Nike'), 'none')
+eq('extra spaces are not a change', brandChange('  Nike  '), 'none')
+eq('words dropped', brandChange('Molytical August LED'), 'stripped')
+eq('only cut to 50 characters (nothing dropped)', brandChange('A'.repeat(60)), 'cut')
+eq('both: says what was dropped', brandChange('A'.repeat(60) + ' LED'), 'stripped')

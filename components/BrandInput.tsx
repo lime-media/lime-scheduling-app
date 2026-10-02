@@ -6,7 +6,8 @@
  * Shows what will be saved whenever cleaning changes what was typed.
  */
 
-import { BRAND_MAX, cleanBrand } from '@/lib/brand'
+import { useId } from 'react'
+import { BRAND_MAX, brandChange, cleanBrand } from '@/lib/brand'
 
 export function BrandInput({ value, onChange, className, hint = 'Goes to the Salesforce opportunity and leads its name, so it can be searched.', label = 'Brand' }: {
   value: string
@@ -16,16 +17,20 @@ export function BrandInput({ value, onChange, className, hint = 'Goes to the Sal
   hint?: string
   label?: string
 }) {
+  const id = useId()
   const saved = cleanBrand(value)
+  const change = brandChange(value)
   return (
     <div>
-      <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="quote-brand">{label}</label>
-      <input id="quote-brand" type="text" value={value} maxLength={BRAND_MAX + 30} placeholder="e.g. Nike (the brand on the campaign)"
-        onChange={e => onChange(e.target.value)} className={className} aria-describedby="quote-brand-hint" />
-      <p id="quote-brand-hint" className="mt-1 text-[11px] text-gray-500">
-        {saved && saved !== value.replace(/\s+/g, ' ').trim()
+      <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor={id}>{label}</label>
+      <input id={id} type="text" value={value} maxLength={BRAND_MAX + 30} placeholder="e.g. Nike (the brand on the campaign)"
+        onChange={e => onChange(e.target.value)} className={className} aria-describedby={`${id}-hint`} />
+      <p id={`${id}-hint`} className="mt-1 text-[11px] text-gray-500">
+        {change === 'stripped'
           ? <>Saved as <span className="font-medium text-gray-700">{saved}</span>: brand only, no asset, month or year.</>
-          : hint}
+          : change === 'cut'
+            ? <>Saved as <span className="font-medium text-gray-700">{saved}</span>: Salesforce keeps {BRAND_MAX} characters.</>
+            : hint}
       </p>
     </div>
   )

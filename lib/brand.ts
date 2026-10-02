@@ -31,15 +31,27 @@ const TRAILING = new RegExp(
   'i',
 )
 
-/** The brand as saved: trimmed, trailing descriptors dropped, at most 50 characters. */
-export function cleanBrand(raw: string | null | undefined): string {
+/** Trimmed, with trailing asset types, months, years and descriptors dropped. */
+function stripBrand(raw: string | null | undefined): string {
   let s = (raw ?? '').replace(/\s+/g, ' ').trim()
   for (let prev = ''; prev !== s; ) {
     prev = s
     const cut = s.replace(TRAILING, '').trim()
     if (cut) s = cut // never strip a brand down to nothing ("LED" alone stays)
   }
-  return s.slice(0, BRAND_MAX).trim()
+  return s
+}
+
+/** The brand as saved: trimmed, trailing descriptors dropped, at most 50 characters. */
+export function cleanBrand(raw: string | null | undefined): string {
+  return stripBrand(raw).slice(0, BRAND_MAX).trim()
+}
+
+/** Why the saved brand differs from what was typed, so the page can say so. */
+export function brandChange(raw: string | null | undefined): 'none' | 'stripped' | 'cut' {
+  const typed = (raw ?? '').replace(/\s+/g, ' ').trim()
+  if (stripBrand(typed) !== typed) return 'stripped'
+  return typed.length > BRAND_MAX ? 'cut' : 'none'
 }
 
 /**

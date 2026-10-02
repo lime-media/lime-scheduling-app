@@ -1,7 +1,7 @@
 /**
- * GET /api/planner — everything the ops planner shows, for the Monday of last
- * week through six weeks after this week (or ?from=YYYY-MM-DD for another
- * eight-week window starting that Monday): every truck's scheduled shifts with
+ * GET /api/planner — everything the ops planner shows, for last week through
+ * six weeks ahead, or ?from=YYYY-MM-DD&to=YYYY-MM-DD for a range the person
+ * picked (whole Sunday-to-Saturday weeks, at most 13): every truck's scheduled shifts with
  * hours and driver, maintenance, reservations, committed reservations, client
  * hold requests, AT&T soft holds and open days. Staff only.
  *
@@ -18,7 +18,7 @@ import { ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
 import { HIDDEN_TRUCKS } from '@/lib/availabilityEngine'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
 import { parseQuoteFeatures } from '@/lib/quoteFeatures'
-import { buildEntries, plannerWindow, type PlannerHold, type PlannerShift } from '@/lib/planner/build'
+import { buildEntries, plannerRange, plannerWindow, weekStart, type PlannerHold, type PlannerShift } from '@/lib/planner/build'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -33,6 +33,7 @@ SELECT
     CAST(ps.driver_uid AS NVARCHAR(64)) AS driver_uid,
     COALESCE(cl.client,  '') AS client,
     COALESCE(cp.program, '') AS program,
+    NULLIF(LTRIM(RTRIM(cp.job_number)), '') AS job_number,
     COALESCE(NULLIF(cpm.standard_market_name, ''), cpm.market, '') AS market
 FROM dbo.program_schedule ps
 JOIN dbo.trucks t
@@ -96,18 +97,19 @@ async function driverNames(ids: string[]): Promise<Map<string, string>> {
   return new Map(rows.filter(r => r.uid && r.name && want.has(r.uid.toLowerCase())).map(r => [r.uid.toLowerCase(), r.name]))
 }
 
-async function opportunityNames(ids: string[]): Promise<Map<string, string>> {
+async function opportunityNames(ids: string[]): Promise<Map<string, { name: string; jobNumber: string | null }>> {
   if (ids.length === 0 || !isSfdcConfigured()) return new Map()
-  const out = new Map<string, string>()
-  try {
-    for (let i = 0; i < ids.length; i += 200) {
-      const chunk = ids.slice(i, i + 200).filter(id => /^[A-Za-z0-9]{15,18}$/.test(id))
-      if (chunk.length === 0) continue
-      const rows = await sfdcQuery<{ Id: string; Name: string }>(`SELECT Id, Name FROM Opportunity WHERE Id IN (${chunk.map(id => `'${id}'`).join(',')})`)
-      for (const r of rows) out.set(r.Id, r.Name)
+  const out = new Map<string, { name: string; jobNumber: string | null }>()
+  // Per chunk, so one failed query never discards the names already found.
+  for (let i = 0; i < ids.length; i += 200) {
+    const chunk = ids.slice(i, i + 200).filter(id => /^[A-Za-z0-9]{15,18}$/.test(id))
+    if (chunk.length === 0) continue
+    try {
+      const rows = await sfdcQuery<{ Id: string; Name: string; Job_Number__c: string | null }>(`SELECT Id, Name, Job_Number__c FROM Opportunity WHERE Id IN (${chunk.map(id => `'${id}'`).join(',')})`)
+      for (const r of rows) out.set(r.Id, { name: r.Name, jobNumber: r.Job_Number__c?.trim() || null })
+    } catch (err) {
+      console.error('[planner] opportunity names failed for a chunk:', err)
     }
-  } catch (err) {
-    console.error('[planner] opportunity names failed:', err)
   }
   return out
 }
@@ -116,16 +118,20 @@ export async function GET(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  // ?from=YYYY-MM-DD&to=YYYY-MM-DD: the range the person picked, widened to
+  // whole Sunday-to-Saturday weeks (plannerRange). ?from= alone: eight weeks
+  // from that date's week. Neither: last week through six weeks ahead.
+  const isDate = (v: string | null): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(v))
   const fromParam = req.nextUrl.searchParams.get('from')
-  const anchor = fromParam && /^\d{4}-\d{2}-\d{2}$/.test(fromParam) ? fromParam : iso(new Date())
-  // ?from= names the Monday the window starts on; plannerWindow starts a week
-  // before the week containing its date, so step forward a week to land on it.
-  const window = fromParam ? plannerWindow(iso(new Date(Date.parse(anchor + 'T00:00:00Z') + 7 * 864e5))) : plannerWindow(anchor)
+  const toParam = req.nextUrl.searchParams.get('to')
+  const window = isDate(fromParam)
+    ? plannerRange(fromParam, isDate(toParam) ? toParam : iso(new Date(Date.parse(weekStart(fromParam) + 'T00:00:00Z') + (8 * 7 - 1) * 864e5)))
+    : plannerWindow(iso(new Date()))
 
   try {
     const [trucksRaw, shiftsRaw, holds] = await Promise.all([
       query<{ truck_number: string }[]>(ALL_TRUCKS_QUERY),
-      query<{ truck_number: string; shift_date: Date | string; minutes: number | null; driver_uid: string | null; client: string; program: string; market: string }[]>(
+      query<{ truck_number: string; shift_date: Date | string; minutes: number | null; driver_uid: string | null; client: string; program: string; job_number: string | null; market: string }[]>(
         SHIFTS_QUERY, { from: window.from, to: window.to }),
       prisma.hold.findMany({
         where: { ...activeHoldWhere(), start_date: { lte: new Date(window.to) }, end_date: { gte: new Date(window.from) } },
@@ -148,6 +154,7 @@ export async function GET(req: NextRequest) {
         driverName: r.driver_uid ? names.get(r.driver_uid.toLowerCase()) ?? null : null,
         client: r.client,
         program: r.program,
+        jobNumber: r.job_number,
         market: r.market,
       }))
 
@@ -166,7 +173,8 @@ export async function GET(req: NextRequest) {
           market: h.market?.includes(',') || !h.state ? h.market : [h.market, h.state].filter(Boolean).join(', '),
           hours: typeof f?.operatingHours === 'number' ? f.operatingHours : null,
           opportunityId: h.sfdc_opportunity_id,
-          opportunityName: h.sfdc_opportunity_id ? opps.get(h.sfdc_opportunity_id) ?? null : null,
+          opportunityName: h.sfdc_opportunity_id ? opps.get(h.sfdc_opportunity_id)?.name ?? null : null,
+          jobNumber: h.sfdc_opportunity_id ? opps.get(h.sfdc_opportunity_id)?.jobNumber ?? null : null,
           campaignGroupId: h.campaign_group_id,
         }
       })

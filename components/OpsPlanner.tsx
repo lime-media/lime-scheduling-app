@@ -1,8 +1,9 @@
 'use client'
 
 /**
- * Ops planner — a pivotable Gantt of the fleet: last week through six weeks
- * out, every truck's scheduled shifts, maintenance, reservations (client hold
+ * Ops planner — a pivotable Gantt of the fleet: by default last week through
+ * six weeks out, or any range the person picks (whole Sunday-to-Saturday
+ * weeks, lib/planner/build.ts plannerRange), every truck's scheduled shifts, maintenance, reservations (client hold
  * requests included), committed reservations, AT&T soft holds and open days.
  *
  * Each pivot is a tree (PIVOT_LEVELS in lib/planner/build.ts):
@@ -25,7 +26,7 @@
 
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import {
-  cellText, describeEntry, entryMatches, marketLabel, pivotTree, truckDayTop,
+  cellText, describeEntry, entryMatches, marketLabel, pivotTree, plannerRange, plannerWindow, truckDayTop, PLANNER_MAX_WEEKS,
   type Dimension, type Entry, type EntryKind, type Pivot, type PlannerNode,
 } from '@/lib/planner/build'
 import {
@@ -75,9 +76,8 @@ function save(key: string, v: unknown) { try { localStorage.setItem(key, JSON.st
 const CELL_W = 34
 const LABEL_W = 240
 const INDENT = 14
-const WEEKS = 8
 
-type DayMeta = { d: string; weekend: boolean; sunday: boolean; past: boolean; today: boolean; header: string; num: string }
+type DayMeta = { d: string; weekend: boolean; saturday: boolean; past: boolean; today: boolean; header: string; num: string }
 type HoverInfo = { x: number; y: number; title: string; date: string; entries: Entry[] }
 type HoverApi = { show: (h: HoverInfo) => void; move: (x: number, y: number) => void; hide: () => void }
 
@@ -85,7 +85,8 @@ type HoverApi = { show: (h: HoverInfo) => void; move: (x: number, y: number) => 
 
 export function OpsPlanner() {
   const today = localToday()
-  const [weekOffset, setWeekOffset] = useState(0)
+  // The range shown; null = the default (last week through six weeks ahead).
+  const [range, setRange] = useState<{ from: string; to: string } | null>(null)
   const [data, setData] = useState<PlannerData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -102,18 +103,26 @@ export function OpsPlanner() {
   useEffect(() => { setPivot(store<Pivot>('planner.pivot', 'truck')) }, [])
   useEffect(() => { save('planner.pivot', pivot); setCollapsed(new Set()) }, [pivot])
 
-  // The window the rep asked for, known before the response arrives.
+  // The window asked for, known before the response arrives: whole
+  // Sunday-to-Saturday weeks, the same rule the server applies.
   const requested = useMemo(() => {
-    const from = addDays(today, -((dowOf(today) + 6) % 7) - 7 + weekOffset * 7)
-    return { from, to: addDays(from, WEEKS * 7 - 1) }
-  }, [today, weekOffset])
+    const w = range ? plannerRange(range.from, range.to) : plannerWindow(today)
+    return { from: w.from, to: w.to, weeks: w.days.length / 7 }
+  }, [today, range])
+  const isDefault = range === null
+  // ‹ › move the whole range a week; the length stays.
+  const shift = (weeks: number) => setRange({ from: addDays(requested.from, weeks * 7), to: addDays(requested.to, weeks * 7) })
+  const pick = (which: 'from' | 'to', value: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return
+    setRange({ from: which === 'from' ? value : requested.from, to: which === 'to' ? value : requested.to })
+  }
 
   // Only the latest request may land: quick clicks on ‹ › abort the earlier ones.
   useEffect(() => {
     const mine = ++seq.current
     const ctrl = new AbortController()
     setLoading(true); setError(null)
-    fetch(`/api/planner${weekOffset === 0 ? '' : `?from=${requested.from}`}`, { signal: ctrl.signal })
+    fetch(`/api/planner?from=${requested.from}&to=${requested.to}`, { signal: ctrl.signal })
       .then(async res => {
         const body = await res.json()
         if (!res.ok) throw new Error(body.error || 'The planner could not be loaded.')
@@ -122,12 +131,12 @@ export function OpsPlanner() {
       .catch(e => { if (mine === seq.current && e?.name !== 'AbortError') setError(e instanceof Error ? e.message : 'The planner could not be loaded.') })
       .finally(() => { if (mine === seq.current) setLoading(false) })
     return () => ctrl.abort()
-  }, [weekOffset, requested.from, reloadKey])
+  }, [requested.from, requested.to, reloadKey])
 
   const days = useMemo(() => data?.window.days ?? [], [data])
   const dayMeta = useMemo<DayMeta[]>(() => days.map(d => {
     const dow = dowOf(d)
-    return { d, weekend: dow === 0 || dow === 6, sunday: dow === 0, past: d < today, today: d === today, header: fmt(d, { weekday: 'narrow' }), num: fmt(d, { day: 'numeric' }) }
+    return { d, weekend: dow === 0 || dow === 6, saturday: dow === 6, past: d < today, today: d === today, header: fmt(d, { weekday: 'narrow' }), num: fmt(d, { day: 'numeric' }) }
   }), [days, today])
   const weeks = useMemo(() => {
     const w: { start: string; span: number }[] = []
@@ -195,13 +204,20 @@ export function OpsPlanner() {
         </div>
 
         <div className="inline-flex items-center rounded-lg border border-gray-200 bg-white">
-          <button onClick={() => setWeekOffset(o => o - 1)} className="px-2.5 py-1.5 text-gray-500 hover:text-gray-900" aria-label="Previous week">‹</button>
-          <button onClick={() => setWeekOffset(0)} className="px-2 py-1.5 text-sm font-medium text-gray-700 hover:text-gray-900 border-x border-gray-200 tabular-nums">
-            {fmt(requested.from, { month: 'short', day: 'numeric' })} – {fmt(requested.to, { month: 'short', day: 'numeric' })}
-          </button>
-          <button onClick={() => setWeekOffset(o => o + 1)} className="px-2.5 py-1.5 text-gray-500 hover:text-gray-900" aria-label="Next week">›</button>
+          <button onClick={() => shift(-1)} className="px-2.5 py-1.5 text-gray-500 hover:text-gray-900" aria-label="Back one week">‹</button>
+          <label className="sr-only" htmlFor="planner-from">From</label>
+          <input id="planner-from" type="date" value={requested.from} onChange={e => pick('from', e.target.value)}
+            className="px-1.5 py-1 text-sm text-gray-700 border-l border-gray-200 bg-transparent tabular-nums focus:outline-none focus:ring-2 focus:ring-green-500 rounded" />
+          <span className="px-1 text-gray-400" aria-hidden>–</span>
+          <label className="sr-only" htmlFor="planner-to">To</label>
+          <input id="planner-to" type="date" value={requested.to} min={requested.from} onChange={e => pick('to', e.target.value)}
+            className="px-1.5 py-1 text-sm text-gray-700 border-r border-gray-200 bg-transparent tabular-nums focus:outline-none focus:ring-2 focus:ring-green-500 rounded" />
+          <button onClick={() => shift(1)} className="px-2.5 py-1.5 text-gray-500 hover:text-gray-900" aria-label="Forward one week">›</button>
         </div>
-        {weekOffset !== 0 && <button onClick={() => setWeekOffset(0)} className="text-sm text-green-700 hover:text-green-800">Back to this week</button>}
+        <span className="text-xs text-gray-500" title={`Whole Sunday-to-Saturday weeks, up to ${PLANNER_MAX_WEEKS}`}>
+          {requested.weeks} week{requested.weeks === 1 ? '' : 's'}, Sun–Sat
+        </span>
+        {!isDefault && <button onClick={() => setRange(null)} className="text-sm text-green-700 hover:text-green-800">Back to this week</button>}
         {loading && (
           <span className="inline-flex items-center gap-1.5 text-xs text-gray-500" role="status" aria-live="polite">
             <span className="w-3 h-3 border-2 border-gray-300 border-t-gray-700 rounded-full animate-spin" /> Loading…
@@ -233,7 +249,7 @@ export function OpsPlanner() {
           </button>
         ))}
         <span className="ml-auto text-xs text-gray-500">
-          {pivot === 'truck' ? 'Bars show the market the truck is in' : 'Cells show scheduled hours · R reservation, C committed (hours not on file) · M maintenance'} · numbers on group rows = trucks that day
+          {pivot === 'truck' ? 'Bars show the market the truck is in' : 'Cells show scheduled hours · R reservation, C committed (hours not on file) · M maintenance'}
         </span>
       </div>
 
@@ -283,7 +299,7 @@ type GridProps = {
 
 const PlannerGrid = memo(function PlannerGrid({ tree, dayMeta, weeks, collapsed, onToggle, showMarket, strips, hoverApi, header }: GridProps) {
   const tableRef = useRef<HTMLTableElement>(null)
-  const dayBorder = (m: DayMeta) => `${m.sunday ? 'border-r border-r-gray-200' : ''} ${m.today ? 'border-l-2 border-l-gray-900' : ''}`
+  const dayBorder = (m: DayMeta) => `${m.saturday ? 'border-r border-r-gray-200' : ''} ${m.today ? 'border-l-2 border-l-gray-900' : ''}`
   const joinKey = (e: Entry) => (showMarket ? `${e.kind}|${marketLabel(e)}` : e.barKey)
   let row = 0 // leaf rows, for keyboard navigation
 
@@ -389,13 +405,7 @@ const PlannerGrid = memo(function PlannerGrid({ tree, dayMeta, weeks, collapsed,
                 </td>
               )
             }
-            const count = n.trucksByDay[m.d] ?? 0
-            return (
-              <td key={m.d} className={`border-b border-gray-200 ${bg} ${dayBorder(m)} text-center text-[10px] tabular-nums ${m.today ? 'text-gray-900 font-semibold' : 'text-gray-500'}`}
-                title={count ? `${count} truck${count === 1 ? '' : 's'}` : undefined}>
-                {count || ''}
-              </td>
-            )
+            return <td key={m.d} className={`border-b border-gray-200 ${bg} ${dayBorder(m)}`} />
           })}
         </tr>
         {!isCollapsed && n.children.map(c => (c.children.length ? <BranchKey key={c.key}>{renderBranch(c)}</BranchKey> : renderLeaf(c, n)))}
@@ -414,14 +424,14 @@ const PlannerGrid = memo(function PlannerGrid({ tree, dayMeta, weeks, collapsed,
           </th>
           {weeks.map(w => (
             <th key={w.start} colSpan={w.span} scope="colgroup" className="bg-white border-b border-r border-gray-200 px-2 py-1 text-left font-semibold text-gray-700 whitespace-nowrap">
-              Week of {fmt(w.start, { month: 'short', day: 'numeric' })}
+              {fmt(w.start, { month: 'short', day: 'numeric' })} – {fmt(addDays(w.start, w.span - 1), { month: 'short', day: 'numeric' })}
             </th>
           ))}
         </tr>
         <tr>
           {dayMeta.map(m => (
             <th key={m.d} scope="col" style={{ width: CELL_W, minWidth: CELL_W }} aria-label={fmt(m.d, { weekday: 'long', month: 'long', day: 'numeric' })}
-              className={`border-b border-gray-200 ${m.sunday ? 'border-r' : ''} py-1 font-medium ${m.today ? 'bg-gray-900 text-white' : m.weekend ? 'bg-gray-100 text-gray-600' : 'bg-white text-gray-600'}`}>
+              className={`border-b border-gray-200 ${m.saturday ? 'border-r' : ''} py-1 font-medium ${m.today ? 'bg-gray-900 text-white' : m.weekend ? 'bg-gray-100 text-gray-600' : 'bg-white text-gray-600'}`}>
               <div className="leading-none text-[10px] uppercase">{m.header}</div>
               <div className="leading-tight tabular-nums">{m.num}</div>
             </th>

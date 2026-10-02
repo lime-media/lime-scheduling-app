@@ -71,15 +71,33 @@ const addDays = (d: string, n: number) => {
   return x.toISOString().slice(0, 10)
 }
 
-/** Monday of the previous week through the Sunday six weeks after this week: eight weeks. */
-export function plannerWindow(today: string, weeksAhead = 6): { from: string; to: string; days: string[] } {
-  const t = new Date(today + 'T00:00:00Z')
-  const dow = (t.getUTCDay() + 6) % 7 // Monday = 0
-  const from = addDays(today, -dow - 7)
-  const to = addDays(from, (weeksAhead + 2) * 7 - 1)
+/** Weeks run Sunday to Saturday. */
+export const weekStart = (d: string) => addDays(d, -new Date(d + 'T00:00:00Z').getUTCDay())
+export const weekEnd = (d: string) => addDays(weekStart(d), 6)
+
+/** The longest range the planner loads at once, in weeks. */
+export const PLANNER_MAX_WEEKS = 26
+
+/**
+ * The planner's days for a range the person picked: from the Sunday of the
+ * start's week through the Saturday of the end's week, so every column group
+ * is a whole Sunday-to-Saturday week. An end before the start is the start's
+ * week alone; a range longer than PLANNER_MAX_WEEKS is cut to that many.
+ */
+export function plannerRange(fromDate: string, toDate: string): { from: string; to: string; days: string[] } {
+  const from = weekStart(fromDate)
+  let to = weekEnd(toDate < fromDate ? fromDate : toDate)
+  const last = addDays(from, PLANNER_MAX_WEEKS * 7 - 1)
+  if (to > last) to = last
   const days: string[] = []
   for (let d = from; d <= to; d = addDays(d, 1)) days.push(d)
   return { from, to, days }
+}
+
+/** The default: last week, this week and six ahead — eight Sunday-to-Saturday weeks. */
+export function plannerWindow(today: string, weeksAhead = 6): { from: string; to: string; days: string[] } {
+  const from = addDays(weekStart(today), -7)
+  return plannerRange(from, addDays(from, (weeksAhead + 2) * 7 - 1))
 }
 
 /** Shift minutes to the 8 / 10 / 12 the planner shows (nearest whole hour). */
@@ -219,7 +237,6 @@ export type PlannerNode = {
   /** Leaf rows beneath this node (1 for a leaf). */
   leafCount: number
   /** Trucks under this node on each day (non-open entries; open entries in the open group). */
-  trucksByDay: Record<string, number>
 }
 
 /** An entry's value at one level. Missing drivers and markets get a stated placeholder, never a guess. */
@@ -262,10 +279,9 @@ const sortNodes = (a: PlannerNode, b: PlannerNode) =>
  */
 export function pivotTree(entries: Entry[], pivot: Pivot, kinds?: Set<EntryKind>, trucks?: string[]): PlannerNode[] {
   const blank = (key: string, dim: Dimension, value: string, depth: number, unclassified: boolean): PlannerNode =>
-    ({ key, dim, value, depth, unclassified, children: [], cells: {}, top: {}, leafCount: 0, trucksByDay: {} })
+    ({ key, dim, value, depth, unclassified, children: [], cells: {}, top: {}, leafCount: 0 })
   const root = blank('', 'truck', '', -1, false)
   const index = new Map<string, PlannerNode>()
-  const dayTrucks = new Map<string, Map<string, Set<string>>>() // node key → date → trucks
   const child = (parent: PlannerNode, dim: Dimension, value: string, depth: number, unclassified: boolean) => {
     const key = `${parent.key}/${dim}:${encodeURIComponent(value)}`
     let node = index.get(key)
@@ -283,16 +299,9 @@ export function pivotTree(entries: Entry[], pivot: Pivot, kinds?: Set<EntryKind>
     const path = pathOf(e, pivot)
     path.forEach((step, depth) => {
       const node = child(parent, step.dim, step.value, depth, step.unclassified)
-      const byDay = dayTrucks.get(node.key) ?? new Map<string, Set<string>>()
-      dayTrucks.set(node.key, byDay)
-      byDay.set(e.date, (byDay.get(e.date) ?? new Set()).add(e.truck))
       if (depth === path.length - 1) (node.cells[e.date] ??= []).push(e)
       parent = node
     })
-  }
-  for (const [key, byDay] of dayTrucks) {
-    const node = index.get(key)!
-    for (const [d, t] of byDay) node.trucksByDay[d] = t.size
   }
   const finish = (n: PlannerNode): number => {
     n.children.sort(sortNodes)

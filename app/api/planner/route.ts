@@ -1,7 +1,7 @@
 /**
- * GET /api/planner — everything the ops planner shows, for the Monday of last
- * week through six weeks after this week (or ?from=YYYY-MM-DD for another
- * eight-week window starting that Monday): every truck's scheduled shifts with
+ * GET /api/planner — everything the ops planner shows, for last week through
+ * six weeks ahead, or ?from=YYYY-MM-DD&to=YYYY-MM-DD for a range the person
+ * picked (whole Sunday-to-Saturday weeks, at most 26): every truck's scheduled shifts with
  * hours and driver, maintenance, reservations, committed reservations, client
  * hold requests, AT&T soft holds and open days. Staff only.
  *
@@ -18,7 +18,7 @@ import { ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
 import { HIDDEN_TRUCKS } from '@/lib/availabilityEngine'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
 import { parseQuoteFeatures } from '@/lib/quoteFeatures'
-import { buildEntries, plannerWindow, type PlannerHold, type PlannerShift } from '@/lib/planner/build'
+import { buildEntries, plannerRange, plannerWindow, weekStart, type PlannerHold, type PlannerShift } from '@/lib/planner/build'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -116,11 +116,15 @@ export async function GET(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  // ?from=YYYY-MM-DD&to=YYYY-MM-DD: the range the person picked, widened to
+  // whole Sunday-to-Saturday weeks (plannerRange). ?from= alone: eight weeks
+  // from that date's week. Neither: last week through six weeks ahead.
+  const isDate = (v: string | null): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(v))
   const fromParam = req.nextUrl.searchParams.get('from')
-  const anchor = fromParam && /^\d{4}-\d{2}-\d{2}$/.test(fromParam) ? fromParam : iso(new Date())
-  // ?from= names the Monday the window starts on; plannerWindow starts a week
-  // before the week containing its date, so step forward a week to land on it.
-  const window = fromParam ? plannerWindow(iso(new Date(Date.parse(anchor + 'T00:00:00Z') + 7 * 864e5))) : plannerWindow(anchor)
+  const toParam = req.nextUrl.searchParams.get('to')
+  const window = isDate(fromParam)
+    ? plannerRange(fromParam, isDate(toParam) ? toParam : iso(new Date(Date.parse(weekStart(fromParam) + 'T00:00:00Z') + (8 * 7 - 1) * 864e5)))
+    : plannerWindow(iso(new Date()))
 
   try {
     const [trucksRaw, shiftsRaw, holds] = await Promise.all([

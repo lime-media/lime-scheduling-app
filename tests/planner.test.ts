@@ -3,15 +3,26 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { buildEntries, cellText, describeEntry, entryMatches, leaves, marketLabel, normalizeMarket, pivotTree, truckDayTop, plannerWindow, primary, shiftHours, OPEN_CAPACITY, UNASSIGNED, UNCLASSIFIED, type PlannerHold, type PlannerNode, type PlannerShift } from '@/lib/planner/build'
+import { buildEntries, cellText, describeEntry, entryMatches, leaves, marketLabel, normalizeMarket, pivotTree, truckDayTop, plannerRange, plannerWindow, primary, PLANNER_MAX_WEEKS, shiftHours, OPEN_CAPACITY, UNASSIGNED, UNCLASSIFIED, type PlannerHold, type PlannerNode, type PlannerShift } from '@/lib/planner/build'
 
 section('planner: window')
 {
-  const w = plannerWindow('2026-09-27') // a Sunday
-  eq('starts the Monday of last week', w.from, '2026-09-14')
+  const w = plannerWindow('2026-09-30') // a Wednesday
+  eq('starts the Sunday of last week', w.from, '2026-09-20')
   eq('runs eight weeks: last week, this week, six ahead', w.days.length, 56)
-  eq('ends on a Sunday', w.to, '2026-11-08')
-  eq('a Monday anchors the same way', plannerWindow('2026-09-21').from, '2026-09-14')
+  eq('ends on a Saturday', w.to, '2026-11-14')
+  eq('a Sunday is the first day of its week', plannerWindow('2026-09-27').from, '2026-09-20')
+  eq('a Saturday is the last day of its week', plannerWindow('2026-10-03').from, '2026-09-20')
+}
+
+section('planner: a range the person picks')
+{
+  eq('widened to whole Sunday-to-Saturday weeks', [plannerRange('2026-10-07', '2026-10-21').from, plannerRange('2026-10-07', '2026-10-21').to], ['2026-10-04', '2026-10-24'])
+  eq('already whole weeks: unchanged', [plannerRange('2026-10-04', '2026-10-17').from, plannerRange('2026-10-04', '2026-10-17').to], ['2026-10-04', '2026-10-17'])
+  eq('a single day is its week', plannerRange('2026-10-07', '2026-10-07').days.length, 7)
+  eq('an end before the start: the start\u2019s week', [plannerRange('2026-10-07', '2026-09-01').from, plannerRange('2026-10-07', '2026-09-01').to], ['2026-10-04', '2026-10-10'])
+  eq(`at most ${PLANNER_MAX_WEEKS} weeks`, plannerRange('2026-10-04', '2027-12-31').days.length, PLANNER_MAX_WEEKS * 7)
+  eq('every week starts on a Sunday', plannerRange('2026-10-07', '2026-12-30').days.filter((_, i) => i % 7 === 0).every(d => new Date(d + 'T00:00:00Z').getUTCDay() === 0), true)
 }
 
 section('planner: hours')
@@ -94,7 +105,6 @@ section('planner: pivot trees')
   eq('no market at the top is Unclassified; open capacity last', market.map(n => n.value), ['Austin, TX', 'Dallas, TX', UNCLASSIFIED, OPEN_CAPACITY])
 
   eq('open capacity lists the trucks', find(market, OPEN_CAPACITY).children.map(n => n.value), ['1261', '1262', '1263'])
-  eq('group rows count trucks per day (1262 reserved, 1263 requested)', find(client, 'Acme').trucksByDay['2026-10-06'], 2)
   eq('status filters apply', shape(pivotTree(entries, 'truck', new Set(['SCHEDULED']))), [{ '1261': ['Driver D1'] }])
   eq('one spelling per market', normalizeMarket('  Boston ,MA '), 'Boston, MA')
 }

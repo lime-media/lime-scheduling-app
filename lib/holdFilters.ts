@@ -39,3 +39,15 @@ export function activeHoldWhere(
     ],
   }
 }
+
+/**
+ * activeHoldWhere() for a row already in memory: does this hold reserve its
+ * truck right now? Same rule, kept beside it so the two cannot drift.
+ */
+export function holdReservesNow(
+  h: { status: string; expires_at: Date | null },
+  now: Date = new Date(),
+): boolean {
+  if (h.status === 'EXPIRED') return false
+  return h.status === 'COMMITTED' || h.expires_at === null || h.expires_at >= now
+}

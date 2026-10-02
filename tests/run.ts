@@ -16,6 +16,7 @@ import './brandMarkup.test'
 import './sfdcStages.test'
 import './quoteOnly.test'
 import './soql.test'
+import './sfdcPush.test'
 import { report } from './harness'
 
 process.exit(report())

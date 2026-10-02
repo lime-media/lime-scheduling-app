@@ -17,6 +17,7 @@ import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
 import { useEffect, useRef, useState } from 'react'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
+import { BrandInput } from '@/components/BrandInput'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { ReviewFinding } from '@/lib/planning/claude'
 import type { Arrival, LineQuote, MultiMarketQuote, QuoteRow, RowError } from '@/lib/planning/quote'
@@ -101,6 +102,8 @@ const tdNum = td + ' text-right tabular-nums'
 
 export function PlannerTab() {
   const [account, setAccount] = useState<SfdcAccount | null>(null)
+  // The campaign's brand, for the Salesforce opportunity (components/BrandInput.tsx).
+  const [brand, setBrand] = useState('')
   const [rows, setRows] = useState<QuoteRow[]>([newRow()])
   const [rowErrors, setRowErrors] = useState<RowError[]>([])
   const [features, setFeatures] = useState({ shadowFencing: true, smartDirectional: false, deviceId: false })
@@ -257,7 +260,7 @@ export function PlannerTab() {
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, quoteOnly }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, quoteOnly, brand }),
       })
       const data = await readJson(res)
       if (res.status === 409 && data.shortfalls) {
@@ -290,6 +293,9 @@ export function PlannerTab() {
       <div className={card}>
         <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
         <AccountSearch selected={account} onSelect={a => { setAccount(a); setQuote(null); setHoldResult(null) }} />
+        <div className="mt-3 max-w-sm">
+          <BrandInput value={brand} onChange={setBrand} className={input} />
+        </div>
       </div>
 
       {/* 2. Markets */}

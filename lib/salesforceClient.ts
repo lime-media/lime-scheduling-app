@@ -101,6 +101,8 @@ export type CreateOpportunityInput = {
   ownerId?: string
   /** Opportunity Client Type (Agency / Brand Direct). */
   clientType?: 'Agency' | 'Brand Direct'
+  /** Brand_Job_Name__c (50 characters): the brand, already cleaned (lib/brand.ts). */
+  brand?: string
 }
 
 export type SfdcOpportunityResult = {
@@ -126,6 +128,7 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
   if (input.market) body.Markets__c = input.market
   if (input.ownerId) body.OwnerId = input.ownerId
   if (input.clientType) body.Client_Type__c = input.clientType
+  if (input.brand) body.Brand_Job_Name__c = input.brand.slice(0, 50)
   if (input.holdStart) body.LED_Hold_Start__c = input.holdStart
   if (input.holdStop) body.LED_Hold_Stop__c = input.holdStop
   if (input.holdExp) body.LED_Hold_Exp__c = input.holdExp

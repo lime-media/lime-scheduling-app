@@ -34,6 +34,7 @@
  * Description as quoted but not booked.
  */
 
+import { cleanBrand, opportunityName } from '@/lib/brand'
 import { QUOTE_ONLY_GROUP_PREFIX, QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
 import { openStage } from '@/lib/sfdcStages'
 import { NextRequest, NextResponse } from 'next/server'
@@ -53,6 +54,8 @@ export const maxDuration = 300
 
 type HoldBody = QuoteRequest & {
   sfdcAccountName?: string
+  /** The brand the seller typed; cleaned before it goes to Salesforce (lib/brand.ts). */
+  brand?: string
   /** Row ids to book. Omitted: every row. */
   selectedIds?: string[]
   /** Book what can be covered when some trucks no longer can be. */
@@ -211,6 +214,7 @@ export async function POST(req: NextRequest) {
     }
 
     const accountName = body.sfdcAccountName || 'Client'
+    const brand = cleanBrand(body.brand)
     const linkedClient = await prisma.clientUser.findFirst({ where: { sfdc_account_id: body.sfdcAccountId }, select: { id: true } })
     const serviceUser = await prisma.user.findFirst({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } })
     const createdBy = (token.id as string) || serviceUser?.id || 'system'
@@ -237,7 +241,7 @@ export async function POST(req: NextRequest) {
         status: QUOTE_ONLY_STATUS,
         source: 'INTERNAL',
         origination: QUOTE_ONLY_ORIGINATION,
-        notes: `${QUOTE_ONLY_NOTE} ${lq.market}, part of a ${quote.summary.markets}-market quote for ${accountName}: ${lq.trucks} truck${lq.trucks === 1 ? '' : 's'} quoted`
+        notes: `${QUOTE_ONLY_NOTE} ${lq.market}, part of a ${quote.summary.markets}-market quote for ${accountName}${brand ? ` (brand: ${brand})` : ''}: ${lq.trucks} truck${lq.trucks === 1 ? '' : 's'} quoted`
           + (assigned.length ? `, priced on ${assigned.join(', ')}` : '')
           + (lq.missing ? `, ${lq.missing} with no truck available` : '') + '.',
         created_by: createdBy,
@@ -265,7 +269,7 @@ export async function POST(req: NextRequest) {
         status: 'HOLD',
         source: 'INTERNAL',
         origination: 'frontend',
-        notes: `${lq.market}, part of a ${quote.summary.markets}-market order for ${accountName}.`
+        notes: `${lq.market}, part of a ${quote.summary.markets}-market order for ${accountName}${brand ? ` (brand: ${brand})` : ''}.`
           + (partner ? ` Truck alternates weekly with ${partner}.` : '')
           + (stint.travelTo ? ` Last day is travel to ${stint.travelTo}.` : ''),
         created_by: createdBy,
@@ -315,7 +319,8 @@ export async function POST(req: NextRequest) {
           accountId: body.sfdcAccountId,
           ownerId: owner.ownerId ?? undefined,
           clientType: accountInfo?.clientType,
-          name: `${accountName} - Multi-market (${quote.summary.markets} markets) - ${starts[0]} to ${ends[ends.length - 1]}`.slice(0, 120),
+          name: opportunityName(brand, accountName, `Multi-market (${quote.summary.markets} markets) - ${starts[0]} to ${ends[ends.length - 1]}`),
+          brand: brand || undefined,
           stageName: openStage(body.stage),
           closeDate: starts[0],
           amount: quote.summary.grandTotal,

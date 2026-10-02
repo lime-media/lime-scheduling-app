@@ -6,6 +6,7 @@
  * checks are skipped.  Call this after any schedule cache refresh or hold creation.
  */
 
+import { expiryClosesOpportunity } from '@/lib/sfdcIntegration'
 import { getPool, query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
@@ -223,17 +224,20 @@ export async function expireHolds(): Promise<{
   // deferred until after the loop so the "any active holds left?" check inside
   // closeOpportunityAsLost() sees the finished state rather than a partial one.
   //
-  // Restricted to holds Salesforce itself put an expiry on. Client-portal holds
-  // also carry an sfdc_opportunity_id — the app creates a WARM Opportunity for
-  // them — so without this guard, ops simply not reviewing a portal booking
-  // within the 72h internal SLA would move a live deal to Closed Lost - Declined.
-  // The customer didn't decline; we didn't answer. Requiring sfdc_hold_exp also
-  // excludes SFDC pushes that omitted Hold Exp and got the 72h fallback, so a rep
-  // leaving an optional field blank can't lose their own deal.
+  // Which expiries close their Opportunity: see expiryClosesOpportunity().
+  //
+  // A DECIDED POLICY (product owner, 2026-10-02), not a refactor: app-created
+  // holds close their Opportunity too — internal quotes, multi-market AND
+  // client-portal bookings. The known cost: a portal booking that lapses only
+  // because ops did not review it within the 72h SLA is closed as "Closed Lost
+  // - Declined" although the customer did not decline, and that flows into
+  // pipeline reporting. Accepted so an expired reservation never leaves a live-
+  // looking deal behind. Salesforce pushes without a Hold Exp and quote-only
+  // logs are still never closed. To stop the outward writes, SFDC_AUTOCLOSE=off.
   const touchedOpportunities = Array.from(
     new Set(
       stale
-        .filter((h) => h.source === 'SALESFORCE' && h.sfdc_hold_exp !== null)
+        .filter(expiryClosesOpportunity)
         .map((h) => h.sfdc_opportunity_id)
         .filter((id): id is string => Boolean(id))
     )

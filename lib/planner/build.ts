@@ -26,6 +26,8 @@ export type PlannerShift = {
   driverName: string | null
   client: string
   program: string
+  /** client_programs.job_number, e.g. "26-0119-300". */
+  jobNumber?: string | null
   market: string
 }
 
@@ -41,6 +43,8 @@ export type PlannerHold = {
   hours: number | null    // from the quote, when it was quoted here
   opportunityId: string | null
   opportunityName: string | null
+  /** The Opportunity's Job_Number__c, once it has one (won deals). */
+  jobNumber?: string | null
   campaignGroupId: string | null
 }
 
@@ -54,6 +58,8 @@ export type Entry = {
   client: string
   campaign: string
   market: string
+  /** The job number ("26-0119-300"), when the program or Opportunity has one. */
+  jobNumber: string | null
   /** Groups consecutive days of the same thing into one bar. */
   barKey: string
   detail: string
@@ -71,15 +77,38 @@ const addDays = (d: string, n: number) => {
   return x.toISOString().slice(0, 10)
 }
 
-/** Monday of the previous week through the Sunday six weeks after this week: eight weeks. */
-export function plannerWindow(today: string, weeksAhead = 6): { from: string; to: string; days: string[] } {
-  const t = new Date(today + 'T00:00:00Z')
-  const dow = (t.getUTCDay() + 6) % 7 // Monday = 0
-  const from = addDays(today, -dow - 7)
-  const to = addDays(from, (weeksAhead + 2) * 7 - 1)
+/** Weeks run Sunday to Saturday. */
+export const weekStart = (d: string) => addDays(d, -new Date(d + 'T00:00:00Z').getUTCDay())
+export const weekEnd = (d: string) => addDays(weekStart(d), 6)
+
+/**
+ * The longest range the planner loads at once, in weeks — a quarter. Every
+ * truck-day is an entry (open days included) and a real cell, with no
+ * virtualisation: at ~82 trucks, 26 weeks would be ~15,000 entries (~3 MB of
+ * JSON, near Vercel's 4.5 MB response limit) and ~60,000 sheet cells.
+ */
+export const PLANNER_MAX_WEEKS = 13
+
+/**
+ * The planner's days for a range the person picked: from the Sunday of the
+ * start's week through the Saturday of the end's week, so every column group
+ * is a whole Sunday-to-Saturday week. An end before the start is the start's
+ * week alone; a range longer than PLANNER_MAX_WEEKS is cut to that many.
+ */
+export function plannerRange(fromDate: string, toDate: string): { from: string; to: string; days: string[] } {
+  const from = weekStart(fromDate)
+  let to = weekEnd(toDate < fromDate ? fromDate : toDate)
+  const last = addDays(from, PLANNER_MAX_WEEKS * 7 - 1)
+  if (to > last) to = last
   const days: string[] = []
   for (let d = from; d <= to; d = addDays(d, 1)) days.push(d)
   return { from, to, days }
+}
+
+/** The default: last week, this week and six ahead — eight Sunday-to-Saturday weeks. */
+export function plannerWindow(today: string, weeksAhead = 6): { from: string; to: string; days: string[] } {
+  const from = addDays(weekStart(today), -7)
+  return plannerRange(from, addDays(from, (weeksAhead + 2) * 7 - 1))
 }
 
 /** Shift minutes to the 8 / 10 / 12 the planner shows (nearest whole hour). */
@@ -107,6 +136,15 @@ function reservationCampaign(h: PlannerHold): string {
  * only where nothing else is booked (the grid shows the real shift on those
  * days). A truck-day with nothing on it is OPEN.
  */
+/** Placeholder job numbers ("00-0000-000", test and maintenance programs) are no job number. */
+export function realJobNumber(v: string | null | undefined): string | null {
+  const t = (v ?? '').trim()
+  return t && !/^[0\-\s]+$/.test(t) ? t : null
+}
+
+/** A drive day: the truck is travelling, not running a program — shown as D. */
+export const isDriveDay = (e: Pick<Entry, 'kind' | 'campaign'>) => e.kind === 'SCHEDULED' && /\bdrive\s*day\b/i.test(e.campaign)
+
 export function buildEntries(input: { trucks: string[]; days: string[]; shifts: PlannerShift[]; holds: PlannerHold[] }): Entry[] {
   const { trucks, days } = input
   const inWindow = new Set(days)
@@ -137,6 +175,7 @@ export function buildEntries(input: { trucks: string[]; days: string[]; shifts: 
       client: s.client || 'No client',
       campaign: s.program || 'No program',
       market: normalizeMarket(s.market),
+      jobNumber: realJobNumber(s.jobNumber),
       barKey: `S|${s.program}|${s.driverId ?? ''}`,
       detail: [s.program, s.market, s.client].filter(Boolean).join(' · '),
     })
@@ -156,6 +195,7 @@ export function buildEntries(input: { trucks: string[]; days: string[]; shifts: 
         client: h.client || 'No client',
         campaign: reservationCampaign(h),
         market: normalizeMarket(h.market),
+        jobNumber: realJobNumber(h.jobNumber),
         barKey: `H|${h.id}`,
         detail: [kind === 'COMMITTED' ? 'Committed (won)' : h.source === 'CLIENT' ? 'Reservation (client request)' : 'Reservation', h.market, h.client].filter(Boolean).join(' · '),
       })
@@ -168,7 +208,7 @@ export function buildEntries(input: { trucks: string[]; days: string[]; shifts: 
       if (byTruckDay.has(`${h.truck}|${d}`)) continue
       push({
         kind: 'ATT_SOFT', truck: h.truck, date: d, hours: null, driver: null,
-        client: '160over90 (AT&T)', campaign: 'AT&T soft hold', market: '',
+        client: '160over90 (AT&T)', campaign: 'AT&T soft hold', market: '', jobNumber: null,
         barKey: `A|${h.id}`, detail: 'AT&T soft hold',
       })
     }
@@ -178,7 +218,7 @@ export function buildEntries(input: { trucks: string[]; days: string[]; shifts: 
   for (const truck of trucks) {
     for (const d of days) {
       if (byTruckDay.has(`${truck}|${d}`)) continue
-      push({ kind: 'OPEN', truck, date: d, hours: null, driver: null, client: OPEN_CAPACITY, campaign: OPEN_CAPACITY, market: '', barKey: 'O', detail: 'Open' })
+      push({ kind: 'OPEN', truck, date: d, hours: null, driver: null, client: OPEN_CAPACITY, campaign: OPEN_CAPACITY, market: '', jobNumber: null, barKey: 'O', detail: 'Open' })
     }
   }
   return out
@@ -218,8 +258,6 @@ export type PlannerNode = {
   top: Record<string, Entry>
   /** Leaf rows beneath this node (1 for a leaf). */
   leafCount: number
-  /** Trucks under this node on each day (non-open entries; open entries in the open group). */
-  trucksByDay: Record<string, number>
 }
 
 /** An entry's value at one level. Missing drivers and markets get a stated placeholder, never a guess. */
@@ -262,10 +300,9 @@ const sortNodes = (a: PlannerNode, b: PlannerNode) =>
  */
 export function pivotTree(entries: Entry[], pivot: Pivot, kinds?: Set<EntryKind>, trucks?: string[]): PlannerNode[] {
   const blank = (key: string, dim: Dimension, value: string, depth: number, unclassified: boolean): PlannerNode =>
-    ({ key, dim, value, depth, unclassified, children: [], cells: {}, top: {}, leafCount: 0, trucksByDay: {} })
+    ({ key, dim, value, depth, unclassified, children: [], cells: {}, top: {}, leafCount: 0 })
   const root = blank('', 'truck', '', -1, false)
   const index = new Map<string, PlannerNode>()
-  const dayTrucks = new Map<string, Map<string, Set<string>>>() // node key → date → trucks
   const child = (parent: PlannerNode, dim: Dimension, value: string, depth: number, unclassified: boolean) => {
     const key = `${parent.key}/${dim}:${encodeURIComponent(value)}`
     let node = index.get(key)
@@ -283,16 +320,9 @@ export function pivotTree(entries: Entry[], pivot: Pivot, kinds?: Set<EntryKind>
     const path = pathOf(e, pivot)
     path.forEach((step, depth) => {
       const node = child(parent, step.dim, step.value, depth, step.unclassified)
-      const byDay = dayTrucks.get(node.key) ?? new Map<string, Set<string>>()
-      dayTrucks.set(node.key, byDay)
-      byDay.set(e.date, (byDay.get(e.date) ?? new Set()).add(e.truck))
       if (depth === path.length - 1) (node.cells[e.date] ??= []).push(e)
       parent = node
     })
-  }
-  for (const [key, byDay] of dayTrucks) {
-    const node = index.get(key)!
-    for (const [d, t] of byDay) node.trucksByDay[d] = t.size
   }
   const finish = (n: PlannerNode): number => {
     n.children.sort(sortNodes)
@@ -335,7 +365,7 @@ export function truckDayTop(entries: Entry[], kinds?: Set<EntryKind>): Map<strin
 /** Whether an entry matches a search, on any of the fields the pivots use. */
 export function entryMatches(e: Entry, q: string): boolean {
   if (!q) return true
-  return [e.truck, e.driver ?? '', e.client, e.campaign, e.market].some(v => v.toLowerCase().includes(q))
+  return [e.truck, e.driver ?? '', e.client, e.campaign, e.market, e.jobNumber ?? ''].some(v => v.toLowerCase().includes(q))
 }
 
 /** Leaf rows under a node, in display order. */
@@ -353,6 +383,7 @@ export function marketLabel(e: Entry): string {
 
 /** What a cell shows: hours, or "R" for a reservation with no hours on file; empty for open and non-hour entries. */
 export function cellText(e: Entry): string {
+  if (isDriveDay(e)) return 'D'
   if (e.hours !== null) return String(e.hours)
   if (e.kind === 'RESERVATION') return 'R'
   if (e.kind === 'COMMITTED') return 'C'
@@ -367,7 +398,7 @@ export function describeEntry(e: Entry): string {
   return [
     `Truck ${e.truck}: ${what}`,
     e.hours !== null ? `${e.hours} hours` : e.kind === 'RESERVATION' || e.kind === 'COMMITTED' ? 'hours not on file' : null,
-    e.campaign, e.client, e.market || null, e.driver ? `driver ${e.driver}` : null,
+    e.campaign, e.client, e.market || null, e.jobNumber ? `job ${e.jobNumber}` : null, e.driver ? `driver ${e.driver}` : null,
   ].filter(Boolean).join(', ')
 }
 

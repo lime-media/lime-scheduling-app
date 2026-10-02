@@ -6,6 +6,7 @@
  * Uses the availability engine to auto-select trucks.
  */
 
+import { cleanBrand, opportunityName } from '@/lib/brand'
 import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
 import { openStage } from '@/lib/sfdcStages'
 import { NextRequest, NextResponse } from 'next/server'
@@ -37,12 +38,14 @@ export async function POST(req: NextRequest) {
   const body = await req.json()
   const {
     market, state, start_date, end_date, truck_count,
-    sfdc_account_id, sfdc_account_name,
+    sfdc_account_id, sfdc_account_name, brand: rawBrand,
     shadow_fencing, smart_directional, device_id, studies: rawStudies,
     days_per_week, operating_hours, brand_markup_pct, stage, quote_only, expected_total,
   } = body
   // Low conviction: log a priced opportunity, reserve nothing (lib/quoteOnly.ts).
   const quoteOnly = quote_only === true
+  // The brand, as Salesforce gets it (Brand / Job Name, and first in the name).
+  const brand = cleanBrand(typeof rawBrand === 'string' ? rawBrand : '')
 
   if (!market || !start_date || !end_date || !truck_count) {
     return NextResponse.json({ error: 'market, start_date, end_date, truck_count required' }, { status: 400 })
@@ -210,7 +213,7 @@ export async function POST(req: NextRequest) {
           status:            quoteOnly ? QUOTE_ONLY_STATUS : 'HOLD',
           source:            'INTERNAL',
           origination:       quoteOnly ? QUOTE_ONLY_ORIGINATION : 'frontend',
-          notes:             quoteOnly ? `${QUOTE_ONLY_NOTE} Internal quote for ${sfdc_account_name || 'Unknown'}` : `Internal quote for ${sfdc_account_name || 'Unknown'}`,
+          notes:             `${quoteOnly ? `${QUOTE_ONLY_NOTE} ` : ''}Internal quote for ${sfdc_account_name || 'Unknown'}${brand ? ` (brand: ${brand})` : ''}`,
           created_by:        createdBy,
           // Quote-only logs are internal: never shown in the client portal.
           client_user_id:    quoteOnly ? null : linkedClient?.id ?? null,
@@ -255,7 +258,8 @@ export async function POST(req: NextRequest) {
             + (selectedTrucks.length ? `, priced on ${selectedTrucks.map(t => t.truckNumber).join(', ')}.` : '; no truck was available, so transport is not priced.') : null,
           markupPct ? `Brand Direct pricing: +${markupPct}% folded into every line item.` : null,
         ].filter(Boolean).join('\n') || undefined,
-        name: `${sfdc_account_name || 'Client'} - ${market} - ${start_date} to ${end_date}`,
+        name: opportunityName(brand, sfdc_account_name || 'Client', `${market} - ${start_date} to ${end_date}`),
+        brand: brand || undefined,
         // The seller's choice of open stage; never a closed one.
         stageName: openStage(stage),
         closeDate: start_date,

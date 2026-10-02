@@ -8,6 +8,8 @@ import { prisma } from '@/lib/prisma'
 import { haversineDistance, getMarketCoords, resolveMarketInput, type MarketMatch } from '@/lib/marketCoordinates'
 import { marketSizeTierFromDmaCode, NON_DMA_MARKET_TIER, type RateOverrides } from './config'
 import { loadStandardMarketCoords, normalizeMarketKey, titleCaseMarket } from '@/lib/marketBounds'
+import { findPlaces, placeCoords } from '@/lib/geo/places'
+import { dmaForPoint } from '@/lib/pricing/dmaArea'
 import type { ClientSession } from '@/lib/clientAuth'
 
 // ---------------------------------------------------------------------------
@@ -16,21 +18,24 @@ import type { ClientSession } from '@/lib/clientAuth'
 
 /**
  * Resolve a campaign market string (e.g. "Dallas, TX") to a market size
- * tier ID (1-4) by matching against active AcceptedMarkets in the DB.
- * Falls back to tier 3 (mid/large) if no match — safe default that
- * doesn't over-promise on lift-study eligibility.
+ * tier ID (1-4): a top-50 DMA city by name, else the top-50 DMA whose ring
+ * the market sits in (lib/pricing/dmaArea.ts), else tier 4 (small metro).
+ * Tier sets estimated reach, and so lift-study eligibility — never price.
  */
 export async function resolveMarketSizeTierId(market: string): Promise<number> {
   if (!market) return NON_DMA_MARKET_TIER
   try {
     const acceptedMarkets = await prisma.acceptedMarket.findMany({
       where: { is_active: true },
-      select: { dma_code: true, dma_name: true },
+      select: { dma_code: true, dma_name: true, lat: true, lng: true },
     })
-    const matched = matchAcceptedDma(market, acceptedMarkets)
-    return matched
-      ? marketSizeTierFromDmaCode(matched.dma_code)
-      : NON_DMA_MARKET_TIER
+    // A top-50 DMA city by name, then by location: a suburb in a top-50 DMA's
+    // ring takes that DMA's tier (lib/pricing/dmaArea.ts).
+    const named = matchAcceptedDma(market, acceptedMarkets)
+    if (named) return marketSizeTierFromDmaCode(named.dma_code)
+    const coords = await resolveCampaignCoords(market)
+    const around = coords ? dmaForPoint(coords, acceptedMarkets) : null
+    return around ? marketSizeTierFromDmaCode(around.dma_code) : NON_DMA_MARKET_TIER
   } catch (err) {
     console.error('[resolvers] market size tier lookup failed, using the small-metro tier:', err)
     return NON_DMA_MARKET_TIER
@@ -169,7 +174,7 @@ export async function resolveRateOverridesBySfdcAccount(sfdcAccountId: string): 
 // Campaign coordinate resolution
 // ---------------------------------------------------------------------------
 
-export type CampaignCoords = { lat: number; lng: number; source: 'coords_map' | 'standard_market' | 'accepted_market' }
+export type CampaignCoords = { lat: number; lng: number; source: 'coords_map' | 'standard_market' | 'us_place' | 'accepted_market' }
 
 /**
  * Resolve a campaign market string to lat/lng coordinates.
@@ -209,6 +214,10 @@ export async function resolveCampaignCoords(market: string): Promise<CampaignCoo
   } catch (err) {
     console.error('[resolvers] standard market coord lookup failed:', err)
   }
+
+  // Any US city, town or ZIP the lists do not know (lib/geo/places.ts).
+  const place = placeCoords(market)
+  if (place) return { lat: place.lat, lng: place.lng, source: 'us_place' }
 
   // Fall back to accepted markets table (fuzzy city match)
   try {
@@ -337,9 +346,9 @@ export async function resolveMarketInputAll(input: string): Promise<MarketMatch[
     standard = await loadStandardMarketCoords()
   } catch (err) {
     console.error('[resolvers] standard market list unavailable, file only:', err)
-    return fromFile
+    return fromFile.length ? fromFile : placeMatches(input)
   }
-  if (standard.size === 0) return fromFile
+  if (standard.size === 0) return fromFile.length ? fromFile : placeMatches(input)
 
   const key = normalizeMarketKey(input)
   const city = key.split(',')[0].trim()
@@ -365,7 +374,14 @@ export async function resolveMarketInputAll(input: string): Promise<MarketMatch[
   const byKey = new Map<string, MarketMatch>()
   for (const m of tier) byKey.set(m.key, m)
   for (const m of fromFile) if (!byKey.has(m.key)) byKey.set(m.key, m)
+  // Neither knows it: any US city, town or ZIP (lib/geo/places.ts).
+  if (byKey.size === 0) return placeMatches(input)
 
   return [...byKey.values()].sort((a, b) => a.formal.localeCompare(b.formal))
 }
 
+
+/** Places as market matches: the fallback when no market list knows the input. */
+function placeMatches(input: string): MarketMatch[] {
+  return findPlaces(input).map(p => ({ key: normalizeMarketKey(p.name), formal: p.name, lat: p.lat, lng: p.lng }))
+}

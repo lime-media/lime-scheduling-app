@@ -16,6 +16,7 @@ import { query } from '@/lib/mssql'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { scheduledWithMarketQuery } from '@/lib/scheduleQuery'
 import { hasMarketBounds, loadStandardMarketCoords, normalizeMarketKey } from '@/lib/marketBounds'
+import { placeCoords } from '@/lib/geo/places'
 import { getLiveVehicleLocations, type SamsaraVehicleLocation } from '@/lib/samsaraService'
 import { buildTruckTimelines, type DayRow, type TruckJob } from '@/lib/truckTimeline'
 
@@ -117,6 +118,8 @@ export async function loadFleetTimelines(opts: {
       const coords =
         marketCoords.get(normalizeMarketKey(state && !market.toLowerCase().endsWith(`, ${state.toLowerCase()}`) ? `${market}, ${state}` : market))
         ?? marketCoords.get(normalizeMarketKey(market))
+        // Not a standard market: any US city or town (lib/geo/places.ts).
+        ?? placeCoords(market, state) ?? undefined
       return {
         id: h.id,
         truck_number: h.truck_number,

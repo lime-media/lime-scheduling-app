@@ -281,11 +281,13 @@ eq('falls back to the name file when absent',
 eq('unmapped market resolves when the market supplies coords',
    jobCoords({ market: 'Allentown, PA', state: 'PA', lat: 40.6, lng: -75.5 }),
    { lat: 40.6, lng: -75.5 })
-eq('unmapped market still null without them',
-   jobCoords({ market: 'Allentown, PA', state: 'PA' }), null)
+eq('a market no list knows is found among US places (Census)',
+   jobCoords({ market: 'Allentown, PA', state: 'PA' }) !== null, true)
+eq('a place that does not exist is still null',
+   jobCoords({ market: 'Nowhere Junction, PA', state: 'PA' }), null)
 // Half a coordinate is not a coordinate.
 eq('partial coordinates are ignored',
-   jobCoords({ market: 'Allentown, PA', state: 'PA', lat: 40.6 }), null)
+   jobCoords({ market: 'Nowhere Junction, PA', state: 'PA', lat: 40.6 }), null)
 
 section('market name normalization (standard_market_lookup keys)')
 // standard_market values carry stray leading spaces (" Boston, MA") and hold

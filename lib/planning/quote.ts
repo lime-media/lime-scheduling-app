@@ -209,7 +209,7 @@ export async function resolveRows(rows: QuoteRow[]): Promise<{ lines: OrderLine[
       standardMarket = (await nearestStandardMarket(lat, lng)) ?? undefined
     } else {
       const matches = await resolveMarketInputAll(market)
-      if (matches.length === 0) { errors.push({ rowId: r.id, message: `"${market}" was not found. Include the state, e.g. "Portland, OR".` }); continue }
+      if (matches.length === 0) { errors.push({ rowId: r.id, message: `"${market}" was not found. Use a US city with its state (e.g. "Ames, IA") or a ZIP code.` }); continue }
       if (matches.length > 1) { errors.push({ rowId: r.id, message: `Several markets match "${market}".`, candidates: matches.map(m => m.formal) }); continue }
       market = matches[0].formal
       const coords = await resolveCampaignCoords(market)

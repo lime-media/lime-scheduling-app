@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
   const marketMatches = await resolveMarketInputAll(market)
   if (marketMatches.length === 0) {
     return NextResponse.json({
-      error: `We couldn't find "${market}" in our market database. Please include the state abbreviation (e.g. "Portland, OR").`,
+      error: `We couldn't find "${market}". Use a US city with its state (e.g. "Ames, IA") or a ZIP code.`,
     }, { status: 400 })
   }
   if (marketMatches.length > 1) {

@@ -1,5 +1,6 @@
 'use client'
 
+import { MarketInput } from '@/components/MarketInput'
 import { BrandInput } from '@/components/BrandInput'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import Link from 'next/link'
@@ -532,13 +533,7 @@ function QuoteBox({
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="col-span-2 sm:col-span-1">
             <label className={labelClass}>Market{requiredMark}</label>
-            <input
-              type="text"
-              placeholder="e.g. Dallas, TX"
-              value={form.market}
-              onChange={(e) => onChange({ market: e.target.value })}
-              className={inputClass}
-            />
+            <MarketInput value={form.market} onChange={v => onChange({ market: v })} className={inputClass} ariaLabel="Market" />
           </div>
           <div>
             <label className={labelClass}>Start date{requiredMark}</label>

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
-import { SFDC_SERVICE_USER_EMAIL, appOwnsOpportunity } from '@/lib/sfdcIntegration'
+import { SFDC_SERVICE_USER_EMAIL, trucksToMirror } from '@/lib/sfdcIntegration'
 import { endOfDayUtc } from '@/lib/dateOnly'
 import { HOLD_EXPIRATION_HOURS } from '@/lib/holdExpiry'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
@@ -27,13 +27,6 @@ export async function POST(req: NextRequest) {
 
   if (!opportunityId || !accountName || !trucks || !holdStart || !holdStop) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
-  }
-
-  // An Opportunity the app created (quote tools) is already reserved here by
-  // the app's own holds; its push is an echo, never a second reservation.
-  const linked = await prisma.hold.findMany({ where: { sfdc_opportunity_id: opportunityId }, select: { source: true } })
-  if (appOwnsOpportunity(linked.map(h => h.source))) {
-    return NextResponse.json({ opportunityId, skipped: 'app_owned', detail: 'This Opportunity was created by the scheduling app, which already holds its trucks.' })
   }
 
   const serviceUser = await prisma.user.findUnique({ where: { email: SFDC_SERVICE_USER_EMAIL } })
@@ -110,7 +103,17 @@ export async function POST(req: NextRequest) {
     results.push({ truck_number: hold.truck_number, hold_id: hold.id, action: 'removed' })
   }
 
-  for (const truck_number of truckNumbers) {
+  // Trucks the app itself holds for this Opportunity right now (it created the
+  // Opportunity from a quote) are an echo, not a second reservation. Stale
+  // SALESFORCE holds above are still reconciled against the full list.
+  const linkedHolds = await prisma.hold.findMany({
+    where: { sfdc_opportunity_id: opportunityId },
+    select: { truck_number: true, source: true, status: true, expires_at: true },
+  })
+  const toMirror = trucksToMirror(truckNumbers, linkedHolds, now)
+  const skippedAppHeld = truckNumbers.filter(t => !toMirror.includes(t))
+
+  for (const truck_number of toMirror) {
     const gps    = gpsMap.get(truck_number)
     const state  = gps?.state ?? ''
     // This route DERIVES a market from Samsara reverse-geocoding rather than
@@ -269,5 +272,5 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ results })
+  return NextResponse.json({ results, ...(skippedAppHeld.length ? { skipped_app_held: skippedAppHeld } : {}) })
 }

@@ -225,8 +225,15 @@ export async function expireHolds(): Promise<{
   // closeOpportunityAsLost() sees the finished state rather than a partial one.
   //
   // Which expiries close their Opportunity: see expiryClosesOpportunity().
-  // App-created holds (quotes, multi-market, client portal) included — a
-  // reservation the app let lapse is a lost deal in Salesforce too.
+  //
+  // A DECIDED POLICY (product owner, 2026-10-02), not a refactor: app-created
+  // holds close their Opportunity too — internal quotes, multi-market AND
+  // client-portal bookings. The known cost: a portal booking that lapses only
+  // because ops did not review it within the 72h SLA is closed as "Closed Lost
+  // - Declined" although the customer did not decline, and that flows into
+  // pipeline reporting. Accepted so an expired reservation never leaves a live-
+  // looking deal behind. Salesforce pushes without a Hold Exp and quote-only
+  // logs are still never closed. To stop the outward writes, SFDC_AUTOCLOSE=off.
   const touchedOpportunities = Array.from(
     new Set(
       stale

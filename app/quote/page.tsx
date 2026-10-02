@@ -1,5 +1,6 @@
 'use client'
 
+import { MarketInput } from '@/components/MarketInput'
 import { BrandInput } from '@/components/BrandInput'
 import toast from 'react-hot-toast'
 import { ATT_RELEASE_WARNING } from '@/lib/attSoftRules'
@@ -316,7 +317,7 @@ export default function InternalQuotePage() {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div className="col-span-2 sm:col-span-1">
               <label className="text-xs font-medium text-gray-600 mb-1 block">Market</label>
-              <input type="text" placeholder="e.g. Dallas, TX" value={form.market} onChange={e => setForm(p => ({ ...p, market: e.target.value }))} className={inputClass} />
+              <MarketInput value={form.market} onChange={v => setForm(p => ({ ...p, market: v }))} className={inputClass} ariaLabel="Market" />
             </div>
             <div>
               <label className="text-xs font-medium text-gray-600 mb-1 block">Start</label>

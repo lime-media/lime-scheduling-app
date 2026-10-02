@@ -22,6 +22,7 @@
  * check can be deleted.
  */
 
+import { placeCoords } from '@/lib/geo/places'
 import { query } from '@/lib/mssql'
 
 const BOUNDS_COLUMNS = ['bounds_ne_lat', 'bounds_ne_lng', 'bounds_sw_lat', 'bounds_sw_lng']
@@ -143,10 +144,13 @@ export async function canonicalMarketName(market: string, state?: string): Promi
   } catch {
     return null
   }
-  if (coords.size === 0) return null
+  if (coords.size === 0) return placeCoords(raw, state)?.name ?? null
 
   const matched = matchMarketKey(raw, state, coords.keys())
-  return matched ? titleCaseMarket(matched) : null
+  if (matched) return titleCaseMarket(matched)
+  // Not a standard market: any US city or town, spelled as the Census spells
+  // it ("Ames, IA"), so the hold can locate itself later (lib/geo/places.ts).
+  return placeCoords(raw, state)?.name ?? null
 }
 
 /**

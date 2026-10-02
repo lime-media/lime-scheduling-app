@@ -1,3 +1,4 @@
+import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { holdReservesNow } from '@/lib/holdFilters'
 
 // Holds pushed in from Salesforce are attributed to this service user, and
@@ -21,6 +22,32 @@ export function trucksToMirror(
 ): string[] {
   const held = new Set(linkedHolds.filter(h => h.source !== 'SALESFORCE' && holdReservesNow(h, now)).map(h => h.truck_number))
   return pushedTrucks.filter(t => !held.has(t))
+}
+
+/**
+ * Does this hold expiring close its Salesforce Opportunity (once it was the
+ * Opportunity's last live hold)? Every hold linked to an Opportunity does —
+ * those Salesforce pushed with a Hold Exp, and those the app created from a
+ * quote, multi-market or the client portal — except:
+ *   - a Salesforce push with no Hold Exp (the 72h fallback): a rep leaving an
+ *     optional field blank must not lose their deal;
+ *   - a quote-only log: it never reserved anything, and stays open by design.
+ */
+export function expiryClosesOpportunity(h: { sfdc_opportunity_id: string | null; source: string; sfdc_hold_exp: Date | null; origination: string | null }): boolean {
+  if (!h.sfdc_opportunity_id) return false
+  if (h.origination === QUOTE_ONLY_ORIGINATION) return false
+  return h.source !== 'SALESFORCE' || h.sfdc_hold_exp !== null
+}
+
+/**
+ * Can a hold be put back in play (reinstated, or given a new expiry)? Not
+ * while its Opportunity is Closed Lost: the hourly reconcile would expire it
+ * again within the hour, silently. Reopening the deal is a Salesforce
+ * decision; the message says so. An unknown stage (null) never blocks.
+ */
+export function closedOpportunityBlocksReactivation(stage: { isClosed: boolean; isWon: boolean; stageName: string } | null): string | null {
+  if (!stage || !stage.isClosed || stage.isWon) return null
+  return `Its Salesforce Opportunity is "${stage.stageName}", so the hold would be released again within the hour. Reopen the Opportunity in Salesforce first, then try again.`
 }
 
 /**

@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { opportunityMarketCandidates, trucksToMirror } from '@/lib/sfdcIntegration'
+import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, opportunityMarketCandidates, trucksToMirror } from '@/lib/sfdcIntegration'
 
 const NOW = new Date('2026-10-02T12:00:00Z')
 const later = new Date('2026-10-05T23:59:59Z'), earlier = new Date('2026-09-28T00:00:00Z')
@@ -20,6 +20,26 @@ eq('app hold past its expiry (sweep not run yet): mirror it', trucksToMirror(['7
 eq('a rep adds a truck to an app quote in Salesforce: only the new truck is mirrored',
   trucksToMirror(['7423', '1106'], [row('7423', 'INTERNAL', 'HOLD', later)], NOW), ['1106'])
 eq('trucks already mirrored from Salesforce are still updated', trucksToMirror(['9269'], [row('9269', 'SALESFORCE', 'HOLD', later)], NOW), ['9269'])
+
+section('Salesforce: which expiries close the Opportunity')
+{
+  const h = (source: string, sfdc_hold_exp: Date | null, origination: string | null = null, sfdc_opportunity_id: string | null = '006VP00000gRDLxYAO') =>
+    expiryClosesOpportunity({ source, sfdc_hold_exp, origination, sfdc_opportunity_id })
+  const exp = new Date('2026-10-07T00:00:00Z')
+  eq('a Salesforce push with a Hold Exp', h('SALESFORCE', exp), true)
+  eq('a Salesforce push with no Hold Exp (72h fallback): the rep keeps the deal', h('SALESFORCE', null), false)
+  eq('an internal quote hold', h('INTERNAL', null, 'frontend'), true)
+  eq('a multi-market hold', h('INTERNAL', null, 'frontend'), true)
+  eq('a client portal hold', h('CLIENT', null, 'client-view'), true)
+  eq('a quote-only log never closes its Opportunity', h('INTERNAL', null, 'quote_only'), false)
+  eq('no Opportunity, nothing to close', h('INTERNAL', null, 'frontend', null), false)
+}
+
+section('Salesforce: a hold is not revived under a Closed Lost Opportunity')
+eq('Closed Lost: refused, and says to reopen in Salesforce', closedOpportunityBlocksReactivation({ isClosed: true, isWon: false, stageName: 'Closed Lost - Declined' })?.includes('Reopen the Opportunity in Salesforce'), true)
+eq('open: allowed', closedOpportunityBlocksReactivation({ isClosed: false, isWon: false, stageName: 'WARM' }), null)
+eq('Closed Won: allowed', closedOpportunityBlocksReactivation({ isClosed: true, isWon: true, stageName: 'Closed Won' }), null)
+eq('stage unknown (Salesforce unreachable): allowed', closedOpportunityBlocksReactivation(null), null)
 
 section('Salesforce push: the hold goes where the Opportunity says, never where the truck is parked')
 {

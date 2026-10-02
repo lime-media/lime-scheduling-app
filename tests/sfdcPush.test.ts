@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { trucksToMirror } from '@/lib/sfdcIntegration'
+import { opportunityMarketCandidates, trucksToMirror } from '@/lib/sfdcIntegration'
 
 const NOW = new Date('2026-10-02T12:00:00Z')
 const later = new Date('2026-10-05T23:59:59Z'), earlier = new Date('2026-09-28T00:00:00Z')
@@ -20,3 +20,20 @@ eq('app hold past its expiry (sweep not run yet): mirror it', trucksToMirror(['7
 eq('a rep adds a truck to an app quote in Salesforce: only the new truck is mirrored',
   trucksToMirror(['7423', '1106'], [row('7423', 'INTERNAL', 'HOLD', later)], NOW), ['1106'])
 eq('trucks already mirrored from Salesforce are still updated', trucksToMirror(['9269'], [row('9269', 'SALESFORCE', 'HOLD', later)], NOW), ['9269'])
+
+section('Salesforce push: the hold goes where the Opportunity says, never where the truck is parked')
+{
+  const c = opportunityMarketCandidates
+  eq('a single market', c('Bakersfield', 'Bakersfield LED'), ['Bakersfield'])
+  eq('a market with its state stays one market', c('San Francisco, CA', 'Atlassian - San Francisco LED'), ['San Francisco, CA'])
+  eq('Las Vegas, NV', c('Las Vegas, NV', 'Atlassian - Las Vegas LED'), ['Las Vegas, NV'])
+  eq('two markets', c('New York, San Francisco', 'Spellbook - New York/San Francisco LED'), ['New York City, NY', 'San Francisco'])
+  eq('a semicolon list', c('San Francisco; New York; Miami', 'Deel - Multimarket LED'), ['San Francisco', 'New York City, NY', 'Miami'])
+  eq('DC and LA are markets, not states; shorthand is spelled out', c('DC, NYC, LA', 'DC/NYC/LA LED'), ['Washington, DC', 'New York City, NY', 'Los Angeles, CA'])
+  eq('blank field: the name says it', c(null, 'Detroit/LA/Austin/San Francisco/DC LED'), ['Detroit', 'Los Angeles, CA', 'Austin', 'San Francisco', 'Washington, DC'])
+  eq('a placeholder field: the name says it', c('Market', 'Washington DC/Austin LED'), ['Washington, DC', 'Austin'])
+  eq('notes mixed into the field are dropped', c('San Francisco, x1 and 3x Trucks options', 'San Francisco/x1 and 3x Trucks options LED'), ['San Francisco'])
+  eq('the name with a client prefix', c(null, 'Mount Sinai - New York LED'), ['New York City, NY'])
+  eq('a bare Washington is not guessed', c('Washington', 'Washington LED'), ['Washington'])
+  eq('nothing usable anywhere', c(null, null), [])
+}

@@ -30,6 +30,7 @@
  * never been priced and is not introduced here.
  */
 
+import { placeCoords } from '@/lib/geo/places'
 import { haversineDistance, getMarketCoords } from '@/lib/marketCoordinates'
 import { transportDaysFromDistance, needsRepositioning, chargeForLeg } from '@/lib/pricing/transport'
 import { findPredecessor, findSuccessor, type TruckJob } from '@/lib/truckTimeline'
@@ -142,9 +143,14 @@ export function coordsForJob(market: string, state: string): Coords | null {
     if (withState) return withState
   }
 
-  // Last resort: the city alone, in case the map keys it without a state.
+  // Then the city alone, in case the map keys it without a state.
   const city = market.split(',')[0].trim()
-  return city && city !== market ? getMarketCoords(city) ?? null : null
+  const bare = city && city !== market ? getMarketCoords(city) : null
+  if (bare) return bare
+
+  // Last: any US city or town (lib/geo/places.ts).
+  const place = placeCoords(market, state)
+  return place ? { lat: place.lat, lng: place.lng } : null
 }
 
 /**

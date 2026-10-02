@@ -12,6 +12,7 @@
  * one Salesforce opportunity in one step.
  */
 
+import { MarketInput } from '@/components/MarketInput'
 import { SHORT_RANGE_MAX_DAYS } from '@/lib/pricing/schedule'
 import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
@@ -331,8 +332,8 @@ export function PlannerTab() {
                 return (
                   <tr key={r.id}>
                     <td className={td + ' min-w-[12rem]'}>
-                      <input className={input} placeholder="e.g. Dallas, TX" value={r.market}
-                        onChange={e => updateRow(r.id, { market: e.target.value, lat: undefined, lng: undefined })} />
+                      <MarketInput className={input} value={r.market} ariaLabel="Market"
+                        onChange={v => updateRow(r.id, { market: v, lat: undefined, lng: undefined })} />
                       {r.lat !== undefined && <div className="text-[11px] text-gray-400 mt-0.5">From client file</div>}
                       {err && (
                         <div className="text-xs text-red-700 mt-1">

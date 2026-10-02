@@ -32,6 +32,7 @@ import {
 import {
   LEGEND_SWATCH, CELL_TEXT, RESERVATION_LABEL, COMMITTED_LABEL, ATT_SOFT_LABEL, type DisplayStatus,
 } from '@/lib/statusColors'
+import { SHEET_COLUMNS, sheetRows, sortSheet, type SheetColumn, type SheetRow } from '@/lib/planner/sheet'
 
 type PlannerData = {
   window: { from: string; to: string; days: string[] }
@@ -53,6 +54,10 @@ const swatch = (k: EntryKind) => LEGEND_SWATCH[STATUS_OF[k] as keyof typeof LEGE
 const textOn = (k: EntryKind) => CELL_TEXT[STATUS_OF[k]]
 const KIND_ORDER: EntryKind[] = ['SCHEDULED', 'MAINTENANCE', 'COMMITTED', 'RESERVATION', 'ATT_SOFT', 'OPEN']
 
+type View = Pivot | 'sheet'
+const VIEWS: { value: View; label: string; path: string }[] = [
+  { value: 'sheet',    label: 'Sheet',    path: 'Driver · Program · Market · Job # · Truck' },
+]
 const PIVOTS: { value: Pivot; label: string; path: string }[] = [
   { value: 'truck',    label: 'Truck',    path: 'Truck › Driver' },
   { value: 'driver',   label: 'Driver',   path: 'Driver › Campaign › Market › Truck' },
@@ -90,7 +95,9 @@ export function OpsPlanner() {
   const [data, setData] = useState<PlannerData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [pivot, setPivot] = useState<Pivot>('truck')
+  const [view, setView] = useState<View>('truck')
+  const pivot: Pivot = view === 'sheet' ? 'truck' : view
+  const [sort, setSort] = useState<{ by: SheetColumn; dir: 'asc' | 'desc' }>({ by: 'driver', dir: 'asc' })
   const [kinds, setKinds] = useState<Set<EntryKind>>(new Set(KIND_ORDER))
   const [search, setSearch] = useState('')
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -100,8 +107,13 @@ export function OpsPlanner() {
   const seq = useRef(0)
   const [reloadKey, setReloadKey] = useState(0)
 
-  useEffect(() => { setPivot(store<Pivot>('planner.pivot', 'truck')) }, [])
-  useEffect(() => { save('planner.pivot', pivot); setCollapsed(new Set()) }, [pivot])
+  useEffect(() => {
+    setView(store<View>('planner.pivot', 'truck'))
+    setSort(store('planner.sheetSort', { by: 'driver' as SheetColumn, dir: 'asc' as const }))
+  }, [])
+  useEffect(() => { save('planner.pivot', view); setCollapsed(new Set()) }, [view])
+  useEffect(() => { save('planner.sheetSort', sort) }, [sort])
+  const sortBy = useCallback((by: SheetColumn) => setSort(s => ({ by, dir: s.by === by && s.dir === 'asc' ? 'desc' : 'asc' })), [])
 
   // The window asked for, known before the response arrives: whole
   // Sunday-to-Saturday weeks, the same rule the server applies.
@@ -145,7 +157,8 @@ export function OpsPlanner() {
   }, [days])
 
   // Pivot once per data / pivot / filter change — never per keystroke.
-  const baseTree = useMemo(() => (data ? pivotTree(data.entries, pivot, kinds, data.trucks) : []), [data, pivot, kinds])
+  const baseTree = useMemo(() => (data && view !== 'sheet' ? pivotTree(data.entries, pivot, kinds, data.trucks) : []), [data, view, pivot, kinds])
+  const baseSheet = useMemo(() => (data && view === 'sheet' ? sheetRows(data.entries, kinds) : []), [data, view, kinds])
   const strips = useMemo(() => (data ? truckDayTop(data.entries, kinds) : new Map<string, Record<string, Entry>>()), [data, kinds])
   const q = deferredSearch.trim().toLowerCase()
   const tree = useMemo(() => {
@@ -157,6 +170,10 @@ export function OpsPlanner() {
     }
     return baseTree.map(keep).filter((x): x is PlannerNode => x !== null)
   }, [baseTree, q])
+  const sheet = useMemo(() => {
+    const rows = q ? baseSheet.filter(r => [r.driver, r.program, r.market, r.job, r.truck].some(v => v.toLowerCase().includes(q))) : baseSheet
+    return sortSheet(rows, sort.by, sort.dir)
+  }, [baseSheet, q, sort])
 
   // Legend counts follow the search, so the numbers describe what is on screen.
   const counts = useMemo(() => {
@@ -175,7 +192,7 @@ export function OpsPlanner() {
   const toggleKind = (k: EntryKind) => setKinds(prev => { const n = new Set(prev); if (n.has(k)) n.delete(k); else n.add(k); return n })
   const toggleNode = useCallback((k: string) => setCollapsed(prev => { const n = new Set(prev); if (n.has(k)) n.delete(k); else n.add(k); return n }), [])
   const topCollapsed = tree.length > 0 && tree.every(n => collapsed.has(n.key))
-  const pivotInfo = PIVOTS.find(p => p.value === pivot)!
+  const viewInfo = [...VIEWS, ...PIVOTS].find(p => p.value === view)!
 
   // Scroll so today sits near the left edge when a window loads.
   useEffect(() => {
@@ -194,10 +211,10 @@ export function OpsPlanner() {
       <div className="flex flex-wrap items-center gap-3 px-4 py-3 bg-white border-b border-gray-200">
         <h1 className="text-lg font-bold text-gray-900 mr-2">Planner</h1>
 
-        <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5" role="tablist" aria-label="Pivot by">
-          {PIVOTS.map(p => (
-            <button key={p.value} role="tab" aria-selected={pivot === p.value} onClick={() => setPivot(p.value)} title={p.path}
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${pivot === p.value ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+        <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5" role="tablist" aria-label="View">
+          {[...VIEWS, ...PIVOTS].map((p, i) => (
+            <button key={p.value} role="tab" aria-selected={view === p.value} onClick={() => setView(p.value)} title={p.path}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${i === VIEWS.length ? 'ml-1' : ''} ${view === p.value ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
               {p.label}
             </button>
           ))}
@@ -226,16 +243,16 @@ export function OpsPlanner() {
 
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search trucks, drivers, clients, campaigns, markets…" aria-label="Search the planner"
           className="ml-auto w-72 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent" />
-        {innerBranches.length > 0 && (
+        {view !== 'sheet' && innerBranches.length > 0 && (
           <button onClick={() => setCollapsed(new Set(innerBranches))}
             className="text-sm text-gray-600 hover:text-gray-900 border border-gray-200 rounded-lg px-3 py-1.5 bg-white" title="Open the first level only">
             Top level only
           </button>
         )}
-        <button onClick={() => setCollapsed(topCollapsed ? new Set() : new Set(tree.map(n => n.key)))}
+        {view !== 'sheet' && <button onClick={() => setCollapsed(topCollapsed ? new Set() : new Set(tree.map(n => n.key)))}
           className="text-sm text-gray-600 hover:text-gray-900 border border-gray-200 rounded-lg px-3 py-1.5 bg-white">
           {topCollapsed ? 'Expand all' : 'Collapse all'}
-        </button>
+        </button>}
       </div>
 
       {/* Legend = filters */}
@@ -249,7 +266,7 @@ export function OpsPlanner() {
           </button>
         ))}
         <span className="ml-auto text-xs text-gray-500">
-          {pivot === 'truck' ? 'Bars show the market the truck is in' : 'Cells show scheduled hours · R reservation, C committed (hours not on file) · M maintenance'}
+          {view === 'truck' ? 'Bars show the market the truck is in' : 'Cells show scheduled hours · D drive day · R reservation, C committed (hours not on file) · M maintenance'}
         </span>
       </div>
 
@@ -269,10 +286,13 @@ export function OpsPlanner() {
             {error} <button onClick={() => setReloadKey(k => k + 1)} className="underline ml-2">Retry</button>
           </div>
         )}
-        {data && (
+        {data && view === 'sheet' && (
+          <SheetGrid rows={sheet} dayMeta={dayMeta} weeks={weeks} sort={sort} onSort={sortBy} hoverApi={hoverApi} />
+        )}
+        {data && view !== 'sheet' && (
           <PlannerGrid
             tree={tree} dayMeta={dayMeta} weeks={weeks} collapsed={collapsed} onToggle={toggleNode}
-            showMarket={pivot === 'truck'} strips={strips} hoverApi={hoverApi} header={pivotInfo.path}
+            showMarket={view === 'truck'} strips={strips} hoverApi={hoverApi} header={viewInfo.path}
           />
         )}
       </div>
@@ -281,6 +301,168 @@ export function OpsPlanner() {
     </div>
   )
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared by the pivot grid and the sheet: day cells and keyboard movement.
+
+const dayBorder = (m: DayMeta) => `${m.saturday ? 'border-r border-r-gray-200' : ''} ${m.today ? 'border-l-2 border-l-gray-900' : ''}`
+
+// Keyboard: one cell is in the tab order at a time (roving tabindex); arrow
+// keys move through the grid, and a focused cell shows its details.
+function gridKeyDown(ev: React.KeyboardEvent, tableRef: MutableRefObject<HTMLTableElement | null>, dayCount: number, hoverApi: MutableRefObject<HoverApi | null>) {
+  const cell = (ev.target as HTMLElement).closest('td[data-r]') as HTMLElement | null
+  if (!cell || !tableRef.current) return
+  const r = Number(cell.dataset.r), c = Number(cell.dataset.c)
+  const next = { ArrowRight: [r, c + 1], ArrowLeft: [r, c - 1], ArrowDown: [r + 1, c], ArrowUp: [r - 1, c], Home: [r, 0], End: [r, dayCount - 1] }[ev.key]
+  if (!next) { if (ev.key === 'Escape') hoverApi.current?.hide(); return }
+  const target = tableRef.current.querySelector<HTMLElement>(`td[data-r="${next[0]}"][data-c="${next[1]}"]`)
+  if (!target) return
+  ev.preventDefault()
+  cell.tabIndex = -1
+  target.tabIndex = 0
+  target.focus()
+}
+
+/** One row's day cells: bars joined across consecutive days of the same thing. */
+function dayCells({ r, title, top, cells, dayMeta, showMarket, hoverApi }: {
+  r: number; title: string; top: Record<string, Entry>; cells: Record<string, Entry[]>
+  dayMeta: DayMeta[]; showMarket: boolean; hoverApi: MutableRefObject<HoverApi | null>
+}): JSX.Element[] {
+  const joinKey = (e: Entry) => (showMarket ? `${e.kind}|${marketLabel(e)}` : e.barKey)
+  const showFor = (el: HTMLElement, info: Omit<HoverInfo, 'x' | 'y'>) => {
+    const b = el.getBoundingClientRect()
+    hoverApi.current?.show({ ...info, x: b.right, y: b.bottom })
+  }
+  return dayMeta.map((m, i) => {
+    const e = top[m.d]
+    const list = cells[m.d]
+    const base = `border-b border-gray-100 p-0 ${dayBorder(m)} ${m.weekend ? 'bg-gray-50' : 'bg-white'} focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-inset`
+    const aria = `${fmt(m.d, { weekday: 'long', month: 'long', day: 'numeric' })}. ${title}. ${list?.length ? list.map(describeEntry).join('; ') : 'Nothing'}`
+    const nav = { 'data-r': r, 'data-c': i, tabIndex: r === 0 && i === 0 ? 0 : -1, 'aria-label': aria }
+    if (!e) return <td key={m.d} className={base} {...nav} />
+    const prev = top[dayMeta[i - 1]?.d]
+    const next = top[dayMeta[i + 1]?.d]
+    const joinL = !!prev && joinKey(prev) === joinKey(e)
+    const joinR = !!next && joinKey(next) === joinKey(e)
+    // Under the truck pivot, a bar carries the market once, spanning its days.
+    let span = 1
+    if (showMarket && !joinL) {
+      while (i + span < dayMeta.length && top[dayMeta[i + span].d] && joinKey(top[dayMeta[i + span].d]) === joinKey(e)) span++
+    }
+    const info = { title, date: m.d, entries: list }
+    return (
+      <td key={m.d} className={base} {...nav}
+        onMouseEnter={ev => hoverApi.current?.show({ ...info, x: ev.clientX, y: ev.clientY })}
+        onMouseMove={ev => hoverApi.current?.move(ev.clientX, ev.clientY)}
+        onFocus={ev => showFor(ev.currentTarget, info)}
+        onBlur={() => hoverApi.current?.hide()}>
+        <div aria-hidden className={`relative h-5 my-1 flex items-center justify-center font-semibold tabular-nums ${swatch(e.kind)} ${textOn(e.kind)} ${m.past ? 'opacity-60' : ''}
+          ${joinL ? '' : 'ml-0.5 rounded-l'} ${joinR ? '' : 'mr-0.5 rounded-r'}`}>
+          {showMarket
+            ? (!joinL && marketLabel(e) && (
+                <span className="absolute left-1 top-0 bottom-0 z-[5] flex items-center text-[10px] font-medium whitespace-nowrap overflow-hidden text-ellipsis pointer-events-none"
+                  style={{ width: span * CELL_W - 8 }}>
+                  {marketLabel(e)}
+                </span>
+              ))
+            : cellText(e)}
+          {list.length > 1 && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-red-500 ring-1 ring-white" />}
+        </div>
+      </td>
+    )
+  })
+}
+
+/** The two header rows of day columns: weeks (Sun–Sat) over days. */
+function DayHeaderCells({ weeks, dayMeta, row }: { weeks: { start: string; span: number }[]; dayMeta: DayMeta[]; row: 'weeks' | 'days' }) {
+  if (row === 'weeks') {
+    return <>{weeks.map(w => (
+      <th key={w.start} colSpan={w.span} scope="colgroup" className="bg-white border-b border-r border-gray-200 px-2 py-1 text-left font-semibold text-gray-700 whitespace-nowrap">
+        {fmt(w.start, { month: 'short', day: 'numeric' })} – {fmt(addDays(w.start, w.span - 1), { month: 'short', day: 'numeric' })}
+      </th>
+    ))}</>
+  }
+  return <>{dayMeta.map(m => (
+    <th key={m.d} scope="col" style={{ width: CELL_W, minWidth: CELL_W }} aria-label={fmt(m.d, { weekday: 'long', month: 'long', day: 'numeric' })}
+      className={`border-b border-gray-200 ${m.saturday ? 'border-r' : ''} py-1 font-medium ${m.today ? 'bg-gray-900 text-white' : m.weekend ? 'bg-gray-100 text-gray-600' : 'bg-white text-gray-600'}`}>
+      <div className="leading-none text-[10px] uppercase">{m.header}</div>
+      <div className="leading-tight tabular-nums">{m.num}</div>
+    </th>
+  ))}</>
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sheet — the ops spreadsheet layout: flat rows, sortable label columns.
+
+type SheetProps = {
+  rows: SheetRow[]
+  dayMeta: DayMeta[]
+  weeks: { start: string; span: number }[]
+  sort: { by: SheetColumn; dir: 'asc' | 'desc' }
+  onSort: (by: SheetColumn) => void
+  hoverApi: MutableRefObject<HoverApi | null>
+}
+
+// Each label column stays on screen while the days scroll: its left offset is
+// the width of the columns before it.
+const SHEET_LEFT = SHEET_COLUMNS.reduce<number[]>((acc, c, i) => [...acc, i === 0 ? 0 : acc[i - 1] + SHEET_COLUMNS[i - 1].width], [])
+const SHEET_W = SHEET_COLUMNS.reduce((w, c) => w + c.width, 0)
+
+const SheetGrid = memo(function SheetGrid({ rows, dayMeta, weeks, sort, onSort, hoverApi }: SheetProps) {
+  const tableRef = useRef<HTMLTableElement>(null)
+  const onKeyDown = (ev: React.KeyboardEvent) => gridKeyDown(ev, tableRef, dayMeta.length, hoverApi)
+  const stick = (i: number) => ({ left: SHEET_LEFT[i], width: SHEET_COLUMNS[i].width, minWidth: SHEET_COLUMNS[i].width, maxWidth: SHEET_COLUMNS[i].width })
+  const lastLabel = SHEET_COLUMNS.length - 1
+  return (
+    <table ref={tableRef} onKeyDown={onKeyDown} className="border-separate border-spacing-0 text-xs select-none" style={{ minWidth: SHEET_W + dayMeta.length * CELL_W }}
+      aria-label="Planner sheet">
+      <thead className="sticky top-0 z-30">
+        <tr>
+          {SHEET_COLUMNS.map((c, i) => {
+            const active = sort.by === c.key
+            return (
+              <th key={c.key} rowSpan={2} scope="col" aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+                className={`sticky z-40 bg-white border-b border-gray-200 ${i === lastLabel ? 'border-r' : ''} px-2 text-left font-semibold text-gray-700 whitespace-nowrap`}
+                style={stick(i)}>
+                <button onClick={() => onSort(c.key)} className="inline-flex items-center gap-1 hover:text-gray-900" title={`Sort by ${c.label}`}>
+                  {c.label}
+                  <span aria-hidden className={`text-[9px] ${active ? 'text-gray-700' : 'text-gray-300'}`}>{active && sort.dir === 'desc' ? '▼' : '▲'}</span>
+                </button>
+              </th>
+            )
+          })}
+          <DayHeaderCells weeks={weeks} dayMeta={dayMeta} row="weeks" />
+        </tr>
+        <tr>
+          <DayHeaderCells weeks={weeks} dayMeta={dayMeta} row="days" />
+        </tr>
+      </thead>
+      <tbody>
+        {rows.length === 0 && (
+          <tr><td colSpan={dayMeta.length + SHEET_COLUMNS.length} className="p-8 text-center text-sm text-gray-500">Nothing matches.</td></tr>
+        )}
+        {rows.map((row, r) => {
+          const title = [row.driver, row.program, row.market, row.truck ? `#${row.truck}` : ''].filter(Boolean).join(' · ')
+          return (
+            <tr key={row.key}>
+              {SHEET_COLUMNS.map((c, i) => {
+                const v = c.key === 'truck' && row.truck ? `#${row.truck}` : row[c.key]
+                return (
+                  <th key={c.key} scope={i === 0 ? 'row' : undefined}
+                    className={`sticky z-10 bg-white border-b border-gray-100 ${i === lastLabel ? 'border-r border-r-gray-200' : ''} h-7 px-2 text-left font-normal whitespace-nowrap ${c.key === 'truck' || c.key === 'job' ? 'tabular-nums' : ''}`}
+                    style={stick(i)}>
+                    <span className={`block truncate ${v ? 'text-gray-800' : 'text-gray-400'}`} title={v || undefined}>{v || '—'}</span>
+                  </th>
+                )
+              })}
+              {dayCells({ r, title, top: row.top, cells: row.cells, dayMeta, showMarket: false, hoverApi })}
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
+  )
+})
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Grid — memoised; re-renders only when its data, pivot or collapsed state change.
@@ -299,29 +481,9 @@ type GridProps = {
 
 const PlannerGrid = memo(function PlannerGrid({ tree, dayMeta, weeks, collapsed, onToggle, showMarket, strips, hoverApi, header }: GridProps) {
   const tableRef = useRef<HTMLTableElement>(null)
-  const dayBorder = (m: DayMeta) => `${m.saturday ? 'border-r border-r-gray-200' : ''} ${m.today ? 'border-l-2 border-l-gray-900' : ''}`
-  const joinKey = (e: Entry) => (showMarket ? `${e.kind}|${marketLabel(e)}` : e.barKey)
   let row = 0 // leaf rows, for keyboard navigation
 
-  // Keyboard: one cell is in the tab order at a time (roving tabindex); arrow
-  // keys move through the grid, and a focused cell shows its details.
-  const onKeyDown = (ev: React.KeyboardEvent) => {
-    const cell = (ev.target as HTMLElement).closest('td[data-r]') as HTMLElement | null
-    if (!cell || !tableRef.current) return
-    const r = Number(cell.dataset.r), c = Number(cell.dataset.c)
-    const next = { ArrowRight: [r, c + 1], ArrowLeft: [r, c - 1], ArrowDown: [r + 1, c], ArrowUp: [r - 1, c], Home: [r, 0], End: [r, dayMeta.length - 1] }[ev.key]
-    if (!next) { if (ev.key === 'Escape') hoverApi.current?.hide(); return }
-    const target = tableRef.current.querySelector<HTMLElement>(`td[data-r="${next[0]}"][data-c="${next[1]}"]`)
-    if (!target) return
-    ev.preventDefault()
-    cell.tabIndex = -1
-    target.tabIndex = 0
-    target.focus()
-  }
-  const showFor = (el: HTMLElement, info: Omit<HoverInfo, 'x' | 'y'>) => {
-    const r = el.getBoundingClientRect()
-    hoverApi.current?.show({ ...info, x: r.right, y: r.bottom })
-  }
+  const onKeyDown = (ev: React.KeyboardEvent) => gridKeyDown(ev, tableRef, dayMeta.length, hoverApi)
 
   const renderLeaf = (n: PlannerNode, parent: PlannerNode | null): JSX.Element => {
     const r = row++
@@ -334,44 +496,7 @@ const PlannerGrid = memo(function PlannerGrid({ tree, dayMeta, weeks, collapsed,
             {label(n.dim, n.value)}
           </span>
         </th>
-        {dayMeta.map((m, i) => {
-          const e = n.top[m.d]
-          const list = n.cells[m.d]
-          const base = `border-b border-gray-100 p-0 ${dayBorder(m)} ${m.weekend ? 'bg-gray-50' : 'bg-white'} focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-inset`
-          const aria = `${fmt(m.d, { weekday: 'long', month: 'long', day: 'numeric' })}. ${title}. ${list?.length ? list.map(describeEntry).join('; ') : 'Nothing'}`
-          const nav = { 'data-r': r, 'data-c': i, tabIndex: r === 0 && i === 0 ? 0 : -1, 'aria-label': aria }
-          if (!e) return <td key={m.d} className={base} {...nav} />
-          const prev = n.top[dayMeta[i - 1]?.d]
-          const next = n.top[dayMeta[i + 1]?.d]
-          const joinL = !!prev && joinKey(prev) === joinKey(e)
-          const joinR = !!next && joinKey(next) === joinKey(e)
-          // Under the truck pivot, a bar carries the market once, spanning its days.
-          let span = 1
-          if (showMarket && !joinL) {
-            while (i + span < dayMeta.length && n.top[dayMeta[i + span].d] && joinKey(n.top[dayMeta[i + span].d]) === joinKey(e)) span++
-          }
-          const info = { title, date: m.d, entries: list }
-          return (
-            <td key={m.d} className={base} {...nav}
-              onMouseEnter={ev => hoverApi.current?.show({ ...info, x: ev.clientX, y: ev.clientY })}
-              onMouseMove={ev => hoverApi.current?.move(ev.clientX, ev.clientY)}
-              onFocus={ev => showFor(ev.currentTarget, info)}
-              onBlur={() => hoverApi.current?.hide()}>
-              <div aria-hidden className={`relative h-5 my-1 flex items-center justify-center font-semibold tabular-nums ${swatch(e.kind)} ${textOn(e.kind)} ${m.past ? 'opacity-60' : ''}
-                ${joinL ? '' : 'ml-0.5 rounded-l'} ${joinR ? '' : 'mr-0.5 rounded-r'}`}>
-                {showMarket
-                  ? (!joinL && marketLabel(e) && (
-                      <span className="absolute left-1 top-0 bottom-0 z-[5] flex items-center text-[10px] font-medium whitespace-nowrap overflow-hidden text-ellipsis pointer-events-none"
-                        style={{ width: span * CELL_W - 8 }}>
-                        {marketLabel(e)}
-                      </span>
-                    ))
-                  : cellText(e)}
-                {list.length > 1 && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-red-500 ring-1 ring-white" />}
-              </div>
-            </td>
-          )
-        })}
+        {dayCells({ r, title, top: n.top, cells: n.cells, dayMeta, showMarket, hoverApi })}
       </tr>
     )
   }
@@ -422,20 +547,10 @@ const PlannerGrid = memo(function PlannerGrid({ tree, dayMeta, weeks, collapsed,
             style={{ width: LABEL_W, minWidth: LABEL_W }}>
             {header}
           </th>
-          {weeks.map(w => (
-            <th key={w.start} colSpan={w.span} scope="colgroup" className="bg-white border-b border-r border-gray-200 px-2 py-1 text-left font-semibold text-gray-700 whitespace-nowrap">
-              {fmt(w.start, { month: 'short', day: 'numeric' })} – {fmt(addDays(w.start, w.span - 1), { month: 'short', day: 'numeric' })}
-            </th>
-          ))}
+          <DayHeaderCells weeks={weeks} dayMeta={dayMeta} row="weeks" />
         </tr>
         <tr>
-          {dayMeta.map(m => (
-            <th key={m.d} scope="col" style={{ width: CELL_W, minWidth: CELL_W }} aria-label={fmt(m.d, { weekday: 'long', month: 'long', day: 'numeric' })}
-              className={`border-b border-gray-200 ${m.saturday ? 'border-r' : ''} py-1 font-medium ${m.today ? 'bg-gray-900 text-white' : m.weekend ? 'bg-gray-100 text-gray-600' : 'bg-white text-gray-600'}`}>
-              <div className="leading-none text-[10px] uppercase">{m.header}</div>
-              <div className="leading-tight tabular-nums">{m.num}</div>
-            </th>
-          ))}
+          <DayHeaderCells weeks={weeks} dayMeta={dayMeta} row="days" />
         </tr>
       </thead>
       <tbody>
@@ -484,6 +599,7 @@ function HoverCard({ apiRef }: { apiRef: MutableRefObject<HoverApi | null> }) {
             </div>
             {e.kind !== 'OPEN' && <div className="text-gray-500 truncate">{e.campaign}</div>}
             {e.kind !== 'OPEN' && <div className="text-gray-500 truncate">{[e.client, e.market].filter(Boolean).join(' · ')}</div>}
+            {e.jobNumber && <div className="text-gray-500 tabular-nums">Job # {e.jobNumber}</div>}
             {e.driver && <div className="text-gray-500">Driver: {e.driver}</div>}
             {e.detail.includes('client request') && <div className="text-gray-500">From a client hold request</div>}
           </div>

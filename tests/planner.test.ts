@@ -2,8 +2,9 @@
  * Ops planner pivot — pure-function coverage.
  * Run with: npm test
  */
+import { sheetRows, sortSheet, type SheetColumn } from '@/lib/planner/sheet'
 import { eq, section } from './harness'
-import { buildEntries, cellText, describeEntry, entryMatches, leaves, marketLabel, normalizeMarket, pivotTree, truckDayTop, plannerRange, plannerWindow, primary, PLANNER_MAX_WEEKS, shiftHours, OPEN_CAPACITY, UNASSIGNED, UNCLASSIFIED, type PlannerHold, type PlannerNode, type PlannerShift } from '@/lib/planner/build'
+import { buildEntries, cellText, describeEntry, entryMatches, leaves, marketLabel, normalizeMarket, pivotTree, truckDayTop, plannerRange, plannerWindow, primary, PLANNER_MAX_WEEKS, shiftHours, OPEN_CAPACITY, UNASSIGNED, UNCLASSIFIED, type EntryKind, type PlannerHold, type PlannerNode, type PlannerShift } from '@/lib/planner/build'
 
 section('planner: window')
 {
@@ -130,4 +131,37 @@ section('planner: review fixes')
   eq('each cell\'s display entry is precomputed', find(pivotTree(entries, 'truck'), '1261', 'Driver D1').top['2026-09-29'].hours, 12)
   eq('search matches any field', [entryMatches(primary(at('1261', '2026-09-28')), 'toyota'), entryMatches(primary(at('1261', '2026-09-28')), 'acme')], [true, false])
   eq('cells describe themselves for screen readers', describeEntry(primary(at('1261', '2026-09-28'))), 'Truck 1261: Scheduled, 8 hours, Toyota Fall, Toyota, Dallas, TX, driver Driver D1')
+}
+
+section('planner: Sheet view — one row per driver, program, market, job #, truck')
+{
+  const all = new Set<EntryKind>(['SCHEDULED', 'MAINTENANCE', 'COMMITTED', 'RESERVATION', 'ATT_SOFT', 'OPEN'])
+  const sheetEntries = buildEntries({
+    trucks: ['0975', '0673', '4840'],
+    days,
+    shifts: [
+      { ...shift('0975', '2026-09-28', 600, 'aries', '160over90', 'Alloy Build'), market: 'Denver, CO', jobNumber: '26-0119-300' },
+      { ...shift('0975', '2026-09-29', 600, 'aries', '160over90', 'Alloy Build'), market: 'Denver, CO', jobNumber: '26-0119-300' },
+      { ...shift('4840', '2026-09-28', 480, 'dwight', 'FSI', 'FSI'), market: 'Washington DC', jobNumber: '26-0013-300' },
+      { ...shift('0673', '2026-09-30', 600, 'dwight', '160over90', 'LED DRIVE DAY'), market: 'St George, UT', jobNumber: '26-2000-300' },
+      { ...shift('0673', '2026-10-01', 480, null, 'Lime', 'Truck Maintenance'), jobNumber: '00-0000-000' },
+    ],
+    holds: [hold('r1', '4840', '2026-10-05', '2026-10-06', 'HOLD', { opportunityName: 'Acme - Fall', jobNumber: null })],
+  })
+  const rows = sheetRows(sheetEntries, new Set<EntryKind>(['SCHEDULED', 'MAINTENANCE', 'RESERVATION']))
+  const alloy = rows.find(r => r.program === 'Alloy Build')!
+  eq('consecutive days of one assignment are one row', [rows.filter(r => r.program === 'Alloy Build').length, Object.keys(alloy.cells).sort()], [1, ['2026-09-28', '2026-09-29']])
+  eq('the row carries every column', [alloy.driver, alloy.program, alloy.market, alloy.job, alloy.truck], ['Driver ARIES', 'Alloy Build', 'Denver, CO', '26-0119-300', '0975'])
+  eq('a placeholder job number is no job number', rows.find(r => r.program === 'Truck Maintenance')?.job, '')
+  eq('a reservation has no driver', rows.find(r => r.program.includes('Acme'))?.driver, '')
+  eq('a drive day shows D', cellText(rows.find(r => r.program === 'LED DRIVE DAY')!.top['2026-09-30']), 'D')
+  eq('kinds switched off are left out', rows.some(r => r.program === OPEN_CAPACITY), false)
+  eq('open days are one row per truck when shown', sheetRows(sheetEntries, all).filter(r => r.program === OPEN_CAPACITY).map(r => r.truck).sort(), ['0673', '0975', '4840'])
+
+  const by = (col: SheetColumn, dir: 'asc' | 'desc' = 'asc') => sortSheet(rows, col, dir).map(r => r[col])
+  eq('sorts by driver, blanks last', by('driver'), ['Driver ARIES', 'Driver DWIGHT', 'Driver DWIGHT', '', ''])
+  eq('descending keeps blanks last', by('driver', 'desc'), ['Driver DWIGHT', 'Driver DWIGHT', 'Driver ARIES', '', ''])
+  eq('sorts by truck as numbers', by('truck'), ['0673', '0673', '0975', '4840', '4840'])
+  eq('sorts by job #', by('job').filter(Boolean), ['26-0013-300', '26-0119-300', '26-2000-300'])
+  eq('ties fall back to the other columns in order', sortSheet(rows, 'driver', 'asc').filter(r => r.driver === 'Driver DWIGHT').map(r => r.program), ['FSI', 'LED DRIVE DAY'])
 }

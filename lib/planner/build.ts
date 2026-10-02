@@ -26,6 +26,8 @@ export type PlannerShift = {
   driverName: string | null
   client: string
   program: string
+  /** client_programs.job_number, e.g. "26-0119-300". */
+  jobNumber?: string | null
   market: string
 }
 
@@ -41,6 +43,8 @@ export type PlannerHold = {
   hours: number | null    // from the quote, when it was quoted here
   opportunityId: string | null
   opportunityName: string | null
+  /** The Opportunity's Job_Number__c, once it has one (won deals). */
+  jobNumber?: string | null
   campaignGroupId: string | null
 }
 
@@ -54,6 +58,8 @@ export type Entry = {
   client: string
   campaign: string
   market: string
+  /** The job number ("26-0119-300"), when the program or Opportunity has one. */
+  jobNumber: string | null
   /** Groups consecutive days of the same thing into one bar. */
   barKey: string
   detail: string
@@ -125,6 +131,15 @@ function reservationCampaign(h: PlannerHold): string {
  * only where nothing else is booked (the grid shows the real shift on those
  * days). A truck-day with nothing on it is OPEN.
  */
+/** Placeholder job numbers ("00-0000-000", test and maintenance programs) are no job number. */
+export function realJobNumber(v: string | null | undefined): string | null {
+  const t = (v ?? '').trim()
+  return t && !/^[0\-\s]+$/.test(t) ? t : null
+}
+
+/** A drive day: the truck is travelling, not running a program — shown as D. */
+export const isDriveDay = (e: Pick<Entry, 'kind' | 'campaign'>) => e.kind === 'SCHEDULED' && /\bdrive\s*day\b/i.test(e.campaign)
+
 export function buildEntries(input: { trucks: string[]; days: string[]; shifts: PlannerShift[]; holds: PlannerHold[] }): Entry[] {
   const { trucks, days } = input
   const inWindow = new Set(days)
@@ -155,6 +170,7 @@ export function buildEntries(input: { trucks: string[]; days: string[]; shifts: 
       client: s.client || 'No client',
       campaign: s.program || 'No program',
       market: normalizeMarket(s.market),
+      jobNumber: realJobNumber(s.jobNumber),
       barKey: `S|${s.program}|${s.driverId ?? ''}`,
       detail: [s.program, s.market, s.client].filter(Boolean).join(' · '),
     })
@@ -174,6 +190,7 @@ export function buildEntries(input: { trucks: string[]; days: string[]; shifts: 
         client: h.client || 'No client',
         campaign: reservationCampaign(h),
         market: normalizeMarket(h.market),
+        jobNumber: realJobNumber(h.jobNumber),
         barKey: `H|${h.id}`,
         detail: [kind === 'COMMITTED' ? 'Committed (won)' : h.source === 'CLIENT' ? 'Reservation (client request)' : 'Reservation', h.market, h.client].filter(Boolean).join(' · '),
       })
@@ -186,7 +203,7 @@ export function buildEntries(input: { trucks: string[]; days: string[]; shifts: 
       if (byTruckDay.has(`${h.truck}|${d}`)) continue
       push({
         kind: 'ATT_SOFT', truck: h.truck, date: d, hours: null, driver: null,
-        client: '160over90 (AT&T)', campaign: 'AT&T soft hold', market: '',
+        client: '160over90 (AT&T)', campaign: 'AT&T soft hold', market: '', jobNumber: null,
         barKey: `A|${h.id}`, detail: 'AT&T soft hold',
       })
     }
@@ -196,7 +213,7 @@ export function buildEntries(input: { trucks: string[]; days: string[]; shifts: 
   for (const truck of trucks) {
     for (const d of days) {
       if (byTruckDay.has(`${truck}|${d}`)) continue
-      push({ kind: 'OPEN', truck, date: d, hours: null, driver: null, client: OPEN_CAPACITY, campaign: OPEN_CAPACITY, market: '', barKey: 'O', detail: 'Open' })
+      push({ kind: 'OPEN', truck, date: d, hours: null, driver: null, client: OPEN_CAPACITY, campaign: OPEN_CAPACITY, market: '', jobNumber: null, barKey: 'O', detail: 'Open' })
     }
   }
   return out
@@ -344,7 +361,7 @@ export function truckDayTop(entries: Entry[], kinds?: Set<EntryKind>): Map<strin
 /** Whether an entry matches a search, on any of the fields the pivots use. */
 export function entryMatches(e: Entry, q: string): boolean {
   if (!q) return true
-  return [e.truck, e.driver ?? '', e.client, e.campaign, e.market].some(v => v.toLowerCase().includes(q))
+  return [e.truck, e.driver ?? '', e.client, e.campaign, e.market, e.jobNumber ?? ''].some(v => v.toLowerCase().includes(q))
 }
 
 /** Leaf rows under a node, in display order. */
@@ -362,6 +379,7 @@ export function marketLabel(e: Entry): string {
 
 /** What a cell shows: hours, or "R" for a reservation with no hours on file; empty for open and non-hour entries. */
 export function cellText(e: Entry): string {
+  if (isDriveDay(e)) return 'D'
   if (e.hours !== null) return String(e.hours)
   if (e.kind === 'RESERVATION') return 'R'
   if (e.kind === 'COMMITTED') return 'C'
@@ -376,7 +394,7 @@ export function describeEntry(e: Entry): string {
   return [
     `Truck ${e.truck}: ${what}`,
     e.hours !== null ? `${e.hours} hours` : e.kind === 'RESERVATION' || e.kind === 'COMMITTED' ? 'hours not on file' : null,
-    e.campaign, e.client, e.market || null, e.driver ? `driver ${e.driver}` : null,
+    e.campaign, e.client, e.market || null, e.jobNumber ? `job ${e.jobNumber}` : null, e.driver ? `driver ${e.driver}` : null,
   ].filter(Boolean).join(', ')
 }
 

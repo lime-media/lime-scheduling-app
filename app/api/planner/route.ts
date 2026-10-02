@@ -33,6 +33,7 @@ SELECT
     CAST(ps.driver_uid AS NVARCHAR(64)) AS driver_uid,
     COALESCE(cl.client,  '') AS client,
     COALESCE(cp.program, '') AS program,
+    NULLIF(LTRIM(RTRIM(cp.job_number)), '') AS job_number,
     COALESCE(NULLIF(cpm.standard_market_name, ''), cpm.market, '') AS market
 FROM dbo.program_schedule ps
 JOIN dbo.trucks t
@@ -96,15 +97,15 @@ async function driverNames(ids: string[]): Promise<Map<string, string>> {
   return new Map(rows.filter(r => r.uid && r.name && want.has(r.uid.toLowerCase())).map(r => [r.uid.toLowerCase(), r.name]))
 }
 
-async function opportunityNames(ids: string[]): Promise<Map<string, string>> {
+async function opportunityNames(ids: string[]): Promise<Map<string, { name: string; jobNumber: string | null }>> {
   if (ids.length === 0 || !isSfdcConfigured()) return new Map()
-  const out = new Map<string, string>()
+  const out = new Map<string, { name: string; jobNumber: string | null }>()
   try {
     for (let i = 0; i < ids.length; i += 200) {
       const chunk = ids.slice(i, i + 200).filter(id => /^[A-Za-z0-9]{15,18}$/.test(id))
       if (chunk.length === 0) continue
-      const rows = await sfdcQuery<{ Id: string; Name: string }>(`SELECT Id, Name FROM Opportunity WHERE Id IN (${chunk.map(id => `'${id}'`).join(',')})`)
-      for (const r of rows) out.set(r.Id, r.Name)
+      const rows = await sfdcQuery<{ Id: string; Name: string; Job_Number__c: string | null }>(`SELECT Id, Name, Job_Number__c FROM Opportunity WHERE Id IN (${chunk.map(id => `'${id}'`).join(',')})`)
+      for (const r of rows) out.set(r.Id, { name: r.Name, jobNumber: r.Job_Number__c?.trim() || null })
     }
   } catch (err) {
     console.error('[planner] opportunity names failed:', err)
@@ -129,7 +130,7 @@ export async function GET(req: NextRequest) {
   try {
     const [trucksRaw, shiftsRaw, holds] = await Promise.all([
       query<{ truck_number: string }[]>(ALL_TRUCKS_QUERY),
-      query<{ truck_number: string; shift_date: Date | string; minutes: number | null; driver_uid: string | null; client: string; program: string; market: string }[]>(
+      query<{ truck_number: string; shift_date: Date | string; minutes: number | null; driver_uid: string | null; client: string; program: string; job_number: string | null; market: string }[]>(
         SHIFTS_QUERY, { from: window.from, to: window.to }),
       prisma.hold.findMany({
         where: { ...activeHoldWhere(), start_date: { lte: new Date(window.to) }, end_date: { gte: new Date(window.from) } },
@@ -152,6 +153,7 @@ export async function GET(req: NextRequest) {
         driverName: r.driver_uid ? names.get(r.driver_uid.toLowerCase()) ?? null : null,
         client: r.client,
         program: r.program,
+        jobNumber: r.job_number,
         market: r.market,
       }))
 
@@ -170,7 +172,8 @@ export async function GET(req: NextRequest) {
           market: h.market?.includes(',') || !h.state ? h.market : [h.market, h.state].filter(Boolean).join(', '),
           hours: typeof f?.operatingHours === 'number' ? f.operatingHours : null,
           opportunityId: h.sfdc_opportunity_id,
-          opportunityName: h.sfdc_opportunity_id ? opps.get(h.sfdc_opportunity_id) ?? null : null,
+          opportunityName: h.sfdc_opportunity_id ? opps.get(h.sfdc_opportunity_id)?.name ?? null : null,
+          jobNumber: h.sfdc_opportunity_id ? opps.get(h.sfdc_opportunity_id)?.jobNumber ?? null : null,
           campaignGroupId: h.campaign_group_id,
         }
       })

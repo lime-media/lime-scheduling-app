@@ -10,7 +10,8 @@ import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
  * deal that later closed just sat there reserving its truck until it expired.
  *
  * Rather than requiring a Salesforce-side change to the outbound message, this
- * pulls the stage for every Opportunity behind an active SFDC hold and settles it:
+ * pulls the stage for every Opportunity behind an active hold — pushed from
+ * Salesforce or created by the app's quote tools — and settles it:
  *
  *   Closed Won  → COMMITTED. The deal is real, so the truck genuinely is booked.
  *                 COMMITTED is already immune to expireHolds() and hides the
@@ -74,9 +75,12 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
     return summary
   }
 
+  // Every live hold linked to an Opportunity: those Salesforce pushed AND those
+  // the app created (quotes, multi-market, client portal). Closing the deal in
+  // Salesforce settles the trucks either way. Quote-only logs are EXPIRED from
+  // the start, so they never appear here.
   const holds = await prisma.hold.findMany({
     where: {
-      source:              'SALESFORCE',
       status:              { in: RECONCILABLE_STATUSES },
       sfdc_opportunity_id: { not: null },
     },

@@ -6,7 +6,8 @@ import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { computeHoldExpiresAt } from '@/lib/holdExpiry'
-import { closeOpportunityAsLost } from '@/lib/sfdcOpportunityReconcile'
+import { closeOpportunityAsLost, getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
+import { closedOpportunityBlocksReactivation, expiryClosesOpportunity } from '@/lib/sfdcIntegration'
 import { sendCancellationEmail } from '@/lib/email'
 
 type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration' | 'reinstate'
@@ -146,9 +147,9 @@ export async function PATCH(
   // restored: the old value is what lapsed, and for the short-lead holds this exists to rescue it
   // was already in the past at creation.
   //
-  // Not undone here: a SALESFORCE hold whose Opportunity expireHolds() closed as lost stays
-  // closed. Only Salesforce-originated holds carrying their own Hold Exp date are ever closed
-  // that way, and reopening a deal is a CRM decision, not a side effect of blocking a truck.
+  // Refused while the hold's Opportunity is Closed Lost (closed by expireHolds() or by a
+  // rep): the hourly reconcile would release it again. Reopening a deal is a CRM decision,
+  // not a side effect of blocking a truck, so the person is sent to Salesforce.
   if (action === 'reinstate') {
     // A quote-only log was never a reservation: it may have no truck
     // ("UNASSIGNED") and was priced without a feasibility check. Reinstating
@@ -162,6 +163,10 @@ export async function PATCH(
         { error: 'This is a quote-only log, not an expired reservation. To reserve trucks, get a fresh quote and place the hold.' },
         { status: 400 },
       )
+    }
+    if (hold.sfdc_opportunity_id) {
+      const closed = closedOpportunityBlocksReactivation(await getOpportunityStage(hold.sfdc_opportunity_id))
+      if (closed) return NextResponse.json({ error: `Can't reinstate: ${closed}` }, { status: 409 })
     }
     // While the hold sat expired its truck read as free to every availability path, so the
     // window may have been taken in the meantime — check before blocking it again.
@@ -238,6 +243,10 @@ export async function PATCH(
     if (isNaN(newExp.getTime())) {
       return NextResponse.json({ error: 'Invalid date' }, { status: 400 })
     }
+    if (hold.sfdc_opportunity_id) {
+      const closed = closedOpportunityBlocksReactivation(await getOpportunityStage(hold.sfdc_opportunity_id))
+      if (closed) return NextResponse.json({ error: `Can't change the expiry: ${closed}` }, { status: 409 })
+    }
 
     await prisma.hold.update({
       where: { id: hold.id },
@@ -276,11 +285,10 @@ export async function PATCH(
   })
 
   // Denying the extension expires the hold, so settle Salesforce the same way the
-  // sweep does — same scoping as expireHolds(): only holds Salesforce itself put
-  // an expiry on, never a client-portal booking whose WARM Opportunity the app
-  // created. Only closes if this was the Opportunity's last active hold, and never
-  // allowed to fail the request; the helper swallows its own errors.
-  if (hold.sfdc_opportunity_id && hold.source === 'SALESFORCE' && hold.sfdc_hold_exp !== null) {
+  // sweep does (expiryClosesOpportunity). Only closes if this was the
+  // Opportunity's last active hold, and never allowed to fail the request; the
+  // helper swallows its own errors.
+  if (hold.sfdc_opportunity_id && expiryClosesOpportunity(hold)) {
     await closeOpportunityAsLost(hold.sfdc_opportunity_id)
   }
 

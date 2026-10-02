@@ -6,6 +6,7 @@
  * checks are skipped.  Call this after any schedule cache refresh or hold creation.
  */
 
+import { expiryClosesOpportunity } from '@/lib/sfdcIntegration'
 import { getPool, query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
@@ -223,17 +224,13 @@ export async function expireHolds(): Promise<{
   // deferred until after the loop so the "any active holds left?" check inside
   // closeOpportunityAsLost() sees the finished state rather than a partial one.
   //
-  // Restricted to holds Salesforce itself put an expiry on. Client-portal holds
-  // also carry an sfdc_opportunity_id — the app creates a WARM Opportunity for
-  // them — so without this guard, ops simply not reviewing a portal booking
-  // within the 72h internal SLA would move a live deal to Closed Lost - Declined.
-  // The customer didn't decline; we didn't answer. Requiring sfdc_hold_exp also
-  // excludes SFDC pushes that omitted Hold Exp and got the 72h fallback, so a rep
-  // leaving an optional field blank can't lose their own deal.
+  // Which expiries close their Opportunity: see expiryClosesOpportunity().
+  // App-created holds (quotes, multi-market, client portal) included — a
+  // reservation the app let lapse is a lost deal in Salesforce too.
   const touchedOpportunities = Array.from(
     new Set(
       stale
-        .filter((h) => h.source === 'SALESFORCE' && h.sfdc_hold_exp !== null)
+        .filter(expiryClosesOpportunity)
         .map((h) => h.sfdc_opportunity_id)
         .filter((id): id is string => Boolean(id))
     )

@@ -1,7 +1,7 @@
 /**
  * GET /api/planner — everything the ops planner shows, for last week through
  * six weeks ahead, or ?from=YYYY-MM-DD&to=YYYY-MM-DD for a range the person
- * picked (whole Sunday-to-Saturday weeks, at most 26): every truck's scheduled shifts with
+ * picked (whole Sunday-to-Saturday weeks, at most 13): every truck's scheduled shifts with
  * hours and driver, maintenance, reservations, committed reservations, client
  * hold requests, AT&T soft holds and open days. Staff only.
  *
@@ -100,15 +100,16 @@ async function driverNames(ids: string[]): Promise<Map<string, string>> {
 async function opportunityNames(ids: string[]): Promise<Map<string, { name: string; jobNumber: string | null }>> {
   if (ids.length === 0 || !isSfdcConfigured()) return new Map()
   const out = new Map<string, { name: string; jobNumber: string | null }>()
-  try {
-    for (let i = 0; i < ids.length; i += 200) {
-      const chunk = ids.slice(i, i + 200).filter(id => /^[A-Za-z0-9]{15,18}$/.test(id))
-      if (chunk.length === 0) continue
+  // Per chunk, so one failed query never discards the names already found.
+  for (let i = 0; i < ids.length; i += 200) {
+    const chunk = ids.slice(i, i + 200).filter(id => /^[A-Za-z0-9]{15,18}$/.test(id))
+    if (chunk.length === 0) continue
+    try {
       const rows = await sfdcQuery<{ Id: string; Name: string; Job_Number__c: string | null }>(`SELECT Id, Name, Job_Number__c FROM Opportunity WHERE Id IN (${chunk.map(id => `'${id}'`).join(',')})`)
       for (const r of rows) out.set(r.Id, { name: r.Name, jobNumber: r.Job_Number__c?.trim() || null })
+    } catch (err) {
+      console.error('[planner] opportunity names failed for a chunk:', err)
     }
-  } catch (err) {
-    console.error('[planner] opportunity names failed:', err)
   }
   return out
 }

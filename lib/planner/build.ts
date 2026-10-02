@@ -81,8 +81,13 @@ const addDays = (d: string, n: number) => {
 export const weekStart = (d: string) => addDays(d, -new Date(d + 'T00:00:00Z').getUTCDay())
 export const weekEnd = (d: string) => addDays(weekStart(d), 6)
 
-/** The longest range the planner loads at once, in weeks. */
-export const PLANNER_MAX_WEEKS = 26
+/**
+ * The longest range the planner loads at once, in weeks — a quarter. Every
+ * truck-day is an entry (open days included) and a real cell, with no
+ * virtualisation: at ~82 trucks, 26 weeks would be ~15,000 entries (~3 MB of
+ * JSON, near Vercel's 4.5 MB response limit) and ~60,000 sheet cells.
+ */
+export const PLANNER_MAX_WEEKS = 13
 
 /**
  * The planner's days for a range the person picked: from the Sunday of the
@@ -253,7 +258,6 @@ export type PlannerNode = {
   top: Record<string, Entry>
   /** Leaf rows beneath this node (1 for a leaf). */
   leafCount: number
-  /** Trucks under this node on each day (non-open entries; open entries in the open group). */
 }
 
 /** An entry's value at one level. Missing drivers and markets get a stated placeholder, never a guess. */

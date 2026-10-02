@@ -23,7 +23,20 @@ const ZCTA = zctaData as unknown as Record<string, [number, number]>
 
 export type Place = { name: string; lat: number; lng: number }
 
-const key = (s: string) => s.trim().toLowerCase().replace(/\s*,\s*/g, ', ').replace(/\s+/g, ' ').replace(/\./g, '')
+const STATES = new Set('AL AZ AR CA CO CT DE DC FL GA ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY'.split(' '))
+
+/**
+ * "Ames IA" -> "Ames, IA": a city typed without the comma, when its last word
+ * is a real state code. Anything else is returned as typed.
+ */
+export function withStateComma(input: string): string {
+  const t = input.trim()
+  if (t.includes(',')) return t
+  const m = t.match(/^(.*\S)\s+([A-Za-z]{2})$/)
+  return m && STATES.has(m[2].toUpperCase()) ? `${m[1]}, ${m[2].toUpperCase()}` : t
+}
+
+const key = (s: string) => withStateComma(s).toLowerCase().replace(/\s*,\s*/g, ', ').replace(/\s+/g, ' ').replace(/\./g, '')
 const toPlace = (r: Row): Place => ({ name: r[0], lat: r[1], lng: r[2] })
 
 // City name → every "city, st" key with it, built once on first use.
@@ -40,7 +53,11 @@ function cityIndex(): Map<string, string[]> {
   return byCity
 }
 
-/** A 5-digit ZIP: its centroid, named after the nearest place within 25 miles. */
+/**
+ * A 5-digit ZIP: its centroid, named after the nearest place within 25 miles.
+ * A full scan of ~32,000 places (~7 ms): fine for one typed ZIP, not for a
+ * loop — index the places spatially before calling this per row.
+ */
 export function placeForZip(zip: string): Place | null {
   const z = zip.trim()
   if (!/^\d{5}$/.test(z)) return null

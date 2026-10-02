@@ -8,7 +8,7 @@ import { prisma } from '@/lib/prisma'
 import { haversineDistance, getMarketCoords, resolveMarketInput, type MarketMatch } from '@/lib/marketCoordinates'
 import { marketSizeTierFromDmaCode, NON_DMA_MARKET_TIER, type RateOverrides } from './config'
 import { loadStandardMarketCoords, normalizeMarketKey, titleCaseMarket } from '@/lib/marketBounds'
-import { findPlaces, placeCoords } from '@/lib/geo/places'
+import { findPlaces, placeCoords, withStateComma } from '@/lib/geo/places'
 import { dmaForPoint } from '@/lib/pricing/dmaArea'
 import type { ClientSession } from '@/lib/clientAuth'
 
@@ -22,7 +22,7 @@ import type { ClientSession } from '@/lib/clientAuth'
  * the market sits in (lib/pricing/dmaArea.ts), else tier 4 (small metro).
  * Tier sets estimated reach, and so lift-study eligibility — never price.
  */
-export async function resolveMarketSizeTierId(market: string): Promise<number> {
+export async function resolveMarketSizeTierId(market: string, knownCoords?: { lat: number; lng: number } | null): Promise<number> {
   if (!market) return NON_DMA_MARKET_TIER
   try {
     const acceptedMarkets = await prisma.acceptedMarket.findMany({
@@ -33,7 +33,8 @@ export async function resolveMarketSizeTierId(market: string): Promise<number> {
     // ring takes that DMA's tier (lib/pricing/dmaArea.ts).
     const named = matchAcceptedDma(market, acceptedMarkets)
     if (named) return marketSizeTierFromDmaCode(named.dma_code)
-    const coords = await resolveCampaignCoords(market)
+    // Callers that already located the market pass its coordinates.
+    const coords = knownCoords ?? await resolveCampaignCoords(market)
     const around = coords ? dmaForPoint(coords, acceptedMarkets) : null
     return around ? marketSizeTierFromDmaCode(around.dma_code) : NON_DMA_MARKET_TIER
   } catch (err) {
@@ -338,7 +339,9 @@ export function businessDaysBetween(from: Date, to: Date): number {
  * The standard market list wins on ties: it is the list the team maintains and
  * the one every scheduled shift is selected from, so its spelling is canonical.
  */
-export async function resolveMarketInputAll(input: string): Promise<MarketMatch[]> {
+export async function resolveMarketInputAll(rawInput: string): Promise<MarketMatch[]> {
+  // "Ames IA" is "Ames, IA": every list below keys markets as "city, st".
+  const input = withStateComma(rawInput)
   const fromFile = resolveMarketInput(input)
 
   let standard: Map<string, { lat: number; lng: number }>

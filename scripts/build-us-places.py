@@ -9,7 +9,8 @@ Build lib/geo/data/us-places.json from the Census Gazetteer place file.
 Output: {"ames, ia": ["Ames, IA", 42.0263, -93.6213], ...} for the contiguous
 48 states plus DC (Lime Media does not serve AK, HI or PR). Names lose the
 Census suffix ("Ames city" -> "Ames"); "Nashville-Davidson" also answers to
-"Nashville", "Boise City" to "Boise". Where two places share a name in a
+"Nashville", "Boise City" to "Boise". Keys drop periods
+("st louis, mo"); the display name keeps them ("St. Louis, MO"). Where two places share a name in a
 state, the incorporated one wins, then the larger.
 """
 import json, re, sys
@@ -34,7 +35,9 @@ for i, line in enumerate(open(sys.argv[1], encoding='utf-8', errors='replace')):
     for nm, full in names.items():
         if not nm:
             continue
-        k = f"{nm.lower()}, {st.lower()}"
+        # Periods dropped, exactly as lib/geo/places.ts key() normalizes input:
+        # "St. Louis" and "St Louis" both reach "st louis, mo".
+        k = f"{nm.lower().replace('.', '')}, {st.lower()}"
         r = (full, 1 if funcstat == 'A' else 0, aland)
         if k not in best or r > best[k][0]:
             best[k] = (r, [f"{nm}, {st}", lat, lng])

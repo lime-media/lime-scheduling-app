@@ -389,8 +389,11 @@ export async function buildMultiMarketQuote(req: QuoteRequest, lines: OrderLine[
   }
   // Load far enough out that the cheaper-start alternatives see the fleet too.
   const fleet = await loadPlanningFleet({ today, planThrough: addDays(planThrough, START_SHIFTS[START_SHIFTS.length - 1]), rules })
-  const tiers = new Map<string, number>()
-  for (const l of lines) if (!tiers.has(l.market)) tiers.set(l.market, await resolveMarketSizeTierId(l.standardMarket ?? l.market))
+  // One tier per distinct market, in parallel; each line already knows where it is.
+  const distinct = [...new Map(lines.map(l => [l.market, l])).values()]
+  const tiers = new Map<string, number>(await Promise.all(
+    distinct.map(async l => [l.market, await resolveMarketSizeTierId(l.standardMarket ?? l.market, { lat: l.lat, lng: l.lng })] as const),
+  ))
 
   const run = (ls: OrderLine[], settings = s) => planOrder(ls, fleet.trucks, settings)
   const plan = run(lines)

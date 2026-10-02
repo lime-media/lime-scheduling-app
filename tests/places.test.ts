@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { findPlaces, placeCoords, placeForZip, suggestPlaces } from '@/lib/geo/places'
+import { findPlaces, placeCoords, placeForZip, suggestPlaces, withStateComma } from '@/lib/geo/places'
 import { dmaForPoint, DMA_RADIUS_MILES } from '@/lib/pricing/dmaArea'
 
 section('places: any US city or town can be quoted')
@@ -48,3 +48,13 @@ section('market size tier: by location, not just by name')
   eq('Ames, IA is in no top-50 ring: small metro', at('Ames, IA'), null)
   eq(`the ring is ${DMA_RADIUS_MILES} miles`, DMA_RADIUS_MILES, 40)
 }
+
+section('places: review fixes — punctuated names and a missing comma')
+eq('St. Louis, MO (a period in the name)', placeCoords('St. Louis, MO')?.name, 'St. Louis, MO')
+eq('and without the period', placeCoords('St Louis, MO')?.name, 'St. Louis, MO')
+eq('East St. Louis, IL — a place the standard list does not have', findPlaces('East St Louis, IL').map(p => p.name), ['East St. Louis, IL'])
+eq('suggestions reach punctuated names', suggestPlaces('east st. lou').some(p => p.name === 'East St. Louis, IL'), true)
+eq('"Ames IA" without the comma', findPlaces('Ames IA').map(p => p.name), ['Ames, IA'])
+eq('"New York NY"', withStateComma('New York NY'), 'New York, NY')
+eq('two letters that are no state are left alone', withStateComma('Ponte Vedra Xq'), 'Ponte Vedra Xq')
+eq('a comma already there is left alone', withStateComma('Ames, IA'), 'Ames, IA')

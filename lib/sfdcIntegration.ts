@@ -26,32 +26,48 @@ export function trucksToMirror(
 /**
  * The markets a Salesforce Opportunity says its trucks are going to, as
  * candidate strings to resolve. Markets__c is free text ("Bakersfield",
- * "San Francisco, CA", "New York, San Francisco", "Detroit; Austin"); when it
- * is blank or a placeholder, the Opportunity name stands in ("Orlando LED",
- * "Detroit/LA/Austin LED"). A ", ST" after a city is its state, not a second
- * market. Empty when neither says anything usable.
+ * "San Francisco, CA", "New York, San Francisco", "Detroit; Austin"). When it
+ * is blank or a placeholder, a rep-style name stands in ("Orlando LED",
+ * "Detroit/LA/Austin LED") — only a name with "LED" in it: the app's own
+ * names ("Nike / Rolling Adz - Des Moines, IA - 2026-10-02 to …") carry an
+ * account and dates, not markets, and the app always fills Markets__c.
+ *
+ * A two-letter US state code after a city is that city's state ("Washington,
+ * DC", "New Orleans, LA"), never a second market. Standing alone, or after
+ * another shorthand ("DC, NYC, LA"), DC and LA are the markets they abbreviate.
+ * Empty when nothing usable is said.
  */
 export function opportunityMarketCandidates(marketsField: string | null | undefined, opportunityName: string | null | undefined): string[] {
   const clean = (s: string) => s.replace(/\s+/g, ' ').trim()
   const field = clean(marketsField ?? '')
-  // The name, minus the " LED" product suffix and anything after it
-  // ("Blacksmith Salt Lake City LED / Lux Media Ads / 2026-10-01").
-  const fromName = clean((opportunityName ?? '').replace(/\s+LED\b.*$/i, '').replace(/^[^-]+ - /, ''))
+  const name = opportunityName ?? ''
+  // "Mount Sinai - New York LED / DOmedia / 2026-…" → "New York".
+  const fromName = /\bLED\b/i.test(name) ? clean(name.replace(/\s*\bLED\b.*$/i, '').replace(/^[^-]+ - /, '')) : ''
   const usable = (s: string) => s.length > 1 && !/^(market|markets|tbd|n\/?a)$/i.test(s)
   const text = usable(field) ? field : usable(fromName) ? fromName : ''
   if (!text) return []
   const out: string[] = []
-  for (const piece of text.split(/[;/]|,|&|\band\b/i).map(clean).filter(Boolean)) {
-    // "x1 and 3x Trucks options" and the like are notes, not markets.
-    if (/\btrucks?\b|\boptions?\b|^\d|\bx\d/i.test(piece)) continue
-    if (/^[A-Z]{2}$/.test(piece) && out.length && !out[out.length - 1].includes(',') && piece !== 'DC' && piece !== 'LA') {
-      out[out.length - 1] = `${out[out.length - 1]}, ${piece}`
+  // Pieces with the separator before each: only a comma can introduce a state
+  // ("City, ST"); a slash, semicolon, "&" or "and" always starts a new market.
+  const parts = text.split(/(;|\/|,|&|\band\b)/i)
+  for (let i = 0; i < parts.length; i += 2) {
+    const piece = clean(parts[i])
+    const afterComma = parts[i - 1] === ','
+    if (!piece) continue
+    // Notes typed into the field ("x1 and 3x Trucks options") and dates are not markets.
+    if (/\btrucks?\b|\boptions?\b|^\d|\bx\d|\d{4}-\d{2}/i.test(piece)) continue
+    const prev = out[out.length - 1]
+    const isState = /^[a-z]{2}$/i.test(piece) && US_STATES.has(piece.toUpperCase())
+    if (isState && afterComma && prev && !prev.includes(',') && !(prev.toLowerCase() in MARKET_SHORTHAND)) {
+      out[out.length - 1] = `${prev}, ${piece.toUpperCase()}`
     } else {
       out.push(piece)
     }
   }
   return [...new Set(out.map(m => MARKET_SHORTHAND[m.toLowerCase().replace(/[.]/g, '')] ?? m))]
 }
+
+const US_STATES = new Set('AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY'.split(' '))
 
 /**
  * Shorthand reps write in Salesforce, to the standard market it means. Only

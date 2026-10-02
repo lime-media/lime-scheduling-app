@@ -45,8 +45,9 @@ export async function POST(req: NextRequest) {
   }
 
   // Where the campaign runs, from the Opportunity — never where the truck
-  // happens to be parked now. null = Salesforce could not be asked.
+  // happens to be parked now.
   const destination = await opportunityDestination(opportunityId)
+  const known = destination.status === 'ok' ? destination : null
 
   const now = new Date()
 
@@ -117,9 +118,8 @@ export async function POST(req: NextRequest) {
   const skippedAppHeld = truckNumbers.filter(t => !toMirror.includes(t))
 
   for (const truck_number of toMirror) {
-    // A failed lookup keeps an existing hold's market rather than blanking it.
-    const known = destination ?? null
-
+    // Only a market the Opportunity names is written. When Salesforce can't be
+    // reached, or the Opportunity names none, an existing hold keeps its market.
     const existing = await prisma.hold.findFirst({
       where: { sfdc_opportunity_id: opportunityId, source: 'SALESFORCE', truck_number },
     })
@@ -240,7 +240,9 @@ export async function POST(req: NextRequest) {
           status:              newExpiry <= now ? 'EXPIRED' : 'HOLD',
           source:              'SALESFORCE',
           notes:               `Auto-created from Salesforce Opportunity ${opportunityId}`
-                                 + (known?.market ? '' : ' — market unknown: the Opportunity has no Markets__c')
+                                 + (known ? '' : destination.status === 'unreachable'
+                                     ? ' — market unknown: Salesforce could not be reached (a later push fills it in)'
+                                     : ' — market unknown: the Opportunity names no market (Markets__c)')
                                  + (explicitExpiry === null ? ' — no Hold Exp on the Opportunity, defaulted to 72h' : ''),
           created_by:          serviceUser.id,
           sfdc_opportunity_id: opportunityId,
@@ -270,30 +272,34 @@ export async function POST(req: NextRequest) {
 }
 
 /**
- * The market an Opportunity's trucks are going to, from its Markets__c (or
- * its name). One market resolves to the canonical name and state, so the
- * hold can be located for feasibility. Several markets (a multi-market RFP
+ * The market an Opportunity's trucks are going to, from its Markets__c (or a
+ * rep-style name). One market resolves to the canonical name and state, so
+ * the hold can be located for feasibility. Several markets (a multi-market RFP
  * that does not say which truck goes where) are listed as written, e.g.
- * "Multi-market: Detroit, LA, Austin", with no state. null when Salesforce
- * could not be asked.
+ * "Multi-market: Detroit, Los Angeles, CA, Austin", with no state.
+ *   ok          — a market to write
+ *   none        — Salesforce answered, but the Opportunity names no market
+ *   unreachable — Salesforce could not be asked
  */
-async function opportunityDestination(opportunityId: string): Promise<{ market: string; state: string } | null> {
-  if (!isSfdcConfigured()) return null
+type Destination = { status: 'ok'; market: string; state: string } | { status: 'none' | 'unreachable' }
+
+async function opportunityDestination(opportunityId: string): Promise<Destination> {
+  if (!isSfdcConfigured()) return { status: 'unreachable' }
   try {
     const rows = await sfdcQuery<{ Name: string | null; Markets__c: string | null }>(
       `SELECT Name, Markets__c FROM Opportunity WHERE Id = '${soqlString(opportunityId)}' LIMIT 1`,
     )
-    if (!rows[0]) return null
+    if (!rows[0]) return { status: 'unreachable' }
     const candidates = opportunityMarketCandidates(rows[0].Markets__c, rows[0].Name)
-    if (candidates.length === 0) return { market: '', state: '' }
-    if (candidates.length > 1) return { market: `Multi-market: ${candidates.join(', ')}`, state: '' }
+    if (candidates.length === 0) return { status: 'none' }
+    if (candidates.length > 1) return { status: 'ok', market: `Multi-market: ${candidates.join(', ')}`, state: '' }
     const [city, st] = candidates[0].split(',').map(x => x.trim())
     const canonical = await canonicalMarketName(candidates[0], st || undefined)
-    if (canonical) return { market: canonical, state: canonical.split(',')[1]?.trim() ?? '' }
+    if (canonical) return { status: 'ok', market: canonical, state: canonical.split(',')[1]?.trim() ?? '' }
     // Not a market we know (a venue, a region): keep it as written.
-    return { market: st ? candidates[0] : city, state: st && /^[A-Z]{2}$/i.test(st) ? st.toUpperCase() : '' }
+    return { status: 'ok', market: st ? candidates[0] : city, state: st && /^[A-Z]{2}$/i.test(st) ? st.toUpperCase() : '' }
   } catch (err) {
     console.error('[sfdc/hold] could not read the Opportunity market:', err)
-    return null
+    return { status: 'unreachable' }
   }
 }

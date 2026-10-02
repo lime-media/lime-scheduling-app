@@ -36,4 +36,17 @@ section('Salesforce push: the hold goes where the Opportunity says, never where 
   eq('the name with a client prefix', c(null, 'Mount Sinai - New York LED'), ['New York City, NY'])
   eq('a bare Washington is not guessed', c('Washington', 'Washington LED'), ['Washington'])
   eq('nothing usable anywhere', c(null, null), [])
+  // Review: a two-letter state after a city is the city's state, never a second market.
+  eq('Washington, DC is one market', c('Washington, DC', 'DC LED'), ['Washington, DC'])
+  eq('New Orleans, LA is Louisiana, not Los Angeles', c('New Orleans, LA', 'New Orleans LED'), ['New Orleans, LA'])
+  eq('Baton Rouge, LA', c('Baton Rouge, LA', null), ['Baton Rouge, LA'])
+  eq('Shreveport, LA', c('Shreveport, LA', null), ['Shreveport, LA'])
+  eq('two markets with states', c('Washington, DC, Austin, TX', null), ['Washington, DC', 'Austin, TX'])
+  eq('LA after another shorthand is still Los Angeles', c('NYC, LA', null), ['New York City, NY', 'Los Angeles, CA'])
+  eq('a lower-case state still counts', c('Dallas, tx', null), ['Dallas, TX'])
+  eq('two letters that are no state stay a market', c('Austin, XX', null), ['Austin', 'XX'])
+  // Review: the app's own names (PR 95) carry an account and dates, not markets.
+  eq("an app-made name is never read as markets", c(null, 'Nike / Rolling Adz - Des Moines, IA - 2026-10-02 to 2026-10-03'), [])
+  eq("nor an app multi-market name", c(null, 'Nike / Clear Trust Media - Multi-market (3 markets) - 2026-10-15 to 2026-11-19'), [])
+  eq('dates in the field are dropped', c('Dallas, 2026-10-10', null), ['Dallas'])
 }

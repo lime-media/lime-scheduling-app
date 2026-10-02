@@ -1,3 +1,4 @@
+import { cleanBrand, opportunityName } from '@/lib/brand'
 import { NextRequest, NextResponse } from 'next/server'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
@@ -107,11 +108,14 @@ async function handleAutoSelectHold(
     studies?: string[]
     days_per_week?: number
     operating_hours?: number
+    /** Optional brand; cleaned before it goes to Salesforce (lib/brand.ts). */
+    brand?: string
   },
 ) {
   const {
     market, state, start_date, end_date, truck_count, notes,
   } = body
+  const brand = cleanBrand(body.brand)
 
   if (truck_count < 1 || truck_count > 20) {
     return NextResponse.json({ error: 'truck_count must be between 1 and 20' }, { status: 400 })
@@ -273,7 +277,7 @@ async function handleAutoSelectHold(
         state: resolvedState,
         start_date,
         end_date,
-        notes: notes ?? null,
+        notes: [brand ? `Brand: ${brand}` : null, notes || null].filter(Boolean).join(' | ') || null,
         pricing_tier: pricingTier,
         quoted_total: serverTotal,
         daily_rate: quote.dailyRate,
@@ -295,7 +299,7 @@ async function handleAutoSelectHold(
   // Create Salesforce Opportunity if the client has an SFDC Account ID
   if (session.sfdcAccountId && isSfdcConfigured() && created.length > 0) {
     try {
-      const oppName = `${session.companyName} - ${market} - ${start_date} to ${end_date}`
+      const oppName = opportunityName(brand, session.companyName, `${market} - ${start_date} to ${end_date}`)
       const firstHold = await prisma.hold.findFirst({
         where: { campaign_group_id: campaignGroupId },
         select: { expires_at: true },
@@ -312,6 +316,7 @@ async function handleAutoSelectHold(
         ownerId: accountInfo?.ownerId ?? undefined,
         clientType: accountInfo?.clientType,
         name: oppName,
+        brand: brand || undefined,
         stageName: DEFAULT_STAGE, // a client's own request: no seller to choose
         closeDate: start_date,
         amount: serverTotal,

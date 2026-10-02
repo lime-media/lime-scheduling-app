@@ -1,5 +1,6 @@
 'use client'
 
+import { BrandInput } from '@/components/BrandInput'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { ClientHeader } from '@/components/ClientHeader'
@@ -89,6 +90,8 @@ type QuoteForm = {
   truck_count: number | undefined
   days_per_week: 5 | 6 | 7
   operating_hours: 8 | 10 | 12
+  /** Optional: the brand the campaign is for (lib/brand.ts). */
+  brand: string
 }
 
 const VALID_STUDIES = ['web_lift', 'foot_traffic', 'sales_lift', 'brand_lift'] as const
@@ -570,6 +573,10 @@ function QuoteBox({
             />
           </div>
         </div>
+        <div className="mt-3 max-w-sm">
+          <BrandInput value={form.brand} onChange={v => onChange({ brand: v })} className={inputClass}
+            label="Brand (optional)" hint="The brand this campaign is for." />
+        </div>
         {/* Hours are chosen for every campaign. The weekly schedule only for
             7+ days: a shorter range runs, and is billed, every day it covers. */}
         {(() => {
@@ -624,7 +631,7 @@ export default function ClientAiPage() {
   const { clientUser, authChecked } = useClientAuth()
 
   // Quote form state
-  const [quoteForm, setQuoteForm] = useState<QuoteForm>({ market: '', start_date: '', end_date: '', truck_count: undefined, days_per_week: 5, operating_hours: 8 })
+  const [quoteForm, setQuoteForm] = useState<QuoteForm>({ market: '', start_date: '', end_date: '', truck_count: undefined, days_per_week: 5, operating_hours: 8, brand: '' })
   const [quoteLoading, setQuoteLoading] = useState(false)
   const [quoteResult, setQuoteResult] = useState<QuoteResponse | null>(null)
   const [quoteError, setQuoteError] = useState<string | null>(null)
@@ -742,6 +749,7 @@ export default function ClientAiPage() {
           studies: featureToggles.studies,
           days_per_week: quoteResult.pricing.schedule.daysPerWeek,
           operating_hours: quoteResult.pricing.schedule.operatingHours,
+          brand: quoteForm.brand,
         }),
       })
       const data = await res.json()

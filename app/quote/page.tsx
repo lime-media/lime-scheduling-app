@@ -1,5 +1,6 @@
 'use client'
 
+import { BrandInput } from '@/components/BrandInput'
 import toast from 'react-hot-toast'
 import { ATT_RELEASE_WARNING } from '@/lib/attSoftRules'
 import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
@@ -82,6 +83,8 @@ export default function InternalQuotePage() {
   const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
   // Opportunity stage the seller wants the reservation's opportunity to start at.
   const [stage, setStage] = useState<OpenStage>(DEFAULT_STAGE)
+  // The campaign's brand, for the Salesforce opportunity (components/BrandInput.tsx).
+  const [brand, setBrand] = useState('')
   // Low conviction: log a priced opportunity without reserving any truck.
   const [quoteOnly, setQuoteOnly] = useState(false)
   const isBrandDirect = account?.clientType === 'Brand Direct'
@@ -219,6 +222,7 @@ export default function InternalQuotePage() {
           truck_count: form.truck_count,
           sfdc_account_id: account.id,
           sfdc_account_name: account.name,
+          brand,
           shadow_fencing: toggles.shadowFencing,
           smart_directional: toggles.smartDirectional,
           device_id: toggles.deviceId,
@@ -246,7 +250,7 @@ export default function InternalQuotePage() {
     } finally {
       setHoldLoading(false)
     }
-  }, [holdLoading, quoteResult, account, form, toggles, isBrandDirect, markupPct, stage, quoteOnly]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [holdLoading, quoteResult, account, form, toggles, isBrandDirect, markupPct, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (status === 'loading' || !session) return null
 
@@ -301,6 +305,9 @@ export default function InternalQuotePage() {
         <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 mb-4">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
           <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
+          <div className="mt-3 max-w-sm">
+            <BrandInput value={brand} onChange={setBrand} className={inputClass} />
+          </div>
         </div>
 
         {/* Step 2: Campaign details */}

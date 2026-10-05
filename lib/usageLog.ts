@@ -5,8 +5,9 @@
  * (mcp_query_log) and shown alongside.
  *
  * Wired once per route with withUsageLog(), so no early return inside a
- * handler can skip the log. Logging NEVER affects the request: a failed write
- * (or a database without the table yet) is caught and printed, never thrown.
+ * handler can skip the log. Logging NEVER affects the request: the write runs
+ * after the response is sent (waitUntil, which keeps the function alive until
+ * it lands), and a failed write is caught and printed, never thrown.
  *
  * Also keeps "last activity" on the person (touchActivity), shown on the Users
  * page — written at most once every ACTIVITY_THROTTLE_MIN per person.
@@ -14,6 +15,7 @@
 
 import { NextRequest } from 'next/server'
 import { getToken } from 'next-auth/jwt'
+import { waitUntil } from '@vercel/functions'
 import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
 
@@ -27,7 +29,8 @@ export type Outcome = 'success' | 'not_feasible' | 'refused' | 'error'
 
 const MAX_JSON = 8000
 const LONG_TEXT = new Set(['message', 'question', 'text', 'csv', 'content', 'notes'])
-const SECRET = /password|secret|token|otp|code_hash/i
+// Never stored, whatever route they arrive on: credentials and personal identifiers.
+export const SECRET = /pass(word|wd)?|pwd|secret|token|otp|code_hash|auth|api[-_]?key|private[-_]?key|credential|cookie|session|ssn/i
 
 function clip(s: string, n: number): string { return s.length > n ? `${s.slice(0, n)}… (${s.length} chars)` : s }
 
@@ -89,7 +92,7 @@ export function outcomeFor(status: number, json: unknown): Outcome {
   if (status >= 500) return 'error'
   if (status >= 400) return 'refused'
   const j = (json ?? {}) as Record<string, unknown>
-  if (j.insufficient === true || j.ok === false) return 'not_feasible'
+  if (j.insufficient === true) return 'not_feasible'
   return 'success'
 }
 
@@ -138,15 +141,22 @@ async function record(actor: Actor, tool: UsageTool, inputs: unknown, status: nu
   await touchActivity(actor)
 }
 
+/** A form upload's fields: same redaction as JSON; a file is only its name and size. */
+export function pruneFormEntries(entries: [string, string | { name: string; size: number }][]): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of entries) {
+    if (SECRET.test(k)) continue
+    out[k] = typeof v === 'string' ? clip(v, 500) : { file: v.name, bytes: v.size }
+  }
+  return out
+}
+
 /** What went in: the JSON body, or for a file upload only its name and size. */
 async function readInputs(req: NextRequest): Promise<unknown> {
   try {
     const type = req.headers.get('content-type') ?? ''
     if (type.includes('multipart/form-data')) {
-      const form = await req.clone().formData()
-      const out: Record<string, unknown> = {}
-      for (const [k, v] of form.entries()) out[k] = typeof v === 'string' ? clip(v, 500) : { file: v.name, bytes: v.size }
-      return out
+      return pruneFormEntries([...(await req.clone().formData()).entries()])
     }
     return pruneInputs(await req.clone().json())
   } catch {
@@ -170,13 +180,19 @@ export function withUsageLog(
     try {
       res = await handler(req)
     } catch (err) {
-      if (actor) await record(actor, tool, inputs, 500, { error: err instanceof Error ? err.message : String(err) }, Date.now() - started)
+      if (actor) waitUntil(record(actor, tool, inputs, 500, { error: err instanceof Error ? err.message : String(err) }, Date.now() - started))
       throw err
     }
     if (actor) {
-      let json: unknown = null
-      try { json = await res.clone().json() } catch { /* not JSON */ }
-      await record(actor, tool, inputs, res.status, json, Date.now() - started)
+      // Off the critical path: the person gets the response now; the log is
+      // written after it is sent.
+      const latency = Date.now() - started
+      const copy = res.clone()
+      waitUntil((async () => {
+        let json: unknown = null
+        try { json = await copy.json() } catch { /* not JSON */ }
+        await record(actor, tool, inputs, res.status, json, latency)
+      })())
     }
     return res
   }

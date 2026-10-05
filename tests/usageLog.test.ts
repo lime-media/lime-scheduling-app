@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { outcomeFor, pruneInputs, summarizeResult } from '@/lib/usageLog'
+import { outcomeFor, pruneFormEntries, pruneInputs, summarizeResult } from '@/lib/usageLog'
 import { describeInputs, describeResult, toolLabel } from '@/lib/usageFormat'
 
 section('usage log: inputs kept')
@@ -14,6 +14,9 @@ eq('other strings to 200', String(pruneInputs({ market: 'b'.repeat(300) }).marke
 eq('a long list keeps the first 20 and the count', (pruneInputs({ rows: Array.from({ length: 30 }, (_, i) => ({ market: `M${i}` })) }).rows as { count: number }).count, 30)
 eq('list items lose nested objects', pruneInputs({ rows: [{ market: 'Dallas', extra: { deep: 1 } }] }).rows, [{ market: 'Dallas' }])
 eq('not an object: nothing', pruneInputs('hello'), {})
+eq('review: every credential and personal-ID key is dropped',
+  Object.keys(pruneInputs({ market: 'x', authorization: 'Bearer sk', apiKey: 'sk', api_key: 'sk', pwd: 'p', passwd: 'p', credentials: 'u:p', ssn: '1', sessionId: 's', cookie: 'c', privateKey: 'k' })), ['market'])
+eq('...including inside list items', pruneInputs({ rows: [{ market: 'Dallas', apiKey: 'sk' }] }).rows, [{ market: 'Dallas' }])
 
 section('usage log: result headline')
 eq('a Classic quote', summarizeResult({ grandTotal: 3800, market: 'Ames, IA', presets: { good: { total: 2700 }, best: { total: 3800 } } }), { total: 3800, good: 2700, best: 3800, market: 'Ames, IA' })
@@ -26,6 +29,7 @@ section('usage log: outcome')
 eq('200 is success', outcomeFor(200, { grandTotal: 1 }), 'success')
 eq('not enough trucks is not feasible', outcomeFor(200, { insufficient: true }), 'not_feasible')
 eq('4xx is refused', outcomeFor(409, { error: 'x' }), 'refused')
+eq('review: ok:false on a 200 is not read as "not feasible"', outcomeFor(200, { ok: false }), 'success')
 eq('5xx is an error', outcomeFor(502, null), 'error')
 
 section('usage page: one-line descriptions')
@@ -36,3 +40,8 @@ eq('a result', describeResult({ total: 3800.4, holds: 1 }), '$3,800 · 1 hold')
 eq('a refusal', describeResult({ insufficient: true, error: 'Automatic quote not feasible' }), 'not enough trucks · Automatic quote not feasible')
 eq('an MCP result', describeResult({ best_total: 12000 }), '$12,000')
 eq('tool names', [toolLabel('quote_classic'), toolLabel('get_rate_quote'), toolLabel('something_new')], ['Quote (Classic)', 'MCP: rate quote', 'something_new'])
+
+section('usage log: file uploads are redacted the same way')
+eq('the field kept, the key dropped, the file as name + size',
+  pruneFormEntries([['label', 'Acme DMAs'], ['apiKey', 'sk-live-xyz'], ['file', { name: 'zips.csv', size: 7 }]]),
+  { label: 'Acme DMAs', file: { file: 'zips.csv', bytes: 7 } })

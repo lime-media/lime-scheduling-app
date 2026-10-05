@@ -271,15 +271,15 @@ model AcceptedMarket {
 // actor_type: app_user | client_user
 // outcome: success | not_feasible | refused | error
 model UsageLog {
-  id         String   @id @default(cuid())
+  id         String   @id @default(cuid()) @db.NVarChar(36)
   created_at DateTime @default(now())
-  actor_type String
+  actor_type String   @db.NVarChar(20)
   actor_id   String   @db.NVarChar(255)
   actor_name String   @default("")
-  tool       String
+  tool       String   @db.NVarChar(100)
   inputs     String?  @db.NVarChar(Max)
   result     String?  @db.NVarChar(Max)
-  outcome    String
+  outcome    String   @db.NVarChar(20)
   status     Int
   latency_ms Int
 

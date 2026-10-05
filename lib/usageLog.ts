@@ -134,7 +134,8 @@ export function reportFields(inputs: unknown, result: unknown, actor?: Actor): {
     market: text(i.market, 200) ?? text(i.campaign_city, 200) ?? (rows ? `${rows} markets` : null) ?? text(r.market, 200),
     account: text(i.sfdc_account_name, 255) ?? text(i.sfdcAccountName, 255)
       ?? (actor?.type === 'client_user' ? text(actor.name, 255) : null),
-    total: num(r.total) ?? num(r.grand_total) ?? num(r.best_total) ?? num(r.good_total) ?? null,
+    // summarizeResult writes total (the quoted figure), or the presets as best/good; MCP writes grand_total.
+    total: num(r.total) ?? num(r.grand_total) ?? num(r.best) ?? num(r.good) ?? null,
     holds: num(r.holds) ?? num(r.hold_count) ?? null,
     conversation_id: text(r.conversation_id, 64),
   }

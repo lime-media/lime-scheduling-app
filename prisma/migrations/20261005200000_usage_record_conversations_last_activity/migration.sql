@@ -28,6 +28,17 @@ IF COL_LENGTH('dbo.chat_conversations', 'actor_type') IS NULL
     ALTER TABLE [dbo].[chat_conversations] ADD [actor_type] NVARCHAR(20) NOT NULL
         CONSTRAINT [DF_chat_conversations_actor_type] DEFAULT 'app_user';
 
+-- Client user ids can be 43 characters ("client_" + a UUID); the column held
+-- 36, which would truncate. Widen to 255, as app_usage_log.actor_id. COL_LENGTH
+-- counts bytes (2 per NVARCHAR character). An index on the column (created by
+-- an earlier run of this script) must be rebuilt around the change.
+IF COL_LENGTH('dbo.chat_conversations', 'user_id') < 510
+BEGIN
+    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_chat_conversations_owner' AND object_id = OBJECT_ID('dbo.chat_conversations'))
+        DROP INDEX [IX_chat_conversations_owner] ON [dbo].[chat_conversations];
+    ALTER TABLE [dbo].[chat_conversations] ALTER COLUMN [user_id] NVARCHAR(255) NOT NULL;
+END;
+
 IF COL_LENGTH('dbo.app_usage_log', 'market') IS NULL          ALTER TABLE [dbo].[app_usage_log] ADD [market] NVARCHAR(200) NULL;
 IF COL_LENGTH('dbo.app_usage_log', 'account') IS NULL         ALTER TABLE [dbo].[app_usage_log] ADD [account] NVARCHAR(255) NULL;
 IF COL_LENGTH('dbo.app_usage_log', 'total') IS NULL           ALTER TABLE [dbo].[app_usage_log] ADD [total] DECIMAL(14, 2) NULL;
@@ -91,6 +102,10 @@ JOIN [dbo].[chat_conversations] cv ON cv.id = m.conversation_id AND cv.actor_typ
 LEFT JOIN [dbo].[app_users] u ON u.id = cv.user_id
 OUTER APPLY (SELECT TOP 1 x.content, x.created_at FROM [dbo].[chat_messages] x
              WHERE x.conversation_id = m.conversation_id AND x.role = ''assistant'' AND x.created_at >= m.created_at
+               -- the reply to THIS question: none if another question came first
+               AND NOT EXISTS (SELECT 1 FROM [dbo].[chat_messages] n
+                               WHERE n.conversation_id = m.conversation_id AND n.role = ''user''
+                                 AND n.created_at > m.created_at AND n.created_at < x.created_at)
              ORDER BY x.created_at) a
 WHERE m.role = ''user''
   AND NOT EXISTS (SELECT 1 FROM [dbo].[app_usage_log] g WHERE g.id = ''c'' + REPLACE(m.id, ''-'', ''''));
@@ -139,7 +154,7 @@ WHERE NOT EXISTS (SELECT 1 FROM [dbo].[app_usage_log] g WHERE g.id = ''m'' + l.i
 EXEC(N'
 WITH h AS (
     SELECT h.*,
-           CASE WHEN h.campaign_group_id LIKE ''mm%''
+           CASE WHEN h.campaign_group_id LIKE ''mm%'' AND CHARINDEX(''_'', h.campaign_group_id) > 0
                 THEN LEFT(h.campaign_group_id, LEN(h.campaign_group_id) - CHARINDEX(''_'', REVERSE(h.campaign_group_id)))
                 ELSE COALESCE(h.campaign_group_id, h.id) END AS run_key
     FROM [dbo].[app_holds] h
@@ -190,11 +205,12 @@ UPDATE g SET
     account = LEFT(COALESCE(g.account, JSON_VALUE(g.inputs, ''$.sfdc_account_name''), JSON_VALUE(g.inputs, ''$.sfdcAccountName''),
                             CASE WHEN g.actor_type = ''client_user'' THEN g.actor_name END), 255),
     total = COALESCE(g.total, CAST(TRY_CAST(COALESCE(JSON_VALUE(g.result, ''$.total''), JSON_VALUE(g.result, ''$.grand_total''),
-                                                       JSON_VALUE(g.result, ''$.best_total''), JSON_VALUE(g.result, ''$.good_total'')) AS FLOAT) AS DECIMAL(14, 2))),
+                                                       JSON_VALUE(g.result, ''$.best''), JSON_VALUE(g.result, ''$.good'')) AS FLOAT) AS DECIMAL(14, 2))),
     holds = COALESCE(g.holds, TRY_CAST(COALESCE(JSON_VALUE(g.result, ''$.holds''), JSON_VALUE(g.result, ''$.hold_count'')) AS INT)),
     conversation_id = COALESCE(g.conversation_id, JSON_VALUE(g.result, ''$.conversation_id''))
 FROM [dbo].[app_usage_log] g
-WHERE ISJSON(COALESCE(g.inputs, ''{}'')) = 1 AND ISJSON(COALESCE(g.result, ''{}'')) = 1;
+WHERE ISJSON(COALESCE(g.inputs, ''{}'')) = 1 AND ISJSON(COALESCE(g.result, ''{}'')) = 1
+  AND (g.market IS NULL OR g.account IS NULL OR g.total IS NULL OR g.holds IS NULL OR g.conversation_id IS NULL);
 ');
 
 -- ── 6. Verify ─────────────────────────────────────────────────────────────────

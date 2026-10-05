@@ -61,3 +61,4 @@ eq('a client run is on its own account', reportFields({ market: 'Dallas, TX' }, 
 eq('an MCP quote', reportFields({ campaign_city: 'Phoenix, AZ' }, { grand_total: 91350 }), { market: 'Phoenix, AZ', account: null, total: 91350, holds: null, conversation_id: null })
 eq('a chat: its conversation', reportFields({ message: 'hi' }, { reply: 'ok', conversation_id: 'abc' }).conversation_id, 'abc')
 eq('nothing: all null', reportFields(null, null), { market: null, account: null, total: null, holds: null, conversation_id: null })
+eq('review: presets only (no grand total) still fills total, from best', reportFields({}, summarizeResult({ presets: { good: { total: 3500 }, best: { total: 4200 } } })).total, 4200)

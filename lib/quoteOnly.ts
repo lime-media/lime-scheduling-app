@@ -8,7 +8,7 @@
  * Never linked to the client portal. The rows are written ALREADY EXPIRED:
  *   - an EXPIRED row never blocks a truck (availability, conflicts, quoting,
  *     the grid and map all ignore it);
- *   - the hourly expiry sweep and the Closed Won/Lost reconcile skip EXPIRED
+ *   - the expiry sweep and the Closed Won/Lost reconcile skip EXPIRED
  *     rows, so they never touch the opportunity.
  *
  * The opportunity leaves the LED truck and hold-date fields EMPTY. Salesforce

@@ -13,7 +13,7 @@
  *   2. the environment var    — deploy-level override, still honoured
  *   3. the compiled default   — always correct, never empty
  *
- * A short cache keeps the hourly sweep and burst sends from querying per email
+ * A short cache keeps the sweep and burst sends from querying per email
  * without making an edit wait minutes to take effect.
  */
 

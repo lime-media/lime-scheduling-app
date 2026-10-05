@@ -7,7 +7,7 @@ import { refreshCache } from '@/lib/scheduleCache'
 // production run also faces the entire backlog that accumulated while the old
 // in-process timer silently never fired, so it is far slower than steady state.
 // 300s is the Pro ceiling; every stage is idempotent, so a run that still times
-// out is retried by the next hour rather than losing work.
+// out is retried by the next run rather than losing work.
 export const dynamic     = 'force-dynamic'
 export const maxDuration = 300
 
@@ -15,7 +15,7 @@ export const maxDuration = 300
  * Scheduled maintenance sweep — expires holds past their `expires_at`,
  * releases stale ATT_SOFT holds, and re-runs conflict detection.
  *
- * Invoked hourly by Vercel Cron (see vercel.json), which sends
+ * Invoked every 15 minutes by Vercel Cron (see vercel.json), which sends
  * `Authorization: Bearer $CRON_SECRET`. Safe to call by hand with the same
  * header to force a sweep.
  *

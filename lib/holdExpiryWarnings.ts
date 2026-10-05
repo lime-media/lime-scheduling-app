@@ -8,7 +8,7 @@
  *
  * Idempotency without a schema change
  * -----------------------------------
- * The cron runs hourly, so "expires within 24h" matches for 24 consecutive runs.
+ * The cron runs every 15 minutes, so "expires within 24h" matches for ~96 consecutive runs.
  * Rather than add a warned_at column, a WARN_HOLD_EXPIRY audit row per hold is
  * the record — the same table already carries EXPIRE_HOLD and CREATE_HOLD, and
  * it survives redeploys and reruns.

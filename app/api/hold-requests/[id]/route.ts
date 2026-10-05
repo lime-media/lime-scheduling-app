@@ -148,7 +148,7 @@ export async function PATCH(
   // was already in the past at creation.
   //
   // Refused while the hold's Opportunity is Closed Lost (closed by expireHolds() or by a
-  // rep): the hourly reconcile would release it again. Reopening a deal is a CRM decision,
+  // rep): the reconcile (every 15 minutes) would release it again. Reopening a deal is a CRM decision,
   // not a side effect of blocking a truck, so the person is sent to Salesforce.
   if (action === 'reinstate') {
     // A quote-only log was never a reservation: it may have no truck

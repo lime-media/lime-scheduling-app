@@ -17,6 +17,7 @@
     "@anthropic-ai/sdk": "^0.85.0",
     "@auth/prisma-adapter": "^2.11.1",
     "@prisma/client": "^5.22.0",
+    "@vercel/functions": "^3.9.11",
     "bcryptjs": "^3.0.3",
     "date-fns": "^4.1.0",
     "googleapis": "^173.0.0",

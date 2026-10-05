@@ -6,7 +6,7 @@ import { syncAttSoftHolds } from '@/lib/attSoftHolds'
 /**
  * POST /api/holds/att-sync — bring AT&T soft holds in line with the schedule
  * (current month + next two; prior months released). Called when the
- * schedule grid loads; the hourly cron runs the same sync. See
+ * schedule grid loads; the cron (every 15 minutes) runs the same sync. See
  * lib/attSoftHolds.ts for the rules.
  */
 export async function POST() {

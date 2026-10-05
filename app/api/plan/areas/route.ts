@@ -12,6 +12,7 @@
  * grouped into areas, and every correction is returned as a flag.
  */
 
+import { withUsageLog } from '@/lib/usageLog'
 import { NextRequest, NextResponse } from 'next/server'
 import { buildAreas, parseZipRows, type AreaFlag, type Centroids, type ZipRow } from '@/lib/planning/areas'
 import { xlsxToCsv } from '@/lib/planning/xlsx'
@@ -39,7 +40,7 @@ const isRow = (r: unknown): r is ZipRow => {
     && typeof x.label === 'string' && typeof x.city === 'string' && typeof x.state === 'string'
 }
 
-export async function POST(req: NextRequest) {
+async function handlePost(req: NextRequest) {
   const denied = await requireStaff(req)
   if (denied) return denied
 
@@ -110,3 +111,6 @@ export async function POST(req: NextRequest) {
     notes: extraction?.notes ?? [],
   })
 }
+
+// Every run is logged for the Usage page (lib/usageLog.ts).
+export const POST = withUsageLog('ai_plan_areas', 'staff', handlePost)

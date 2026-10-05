@@ -4,6 +4,7 @@
  * verified in code against the Census centroids before they are shown.
  */
 
+import { withUsageLog } from '@/lib/usageLog'
 import { NextRequest, NextResponse } from 'next/server'
 import { reviewFootprint } from '@/lib/planning/claude'
 import { requireStaff, claudeErrorResponse } from '@/lib/planning/http'
@@ -14,7 +15,7 @@ export const maxDuration = 300
 
 const centroids = centroidData as unknown as Centroids
 
-export async function POST(req: NextRequest) {
+async function handlePost(req: NextRequest) {
   const denied = await requireStaff(req)
   if (denied) return denied
 
@@ -35,3 +36,6 @@ export async function POST(req: NextRequest) {
     return claudeErrorResponse(err, 'review')
   }
 }
+
+// Every run is logged for the Usage page (lib/usageLog.ts).
+export const POST = withUsageLog('ai_plan_review', 'staff', handlePost)

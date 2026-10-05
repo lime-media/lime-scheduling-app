@@ -1,4 +1,5 @@
 import { withUsageLog } from '@/lib/usageLog'
+import { addMessages, openConversation } from '@/lib/conversations'
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from '@/lib/prisma'
@@ -139,8 +140,12 @@ async function handlePost(req: NextRequest) {
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   if (session.username !== 'testclient') return NextResponse.json({ error: 'Not available yet' }, { status: 403 })
 
-  const { message, history = [] } = await req.json()
+  const { message, history = [], conversation_id: requestedConversation } = await req.json()
   if (!message) return NextResponse.json({ error: 'Message required' }, { status: 400 })
+
+  // The conversation this message belongs to (lib/conversations.ts).
+  const conversationId = await openConversation({ actorType: 'client_user', userId: session.id }, requestedConversation, message)
+  await addMessages(conversationId, [{ role: 'user', content: message }])
 
   let context: string
   try {
@@ -191,10 +196,14 @@ async function handlePost(req: NextRequest) {
     }
   }
 
-  // The exchange is logged by withUsageLog (below), question and answer in
-  // full: the usage log is the client chat's only record.
-  return NextResponse.json({ reply, actionResult })
+  // The conversation keeps the text; the usage log (withUsageLog, below)
+  // records that the chat ran and links here by conversation id.
+  await addMessages(conversationId, [
+    { role: 'assistant', content: reply },
+    ...(actionResult ? [{ role: 'assistant' as const, content: actionResult.message }] : []),
+  ])
+  return NextResponse.json({ reply, actionResult, conversation_id: conversationId })
 }
 
 // Every run is logged for the Usage page (lib/usageLog.ts).
-export const POST = withUsageLog('ai_chat_client', 'client', handlePost, { fullText: true })
+export const POST = withUsageLog('ai_chat_client', 'client', handlePost)

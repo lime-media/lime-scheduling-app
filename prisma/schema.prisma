@@ -244,6 +244,13 @@ model UsageLog {
   outcome    String   @db.NVarChar(20)
   status     Int
   latency_ms Int
+  /// Reportable fields, as real columns (lib/usageLog.ts reportFields).
+  market          String?  @db.NVarChar(200)
+  account         String?  @db.NVarChar(255)
+  total           Decimal? @db.Decimal(14, 2)
+  holds           Int?
+  /// The chat's conversation (chat_conversations), where its text lives.
+  conversation_id String?  @db.NVarChar(64)
 
   @@index([created_at])
   @@index([actor_id, created_at])

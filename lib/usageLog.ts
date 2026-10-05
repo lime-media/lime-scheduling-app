@@ -4,11 +4,12 @@
  * what went in, what came out, how it ended and how long it took. One table,
  * app_usage_log; the Usage page reads only it.
  *
- * Not to be confused with app_audit_logs (what changed on a reservation) or
- * chat_conversations / chat_messages (the staff chat's working memory, which a
- * staff chat row links to by conversation id rather than copying its text).
- * The client chat has no such store, so its rows keep the full question and
- * answer (fullText).
+ * Metadata only. Chat TEXT lives in the conversation store (lib/conversations.ts,
+ * staff and client alike); a chat row keeps a preview and links to it by
+ * conversation_id, so content can be restricted or deleted on its own. The
+ * fields people report on — market, account, total, holds — are real columns
+ * (reportFields), not just JSON. Not to be confused with app_audit_logs,
+ * which records what changed on a reservation.
  *
  * Wired once per route with withUsageLog(), so no early return inside a
  * handler can skip the log. Logging NEVER affects the request: the write runs
@@ -46,9 +47,8 @@ export const SECRET = /pass(word|wd)?|pwd|secret|token|otp|code_hash|auth|api[-_
 
 function clip(s: string, n: number): string { return s.length > n ? `${s.slice(0, n)}… (${s.length} chars)` : s }
 
-/** How much of a long text field (a chat message) is kept: a preview, or all of it. */
+/** How much of a long text field (a chat message) is kept: a preview. */
 export const PREVIEW_CHARS = 500
-export const FULL_TEXT_CHARS = 20_000
 
 function prunePrimitive(key: string, v: unknown, longText = PREVIEW_CHARS): unknown {
   if (typeof v === 'string') return clip(v, LONG_TEXT.has(key) ? longText : 200)
@@ -116,10 +116,28 @@ export function outcomeFor(status: number, json: unknown): Outcome {
   return 'success'
 }
 
-const capJson = (v: unknown, fullText = false) => {
-  const s = JSON.stringify(v)
-  const max = fullText ? FULL_TEXT_CHARS * 2 : MAX_JSON
-  return s.length > max ? `${s.slice(0, max)}…` : s
+const capJson = (v: unknown) => { const s = JSON.stringify(v); return s.length > MAX_JSON ? `${s.slice(0, MAX_JSON)}…` : s }
+
+/**
+ * The reportable fields of a run, from what went in and what came out:
+ * market, account, total, holds, and the chat's conversation. Pure; the same
+ * for app runs and MCP calls.
+ */
+export function reportFields(inputs: unknown, result: unknown, actor?: Actor): {
+  market: string | null; account: string | null; total: number | null; holds: number | null; conversation_id: string | null
+} {
+  const i = (inputs && typeof inputs === 'object' ? inputs : {}) as Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
+  const r = (result && typeof result === 'object' ? result : {}) as Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
+  const text = (v: unknown, n: number) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, n) : null)
+  const rows = Array.isArray(i.rows) ? i.rows.length : typeof i.rows?.count === 'number' ? i.rows.count : null
+  return {
+    market: text(i.market, 200) ?? text(i.campaign_city, 200) ?? (rows ? `${rows} markets` : null) ?? text(r.market, 200),
+    account: text(i.sfdc_account_name, 255) ?? text(i.sfdcAccountName, 255)
+      ?? (actor?.type === 'client_user' ? text(actor.name, 255) : null),
+    total: num(r.total) ?? num(r.grand_total) ?? num(r.best_total) ?? num(r.good_total) ?? null,
+    holds: num(r.holds) ?? num(r.hold_count) ?? null,
+    conversation_id: text(r.conversation_id, 64),
+  }
 }
 
 // ── Who is asking ────────────────────────────────────────────────────────────
@@ -152,13 +170,15 @@ export async function touchActivity(actor: Actor): Promise<void> {
   }
 }
 
-async function record(actor: Actor, tool: string, inputs: unknown, status: number, json: unknown, latencyMs: number, fullText = false) {
+async function record(actor: Actor, tool: string, inputs: unknown, status: number, json: unknown, latencyMs: number) {
+  const result = summarizeResult(json)
   try {
     await prisma.usageLog.create({
       data: {
         actor_type: actor.type, actor_id: actor.id, actor_name: actor.name.slice(0, 500), tool,
-        inputs: capJson(inputs, fullText), result: capJson(summarizeResult(json, fullText ? FULL_TEXT_CHARS : 300), fullText),
+        inputs: capJson(inputs), result: capJson(result),
         outcome: outcomeFor(status, json), status, latency_ms: latencyMs,
+        ...reportFields(inputs, result, actor),
       },
     })
   } catch (err) {
@@ -198,17 +218,15 @@ export function withUsageLog(
   tool: UsageTool,
   who: 'staff' | 'client',
   handler: (req: NextRequest) => Promise<Response>,
-  opts: { fullText?: boolean } = {},
 ): (req: NextRequest) => Promise<Response> {
-  const fullText = opts.fullText === true
   return async (req: NextRequest) => {
     const started = Date.now()
-    const [actor, inputs] = await Promise.all([who === 'staff' ? staffActor(req) : Promise.resolve(clientActor(req)), readInputs(req, fullText ? FULL_TEXT_CHARS : PREVIEW_CHARS)])
+    const [actor, inputs] = await Promise.all([who === 'staff' ? staffActor(req) : Promise.resolve(clientActor(req)), readInputs(req)])
     let res: Response
     try {
       res = await handler(req)
     } catch (err) {
-      if (actor) waitUntil(record(actor, tool, inputs, 500, { error: err instanceof Error ? err.message : String(err) }, Date.now() - started, fullText))
+      if (actor) waitUntil(record(actor, tool, inputs, 500, { error: err instanceof Error ? err.message : String(err) }, Date.now() - started))
       throw err
     }
     if (actor) {
@@ -219,7 +237,7 @@ export function withUsageLog(
       waitUntil((async () => {
         let json: unknown = null
         try { json = await copy.json() } catch { /* not JSON */ }
-        await record(actor, tool, inputs, res.status, json, latency, fullText)
+        await record(actor, tool, inputs, res.status, json, latency)
       })())
     }
     return res
@@ -251,6 +269,7 @@ export async function recordMcpUsage(call: {
       data: {
         actor_type: actorType, actor_id: call.userId ?? 'unknown', actor_name: name || 'Unknown', tool: `mcp_${call.toolName}`.slice(0, 100),
         inputs: capJson(pruneInputs(call.requestParams)), result: capJson(call.responseSummary ?? {}),
+        ...reportFields(pruneInputs(call.requestParams), call.responseSummary, { type: actorType, id: call.userId ?? '', name }),
         outcome, status: outcome === 'success' ? 200 : outcome === 'not_feasible' ? 409 : 500, latency_ms: Math.max(0, Math.round(call.latencyMs)),
       },
     })

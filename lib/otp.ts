@@ -89,4 +89,7 @@ export async function verifyLoginOtp(userId: string, submittedCode: string): Pro
   }
 
   await prisma.otpCode.update({ where: { id: otp.id }, data: { consumed_at: new Date() } })
+  // A login is activity (Users page "Last activity"). Never fails the login.
+  await prisma.user.update({ where: { id: userId }, data: { last_active_at: new Date() } })
+    .catch(err => console.error('[otp] last activity not recorded:', err instanceof Error ? err.message : err))
 }

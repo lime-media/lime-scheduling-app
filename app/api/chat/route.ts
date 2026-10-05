@@ -1,4 +1,5 @@
 import { withUsageLog } from '@/lib/usageLog'
+import { addMessages, openConversation } from '@/lib/conversations'
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
@@ -370,38 +371,9 @@ async function handlePost(req: NextRequest) {
     return NextResponse.json({ error: 'Message required' }, { status: 400 })
   }
 
-  // ── Resolve or create conversation ─────────────────────────────────────────
-  let convId: string | null = incomingConvId ?? null
-
-  try {
-    if (!convId) {
-      const title = message.slice(0, 60)
-      const [newConv] = await query<Record<string, unknown>[]>(
-        `INSERT INTO dbo.chat_conversations (id, title, user_id, created_at, updated_at)
-         OUTPUT INSERTED.id
-         VALUES (NEWID(), @title, @userId, GETUTCDATE(), GETUTCDATE())`,
-        { title, userId: session.user.id }
-      )
-      convId = String(newConv.id)
-    } else {
-      const [conv] = await query<Record<string, unknown>[]>(
-        `SELECT id FROM dbo.chat_conversations WHERE id = @convId AND user_id = @userId`,
-        { convId, userId: session.user.id }
-      )
-      if (!conv) convId = null // fall through without persistence if stale id
-    }
-
-    if (convId) {
-      await query(
-        `INSERT INTO dbo.chat_messages (id, conversation_id, role, content, created_at)
-         VALUES (NEWID(), @convId, 'user', @content, GETUTCDATE())`,
-        { convId, content: message }
-      )
-    }
-  } catch (err) {
-    console.error('Failed to persist user message:', err)
-    convId = null
-  }
+  // ── The conversation this message belongs to (lib/conversations.ts) ──────
+  const convId = await openConversation({ actorType: 'app_user', userId: session.user.id }, incomingConvId, message)
+  await addMessages(convId, [{ role: 'user', content: message }])
 
   // ── Build schedule context ────────────────────────────────────────────────
   let scheduleContext: string
@@ -450,29 +422,11 @@ async function handlePost(req: NextRequest) {
     }
   }
 
-  // ── Persist assistant reply ─────────────────────────────────────────────────
-  if (convId) {
-    try {
-      await query(
-        `INSERT INTO dbo.chat_messages (id, conversation_id, role, content, created_at)
-         VALUES (NEWID(), @convId, 'assistant', @content, GETUTCDATE())`,
-        { convId, content: reply }
-      )
-      if (actionResult) {
-        await query(
-          `INSERT INTO dbo.chat_messages (id, conversation_id, role, content, created_at)
-           VALUES (NEWID(), @convId, 'assistant', @content, GETUTCDATE())`,
-          { convId, content: actionResult.message }
-        )
-      }
-      await query(
-        `UPDATE dbo.chat_conversations SET updated_at = GETUTCDATE() WHERE id = @convId`,
-        { convId }
-      )
-    } catch (err) {
-      console.error('Failed to persist assistant reply:', err)
-    }
-  }
+  // ── Persist the reply ────────────────────────────────────────────────────
+  await addMessages(convId, [
+    { role: 'assistant', content: reply },
+    ...(actionResult ? [{ role: 'assistant' as const, content: actionResult.message }] : []),
+  ])
 
   return NextResponse.json({ reply, actionResult, conversation_id: convId })
 }

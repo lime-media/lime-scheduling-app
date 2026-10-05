@@ -1,5 +1,6 @@
 'use client'
 
+import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { useEffect, useState } from 'react'
 import { useSession } from 'next-auth/react'
 // import { useRouter } from 'next/navigation'
@@ -35,6 +36,8 @@ function lastActivity(iso: string | null): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 const activityTitle = (iso: string | null) => (iso ? new Date(iso).toLocaleString('en-US') : 'No activity recorded yet')
+// The Salesforce integration's service account acts on its own; it has no "activity".
+const isSystemAccount = (email: string) => email.trim().toLowerCase() === SFDC_SERVICE_USER_EMAIL
 
 interface ClientPortalUser {
   id:              string
@@ -354,7 +357,9 @@ export default function UsersPage() {
                       <div className="text-sm text-gray-500 mt-0.5 truncate">{user.email}</div>
                       <div className="text-xs text-gray-400 mt-1">
                         Added {new Date(user.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                        <span title={activityTitle(user.last_active_at)}> · Last active {lastActivity(user.last_active_at)}</span>
+                        {isSystemAccount(user.email)
+                          ? <span> · System account</span>
+                          : <span title={activityTitle(user.last_active_at)}> · Last active {lastActivity(user.last_active_at)}</span>}
                       </div>
                     </div>
                     {isOps && (
@@ -429,9 +434,13 @@ export default function UsersPage() {
                       <td className="px-4 py-3 text-gray-500">
                         {new Date(user.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                       </td>
-                      <td className={`px-4 py-3 ${user.last_active_at ? 'text-gray-600' : 'text-gray-300'}`} title={activityTitle(user.last_active_at)}>
-                        {lastActivity(user.last_active_at)}
-                      </td>
+                      {isSystemAccount(user.email) ? (
+                        <td className="px-4 py-3 text-gray-400 text-xs" title="The Salesforce integration's service account">System account</td>
+                      ) : (
+                        <td className={`px-4 py-3 ${user.last_active_at ? 'text-gray-600' : 'text-gray-300'}`} title={activityTitle(user.last_active_at)}>
+                          {lastActivity(user.last_active_at)}
+                        </td>
+                      )}
                       <td className="px-4 py-3">
                         {isOps ? (
                           <div className="flex items-center gap-2">

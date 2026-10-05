@@ -11,7 +11,7 @@ export async function GET(
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const [conv] = await query<Record<string, unknown>[]>(
-    `SELECT id, title, updated_at FROM dbo.chat_conversations WHERE id = @id AND user_id = @userId`,
+    `SELECT id, title, updated_at FROM dbo.chat_conversations WHERE id = @id AND user_id = @userId AND actor_type = 'app_user'`,
     { id: params.id, userId: session.user.id }
   )
   if (!conv) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -36,16 +36,15 @@ export async function DELETE(
 
   // Verify ownership before deleting
   const [conv] = await query<Record<string, unknown>[]>(
-    `SELECT id FROM dbo.chat_conversations WHERE id = @id AND user_id = @userId`,
+    `SELECT id FROM dbo.chat_conversations WHERE id = @id AND user_id = @userId AND actor_type = 'app_user'`,
     { id: params.id, userId: session.user.id }
   )
   if (!conv) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  // CASCADE on FK handles deleting chat_messages automatically
-  await query(
-    `DELETE FROM dbo.chat_conversations WHERE id = @id`,
-    { id: params.id }
-  )
+  // Messages first: production has no foreign key to cascade the delete, so
+  // removing only the conversation would leave its text behind.
+  await query(`DELETE FROM dbo.chat_messages WHERE conversation_id = @id`, { id: params.id })
+  await query(`DELETE FROM dbo.chat_conversations WHERE id = @id`, { id: params.id })
 
   return NextResponse.json({ ok: true })
 }

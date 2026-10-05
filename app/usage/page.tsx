@@ -126,7 +126,7 @@ export default function UsagePage() {
                         <td className="px-3 py-2 text-gray-600 max-w-xs truncate" title={describeInputs(r.inputs)}>{describeInputs(r.inputs) || '—'}</td>
                         <td className="px-3 py-2 text-gray-600 max-w-xs truncate" title={describeResult(r.result)}>{describeResult(r.result) || '—'}</td>
                         <td className="px-3 py-2"><span className={`text-xs font-medium px-2 py-0.5 rounded-full ${(OUTCOME[r.outcome] ?? OUTCOME.refused).cls}`}>{(OUTCOME[r.outcome] ?? { label: r.outcome }).label}</span></td>
-                        <td className="px-3 py-2 text-right tabular-nums text-gray-500">{r.latencyMs >= 1000 ? `${(r.latencyMs / 1000).toFixed(1)} s` : `${r.latencyMs} ms`}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-gray-500">{r.latencyMs <= 0 ? '—' : r.latencyMs >= 1000 ? `${(r.latencyMs / 1000).toFixed(1)} s` : `${r.latencyMs} ms`}</td>
                       </tr>
                       {open === r.id && (
                         <tr className="bg-gray-50"><td colSpan={7} className="px-3 py-3">

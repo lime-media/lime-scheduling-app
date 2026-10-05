@@ -16,7 +16,7 @@ export async function GET() {
   }
 
   const users = await prisma.user.findMany({
-    select: { id: true, name: true, email: true, role: true, created_at: true },
+    select: { id: true, name: true, email: true, role: true, created_at: true, last_active_at: true },
     orderBy: { created_at: 'asc' },
   })
 
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
   const password_hash = await bcrypt.hash(password, 12)
   const user = await prisma.user.create({
     data: { name: name.trim(), email: email.trim(), password_hash, role },
-    select: { id: true, name: true, email: true, role: true, created_at: true },
+    select: { id: true, name: true, email: true, role: true, created_at: true, last_active_at: true },
   })
 
   return NextResponse.json({ user }, { status: 201 })

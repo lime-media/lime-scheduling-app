@@ -6,6 +6,7 @@
  * This endpoint is used by the internal /quote page.
  */
 
+import { withUsageLog } from '@/lib/usageLog'
 import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
 import { brandMarkupFor, withMarkup } from '@/lib/pricing/brandMarkup'
 import { NextRequest, NextResponse } from 'next/server'
@@ -28,7 +29,7 @@ import {
 
 import type { RateOverrides } from '@/lib/pricing/config'
 
-export async function POST(req: NextRequest) {
+async function handlePost(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
@@ -327,3 +328,6 @@ export async function POST(req: NextRequest) {
     selectedTrucks: selectedTrucks.map(t => t.truckNumber),
   })
 }
+
+// Every run is logged for the Usage page (lib/usageLog.ts).
+export const POST = withUsageLog('quote_classic', 'staff', handlePost)

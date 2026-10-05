@@ -41,13 +41,13 @@ export function expiryClosesOpportunity(h: { sfdc_opportunity_id: string | null;
 
 /**
  * Can a hold be put back in play (reinstated, or given a new expiry)? Not
- * while its Opportunity is Closed Lost: the hourly reconcile would expire it
- * again within the hour, silently. Reopening the deal is a Salesforce
+ * while its Opportunity is Closed Lost: the reconcile (every 15 minutes) would
+ * expire it again, silently. Reopening the deal is a Salesforce
  * decision; the message says so. An unknown stage (null) never blocks.
  */
 export function closedOpportunityBlocksReactivation(stage: { isClosed: boolean; isWon: boolean; stageName: string } | null): string | null {
   if (!stage || !stage.isClosed || stage.isWon) return null
-  return `Its Salesforce Opportunity is "${stage.stageName}", so the hold would be released again within the hour. Reopen the Opportunity in Salesforce first, then try again.`
+  return `Its Salesforce Opportunity is "${stage.stageName}", so the hold would be released again within 15 minutes. Reopen the Opportunity in Salesforce first, then try again.`
 }
 
 /**

@@ -20,7 +20,7 @@ import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
  *                 visible on the Holds page, same as any other expiry.
  *   Still open  → left alone.
  *
- * Run from the hourly sweep, BEFORE expireHolds(), so a won deal sitting past its
+ * Run from the sweep (every 15 minutes), BEFORE expireHolds(), so a won deal sitting past its
  * Hold Exp is committed rather than expired out from under itself.
  */
 
@@ -34,7 +34,7 @@ const SOQL_ID_CHUNK = 200
 // Including it created a loop with the outward close in expireHolds(): once this
 // job set an Opportunity to Closed Lost, any re-activation in the app (a grid
 // status edit, or update_expiration, which sets status back to HOLD) was flipped
-// to EXPIRED again on the next hourly pass. Ops would re-book the truck, watch it
+// to EXPIRED again on the next pass. Ops would re-book the truck, watch it
 // look fine, and see it silently release an hour later, with nothing in the UI
 // explaining that the fix had to happen in Salesforce.
 const RECONCILABLE_STATUSES = ['HOLD', 'EXTENSION_REQUESTED']

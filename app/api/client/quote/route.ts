@@ -8,6 +8,7 @@
  * route measures nothing and decides nothing about transport on its own.
  */
 
+import { withUsageLog } from '@/lib/usageLog'
 import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
 import { brandMarkupFor, withMarkup } from '@/lib/pricing/brandMarkup'
 import { NextRequest, NextResponse } from 'next/server'
@@ -32,7 +33,7 @@ import {
 } from '@/lib/pricing/resolvers'
 
 
-export async function POST(req: NextRequest) {
+async function handlePost(req: NextRequest) {
   const session = getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
@@ -420,3 +421,6 @@ function buildPresetsResponse(quote: ReturnType<typeof computeQuote>) {
     },
   }
 }
+
+// Every run is logged for the Usage page (lib/usageLog.ts).
+export const POST = withUsageLog('quote_client', 'client', handlePost)

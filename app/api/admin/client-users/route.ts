@@ -16,7 +16,7 @@ export async function GET() {
   }
 
   const users = await prisma.clientUser.findMany({
-    select: { id: true, username: true, email: true, company_name: true, partner_id: true, sfdc_account_id: true, created_at: true },
+    select: { id: true, username: true, email: true, company_name: true, partner_id: true, sfdc_account_id: true, created_at: true, last_active_at: true },
     orderBy: { created_at: 'asc' },
   })
 
@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
       partner_id:      partner_id?.trim() || null,
       sfdc_account_id: sfdc_account_id?.trim() || null,
     },
-    select: { id: true, username: true, email: true, company_name: true, partner_id: true, sfdc_account_id: true, created_at: true },
+    select: { id: true, username: true, email: true, company_name: true, partner_id: true, sfdc_account_id: true, created_at: true, last_active_at: true },
   })
 
   return NextResponse.json({ user }, { status: 201 })

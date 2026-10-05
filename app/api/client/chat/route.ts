@@ -1,3 +1,4 @@
+import { withUsageLog } from '@/lib/usageLog'
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from '@/lib/prisma'
@@ -133,7 +134,7 @@ async function scrubOtherClientNames(reply: string, ownClientId: string): Promis
 
 // ── Route handler ─────────────────────────────────────────────────────────────
 
-export async function POST(req: NextRequest) {
+async function handlePost(req: NextRequest) {
   const session = getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   if (session.username !== 'testclient') return NextResponse.json({ error: 'Not available yet' }, { status: 403 })
@@ -202,3 +203,6 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ reply, actionResult })
 }
+
+// Every run is logged for the Usage page (lib/usageLog.ts).
+export const POST = withUsageLog('ai_chat_client', 'client', handlePost)

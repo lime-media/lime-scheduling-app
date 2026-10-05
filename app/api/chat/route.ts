@@ -1,3 +1,4 @@
+import { withUsageLog } from '@/lib/usageLog'
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
@@ -358,7 +359,7 @@ ${holdLines.join('\n') || '  None'}`
 
 // ── Route handler ─────────────────────────────────────────────────────────────
 
-export async function POST(req: NextRequest) {
+async function handlePost(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -475,3 +476,6 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ reply, actionResult, conversation_id: convId })
 }
+
+// Every run is logged for the Usage page (lib/usageLog.ts).
+export const POST = withUsageLog('ai_chat_staff', 'staff', handlePost)

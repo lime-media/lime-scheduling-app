@@ -18,6 +18,7 @@ import './quoteOnly.test'
 import './soql.test'
 import './places.test'
 import './brand.test'
+import './usageLog.test'
 import './sfdcPush.test'
 import { report } from './harness'
 

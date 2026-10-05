@@ -16,7 +16,7 @@
  * treats them as displaceable, so the overlap blocks nothing.)
  *
  * The sync keeps a rolling window of THREE months — the current month (from
- * today) and the next two — and runs hourly from the cron sweep as well as
+ * today) and the next two — and runs from the cron sweep (every 15 minutes) as well as
  * when the schedule grid loads. Each run, in order:
  *
  *   1. Releases soft holds from months before the current one.

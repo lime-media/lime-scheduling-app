@@ -150,10 +150,10 @@ export async function POST(req: NextRequest) {
       const expiryIsPast    = effectiveExpiry <= now
 
       // Reviving an expired hold is the one place this webhook can undo the
-      // hourly Opportunity reconcile, so it's worth a stage lookup here — and
+      // Opportunity reconcile (every 15 minutes), so it's worth a stage lookup here — and
       // only here, since reactivation is rare. Without it, editing a Closed Lost
       // Opportunity would flip its hold back to HOLD, the next sweep would close
-      // it again, and the truck would flap hourly.
+      // it again, and the truck would flap on every run.
       //
       // A null stage means "couldn't ask" — fall through to the old behaviour and
       // let the sweep settle it within the hour, rather than dropping a revival

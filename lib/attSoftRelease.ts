@@ -11,7 +11,7 @@
  * origination 'att_soft_release') for the dates — even when no soft hold
  * exists there yet (a booking beyond the sync's window), so the soft hold is
  * never created over it later. EXPIRED rows block nothing anywhere; the
- * hourly sync never re-creates a soft hold over a release record, and cuts
+ * sync (every 15 minutes) never re-creates a soft hold over a release record, and cuts
  * any soft hold that ends up over one (a release that landed mid-sync).
  *
  * It can be undone (undoRelease), which removes the record so the next sync

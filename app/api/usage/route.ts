@@ -1,9 +1,9 @@
 /**
  * GET /api/usage?from=YYYY-MM-DD&to=YYYY-MM-DD&tool=…&actor=…
  *
- * Every quote and AI run (app_usage_log) and every MCP tool call
- * (mcp_query_log), newest first, with counts by tool and by person, and the
- * MCP tokens with when each was last used. Operations only.
+ * The usage log (app_usage_log): every quote, hold booking and AI run in the
+ * app and every MCP tool call, newest first, with counts by tool and by
+ * person, and the MCP tokens with when each was last used. Operations only.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -32,19 +32,15 @@ export async function GET(req: NextRequest) {
   const from = isDate(sp.get('from')) ? new Date(sp.get('from') + 'T00:00:00Z') : new Date(to.getTime() - 7 * 86_400_000)
   const tool = sp.get('tool') || null
   const actor = sp.get('actor') || null
-  const wantMcp = !tool || tool === 'mcp' || tool.startsWith('mcp:')
-  const wantApp = !tool || !(tool === 'mcp' || tool.startsWith('mcp:'))
+  // 'mcp' = every MCP tool; anything else is one tool's exact name.
+  const toolWhere = !tool ? {} : tool === 'mcp' ? { tool: { startsWith: 'mcp_' } } : { tool }
 
   try {
-    const [appRows, mcpRows, users, clients, tokens] = await Promise.all([
-      wantApp ? prisma.usageLog.findMany({
-        where: { created_at: { gte: from, lte: to }, ...(tool ? { tool } : {}), ...(actor ? { actor_id: actor } : {}) },
+    const [logRows, users, clients, tokens] = await Promise.all([
+      prisma.usageLog.findMany({
+        where: { created_at: { gte: from, lte: to }, ...toolWhere, ...(actor ? { actor_id: actor } : {}) },
         orderBy: { created_at: 'desc' }, take: MAX_ROWS,
-      }) : Promise.resolve([]),
-      wantMcp ? prisma.mcpQueryLog.findMany({
-        where: { created_at: { gte: from, lte: to }, ...(tool?.startsWith('mcp:') ? { tool_name: tool.slice(4) } : {}), ...(actor ? { user_id: actor } : {}) },
-        orderBy: { created_at: 'desc' }, take: MAX_ROWS,
-      }) : Promise.resolve([]),
+      }),
       prisma.user.findMany({ select: { id: true, name: true } }),
       prisma.clientUser.findMany({ select: { id: true, company_name: true, username: true } }),
       prisma.mcpToken.findMany({ select: { id: true, label: true, user_id: true, user_type: true, created_at: true, revoked_at: true, last_used_at: true }, orderBy: { created_at: 'asc' } }),
@@ -54,18 +50,12 @@ export async function GET(req: NextRequest) {
       ...clients.map(c => [c.id, `${c.company_name} (${c.username})`] as [string, string]),
     ])
 
-    const rows: UsageRow[] = [
-      ...appRows.map(r => ({
-        id: r.id, at: r.created_at.toISOString(), source: 'app' as const, tool: r.tool, toolLabel: toolLabel(r.tool),
-        actorType: r.actor_type, actorId: r.actor_id, actorName: names.get(r.actor_id) ?? r.actor_name,
-        outcome: r.outcome, latencyMs: r.latency_ms, inputs: parse(r.inputs), result: parse(r.result),
-      })),
-      ...mcpRows.map(r => ({
-        id: r.id, at: r.created_at.toISOString(), source: 'mcp' as const, tool: `mcp:${r.tool_name}`, toolLabel: toolLabel(r.tool_name),
-        actorType: r.user_type ?? 'unknown', actorId: r.user_id ?? '', actorName: (r.user_id && names.get(r.user_id)) || r.user_id || 'Unknown',
-        outcome: r.outcome, latencyMs: r.latency_ms, inputs: parse(r.request_params), result: parse(r.response_summary),
-      })),
-    ].sort((a, b) => b.at.localeCompare(a.at)).slice(0, MAX_ROWS)
+    const rows: UsageRow[] = logRows.map(r => ({
+      id: r.id, at: r.created_at.toISOString(), source: r.tool.startsWith('mcp_') ? 'mcp' as const : 'app' as const,
+      tool: r.tool, toolLabel: toolLabel(r.tool),
+      actorType: r.actor_type, actorId: r.actor_id, actorName: names.get(r.actor_id) ?? r.actor_name,
+      outcome: r.outcome, latencyMs: r.latency_ms, inputs: parse(r.inputs), result: parse(r.result),
+    }))
 
     const count = (key: (r: UsageRow) => string) => {
       const m = new Map<string, number>()
@@ -74,7 +64,7 @@ export async function GET(req: NextRequest) {
     }
 
     return NextResponse.json({
-      from: from.toISOString(), to: to.toISOString(), truncated: appRows.length === MAX_ROWS || mcpRows.length === MAX_ROWS,
+      from: from.toISOString(), to: to.toISOString(), truncated: logRows.length === MAX_ROWS,
       rows,
       byTool: count(r => r.toolLabel),
       byPerson: count(r => r.actorName),

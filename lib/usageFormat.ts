@@ -21,7 +21,7 @@ export const TOOL_LABELS: Record<UsageTool, string> = {
   ai_plan_review: 'AI: plan review',
 }
 
-/** MCP tool names (logged by the MCP server in mcp_query_log). */
+/** MCP tool names; logged as tool "mcp_<name>" (lib/usageLog.ts recordMcpUsage). */
 export const MCP_TOOL_LABELS: Record<string, string> = {
   list_inventory: 'MCP: list inventory',
   check_availability: 'MCP: check availability',
@@ -31,7 +31,8 @@ export const MCP_TOOL_LABELS: Record<string, string> = {
   book_campaign: 'MCP: book campaign',
 }
 
-export const toolLabel = (tool: string) => (TOOL_LABELS as Record<string, string>)[tool] ?? MCP_TOOL_LABELS[tool] ?? tool
+export const toolLabel = (tool: string) =>
+  (TOOL_LABELS as Record<string, string>)[tool] ?? MCP_TOOL_LABELS[tool.replace(/^mcp_/, '')] ?? tool
 
 type Bag = Record<string, unknown>
 const s = (v: unknown) => (typeof v === 'string' && v ? v : undefined)

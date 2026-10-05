@@ -762,6 +762,8 @@ export default function ClientAiPage() {
   }, [holdLoading, quoteResult, quoteForm, featureToggles])
 
   // Chat — conversation only
+  // The server keeps this chat as one conversation (lib/conversations.ts).
+  const conversationId = useRef<string | null>(null)
   const sendChat = useCallback(async (text?: string) => {
     const typed = (text ?? chatInput).trim()
     if (chatLoading || !typed) return
@@ -779,11 +781,13 @@ export default function ClientAiPage() {
         body: JSON.stringify({
           message: typed,
           history: nextMessages.slice(-10),
+          conversation_id: conversationId.current,
         }),
       })
       const data = await res.json()
 
       if (res.ok) {
+        if (data.conversation_id) conversationId.current = data.conversation_id
         const replyContent = data.actionResult
           ? `${data.reply}\n\n${data.actionResult.message}`
           : data.reply

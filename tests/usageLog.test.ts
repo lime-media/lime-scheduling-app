@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { outcomeFor, pruneFormEntries, pruneInputs, summarizeResult } from '@/lib/usageLog'
+import { outcomeFor, pruneFormEntries, pruneInputs, reportFields, summarizeResult } from '@/lib/usageLog'
 import { describeInputs, describeResult, toolLabel } from '@/lib/usageFormat'
 
 section('usage log: inputs kept')
@@ -45,3 +45,20 @@ section('usage log: file uploads are redacted the same way')
 eq('the field kept, the key dropped, the file as name + size',
   pruneFormEntries([['label', 'Acme DMAs'], ['apiKey', 'sk-live-xyz'], ['file', { name: 'zips.csv', size: 7 }]]),
   { label: 'Acme DMAs', file: { file: 'zips.csv', bytes: 7 } })
+
+section('usage log: one table for everything')
+eq('MCP tools are labelled from their logged name', toolLabel('mcp_get_rate_quote'), 'MCP: rate quote')
+eq('a chat links its conversation instead of copying it', summarizeResult({ reply: 'ok', conversation_id: '1747E4A2-4C43-47B1-B2C9-65B7B444AACF' }).conversation_id, '1747E4A2-4C43-47B1-B2C9-65B7B444AACF')
+eq('a preview is still a preview', String(summarizeResult({ reply: 'x'.repeat(2400) }).reply).startsWith('x'.repeat(300) + '…'), true)
+eq('an assistance request the chat filed is kept', summarizeResult({ reply: 'ok', actionResult: { success: true, message: 'Request sent to the team.' } }).action, 'Request sent to the team.')
+eq('an MCP quote reads like any other', describeInputs({ campaign_city: 'Phoenix, AZ', start_date: '2026-09-01', end_date: '2026-09-21' }), 'Phoenix, AZ · Sep 1–21')
+
+section('usage log: reportable columns')
+eq('a Classic quote', reportFields({ market: 'Ames, IA', sfdc_account_name: 'Acme' }, { total: 3800, holds: 1 }),
+  { market: 'Ames, IA', account: 'Acme', total: 3800, holds: 1, conversation_id: null })
+eq('a Multi-market quote', reportFields({ rows: [{ market: 'Dallas, TX' }, { market: 'Austin, TX' }], sfdcAccountName: 'Acme' }, { total: 41000 }).market, '2 markets')
+eq('a client run is on its own account', reportFields({ market: 'Dallas, TX' }, {}, { type: 'client_user', id: 'c1', name: 'Firefly (firefly)' }).account, 'Firefly (firefly)')
+eq('an MCP quote', reportFields({ campaign_city: 'Phoenix, AZ' }, { grand_total: 91350 }), { market: 'Phoenix, AZ', account: null, total: 91350, holds: null, conversation_id: null })
+eq('a chat: its conversation', reportFields({ message: 'hi' }, { reply: 'ok', conversation_id: 'abc' }).conversation_id, 'abc')
+eq('nothing: all null', reportFields(null, null), { market: null, account: null, total: null, holds: null, conversation_id: null })
+eq('review: presets only (no grand total) still fills total, from best', reportFields({}, summarizeResult({ presets: { good: { total: 3500 }, best: { total: 4200 } } })).total, 4200)

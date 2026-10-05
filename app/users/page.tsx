@@ -12,6 +12,7 @@ interface AppUser {
   email:      string
   role:       string
   created_at: string
+  last_active_at: string | null
 }
 
 interface UserForm {
@@ -23,6 +24,18 @@ interface UserForm {
 
 const EMPTY_FORM: UserForm = { name: '', email: '', password: '', role: 'SALES' }
 
+/** "Today 2:41 PM", "Yesterday", "Sep 24, 2026", or "Never". */
+function lastActivity(iso: string | null): string {
+  if (!iso) return 'Never'
+  const d = new Date(iso)
+  const today = new Date()
+  const days = Math.floor((new Date(today.toDateString()).getTime() - new Date(d.toDateString()).getTime()) / 86_400_000)
+  if (days === 0) return `Today ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`
+  if (days === 1) return 'Yesterday'
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+const activityTitle = (iso: string | null) => (iso ? new Date(iso).toLocaleString('en-US') : 'No activity recorded yet')
+
 interface ClientPortalUser {
   id:              string
   username:        string
@@ -31,6 +44,7 @@ interface ClientPortalUser {
   partner_id:      string | null
   sfdc_account_id: string | null
   created_at:      string
+  last_active_at:  string | null
 }
 
 type SfdcAccount = { id: string; name: string }
@@ -340,6 +354,7 @@ export default function UsersPage() {
                       <div className="text-sm text-gray-500 mt-0.5 truncate">{user.email}</div>
                       <div className="text-xs text-gray-400 mt-1">
                         Added {new Date(user.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                        <span title={activityTitle(user.last_active_at)}> · Last active {lastActivity(user.last_active_at)}</span>
                       </div>
                     </div>
                     {isOps && (
@@ -381,7 +396,7 @@ export default function UsersPage() {
               <table className="w-full text-sm">
                 <thead className="bg-gray-50/80 border-b border-gray-200">
                   <tr>
-                    {['Name', 'Email', 'Role', 'Salesforce owner', 'Created', 'Actions'].map((h) => (
+                    {['Name', 'Email', 'Role', 'Salesforce owner', 'Created', 'Last activity', 'Actions'].map((h) => (
                       <th key={h} className="text-left px-4 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wider">{h}</th>
                     ))}
                   </tr>
@@ -413,6 +428,9 @@ export default function UsersPage() {
                       </td>
                       <td className="px-4 py-3 text-gray-500">
                         {new Date(user.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </td>
+                      <td className={`px-4 py-3 ${user.last_active_at ? 'text-gray-600' : 'text-gray-300'}`} title={activityTitle(user.last_active_at)}>
+                        {lastActivity(user.last_active_at)}
                       </td>
                       <td className="px-4 py-3">
                         {isOps ? (
@@ -483,6 +501,7 @@ export default function UsersPage() {
                         <div className="text-sm text-gray-500 mt-0.5">{cu.username}</div>
                         <div className="text-xs text-gray-400 mt-1">
                           Added {new Date(cu.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                          <span title={activityTitle(cu.last_active_at)}> · Last active {lastActivity(cu.last_active_at)}</span>
                         </div>
                       </div>
                       {isOps && (
@@ -519,7 +538,7 @@ export default function UsersPage() {
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50/80 border-b border-gray-200">
                     <tr>
-                      {['Company', 'Username', 'SFDC Account', 'Created', 'Actions'].map((h) => (
+                      {['Company', 'Username', 'SFDC Account', 'Created', 'Last activity', 'Actions'].map((h) => (
                         <th key={h} className="text-left px-4 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wider">{h}</th>
                       ))}
                     </tr>
@@ -536,6 +555,9 @@ export default function UsersPage() {
                         </td>
                         <td className="px-4 py-3 text-gray-500">
                           {new Date(cu.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                        </td>
+                        <td className={`px-4 py-3 ${cu.last_active_at ? 'text-gray-600' : 'text-gray-300'}`} title={activityTitle(cu.last_active_at)}>
+                          {lastActivity(cu.last_active_at)}
                         </td>
                         <td className="px-4 py-3">
                           {isOps ? (

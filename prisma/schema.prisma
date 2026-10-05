@@ -9,15 +9,17 @@ datasource db {
 
 // role: SALES | OPERATIONS
 model User {
-  id            String     @id @default(cuid())
-  email         String     @unique
-  name          String
-  password_hash String
-  role          String     @default("SALES")
-  created_at    DateTime   @default(now())
-  holds         Hold[]
-  audit_logs    AuditLog[]
-  otp_codes     OtpCode[]
+  id             String     @id @default(cuid())
+  email          String     @unique
+  name           String
+  password_hash  String
+  role           String     @default("SALES")
+  created_at     DateTime   @default(now())
+  /// Last time this person did anything in the app (lib/usageLog.ts touchActivity).
+  last_active_at DateTime?
+  holds          Hold[]
+  audit_logs     AuditLog[]
+  otp_codes      OtpCode[]
 
   @@map("app_users")
 }
@@ -113,6 +115,8 @@ model ClientUser {
   // opportunities can be created under the correct account.
   sfdc_account_id String?
   created_at      DateTime           @default(now())
+  /// Last time this client did anything in the portal or through the MCP.
+  last_active_at  DateTime?
   holds           Hold[]
   hold_requests   HoldRequest[]      @relation("HoldRequestClientUser") // DEPRECATED
   ai_questions    ClientAiQuestion[]
@@ -177,13 +181,15 @@ model OtpCode {
 // user_type: app_user | client_user
 // No hard FK on user_id — target table depends on user_type
 model McpToken {
-  id         String    @id @default(cuid())
-  token_hash String
-  user_id    String    @db.NVarChar(255)
-  user_type  String    @default("app_user")
-  label      String
-  created_at DateTime  @default(now())
-  revoked_at DateTime?
+  id           String    @id @default(cuid())
+  token_hash   String
+  user_id      String    @db.NVarChar(255)
+  user_type    String    @default("app_user")
+  label        String
+  created_at   DateTime  @default(now())
+  revoked_at   DateTime?
+  /// Last time the MCP server validated this token, i.e. last use.
+  last_used_at DateTime?
 
   @@map("mcp_tokens")
 }
@@ -257,4 +263,28 @@ model AcceptedMarket {
   updated_at       DateTime @updatedAt
 
   @@map("app_accepted_markets")
+}
+
+// Every quote and AI run in the app — who, when, which tool, what went in, what
+// came out (lib/usageLog.ts). MCP tool calls are logged by the MCP server in
+// mcp_query_log; the Usage page shows both.
+// actor_type: app_user | client_user
+// outcome: success | not_feasible | refused | error
+model UsageLog {
+  id         String   @id @default(cuid())
+  created_at DateTime @default(now())
+  actor_type String
+  actor_id   String   @db.NVarChar(255)
+  actor_name String   @default("")
+  tool       String
+  inputs     String?  @db.NVarChar(Max)
+  result     String?  @db.NVarChar(Max)
+  outcome    String
+  status     Int
+  latency_ms Int
+
+  @@index([created_at])
+  @@index([actor_id, created_at])
+  @@index([tool, created_at])
+  @@map("app_usage_log")
 }

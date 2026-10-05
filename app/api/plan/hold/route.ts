@@ -34,6 +34,7 @@
  * Description as quoted but not booked.
  */
 
+import { withUsageLog } from '@/lib/usageLog'
 import { cleanBrand, opportunityName } from '@/lib/brand'
 import { QUOTE_ONLY_GROUP_PREFIX, QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
 import { openStage } from '@/lib/sfdcStages'
@@ -87,7 +88,7 @@ const describe = (l: LineQuote, trucks = l.trucks) => {
 const describeQuoted = (l: LineQuote, trucks = l.trucks) =>
   `${l.market}: ${trucks} truck${trucks === 1 ? '' : 's'}, ${l.startDate} to ${l.endDate}, ${scheduleText(l.daysPerWeek)} x ${l.hours}h`
 
-export async function POST(req: NextRequest) {
+async function handlePost(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
@@ -374,3 +375,6 @@ export async function POST(req: NextRequest) {
     }, { status: 500 })
   }
 }
+
+// Every run is logged for the Usage page (lib/usageLog.ts).
+export const POST = withUsageLog('hold_multi', 'staff', handlePost)

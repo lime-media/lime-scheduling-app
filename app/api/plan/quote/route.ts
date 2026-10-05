@@ -5,6 +5,7 @@
  * absorb, neither of which may reach a client route.
  */
 
+import { withUsageLog } from '@/lib/usageLog'
 import { NextRequest, NextResponse } from 'next/server'
 import { requireStaff } from '@/lib/planning/http'
 import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type QuoteRequest } from '@/lib/planning/quote'
@@ -13,7 +14,7 @@ import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type QuoteReq
 export const maxDuration = 300
 
 
-export async function POST(req: NextRequest) {
+async function handlePost(req: NextRequest) {
   const denied = await requireStaff(req)
   if (denied) return denied
 
@@ -37,3 +38,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'The quote could not be built. Check the server log.' }, { status: 500 })
   }
 }
+
+// Every run is logged for the Usage page (lib/usageLog.ts).
+export const POST = withUsageLog('quote_multi', 'staff', handlePost)

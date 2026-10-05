@@ -1,3 +1,4 @@
+import { withUsageLog } from '@/lib/usageLog'
 import { cleanBrand, opportunityName } from '@/lib/brand'
 import { NextRequest, NextResponse } from 'next/server'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
@@ -56,7 +57,7 @@ export async function GET(req: NextRequest) {
   })
 }
 
-export async function POST(req: NextRequest) {
+async function handlePost(req: NextRequest) {
   const session = getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
@@ -353,3 +354,6 @@ async function handleAutoSelectHold(
     // recorded on the hold's features JSON and logged; it is not sent back.
   })
 }
+
+// Every run is logged for the Usage page (lib/usageLog.ts).
+export const POST = withUsageLog('hold_client', 'client', handlePost)

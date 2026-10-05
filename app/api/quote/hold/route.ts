@@ -6,6 +6,7 @@
  * Uses the availability engine to auto-select trucks.
  */
 
+import { withUsageLog } from '@/lib/usageLog'
 import { cleanBrand, opportunityName } from '@/lib/brand'
 import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
 import { openStage } from '@/lib/sfdcStages'
@@ -31,7 +32,7 @@ import {
 import { resolveMarketSizeTierId, resolveRateOverridesBySfdcAccount, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
 import type { RateOverrides } from '@/lib/pricing/config'
 
-export async function POST(req: NextRequest) {
+async function handlePost(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
@@ -312,3 +313,6 @@ export async function POST(req: NextRequest) {
     },
   })
 }
+
+// Every run is logged for the Usage page (lib/usageLog.ts).
+export const POST = withUsageLog('hold_classic', 'staff', handlePost)

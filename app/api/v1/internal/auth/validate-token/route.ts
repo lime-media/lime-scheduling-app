@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { validateInternalApiKey } from '@/lib/internalAuth'
 import { prisma } from '@/lib/prisma'
 import bcrypt from 'bcryptjs'
+import { touchActivity } from '@/lib/usageLog'
 
 export async function POST(req: NextRequest) {
   const keyError = validateInternalApiKey(req)
@@ -24,6 +25,12 @@ export async function POST(req: NextRequest) {
     if (!match) continue
 
     const userType = record.user_type || 'app_user'
+
+    // Last use of the token, and of the person behind it (Users page). Never
+    // allowed to fail the validation.
+    await prisma.mcpToken.update({ where: { id: record.id }, data: { last_used_at: new Date() } })
+      .catch(err => console.error('[mcp] token last_used_at not recorded:', err instanceof Error ? err.message : err))
+    await touchActivity({ type: userType === 'client_user' ? 'client_user' : 'app_user', id: record.user_id, name: record.label })
 
     // Look up user from the correct table based on user_type
     if (userType === 'client_user') {

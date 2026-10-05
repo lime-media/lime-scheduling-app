@@ -20,6 +20,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
     }
 
+    // A login is activity (Users page "Last activity"). Never fails the login.
+    await prisma.clientUser.update({ where: { id: user.id }, data: { last_active_at: new Date() } })
+      .catch(err => console.error('[client login] last activity not recorded:', err instanceof Error ? err.message : err))
     const res = NextResponse.json({
       id:          user.id,
       username:    user.username,

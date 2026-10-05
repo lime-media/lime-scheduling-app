@@ -23,6 +23,7 @@ import { getToken } from 'next-auth/jwt'
 import { waitUntil } from '@vercel/functions'
 import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
+import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
 import type { UsageTool } from '@/lib/usageFormat'
 export { TOOL_LABELS, type UsageTool } from '@/lib/usageFormat'
@@ -123,8 +124,10 @@ export const ACTIVITY_THROTTLE_MIN = 10
 export async function touchActivity(actor: Actor): Promise<void> {
   const cutoff = new Date(Date.now() - ACTIVITY_THROTTLE_MIN * 60_000)
   const where = { id: actor.id, OR: [{ last_active_at: null }, { last_active_at: { lt: cutoff } }] }
+  // The Salesforce integration's service account is not a person: never "active".
+  const staffWhere = { ...where, email: { not: SFDC_SERVICE_USER_EMAIL } }
   try {
-    if (actor.type === 'app_user') await prisma.user.updateMany({ where, data: { last_active_at: new Date() } })
+    if (actor.type === 'app_user') await prisma.user.updateMany({ where: staffWhere, data: { last_active_at: new Date() } })
     else await prisma.clientUser.updateMany({ where, data: { last_active_at: new Date() } })
   } catch (err) {
     console.error('[usage] last activity not recorded:', err instanceof Error ? err.message : err)

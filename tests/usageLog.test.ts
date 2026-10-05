@@ -62,3 +62,8 @@ eq('an MCP quote', reportFields({ campaign_city: 'Phoenix, AZ' }, { grand_total:
 eq('a chat: its conversation', reportFields({ message: 'hi' }, { reply: 'ok', conversation_id: 'abc' }).conversation_id, 'abc')
 eq('nothing: all null', reportFields(null, null), { market: null, account: null, total: null, holds: null, conversation_id: null })
 eq('review: presets only (no grand total) still fills total, from best', reportFields({}, summarizeResult({ presets: { good: { total: 3500 }, best: { total: 4200 } } })).total, 4200)
+
+section('usage log: the Multi-market quote as /api/plan/quote actually returns it')
+eq('total, markets and trucks from summary (production shape)',
+  summarizeResult({ lines: [], summary: { grandTotal: 52400, markets: 2, trucksUsed: 4 }, itineraries: [], alternatives: [] }),
+  { total: 52400, markets: 2, trucks: 4 })

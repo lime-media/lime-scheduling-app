@@ -45,3 +45,12 @@ section('usage log: file uploads are redacted the same way')
 eq('the field kept, the key dropped, the file as name + size',
   pruneFormEntries([['label', 'Acme DMAs'], ['apiKey', 'sk-live-xyz'], ['file', { name: 'zips.csv', size: 7 }]]),
   { label: 'Acme DMAs', file: { file: 'zips.csv', bytes: 7 } })
+
+section('usage log: one table for everything')
+eq('MCP tools are labelled from their logged name', toolLabel('mcp_get_rate_quote'), 'MCP: rate quote')
+eq('a staff chat links its conversation instead of copying it', summarizeResult({ reply: 'ok', conversation_id: '1747E4A2-4C43-47B1-B2C9-65B7B444AACF' }).conversation_id, '1747E4A2-4C43-47B1-B2C9-65B7B444AACF')
+eq('a client chat keeps its whole answer', String(summarizeResult({ reply: 'x'.repeat(2400) }, 20_000).reply).length, 2400)
+eq('...and its question', String(pruneInputs({ message: 'y'.repeat(1500) }, 20_000).message).length, 1500)
+eq('a preview is still a preview', String(summarizeResult({ reply: 'x'.repeat(2400) }).reply).startsWith('x'.repeat(300) + '…'), true)
+eq('an assistance request the chat filed is kept', summarizeResult({ reply: 'ok', actionResult: { success: true, message: 'Request sent to the team.' } }).action, 'Request sent to the team.')
+eq('an MCP quote reads like any other', describeInputs({ campaign_city: 'Phoenix, AZ', start_date: '2026-09-01', end_date: '2026-09-21' }), 'Phoenix, AZ · Sep 1–21')

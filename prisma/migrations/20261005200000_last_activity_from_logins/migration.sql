@@ -42,16 +42,35 @@ OUTER APPLY (SELECT TOP 1 x.content, x.created_at FROM [dbo].[chat_messages] x
 WHERE m.role = 'user'
   AND NOT EXISTS (SELECT 1 FROM [dbo].[app_usage_log] g WHERE g.id = 'c' + REPLACE(m.id, '-', ''));
 
--- Client portal AI chat.
+-- Client portal AI chat — in full: the usage log becomes its only record
+-- (the client chat no longer writes app_client_ai_questions).
+IF OBJECT_ID('dbo.app_client_ai_questions', 'U') IS NOT NULL
 INSERT INTO [dbo].[app_usage_log] (id, created_at, actor_type, actor_id, actor_name, tool, inputs, result, outcome, status, latency_ms)
 SELECT 'q' + q.id, q.asked_at, 'client_user', q.client_user_id,
        COALESCE(c.company_name + ' (' + c.username + ')', NULLIF(q.company_name, ''), 'Former client'), 'ai_chat_client',
-       (SELECT LEFT(q.question, 500) AS message, 'chat history' AS backfilled_from FOR JSON PATH, WITHOUT_ARRAY_WRAPPER),
-       (SELECT LEFT(q.answer, 300) AS reply FOR JSON PATH, WITHOUT_ARRAY_WRAPPER),
+       (SELECT q.question AS message, 'chat history' AS backfilled_from FOR JSON PATH, WITHOUT_ARRAY_WRAPPER),
+       (SELECT q.answer AS reply FOR JSON PATH, WITHOUT_ARRAY_WRAPPER),
        'success', 200, 0
 FROM [dbo].[app_client_ai_questions] q
 LEFT JOIN [dbo].[app_client_users] c ON c.id = q.client_user_id
 WHERE NOT EXISTS (SELECT 1 FROM [dbo].[app_usage_log] g WHERE g.id = 'q' + q.id);
+
+-- MCP tool calls — the MCP server's reports now go straight to the usage log
+-- (POST /api/v1/internal/query-log); the earlier ones come over here.
+IF OBJECT_ID('dbo.mcp_query_log', 'U') IS NOT NULL
+INSERT INTO [dbo].[app_usage_log] (id, created_at, actor_type, actor_id, actor_name, tool, inputs, result, outcome, status, latency_ms)
+SELECT 'm' + l.id, l.created_at,
+       CASE WHEN l.user_type = 'client_user' THEN 'client_user' ELSE 'app_user' END,
+       COALESCE(l.user_id, 'unknown'),
+       COALESCE(CASE WHEN l.user_type = 'client_user' THEN c.company_name + ' (' + c.username + ')' ELSE u.name END, l.user_id, 'Unknown'),
+       LEFT('mcp_' + l.tool_name, 100), l.request_params, l.response_summary,
+       CASE l.outcome WHEN 'success' THEN 'success' WHEN 'no_availability' THEN 'not_feasible' ELSE 'error' END,
+       CASE l.outcome WHEN 'success' THEN 200 WHEN 'no_availability' THEN 409 ELSE 500 END,
+       l.latency_ms
+FROM [dbo].[mcp_query_log] l
+LEFT JOIN [dbo].[app_users] u ON u.id = l.user_id
+LEFT JOIN [dbo].[app_client_users] c ON c.id = l.user_id
+WHERE NOT EXISTS (SELECT 1 FROM [dbo].[app_usage_log] g WHERE g.id = 'm' + l.id);
 
 -- Holds placed from the quote tools: one row per booking. A multi-market
 -- booking's holds share a request prefix (mm_<request>_<line>) and store each
@@ -97,7 +116,8 @@ LEFT JOIN [dbo].[app_client_users] c ON c.id = r.client_user_id
 WHERE NOT EXISTS (SELECT 1 FROM [dbo].[app_usage_log] g WHERE g.id = 'h' + CONVERT(NVARCHAR(32), HASHBYTES('MD5', r.run_key), 2));
 
 -- ── Verify ───────────────────────────────────────────────────────────────────
--- Expect: 0, 0, then about 286 staff chats, 42 client chats and 20 bookings (more if used since).
+-- Expect: 0, 0, then about 286 staff chats, 42 client chats, 20 bookings and
+-- 25 MCP calls (more if used since).
 SELECT
     (SELECT COUNT(*) FROM [dbo].[app_users] u
        CROSS APPLY (SELECT MAX(consumed_at) AS last_login FROM [dbo].[app_login_otps] o WHERE o.user_id = u.id) l
@@ -107,4 +127,5 @@ SELECT
        AND last_active_at IS NOT NULL)                                                      AS service_account_active,
     (SELECT COUNT(*) FROM [dbo].[app_usage_log] WHERE tool = 'ai_chat_staff')                AS usage_staff_chat,
     (SELECT COUNT(*) FROM [dbo].[app_usage_log] WHERE tool = 'ai_chat_client')               AS usage_client_chat,
-    (SELECT COUNT(*) FROM [dbo].[app_usage_log] WHERE tool LIKE 'hold[_]%')                  AS usage_holds;
+    (SELECT COUNT(*) FROM [dbo].[app_usage_log] WHERE tool LIKE 'hold[_]%')                  AS usage_holds,
+    (SELECT COUNT(*) FROM [dbo].[app_usage_log] WHERE tool LIKE 'mcp[_]%')                   AS usage_mcp;

@@ -1,8 +1,14 @@
 /**
- * Usage log: every quote and AI run in the app — who ran it, when, which tool,
- * what went in, what came out, how it ended and how long it took. Shown on the
- * Usage page; MCP tool calls are logged separately by the MCP server
- * (mcp_query_log) and shown alongside.
+ * Usage log: THE record of tool use — every quote, hold booking and AI run in
+ * the app, and every MCP tool call (recordMcpUsage) — who, when, which tool,
+ * what went in, what came out, how it ended and how long it took. One table,
+ * app_usage_log; the Usage page reads only it.
+ *
+ * Not to be confused with app_audit_logs (what changed on a reservation) or
+ * chat_conversations / chat_messages (the staff chat's working memory, which a
+ * staff chat row links to by conversation id rather than copying its text).
+ * The client chat has no such store, so its rows keep the full question and
+ * answer (fullText).
  *
  * Wired once per route with withUsageLog(), so no early return inside a
  * handler can skip the log. Logging NEVER affects the request: the write runs
@@ -40,14 +46,18 @@ export const SECRET = /pass(word|wd)?|pwd|secret|token|otp|code_hash|auth|api[-_
 
 function clip(s: string, n: number): string { return s.length > n ? `${s.slice(0, n)}… (${s.length} chars)` : s }
 
-function prunePrimitive(key: string, v: unknown): unknown {
-  if (typeof v === 'string') return clip(v, LONG_TEXT.has(key) ? 500 : 200)
+/** How much of a long text field (a chat message) is kept: a preview, or all of it. */
+export const PREVIEW_CHARS = 500
+export const FULL_TEXT_CHARS = 20_000
+
+function prunePrimitive(key: string, v: unknown, longText = PREVIEW_CHARS): unknown {
+  if (typeof v === 'string') return clip(v, LONG_TEXT.has(key) ? longText : 200)
   if (typeof v === 'number' || typeof v === 'boolean' || v === null) return v
   return undefined
 }
 
 /** The request inputs worth keeping: primitives, short strings, and the first rows of any list. Never secrets. */
-export function pruneInputs(body: unknown): Record<string, unknown> {
+export function pruneInputs(body: unknown, longText = PREVIEW_CHARS): Record<string, unknown> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return {}
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
@@ -61,7 +71,7 @@ export function pruneInputs(body: unknown): Record<string, unknown> {
     } else if (v && typeof v === 'object') {
       out[k] = Object.fromEntries(Object.entries(v as Record<string, unknown>).filter(([ik]) => !SECRET.test(ik)).map(([ik, iv]) => [ik, prunePrimitive(ik, iv)]).filter(([, iv]) => iv !== undefined))
     } else {
-      const p = prunePrimitive(k, v)
+      const p = prunePrimitive(k, v, longText)
       if (p !== undefined) out[k] = p
     }
   }
@@ -72,7 +82,7 @@ const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : u
 const str = (v: unknown, n = 300) => (typeof v === 'string' && v ? clip(v, n) : undefined)
 
 /** The headline of a response: a total, how many holds, a refusal, an error. */
-export function summarizeResult(json: unknown): Record<string, unknown> {
+export function summarizeResult(json: unknown, replyChars = 300): Record<string, unknown> {
   if (!json || typeof json !== 'object') return {}
   const j = json as Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
   const out: Record<string, unknown> = {
@@ -86,7 +96,11 @@ export function summarizeResult(json: unknown): Record<string, unknown> {
     trucks: num(j.quote?.summary?.trucksUsed),
     areas: Array.isArray(j.areas) ? j.areas.length : undefined,
     findings: Array.isArray(j.findings) ? j.findings.length : undefined,
-    reply: str(j.reply, 300),
+    reply: str(j.reply, replyChars),
+    // The staff chat keeps its transcript in chat_messages; link, don't copy.
+    conversation_id: str(j.conversation_id, 64),
+    // A chat that filed a request for assistance: what happened to it.
+    action: str(j.actionResult?.message),
     insufficient: j.insufficient === true ? true : undefined,
     error: str(j.error) ?? str(j.message),
   }
@@ -102,7 +116,11 @@ export function outcomeFor(status: number, json: unknown): Outcome {
   return 'success'
 }
 
-const capJson = (v: unknown) => { const s = JSON.stringify(v); return s.length > MAX_JSON ? `${s.slice(0, MAX_JSON)}…` : s }
+const capJson = (v: unknown, fullText = false) => {
+  const s = JSON.stringify(v)
+  const max = fullText ? FULL_TEXT_CHARS * 2 : MAX_JSON
+  return s.length > max ? `${s.slice(0, max)}…` : s
+}
 
 // ── Who is asking ────────────────────────────────────────────────────────────
 
@@ -134,12 +152,12 @@ export async function touchActivity(actor: Actor): Promise<void> {
   }
 }
 
-async function record(actor: Actor, tool: UsageTool, inputs: unknown, status: number, json: unknown, latencyMs: number) {
+async function record(actor: Actor, tool: string, inputs: unknown, status: number, json: unknown, latencyMs: number, fullText = false) {
   try {
     await prisma.usageLog.create({
       data: {
         actor_type: actor.type, actor_id: actor.id, actor_name: actor.name.slice(0, 500), tool,
-        inputs: capJson(inputs), result: capJson(summarizeResult(json)),
+        inputs: capJson(inputs, fullText), result: capJson(summarizeResult(json, fullText ? FULL_TEXT_CHARS : 300), fullText),
         outcome: outcomeFor(status, json), status, latency_ms: latencyMs,
       },
     })
@@ -160,13 +178,13 @@ export function pruneFormEntries(entries: [string, string | { name: string; size
 }
 
 /** What went in: the JSON body, or for a file upload only its name and size. */
-async function readInputs(req: NextRequest): Promise<unknown> {
+async function readInputs(req: NextRequest, longText = PREVIEW_CHARS): Promise<unknown> {
   try {
     const type = req.headers.get('content-type') ?? ''
     if (type.includes('multipart/form-data')) {
       return pruneFormEntries([...(await req.clone().formData()).entries()])
     }
-    return pruneInputs(await req.clone().json())
+    return pruneInputs(await req.clone().json(), longText)
   } catch {
     return {}
   }
@@ -180,15 +198,17 @@ export function withUsageLog(
   tool: UsageTool,
   who: 'staff' | 'client',
   handler: (req: NextRequest) => Promise<Response>,
+  opts: { fullText?: boolean } = {},
 ): (req: NextRequest) => Promise<Response> {
+  const fullText = opts.fullText === true
   return async (req: NextRequest) => {
     const started = Date.now()
-    const [actor, inputs] = await Promise.all([who === 'staff' ? staffActor(req) : Promise.resolve(clientActor(req)), readInputs(req)])
+    const [actor, inputs] = await Promise.all([who === 'staff' ? staffActor(req) : Promise.resolve(clientActor(req)), readInputs(req, fullText ? FULL_TEXT_CHARS : PREVIEW_CHARS)])
     let res: Response
     try {
       res = await handler(req)
     } catch (err) {
-      if (actor) waitUntil(record(actor, tool, inputs, 500, { error: err instanceof Error ? err.message : String(err) }, Date.now() - started))
+      if (actor) waitUntil(record(actor, tool, inputs, 500, { error: err instanceof Error ? err.message : String(err) }, Date.now() - started, fullText))
       throw err
     }
     if (actor) {
@@ -199,10 +219,45 @@ export function withUsageLog(
       waitUntil((async () => {
         let json: unknown = null
         try { json = await copy.json() } catch { /* not JSON */ }
-        await record(actor, tool, inputs, res.status, json, latency)
+        await record(actor, tool, inputs, res.status, json, latency, fullText)
       })())
     }
     return res
   }
 }
 
+
+/**
+ * An MCP tool call, reported by the MCP server (POST /api/v1/internal/query-log).
+ * Same table, tool "mcp_<name>". The server's outcome maps onto ours:
+ * no_availability is "not feasible".
+ */
+export async function recordMcpUsage(call: {
+  userId: string | null; userType: string | null; toolName: string
+  requestParams: unknown; responseSummary: unknown; outcome: string; latencyMs: number
+}): Promise<string | null> {
+  const actorType = call.userType === 'client_user' ? 'client_user' : 'app_user'
+  const outcome: Outcome = call.outcome === 'success' ? 'success' : call.outcome === 'no_availability' ? 'not_feasible' : 'error'
+  let name = ''
+  if (call.userId) {
+    try {
+      name = actorType === 'client_user'
+        ? await prisma.clientUser.findUnique({ where: { id: call.userId }, select: { company_name: true, username: true } }).then(c => (c ? `${c.company_name} (${c.username})` : ''))
+        : await prisma.user.findUnique({ where: { id: call.userId }, select: { name: true } }).then(u => u?.name ?? '')
+    } catch { /* name is a convenience */ }
+  }
+  try {
+    const row = await prisma.usageLog.create({
+      data: {
+        actor_type: actorType, actor_id: call.userId ?? 'unknown', actor_name: name || 'Unknown', tool: `mcp_${call.toolName}`.slice(0, 100),
+        inputs: capJson(pruneInputs(call.requestParams)), result: capJson(call.responseSummary ?? {}),
+        outcome, status: outcome === 'success' ? 200 : outcome === 'not_feasible' ? 409 : 500, latency_ms: Math.max(0, Math.round(call.latencyMs)),
+      },
+    })
+    if (call.userId) await touchActivity({ type: actorType, id: call.userId, name })
+    return row.id
+  } catch (err) {
+    console.error('[usage] MCP call not logged:', err instanceof Error ? err.message : err)
+    return null
+  }
+}

@@ -2,8 +2,8 @@
 
 /**
  * Usage — when the quoting tools and the AI are run, by whom, with what, and
- * how it went. App runs (lib/usageLog.ts) and MCP tool calls (mcp_query_log)
- * together, plus the MCP tokens and when each was last used. Operations only.
+ * how it went — the usage log (lib/usageLog.ts), app and MCP alike — plus the
+ * MCP tokens and when each was last used. Operations only.
  */
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
@@ -59,7 +59,7 @@ export default function UsagePage() {
   const toolOptions = useMemo(() => [
     ...Object.entries(TOOL_LABELS).map(([v, l]) => ({ v, l })),
     { v: 'mcp', l: 'MCP: all tools' },
-    ...Object.entries(MCP_TOOL_LABELS).map(([k, l]) => ({ v: `mcp:${k}`, l })),
+    ...Object.entries(MCP_TOOL_LABELS).map(([k, l]) => ({ v: `mcp_${k}`, l })),
   ], [])
 
   if (status === 'loading') return null

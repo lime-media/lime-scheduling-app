@@ -191,18 +191,10 @@ async function handlePost(req: NextRequest) {
     }
   }
 
-  // Log the exchange
-  const answer = actionResult ? `${reply}\n\n${actionResult.message}` : reply
-  try {
-    await prisma.clientAiQuestion.create({
-      data: { client_user_id: session.id, company_name: session.companyName, question: message, answer },
-    })
-  } catch (err) {
-    console.error('[client/chat] failed to log question/answer:', err)
-  }
-
+  // The exchange is logged by withUsageLog (below), question and answer in
+  // full: the usage log is the client chat's only record.
   return NextResponse.json({ reply, actionResult })
 }
 
 // Every run is logged for the Usage page (lib/usageLog.ts).
-export const POST = withUsageLog('ai_chat_client', 'client', handlePost)
+export const POST = withUsageLog('ai_chat_client', 'client', handlePost, { fullText: true })

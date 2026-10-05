@@ -9,6 +9,11 @@
  * after the response is sent (waitUntil, which keeps the function alive until
  * it lands), and a failed write is caught and printed, never thrown.
  *
+ * Retention: kept indefinitely — a product decision (2026-10-05), so usage
+ * can be compared year over year. At ~1,000 runs a month of up to ~16 KB each
+ * that is a few hundred MB a year at most. If the database tier ever needs
+ * it, prune in the cron sweep: DELETE … WHERE created_at < DATEADD(day, -N, …).
+ *
  * Also keeps "last activity" on the person (touchActivity), shown on the Users
  * page — written at most once every ACTIVITY_THROTTLE_MIN per person.
  */

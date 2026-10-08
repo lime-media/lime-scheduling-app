@@ -28,6 +28,11 @@
  *   4. Gives every AT&T truck a soft hold for each month of the window it
  *      does not already have.
  *
+ * People can change the list for a date range (app_att_roster_overrides,
+ * lib/attSoftRules.ts rosterPlan): a truck ADDed is treated as AT&T's on
+ * those dates; a truck REMOVEd has no soft hold on those dates. After an
+ * override's end date the automatic rule applies again.
+ *
  * Every release is written to the audit log with its reason. A soft hold a
  * person released for a booking (lib/attSoftRelease.ts) stays released: step
  * 4 never re-creates it over those dates. Releases delete
@@ -42,7 +47,7 @@ import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
-import { ATT_CLIENT, ATT_MIN_DAYS, PRIOR_MONTH_GRACE_DAY, attLookback, isAttClient, isAttTruck, normalizeClient, planMarketBackfill, planReleaseCuts, planSoftHoldFill, releaseBlockedReason, softHoldWindow } from '@/lib/attSoftRules'
+import { ATT_CLIENT, ATT_MIN_DAYS, PRIOR_MONTH_GRACE_DAY, attLookback, isAttClient, isAttTruck, normalizeClient, planMarketBackfill, planReleaseCuts, planSoftHoldFill, releaseBlockedReason, rosterPlan, softHoldWindow, type RosterOverride } from '@/lib/attSoftRules'
 import { HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
 
 export { ATT_CLIENT, isAttClient, softHoldWindow }
@@ -75,6 +80,20 @@ async function release(hold: SoftHold, reason: string, detail: Record<string, un
   } catch (err) {
     console.error(`[att-soft] release of ${hold.id} (${hold.truck_number}) failed:`, err)
     return false
+  }
+}
+
+/** Overrides still in effect on or after `from`. A read failure (the table not yet migrated) means none. */
+async function activeRosterOverrides(from: string, warnings: string[]): Promise<RosterOverride[]> {
+  try {
+    const rows = await prisma.attRosterOverride.findMany({ where: { removed_at: null, end_date: { gte: utc(from) } } })
+    return rows
+      .filter(r => r.action === 'ADD' || r.action === 'REMOVE')
+      .map(r => ({ truck_number: r.truck_number, action: r.action as RosterOverride['action'], start: iso(r.start_date), end: iso(r.end_date) }))
+  } catch (err) {
+    warnings.push('Could not read the AT&T list changes (app_att_roster_overrides); the automatic list was used as is.')
+    console.error('[att-soft] roster overrides unreadable:', err)
+    return []
   }
 }
 
@@ -195,10 +214,17 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
   const priorDays = lookback.prior ? await attDaysByTruck(lookback.prior.from, lookback.prior.to) : new Map<string, number>()
   const daysOf = (t: string) => ({ current: curDays.get(t) ?? 0, prior: priorDays.get(t) ?? 0 })
   const attTrucks = new Set([...new Set([...curDays.keys(), ...priorDays.keys()])].filter(t => isAttTruck(daysOf(t), lookback)))
-  const toRelease = kept.filter(h => !attTrucks.has(h.truck_number))
+  // People's changes to the list: trucks added, and dates with no soft hold.
+  const roster = rosterPlan({
+    overrides: await activeRosterOverrides(window[0].start, warnings),
+    autoTrucks: attTrucks,
+    span: { start: monthStart, end: window[window.length - 1].end },
+  })
+  const onList = (t: string) => attTrucks.has(t) || roster.addTrucks.has(t)
+  const toRelease = kept.filter(h => !onList(h.truck_number))
   const blocked = releaseBlockedReason({ attTrucks: attTrucks.size, softHolds: kept.length, wouldRelease: toRelease.length })
   let releasedPremise = 0
-  const live: SoftHold[] = kept.filter(h => attTrucks.has(h.truck_number))
+  const live: SoftHold[] = kept.filter(h => onList(h.truck_number))
   if (blocked) {
     // Keep every soft hold; a person should look before trucks are handed back.
     warnings.push(`Soft-hold release skipped: ${blocked}. Check the 160over90 schedule and client record.`)
@@ -225,7 +251,9 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
   // 3b. A release is final: cut any soft hold that sits over a release record
   // (a release that landed while an earlier run was filling the window).
   const span = (r: { start_date: Date; end_date: Date }) => ({ start: iso(r.start_date), end: iso(r.end_date) })
-  const releases = releasedRows.map(r => ({ truck_number: r.truck_number, ...span(r) }))
+  // A truck taken off the list for some dates (or added only for some) is
+  // cut and left unfilled there exactly like a release.
+  const releases = [...releasedRows.map(r => ({ truck_number: r.truck_number, ...span(r) })), ...roster.blocks]
   for (const cut of planReleaseCuts(live.map(h => ({ id: h.id, truck_number: h.truck_number, ...span(h) })), releases)) {
     const h = live.find(x => x.id === cut.id)!
     try {
@@ -261,7 +289,7 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
   // filled back to the whole month here — releases are the way to free days.
   let created = 0
   const fill = planSoftHoldFill({
-    window, trucks: [...attTrucks], lastMarket, releases,
+    window, trucks: [...attTrucks, ...roster.addTrucks], lastMarket, releases,
     live: live.map(h => ({ truck_number: h.truck_number, ...span(h) })),
   })
   for (const g of fill) {
@@ -276,7 +304,9 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
           client_name: 'AT&T',
           market: g.market,
           state: g.state,
-          notes: `Auto soft hold – AT&T (160over90) – ${g.label}`,
+          notes: roster.addTrucks.has(g.truck_number)
+            ? `Soft hold – AT&T (added to the list by hand) – ${g.label}`
+            : `Auto soft hold – AT&T (160over90) – ${g.label}`,
           start_date: utc(g.start),
           end_date: utc(g.end),
           created_by: createdBy,

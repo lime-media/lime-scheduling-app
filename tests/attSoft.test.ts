@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { attLookback, carve, freeRanges, isAttClient, isAttTruck, planMarketBackfill, planReleaseCuts, planSoftHoldFill, reinstateBlockedByRelease, releaseBlockedReason, softHoldWindow, softHoldYieldsOn, validateReleaseRange, ATT_RELEASE_WARNING, ATT_RELEASE_MAX_DAYS } from '@/lib/attSoftRules'
+import { attLookback, carve, freeRanges, isAttClient, isAttTruck, planMarketBackfill, planReleaseCuts, planSoftHoldFill, reinstateBlockedByRelease, releaseBlockedReason, rosterPlan, validateRosterOverride, ATT_LIST_MAX_DAYS, softHoldWindow, softHoldYieldsOn, validateReleaseRange, ATT_RELEASE_WARNING, ATT_RELEASE_MAX_DAYS } from '@/lib/attSoftRules'
 import { clientBookingRefusal, partnerClashDetail, staffBookingRefusal } from '@/lib/bookingRefusals'
 
 section('AT&T soft holds: who is AT&T')
@@ -184,3 +184,48 @@ eq('at most 31 days per release', ATT_RELEASE_MAX_DAYS, 31)
 eq('a three-month "release" is refused before anything is touched', validateReleaseRange('2026-09-01', '2026-11-30')?.includes('at most 31 days'), true)
 eq('a booking-length release is fine', validateReleaseRange('2026-10-12', '2026-10-15'), null)
 eq('bad dates are refused', validateReleaseRange('2026-10-15', '2026-10-12') !== null, true)
+
+section('AT&T list: manual add / take off')
+{
+  const span = { start: '2026-10-01', end: '2026-12-31' }
+  const auto = new Set(['1001'])
+  const off = rosterPlan({ span, autoTrucks: auto, overrides: [{ truck_number: '1001', action: 'REMOVE', start: '2026-10-15', end: '2026-11-15' }] })
+  eq('taking an AT&T truck off blocks exactly those dates', off.blocks, [{ truck_number: '1001', start: '2026-10-15', end: '2026-11-15' }])
+  eq('and adds nobody', off.addTrucks.size, 0)
+
+  const add = rosterPlan({ span, autoTrucks: auto, overrides: [{ truck_number: '2002', action: 'ADD', start: '2026-10-08', end: '2026-10-31' }] })
+  eq('an added truck is on the list', [...add.addTrucks], ['2002'])
+  eq('but only on its added dates: everything else in the window is blocked', add.blocks,
+    [{ truck_number: '2002', start: '2026-10-01', end: '2026-10-07' }, { truck_number: '2002', start: '2026-11-01', end: '2026-12-31' }])
+
+  const swap = rosterPlan({ span, autoTrucks: auto, overrides: [
+    { truck_number: '1001', action: 'REMOVE', start: '2026-10-08', end: '2026-12-31' },
+    { truck_number: '2002', action: 'ADD', start: '2026-10-08', end: '2026-12-31' },
+  ] })
+  eq('a swap: one off, one on', [[...swap.addTrucks], swap.blocks.length], [['2002'], 2])
+
+  const noop = rosterPlan({ span, autoTrucks: auto, overrides: [{ truck_number: '1001', action: 'ADD', start: '2026-10-08', end: '2026-10-31' }] })
+  eq('adding a truck that is AT&T\'s anyway changes nothing', [noop.addTrucks.size, noop.blocks.length], [0, 0])
+
+  const past = rosterPlan({ span, autoTrucks: auto, overrides: [{ truck_number: '2002', action: 'ADD', start: '2026-08-01', end: '2026-09-30' }] })
+  eq('an ended change has no effect', [past.addTrucks.size, past.blocks.length], [0, 0])
+
+  // Through the sync's fill: the added truck gets soft holds only on its dates,
+  // the removed one none on its dates.
+  const fill = planSoftHoldFill({
+    window: [{ start: '2026-10-08', end: '2026-10-31', label: 'October 2026' }],
+    trucks: ['1001', '2002'], live: [], lastMarket: new Map(),
+    releases: swap.blocks,
+  })
+  eq('swap fills only the added truck', fill.map(f => `${f.truck_number} ${f.start}..${f.end}`), ['2002 2026-10-08..2026-10-31'])
+
+  const T = '2026-10-08'
+  eq('valid change', validateRosterOverride({ action: 'ADD', start: T, end: '2026-10-31', reason: 'swap' }, T), null)
+  eq('needs a reason', validateRosterOverride({ action: 'ADD', start: T, end: '2026-10-31', reason: ' ' }, T), 'Say why, so the team knows later.')
+  eq('end before start refused', validateRosterOverride({ action: 'REMOVE', start: '2026-10-31', end: T, reason: 'x' }, T) !== null, true)
+  eq('already ended refused', validateRosterOverride({ action: 'REMOVE', start: '2026-09-01', end: '2026-09-30', reason: 'x' }, T), 'The end date has already passed.')
+  eq('a year is allowed', validateRosterOverride({ action: 'REMOVE', start: T, end: '2027-10-07', reason: 'x' }, T), null)
+  eq('longer than a year refused', validateRosterOverride({ action: 'REMOVE', start: T, end: '2099-12-31', reason: 'x' }, T)?.includes(`${ATT_LIST_MAX_DAYS} days`), true)
+  eq('unknown action refused', validateRosterOverride({ action: 'MOVE', start: T, end: T, reason: 'x' }, T), 'Choose add or remove.')
+}
+

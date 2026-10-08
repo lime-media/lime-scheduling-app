@@ -218,6 +218,62 @@ export function planSoftHoldFill(opts: {
   return out
 }
 
+/**
+ * A person's change to the AT&T truck list for a date range
+ * (app_att_roster_overrides): ADD puts a truck on the list for those dates,
+ * REMOVE takes it off. After the end date the automatic rule applies again.
+ */
+export type RosterOverride = { truck_number: string; action: 'ADD' | 'REMOVE' } & Range
+
+/**
+ * What the overrides mean for one sync, over `span` (the window's months):
+ *
+ * - `addTrucks`: trucks on the list only because someone added them. They
+ *   keep and get soft holds like AT&T's own, but only on their added dates.
+ * - `blocks`: per truck, the dates that must have no soft hold — every
+ *   REMOVE range, and for an added-only truck every date outside its ADD
+ *   ranges. The sync treats these like release records: cut, never filled.
+ *
+ * An ADD on a truck that is AT&T's anyway changes nothing. Pure.
+ */
+export function rosterPlan(opts: {
+  overrides: RosterOverride[]
+  autoTrucks: Set<string>
+  span: Range
+}): { addTrucks: Set<string>; blocks: ({ truck_number: string } & Range)[] } {
+  const live = opts.overrides.filter(o => o.end >= opts.span.start && o.start <= opts.span.end)
+  const blocks: ({ truck_number: string } & Range)[] = live
+    .filter(o => o.action === 'REMOVE')
+    .map(o => ({ truck_number: o.truck_number, start: o.start, end: o.end }))
+  const addTrucks = new Set(live.filter(o => o.action === 'ADD' && !opts.autoTrucks.has(o.truck_number)).map(o => o.truck_number))
+  for (const t of addTrucks) {
+    const added = live.filter(o => o.action === 'ADD' && o.truck_number === t)
+    for (const g of freeRanges(opts.span.start, opts.span.end, added)) blocks.push({ truck_number: t, ...g })
+  }
+  return { addTrucks, blocks }
+}
+
+/**
+ * A list change lasts at most this many days. Changes are meant to end and
+ * hand back to the automatic rule; a year is long enough for any real swap
+ * and keeps one mistyped date from changing the list for decades.
+ */
+export const ATT_LIST_MAX_DAYS = 366
+
+/** Why a list change is refused, or null when it is fine. Dates are YYYY-MM-DD. */
+export function validateRosterOverride(o: { action: string; start: string; end: string; reason: string }, today: string): string | null {
+  if (o.action !== 'ADD' && o.action !== 'REMOVE') return 'Choose add or remove.'
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(o.start) || !/^\d{4}-\d{2}-\d{2}$/.test(o.end) || o.end < o.start) {
+    return 'Dates must be YYYY-MM-DD, end on or after start.'
+  }
+  if (o.end < today) return 'The end date has already passed.'
+  if (Math.round((utc(o.end).getTime() - utc(o.start).getTime()) / 864e5) + 1 > ATT_LIST_MAX_DAYS) {
+    return `A list change lasts at most ${ATT_LIST_MAX_DAYS} days. Make a new one when it ends, if it still applies.`
+  }
+  if (!o.reason.trim()) return 'Say why, so the team knows later.'
+  return null
+}
+
 /** Can this record be reinstated as a live hold? Release records never can. */
 export function reinstateBlockedByRelease(origination: string | null | undefined): string | null {
   return origination === ATT_RELEASE_ORIGINATION

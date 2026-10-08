@@ -36,7 +36,7 @@ import {
 } from '@/lib/pricing/transport'
 import { checkChainFeasibility, type ChainResult } from '@/lib/chainFeasibility'
 import { loadFleetTimelines } from '@/lib/fleetTimelines'
-import { findWindowClash } from '@/lib/truckTimeline'
+import { findWindowClash, windowOccupancy } from '@/lib/truckTimeline'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -73,6 +73,15 @@ export type AvailableTruck = {
    * surfaced so a rep can make the call.
    */
   requiresOverride: boolean
+  /**
+   * An AT&T soft hold covers the campaign dates. Releasing it for those dates
+   * (lib/attSoftRelease.ts) frees the truck; `transport` and `chain` already
+   * assume that release. False when the only soft-hold issue is a later one
+   * the booking would strand, which a release for these dates cannot fix.
+   */
+  softHoldOnDates: boolean
+  /** Why the truck needs an override, for the rep. Empty when it does not. */
+  overrideDetail: string
 }
 
 /** A truck that cannot take the campaign, with the reason, for surfacing in the UI. */
@@ -149,10 +158,6 @@ function normalizeMarket(m: unknown): string {
   return String(m ?? '').replace(/\s*,\s*/g, ', ').trim()
 }
 
-function rangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
-  return aStart <= bEnd && bStart <= aEnd
-}
-
 function classifyDistance(distanceMiles: number, serviceAreaMiles?: number): ProximityBucket {
   if (needsRepositioning(distanceMiles, serviceAreaMiles)) return 'REPOSITIONING'
   return distanceMiles <= 50 ? 'LOCAL' : 'NEARBY'
@@ -218,18 +223,13 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     }
   }
 
-  const bookedByTruck = new Map<string, { start: string; end: string }[]>()
-  for (const [truckNumber, jobs] of timelines) {
-    bookedByTruck.set(truckNumber, jobs.map(j => ({ start: j.start, end: j.end })))
-  }
-
   // Get all known truck numbers
   const allTruckNumbers = new Set<string>()
   for (const row of contextRows) {
     const truckNumber = String(row.truck_number ?? '')
     if (!HIDDEN_TRUCKS.has(truckNumber)) allTruckNumbers.add(truckNumber)
   }
-  for (const truckNumber of bookedByTruck.keys()) {
+  for (const truckNumber of timelines.keys()) {
     allTruckNumbers.add(truckNumber)
   }
 
@@ -250,8 +250,6 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
   const infeasible: InfeasibleTruck[] = []
 
   for (const truckNumber of allTruckNumbers) {
-    const ranges = bookedByTruck.get(truckNumber) ?? []
-
     // Determine truck location
     const gps = gpsMap.get(truckNumber)
     let currentCoords: { lat: number; lng: number } | null = null
@@ -275,8 +273,10 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     // quote will fall back to a manual transport quote.
     if (!effectiveCampaignCoords) continue
 
-    // Rule 2: the campaign window itself must be free.
-    if (ranges.some(r => rangesOverlap(r.start, r.end, startDate, endDate))) {
+    // Rule 2: the campaign window itself must be free — of everything but an
+    // AT&T soft hold, which a rep may release for these dates.
+    const window = windowOccupancy(timelines.get(truckNumber) ?? [], startDate, endDate)
+    if (window.blocked) {
       infeasible.push({
         truckNumber,
         currentMarket,
@@ -291,7 +291,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
       campaignStart: startDate,
       campaignEnd: endDate,
       campaignCoords: effectiveCampaignCoords,
-      jobs: timelines.get(truckNumber) ?? [],
+      jobs: window.jobs,
       currentCoords,
       today,
       serviceAreaMiles,
@@ -336,7 +336,12 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
       hasGps,
       transport,
       chain,
-      requiresOverride: !chain.feasible && chain.overridable,
+      requiresOverride: window.softHeld || (!chain.feasible && chain.overridable),
+      softHoldOnDates: window.softHeld,
+      overrideDetail: [
+        window.softHeld ? `AT&T soft hold on ${startDate} to ${endDate}.` : '',
+        !chain.feasible ? chain.detail ?? '' : '',
+      ].filter(Boolean).join(' '),
     })
   }
 
@@ -363,11 +368,15 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     || a.distanceMiles - b.distanceMiles
   )
 
+  // Counts are of trucks free without overriding anything: they are what
+  // clients and the quote report as "available", and a soft-held truck is not
+  // available until someone releases it.
+  const free = availableTrucks.filter(t => !t.requiresOverride)
   const counts = {
-    total: availableTrucks.length,
-    local: availableTrucks.filter(t => t.proximityBucket === 'LOCAL').length,
-    nearby: availableTrucks.filter(t => t.proximityBucket === 'NEARBY').length,
-    repositioning: availableTrucks.filter(t => t.proximityBucket === 'REPOSITIONING').length,
+    total: free.length,
+    local: free.filter(t => t.proximityBucket === 'LOCAL').length,
+    nearby: free.filter(t => t.proximityBucket === 'NEARBY').length,
+    repositioning: free.filter(t => t.proximityBucket === 'REPOSITIONING').length,
     cannotArrive: infeasible.filter(t => t.reason === 'CANNOT_ARRIVE').length,
     wouldStrandSuccessor: infeasible.filter(t => t.reason === 'STRANDS_SUCCESSOR').length,
     originFellBackToGps: availableTrucks.filter(t => t.chain.inbound.originFellBackToGps).length,
@@ -377,11 +386,37 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     trucks: availableTrucks,
     infeasible,
     counts,
-    sufficient: availableTrucks.filter(t => !t.requiresOverride).length >= truckCount,
+    sufficient: free.length >= truckCount,
     nearestAcceptedMarket,
     marketResolved: campaignCoords !== null,
     campaignFlags: { shortFlight, rush, leadBusinessDays },
   }
+}
+
+/** A truck a rep could use by overriding a soft hold, as the quote shows it. */
+export type OverrideOption = {
+  truckNumber: string
+  from: string
+  detail: string
+  /** A release for the campaign's dates frees it (see AvailableTruck.softHoldOnDates). */
+  releasable: boolean
+  distanceMiles: number
+  needsTransport: boolean
+}
+
+/** The quote's list of soft-hold trucks, closest first. */
+export function overrideOptions(availability: Pick<AvailabilityResult, 'trucks'>): OverrideOption[] {
+  return availability.trucks
+    .filter(t => t.requiresOverride)
+    .sort((a, b) => a.distanceMiles - b.distanceMiles)
+    .map(t => ({
+      truckNumber: t.truckNumber,
+      from: t.currentMarket || 'Unknown',
+      detail: t.overrideDetail,
+      releasable: t.softHoldOnDates,
+      distanceMiles: Math.round(t.distanceMiles),
+      needsTransport: t.transport.needed,
+    }))
 }
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@
 
 import { ATT_RELEASE_WARNING, ATT_RELEASE_MAX_DAYS, validateReleaseRange } from '@/lib/attSoftRules'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
+import { SERVICE_AREA_RADIUS_MILES } from '@/lib/pricing/config'
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 import toast from 'react-hot-toast'
@@ -766,7 +767,9 @@ export default function HoldRequestsPage() {
                                                   TRANSPORT {t.transportDays}d · {fmtMoney(t.transportCharge)}
                                                 </span>
                                               ) : (
-                                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-green-100 text-green-800">IN MARKET</span>
+                                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-green-100 text-green-800" title={`Within the ${SERVICE_AREA_RADIUS_MILES}-mile service area: no transport charge`}>
+                                                  {t.distanceMiles <= 50 ? 'LOCAL' : 'NO TRANSPORT'}
+                                                </span>
                                               )}
                                               {t.requiresOverride && (
                                                 <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-purple-100 text-purple-800">NEEDS SOFT-HOLD RELEASE</span>

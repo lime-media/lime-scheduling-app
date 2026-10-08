@@ -690,7 +690,7 @@ function SoftHoldReleaseOptions({ options, releasing, onRelease }: {
       {options.map((t) => (
         <div key={t.truckNumber} className="mt-1.5 flex items-start gap-2">
           <p className="flex-1 text-purple-600">
-            <span className="font-medium">Truck {t.truckNumber}</span> ({t.from}, {t.needsTransport ? `${t.distanceMiles} mi, needs transport` : 'in market, no transport'}) — {t.detail}
+            <span className="font-medium">Truck {t.truckNumber}</span> ({t.from}, {t.distanceMiles} mi, {t.needsTransport ? 'needs transport' : 'no transport charge'}) — {t.detail}
             {!t.releasable && ' Releasing these dates would not free it; check with operations.'}
           </p>
           {t.releasable && (

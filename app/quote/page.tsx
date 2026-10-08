@@ -20,7 +20,7 @@ import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 
 type QuoteResponse = {
   availability: {
-    requested: number; available: number; local: number; nearby: number; repositioning: number; sufficient: boolean
+    requested: number; available: number; local: number; nearby: number; repositioning: number; serviceAreaMiles?: number; sufficient: boolean
     cannotArrive?: number
     wouldStrandSuccessor?: number
     originFellBackToGps?: number
@@ -418,8 +418,10 @@ export default function InternalQuotePage() {
                 </span>
               </div>
               <div className="text-xs text-gray-500 mt-1 space-y-0.5">
-                {(quoteResult.availability.local + quoteResult.availability.nearby) > 0 && <p>{quoteResult.availability.local + quoteResult.availability.nearby} local</p>}
-                {quoteResult.availability.repositioning > 0 && <p>{quoteResult.availability.repositioning} available with repositioning</p>}
+                {/* Distance from where each truck finishes its prior job, straight line. */}
+                {quoteResult.availability.local > 0 && <p>{quoteResult.availability.local} local (within 50 mi)</p>}
+                {quoteResult.availability.nearby > 0 && <p>{quoteResult.availability.nearby} nearby (51–{quoteResult.availability.serviceAreaMiles ?? 250} mi, no transport charge)</p>}
+                {quoteResult.availability.repositioning > 0 && <p>{quoteResult.availability.repositioning} beyond {quoteResult.availability.serviceAreaMiles ?? 250} mi (transport applies unless waived)</p>}
               </div>
 
               {/* Trucks ruled out by logistics — shown so thin availability

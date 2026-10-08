@@ -1,6 +1,6 @@
 'use client'
 
-import { ATT_RELEASE_WARNING } from '@/lib/attSoftRules'
+import { ATT_RELEASE_WARNING, ATT_RELEASE_MAX_DAYS, validateReleaseRange } from '@/lib/attSoftRules'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
@@ -143,6 +143,42 @@ export default function HoldRequestsPage() {
   const [newExpiresAt, setNewExpiresAt] = useState('')
   const [expiredWindowDays, setExpiredWindowDays] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
+
+  // Releasing part of an AT&T soft hold for a booking (lib/attSoftRelease.ts).
+  const [softRelease, setSoftRelease] = useState<{ hold: HoldRequest; start: string; end: string; context: string } | null>(null)
+  const softReleaseError = softRelease
+    ? (!softRelease.start || !softRelease.end
+        ? 'Pick the booking\'s dates.'
+        : softRelease.start < softRelease.hold.start_date || softRelease.end > softRelease.hold.end_date
+          ? `Dates must fall within this soft hold (${softRelease.hold.start_date} to ${softRelease.hold.end_date}).`
+          : validateReleaseRange(softRelease.start, softRelease.end)
+            ?? (softRelease.context.trim() ? null : 'Say which booking this is for.'))
+    : null
+
+  const submitSoftRelease = async () => {
+    if (!softRelease || softReleaseError) return
+    if (!confirm(ATT_RELEASE_WARNING)) return
+    setSaving(true)
+    try {
+      const res = await fetch('/api/holds/att-soft/release', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          truck_number: softRelease.hold.truck_number,
+          start_date: softRelease.start, end_date: softRelease.end,
+          context: `Reservations: ${softRelease.context.trim()}`,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || 'Release failed')
+      toast.success(data.message)
+      setSoftRelease(null)
+      fetchRequests()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Release failed')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const fetchRequests = useCallback(async () => {
     setLoading(true)
@@ -420,6 +456,17 @@ export default function HoldRequestsPage() {
           className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-50 transition-colors"
         >
           Reinstate
+        </button>
+      )
+    }
+    if (status === 'ATT_SOFT' && actionRequests?.length === 1) {
+      const hold = actionRequests[0]
+      return (
+        <button
+          onClick={() => setSoftRelease({ hold, start: '', end: '', context: '' })}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-purple-200 text-purple-700 hover:bg-purple-50 transition-colors"
+        >
+          Release dates
         </button>
       )
     }
@@ -855,6 +902,61 @@ export default function HoldRequestsPage() {
           </div>
         )
       })()}
+
+      {/* Release an AT&T soft hold for a booking's dates */}
+      {softRelease && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg">
+            <div className="px-6 py-4 border-b border-gray-100">
+              <h2 className="text-lg font-bold text-gray-900">Release AT&amp;T soft hold</h2>
+              <p className="text-sm text-gray-500 mt-0.5">
+                Truck {softRelease.hold.truck_number} &middot; held for AT&amp;T{' '}
+                {format(parseDateOnly(softRelease.hold.start_date), 'MMM d')} &ndash; {format(parseDateOnly(softRelease.hold.end_date), 'MMM d, yyyy')}
+              </p>
+            </div>
+            <div className="px-6 py-4 space-y-3">
+              <p className="text-xs text-purple-800 bg-purple-50 border border-purple-200 rounded-lg px-3 py-2">{ATT_RELEASE_WARNING}</p>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-xs font-medium text-gray-600">
+                  Booking starts
+                  <input type="date" value={softRelease.start}
+                    min={softRelease.hold.start_date} max={softRelease.hold.end_date}
+                    onChange={e => setSoftRelease({ ...softRelease, start: e.target.value, end: softRelease.end || e.target.value })}
+                    className="mt-1 w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
+                </label>
+                <label className="text-xs font-medium text-gray-600">
+                  Booking ends
+                  <input type="date" value={softRelease.end}
+                    min={softRelease.start || softRelease.hold.start_date} max={softRelease.hold.end_date}
+                    onChange={e => setSoftRelease({ ...softRelease, end: e.target.value })}
+                    className="mt-1 w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
+                </label>
+              </div>
+              <label className="block text-xs font-medium text-gray-600">
+                Which booking is this for?
+                <input type="text" value={softRelease.context} maxLength={150}
+                  placeholder="e.g. Acme, Dallas"
+                  onChange={e => setSoftRelease({ ...softRelease, context: e.target.value })}
+                  className="mt-1 w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
+              </label>
+              <p className="text-xs text-gray-500">
+                Only these dates are released (at most {ATT_RELEASE_MAX_DAYS} days); the rest stays reserved for AT&amp;T. Undo it from the Conflicts page.
+              </p>
+              {softReleaseError && softRelease.start && <p className="text-xs text-red-600">{softReleaseError}</p>}
+            </div>
+            <div className="px-6 py-4 border-t border-gray-100 flex gap-3">
+              <button onClick={() => setSoftRelease(null)}
+                className="flex-1 border border-gray-200 text-gray-600 rounded-lg py-2.5 text-sm font-medium hover:bg-gray-50 transition-colors">
+                Cancel
+              </button>
+              <button onClick={submitSoftRelease} disabled={saving || Boolean(softReleaseError)}
+                className="flex-1 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
+                {saving ? 'Releasing...' : 'Release these dates'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

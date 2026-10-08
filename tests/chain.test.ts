@@ -10,7 +10,7 @@
 import { eq, section } from './harness'
 import { getMarketCoords } from '@/lib/marketCoordinates'
 import { checkChainFeasibility, coordsForJob, jobMarketLabel, jobCoords } from '@/lib/chainFeasibility'
-import { buildTruckTimelines, groupDaysIntoJobs, findWindowClash, type TruckJob } from '@/lib/truckTimeline'
+import { buildTruckTimelines, groupDaysIntoJobs, findWindowClash, windowOccupancy, type TruckJob } from '@/lib/truckTimeline'
 import { normalizeMarketKey } from '@/lib/marketBounds'
 
 
@@ -343,3 +343,40 @@ eq('clear gap between jobs', findWindowClash(busy, '2026-09-16', '2026-09-21'), 
 eq('entirely before', findWindowClash(busy, '2026-09-01', '2026-09-09'), null)
 eq('entirely after', findWindowClash(busy, '2026-09-28', '2026-09-30'), null)
 eq('no jobs at all', findWindowClash([], '2026-09-01', '2026-09-30'), null)
+
+section('window: an AT&T soft hold on the dates is releasable, not BOOKED')
+{
+  const soft = (start: string, end: string, market = 'Oklahoma City, OK') =>
+    job(start, end, market, 'OK', { status: 'ATT_SOFT', yieldable: true })
+  const month = soft('2026-10-01', '2026-10-31')
+
+  const w = windowOccupancy([month], '2026-10-10', '2026-10-12')
+  eq('soft hold only: not blocked', w.blocked, null)
+  eq('soft hold only: soft-held', w.softHeld, true)
+  eq('soft hold cut around the booking, as a release would',
+    w.jobs.map(j => `${j.start}..${j.end}`), ['2026-10-01..2026-10-09', '2026-10-13..2026-10-31'])
+  eq('pieces stay yieldable soft holds', w.jobs.every(j => j.yieldable && j.status === 'ATT_SOFT'), true)
+
+  const firm = job('2026-10-11', '2026-10-11', 'Dallas, TX', 'TX')
+  const both = windowOccupancy([month, firm], '2026-10-10', '2026-10-12')
+  eq('a firm job on the dates still blocks', both.blocked, firm)
+  eq('and is not offered for release', both.softHeld, false)
+
+  const free = windowOccupancy([soft('2026-11-01', '2026-11-30')], '2026-10-10', '2026-10-12')
+  eq('nothing on the dates: neither', [free.blocked, free.softHeld], [null, false])
+  eq('timeline untouched', free.jobs.length, 1)
+
+  const edge = windowOccupancy([month], '2026-10-01', '2026-10-31')
+  eq('booking covering the whole soft hold leaves nothing', edge.jobs.length, 0)
+
+  // The truck sits in OKC under its soft hold: after the release it is an
+  // in-market truck for an OKC booking, with no transport — the cheap option
+  // the quote used to hide behind a distant one.
+  const chain = checkChainFeasibility({
+    campaignStart: '2026-10-10', campaignEnd: '2026-10-12', campaignCoords: okc,
+    jobs: w.jobs, currentCoords: okc, today: TODAY,
+  })
+  eq('released OKC truck is feasible for an OKC booking', chain.feasible, true)
+  eq('and needs no transport', chain.inbound.transportDays, 0)
+}
+

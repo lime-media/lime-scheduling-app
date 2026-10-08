@@ -253,6 +253,13 @@ export function rosterPlan(opts: {
   return { addTrucks, blocks }
 }
 
+/**
+ * A list change lasts at most this many days. Changes are meant to end and
+ * hand back to the automatic rule; a year is long enough for any real swap
+ * and keeps one mistyped date from changing the list for decades.
+ */
+export const ATT_LIST_MAX_DAYS = 366
+
 /** Why a list change is refused, or null when it is fine. Dates are YYYY-MM-DD. */
 export function validateRosterOverride(o: { action: string; start: string; end: string; reason: string }, today: string): string | null {
   if (o.action !== 'ADD' && o.action !== 'REMOVE') return 'Choose add or remove.'
@@ -260,6 +267,9 @@ export function validateRosterOverride(o: { action: string; start: string; end: 
     return 'Dates must be YYYY-MM-DD, end on or after start.'
   }
   if (o.end < today) return 'The end date has already passed.'
+  if (Math.round((utc(o.end).getTime() - utc(o.start).getTime()) / 864e5) + 1 > ATT_LIST_MAX_DAYS) {
+    return `A list change lasts at most ${ATT_LIST_MAX_DAYS} days. Make a new one when it ends, if it still applies.`
+  }
   if (!o.reason.trim()) return 'Say why, so the team knows later.'
   return null
 }

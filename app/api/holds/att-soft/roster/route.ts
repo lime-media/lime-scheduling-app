@@ -16,6 +16,7 @@
 import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
 import { syncAttSoftHolds } from '@/lib/attSoftHolds'
@@ -78,24 +79,38 @@ export async function POST(req: Request) {
   }
 
   // Adding and removing the same truck on the same dates contradict each other.
-  const opposite = await prisma.attRosterOverride.findFirst({
-    where: {
-      truck_number: truck, removed_at: null, action: action === 'ADD' ? 'REMOVE' : 'ADD',
-      start_date: { lte: utc(end) }, end_date: { gte: utc(start) },
-    },
+  // Checked and written in one serializable transaction, so two people saving
+  // at once cannot both get through.
+  // The loser of a simultaneous save gets a write conflict (P2034), not a 500.
+  const outcome = await prisma.$transaction(async tx => {
+    const opposite = await tx.attRosterOverride.findFirst({
+      where: {
+        truck_number: truck, removed_at: null, action: action === 'ADD' ? 'REMOVE' : 'ADD',
+        start_date: { lte: utc(end) }, end_date: { gte: utc(start) },
+      },
+    })
+    if (opposite) return { opposite }
+    const row = await tx.attRosterOverride.create({
+      data: {
+        truck_number: truck, action, start_date: utc(start), end_date: utc(end), reason,
+        created_by: session.user.id, created_by_name: session.user.name ?? '',
+      },
+    })
+    return { row }
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }).catch((err: unknown) => {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2034') return { conflict: true as const }
+    throw err
   })
-  if (opposite) {
+  if ('conflict' in outcome) {
+    return NextResponse.json({ error: `Someone changed truck ${truck}'s AT&T list entry at the same moment. Reload and try again.` }, { status: 409 })
+  }
+  if ('opposite' in outcome && outcome.opposite) {
+    const o = outcome.opposite
     return NextResponse.json({
-      error: `Truck ${truck} is already ${opposite.action === 'ADD' ? 'added to' : 'taken off'} the AT&T list for ${range(iso(opposite.start_date), iso(opposite.end_date))}. Undo that first.`,
+      error: `Truck ${truck} is already ${o.action === 'ADD' ? 'added to' : 'taken off'} the AT&T list for ${range(iso(o.start_date), iso(o.end_date))}. Undo that first.`,
     }, { status: 409 })
   }
-
-  const row = await prisma.attRosterOverride.create({
-    data: {
-      truck_number: truck, action, start_date: utc(start), end_date: utc(end), reason,
-      created_by: session.user.id, created_by_name: session.user.name ?? '',
-    },
-  })
+  const row = outcome.row!
   await prisma.auditLog.create({
     data: {
       action: action === 'ADD' ? 'ATT_LIST_ADD' : 'ATT_LIST_REMOVE',

@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { attLookback, carve, freeRanges, isAttClient, isAttTruck, planMarketBackfill, planReleaseCuts, planSoftHoldFill, reinstateBlockedByRelease, releaseBlockedReason, rosterPlan, validateRosterOverride, softHoldWindow, softHoldYieldsOn, validateReleaseRange, ATT_RELEASE_WARNING, ATT_RELEASE_MAX_DAYS } from '@/lib/attSoftRules'
+import { attLookback, carve, freeRanges, isAttClient, isAttTruck, planMarketBackfill, planReleaseCuts, planSoftHoldFill, reinstateBlockedByRelease, releaseBlockedReason, rosterPlan, validateRosterOverride, ATT_LIST_MAX_DAYS, softHoldWindow, softHoldYieldsOn, validateReleaseRange, ATT_RELEASE_WARNING, ATT_RELEASE_MAX_DAYS } from '@/lib/attSoftRules'
 import { clientBookingRefusal, partnerClashDetail, staffBookingRefusal } from '@/lib/bookingRefusals'
 
 section('AT&T soft holds: who is AT&T')
@@ -224,6 +224,8 @@ section('AT&T list: manual add / take off')
   eq('needs a reason', validateRosterOverride({ action: 'ADD', start: T, end: '2026-10-31', reason: ' ' }, T), 'Say why, so the team knows later.')
   eq('end before start refused', validateRosterOverride({ action: 'REMOVE', start: '2026-10-31', end: T, reason: 'x' }, T) !== null, true)
   eq('already ended refused', validateRosterOverride({ action: 'REMOVE', start: '2026-09-01', end: '2026-09-30', reason: 'x' }, T), 'The end date has already passed.')
+  eq('a year is allowed', validateRosterOverride({ action: 'REMOVE', start: T, end: '2027-10-07', reason: 'x' }, T), null)
+  eq('longer than a year refused', validateRosterOverride({ action: 'REMOVE', start: T, end: '2099-12-31', reason: 'x' }, T)?.includes(`${ATT_LIST_MAX_DAYS} days`), true)
   eq('unknown action refused', validateRosterOverride({ action: 'MOVE', start: T, end: T, reason: 'x' }, T), 'Choose add or remove.')
 }
 

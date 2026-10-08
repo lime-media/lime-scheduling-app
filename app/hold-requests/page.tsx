@@ -10,6 +10,7 @@ import { TableSkeleton } from '@/components/LoadingSkeleton'
 import { parseDateOnly } from '@/lib/dateOnly'
 import { formatMarketState } from '@/lib/format'
 import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
+import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
 
 type HoldRequest = {
   id: string
@@ -143,6 +144,9 @@ export default function HoldRequestsPage() {
   const [newExpiresAt, setNewExpiresAt] = useState('')
   const [expiredWindowDays, setExpiredWindowDays] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
+
+  // A change to the AT&T truck list being drafted (components/AttRosterPanel.tsx).
+  const [rosterDraft, setRosterDraft] = useState<RosterDraft | null>(null)
 
   // Releasing part of an AT&T soft hold for a booking (lib/attSoftRelease.ts).
   const [softRelease, setSoftRelease] = useState<{ hold: HoldRequest; start: string; end: string; context: string } | null>(null)
@@ -462,12 +466,20 @@ export default function HoldRequestsPage() {
     if (status === 'ATT_SOFT' && actionRequests?.length === 1) {
       const hold = actionRequests[0]
       return (
-        <button
-          onClick={() => setSoftRelease({ hold, start: '', end: '', context: '' })}
-          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-purple-200 text-purple-700 hover:bg-purple-50 transition-colors"
-        >
-          Release dates
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => setSoftRelease({ hold, start: '', end: '', context: '' })}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium border border-purple-200 text-purple-700 hover:bg-purple-50 transition-colors"
+          >
+            Release dates
+          </button>
+          <button
+            onClick={() => setRosterDraft({ ...newAddDraft(), action: 'REMOVE', truck_number: hold.truck_number, start: hold.start_date < newAddDraft().start ? newAddDraft().start : hold.start_date, end: hold.end_date })}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
+          >
+            Take off list
+          </button>
+        </div>
       )
     }
     if (['HOLD', 'COMMITTED'].includes(status)) {
@@ -519,6 +531,11 @@ export default function HoldRequestsPage() {
             ))}
           </div>
         </div>
+
+        {/* Also shown when "Take off list" is clicked on a soft hold under another filter. */}
+        {(filterStatus === 'ATT_SOFT' || rosterDraft) && (
+          <AttRosterPanel draft={rosterDraft} setDraft={setRosterDraft} onChanged={fetchRequests} />
+        )}
 
         {/* Search */}
         <div className="relative max-w-md mb-6">

@@ -15,6 +15,8 @@
  * a single job — the same grouping the schedule grid and chat context perform.
  */
 
+import { carve } from '@/lib/attSoftRules'
+
 /** A hold in this status is a placeholder that may be voided, not a commitment. */
 export const YIELDABLE_HOLD_STATUSES = new Set(['ATT_SOFT'])
 
@@ -164,6 +166,39 @@ export function findWindowClash(
   campaignEnd: string,
 ): TruckJob | null {
   return jobs.find(j => j.start <= campaignEnd && campaignStart <= j.end) ?? null
+}
+
+/**
+ * What stands in a campaign window, for the quote's truck list.
+ *
+ * - `blocked`: a firm job (client schedule, hold, commitment) overlaps — the
+ *   truck cannot take the campaign.
+ * - `softHeld`: only AT&T soft holds overlap. The truck can take it once the
+ *   soft hold is released for the campaign's dates, which is a rep's call.
+ *   `jobs` is the timeline AFTER that release (each soft hold cut around the
+ *   dates, as lib/attSoftRelease.ts does), so the chain check prices the
+ *   truck as it would really run.
+ *
+ * Before this, a soft hold on the dates excluded the truck as BOOKED, so the
+ * quote's release option never appeared for the commonest case and the quote
+ * fell back to a distant truck with transport.
+ */
+export function windowOccupancy(
+  jobs: TruckJob[],
+  campaignStart: string,
+  campaignEnd: string,
+): { blocked: TruckJob | null; softHeld: boolean; jobs: TruckJob[] } {
+  const over = (j: TruckJob) => j.start <= campaignEnd && campaignStart <= j.end
+  const blocked = jobs.find(j => over(j) && !j.yieldable) ?? null
+  const softHeld = !blocked && jobs.some(over)
+  if (!softHeld) return { blocked, softHeld, jobs }
+  return {
+    blocked,
+    softHeld,
+    jobs: jobs.flatMap(j => over(j)
+      ? carve(j.start, j.end, campaignStart, campaignEnd).map(p => ({ ...j, ...p }))
+      : [j]),
+  }
 }
 
 /**

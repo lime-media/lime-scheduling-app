@@ -11,7 +11,7 @@ import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
 import { brandMarkupFor, withMarkup } from '@/lib/pricing/brandMarkup'
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
-import { checkAvailability, legsFromTrucks } from '@/lib/availabilityEngine'
+import { checkAvailability, legsFromTrucks, overrideOptions } from '@/lib/availabilityEngine'
 import {
   computeQuote,
   priceTransport,
@@ -154,8 +154,13 @@ async function handlePost(req: NextRequest) {
   }
 
   if (!availability.sufficient && body.quote_only !== true) {
+    const freeCount = availability.counts.total
+    const softHeldCount = availability.trucks.filter(t => t.softHoldOnDates).length
     return NextResponse.json({
       availability: {
+        // Trucks an AT&T soft-hold release would free: the way out of "not
+        // enough trucks" when the nearby ones are soft-held.
+        requiresOverride: overrideOptions(availability),
         requested: truck_count,
         available: availability.counts.total,
         local: availability.counts.local,
@@ -166,7 +171,8 @@ async function handlePost(req: NextRequest) {
       insufficient: true,
       // Headline is the operative fact; the counts below are internal detail.
       message: 'Automatic quote not feasible without changing existing reservations or commitments.',
-      detail: `${availability.counts.total} truck${availability.counts.total !== 1 ? 's' : ''} can reach this market for these dates, but ${truck_count} requested.`
+      detail: `${freeCount} truck${freeCount !== 1 ? 's' : ''} can reach this market for these dates without a release, but ${truck_count} requested.`
+        + (softHeldCount > 0 ? ` ${softHeldCount} more ${softHeldCount !== 1 ? 'are' : 'is'} held for AT&T and can be released for this booking (below).` : '')
         + (availability.counts.cannotArrive > 0 ? ` ${availability.counts.cannotArrive} excluded: cannot arrive in time.` : '')
         + (availability.counts.wouldStrandSuccessor > 0 ? ` ${availability.counts.wouldStrandSuccessor} excluded: would strand a later booking.` : ''),
     })
@@ -246,13 +252,7 @@ async function handlePost(req: NextRequest) {
         reason: t.reason,
         detail: t.detail,
       })),
-      requiresOverride: availability.trucks
-        .filter(t => t.requiresOverride)
-        .map(t => ({
-          truckNumber: t.truckNumber,
-          from: t.currentMarket || 'Unknown',
-          detail: t.chain.detail ?? '',
-        })),
+      requiresOverride: overrideOptions(availability),
     },
     pricing: {
       dailyRate: quote.dailyRate,

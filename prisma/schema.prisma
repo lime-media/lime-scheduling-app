@@ -129,6 +129,25 @@ model ClientUser {
 // dbo.client_chat_messages (which already store this too, but joined through
 // conversations rather than as a flat per-question log).
 
+// Manual changes to the AT&T truck list, each for a date range
+// (lib/attSoftHolds.ts). action: ADD | REMOVE. Undo sets removed_at.
+model AttRosterOverride {
+  id              String    @id @default(cuid()) @db.NVarChar(36)
+  truck_number    String    @db.NVarChar(50)
+  action          String    @db.NVarChar(10)
+  start_date      DateTime  @db.Date
+  end_date        DateTime  @db.Date
+  reason          String    @db.NVarChar(500)
+  created_by      String    @db.NVarChar(450)
+  created_by_name String    @default("") @db.NVarChar(200)
+  created_at      DateTime  @default(now())
+  removed_at      DateTime?
+  removed_by      String?   @db.NVarChar(450)
+
+  @@index([removed_at, end_date], map: "IX_app_att_roster_overrides_active")
+  @@map("app_att_roster_overrides")
+}
+
 model AuditLog {
   id           String   @id @default(cuid())
   action       String

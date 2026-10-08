@@ -4,6 +4,7 @@ import { MarketInput } from '@/components/MarketInput'
 import { BrandInput } from '@/components/BrandInput'
 import toast from 'react-hot-toast'
 import { ATT_RELEASE_WARNING } from '@/lib/attSoftRules'
+import type { OverrideOption } from '@/lib/availabilityEngine'
 import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
@@ -25,7 +26,7 @@ type QuoteResponse = {
     originFellBackToGps?: number
     gpsFallbackMarkets?: string[]
     excluded?: { truckNumber: string; from: string; reason: string; detail: string }[]
-    requiresOverride?: { truckNumber: string; from: string; detail: string }[]
+    requiresOverride?: OverrideOption[]
   }
   pricing: { quoteOnlyRequired?: boolean; brandMarkupPct?: number; clientType?: string | null; dailyRate: number; effectiveDailyRate: number; hourSurcharge: number; truckDays: number; days: number; calendarDays: number; truckCount: number; baseMedia: number; pricingBasis: string; marketSizeTier: { id: number; label: string }; schedule: { daysPerWeek: number; operatingHours: number; activationDays: number } }
   features: {
@@ -101,6 +102,8 @@ export default function InternalQuotePage() {
   const [quoteError, setQuoteError] = useState<string | null>(null)
   // Internal-only breakdown shown under the headline. Never sent to clients.
   const [quoteErrorDetail, setQuoteErrorDetail] = useState<string | null>(null)
+  // Soft-held trucks offered when the quote has too few free trucks.
+  const [quoteErrorOverrides, setQuoteErrorOverrides] = useState<OverrideOption[]>([])
   const [marketCandidates, setMarketCandidates] = useState<string[] | null>(null)
 
   // Features
@@ -135,9 +138,11 @@ export default function InternalQuotePage() {
       })
       const data = await res.json()
 
+      setQuoteErrorOverrides([])
       if (res.ok && data.insufficient) {
         setQuoteError(data.message)
         setQuoteErrorDetail(data.detail ?? null)
+        setQuoteErrorOverrides(data.availability?.requiresOverride ?? [])
       } else if (res.ok) {
         setQuoteResult(data)
         if (data.pricing?.quoteOnlyRequired) setQuoteOnly(true)
@@ -381,6 +386,9 @@ export default function InternalQuotePage() {
                 Price it anyway (quote only, no reservation)
               </button>
             )}
+            {quoteErrorOverrides.length > 0 && (
+              <SoftHoldReleaseOptions options={quoteErrorOverrides} releasing={releasing} onRelease={releaseForBooking} />
+            )}
           </div>
         )}
 
@@ -443,24 +451,7 @@ export default function InternalQuotePage() {
 
               {/* Available only by displacing a soft hold — a rep decision. */}
               {(quoteResult.availability.requiresOverride?.length ?? 0) > 0 && (
-                <div className="mt-2 bg-purple-50 border border-purple-200 rounded-lg px-3 py-2 text-xs text-purple-800">
-                  <p className="font-medium">
-                    {quoteResult.availability.requiresOverride!.length} truck{quoteResult.availability.requiresOverride!.length !== 1 ? 's' : ''} available only by releasing a soft hold
-                  </p>
-                  <p className="text-purple-600 mt-0.5">Not included in this quote. Release the AT&amp;T soft hold for this booking&apos;s dates to use {quoteResult.availability.requiresOverride!.length !== 1 ? 'them' : 'it'}.</p>
-                  {quoteResult.availability.requiresOverride!.map((t) => (
-                    <div key={t.truckNumber} className="mt-1.5 flex items-start gap-2">
-                      <p className="flex-1 text-purple-600">
-                        <span className="font-medium">Truck {t.truckNumber}</span> ({t.from}) — {t.detail}
-                      </p>
-                      <button type="button" disabled={releasing === t.truckNumber}
-                        onClick={() => releaseForBooking(t.truckNumber)}
-                        className="shrink-0 rounded border border-purple-300 bg-white px-2 py-0.5 font-medium text-purple-800 hover:bg-purple-100 disabled:opacity-50">
-                        {releasing === t.truckNumber ? 'Releasing…' : 'Release for this booking'}
-                      </button>
-                    </div>
-                  ))}
-                </div>
+                <SoftHoldReleaseOptions options={quoteResult.availability.requiresOverride!} releasing={releasing} onRelease={releaseForBooking} />
               )}
 
               {/* Data quality: a prior job's market did not geocode, so those
@@ -670,6 +661,47 @@ export default function InternalQuotePage() {
         </>
         )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * Trucks this quote can use only by overriding an AT&T soft hold, closest
+ * first. A soft hold on the booking's dates is released for those dates only
+ * (after the operations warning); a truck whose only problem is a LATER soft
+ * hold it would strand cannot be freed by that release, so it gets no button.
+ */
+function SoftHoldReleaseOptions({ options, releasing, onRelease }: {
+  options: OverrideOption[]
+  releasing: string | null
+  onRelease: (truckNumber: string) => void
+}) {
+  const releasable = options.filter(t => t.releasable).length
+  return (
+    <div className="mt-2 bg-purple-50 border border-purple-200 rounded-lg px-3 py-2 text-xs text-purple-800">
+      <p className="font-medium">
+        {options.length} truck{options.length !== 1 ? 's' : ''} held for AT&amp;T {options.length !== 1 ? 'are' : 'is'} not in this quote
+      </p>
+      {releasable > 0 && (
+        <p className="text-purple-600 mt-0.5">
+          Release the soft hold for this booking&apos;s dates to use {releasable !== 1 ? 'them' : 'it'}; the quote re-runs with the truck included.
+        </p>
+      )}
+      {options.map((t) => (
+        <div key={t.truckNumber} className="mt-1.5 flex items-start gap-2">
+          <p className="flex-1 text-purple-600">
+            <span className="font-medium">Truck {t.truckNumber}</span> ({t.from}, {t.needsTransport ? `${t.distanceMiles} mi, needs transport` : 'in market, no transport'}) — {t.detail}
+            {!t.releasable && ' Releasing these dates would not free it; check with operations.'}
+          </p>
+          {t.releasable && (
+            <button type="button" disabled={releasing === t.truckNumber}
+              onClick={() => onRelease(t.truckNumber)}
+              className="shrink-0 rounded border border-purple-300 bg-white px-2 py-0.5 font-medium text-purple-800 hover:bg-purple-100 disabled:opacity-50">
+              {releasing === t.truckNumber ? 'Releasing…' : 'Release for this booking'}
+            </button>
+          )}
+        </div>
+      ))}
     </div>
   )
 }

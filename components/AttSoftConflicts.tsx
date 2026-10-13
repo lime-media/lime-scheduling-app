@@ -6,7 +6,7 @@
  * warning) or dismissed when operations is not concerned. Both are recorded.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import { ATT_RELEASE_WARNING } from '@/lib/attSoftRules'
 import { SortableTh, useTableSort } from '@/components/SortableTh'
@@ -63,6 +63,8 @@ export function AttSoftConflicts() {
   const [busy, setBusy] = useState<string | null>(null)
   const conflictSort = useTableSort<ConflictKey>('conflicts.sort.attSoft', CONFLICT_COLUMNS.map(c => c.key))
   const releaseSort = useTableSort<ReleaseKey>('conflicts.sort.attReleases', RELEASE_COLUMNS.map(c => c.key))
+  const sortedRows = useMemo(() => sortRows(rows, conflictSort.sort, conflictValue), [rows, conflictSort.sort])
+  const sortedReleases = useMemo(() => sortRows(releases, releaseSort.sort, releaseValue), [releases, releaseSort.sort])
 
   const load = useCallback(async () => {
     setLoading(true); setError(null)
@@ -160,7 +162,7 @@ export function AttSoftConflicts() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {sortRows(rows, conflictSort.sort, conflictValue).map(r => (
+              {sortedRows.map(r => (
                 <tr key={r.key} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium text-gray-900 tabular-nums">#{r.truckNumber}</td>
                   <td className="px-4 py-3 text-gray-800 whitespace-nowrap">{range(r.overlap.start, r.overlap.end)}</td>
@@ -208,7 +210,7 @@ export function AttSoftConflicts() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {sortRows(releases, releaseSort.sort, releaseValue).map(r => (
+                {sortedReleases.map(r => (
                   <tr key={r.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3 font-medium text-gray-900 tabular-nums">#{r.truckNumber}</td>
                     <td className="px-4 py-3 text-gray-800 whitespace-nowrap">{range(r.start, r.end)}</td>

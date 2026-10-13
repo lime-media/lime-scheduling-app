@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useState, useEffect, useCallback } from 'react'
+import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 import { ClientHeader } from '@/components/ClientHeader'
@@ -170,30 +170,37 @@ export default function ClientHoldRequestsPage() {
     } catch { /* handled by UI */ }
   }, [extendReason, extendUntil, fetchRequests])
 
-  const filtered = filterStatus ? requests.filter((r) => r.status === filterStatus) : requests
   const { sort, sortBy, chooseSort } = useTableSort<SortKey>('client.holdRequests.sort', SORT_KEYS)
-
-  // Group by campaign_group_id for display
-  const grouped = new Map<string, HoldRequest[]>()
-  const ungrouped: HoldRequest[] = []
-  for (const r of filtered) {
-    if (r.campaign_group_id) {
-      const group = grouped.get(r.campaign_group_id) ?? []
-      group.push(r)
-      grouped.set(r.campaign_group_id, group)
-    } else {
-      ungrouped.push(r)
-    }
-  }
-
-  // The chosen sort orders the table, the campaign cards (by their lowest
-  // truck number for "Truck") and the trucks within each card.
-  const sortedUngrouped = sortRows(ungrouped, sort, sortValue)
-  const sortedGroups = sortRows(
-    Array.from(grouped.entries()).map(([id, rows]) => [id, sortRows(rows, sort, sortValue)] as const),
-    sort,
-    ([, rows], key) => (key === 'truck' ? minValue(rows.map(r => r.truck_number)) : sortValue(rows[0], key)),
+  const filtered = useMemo(
+    () => (filterStatus ? requests.filter((r) => r.status === filterStatus) : requests),
+    [requests, filterStatus],
   )
+
+  // Group by campaign_group_id for display. The chosen sort orders the table,
+  // the campaign cards (by their lowest truck number for "Truck") and the
+  // trucks within each card. Memoized, so typing an extension reason does not
+  // regroup and re-sort the list.
+  const { sortedGroups, sortedUngrouped } = useMemo(() => {
+    const grouped = new Map<string, HoldRequest[]>()
+    const ungrouped: HoldRequest[] = []
+    for (const r of filtered) {
+      if (r.campaign_group_id) {
+        const group = grouped.get(r.campaign_group_id) ?? []
+        group.push(r)
+        grouped.set(r.campaign_group_id, group)
+      } else {
+        ungrouped.push(r)
+      }
+    }
+    return {
+      sortedUngrouped: sortRows(ungrouped, sort, sortValue),
+      sortedGroups: sortRows(
+        Array.from(grouped.entries()).map(([id, rows]) => [id, sortRows(rows, sort, sortValue)] as const),
+        sort,
+        ([, rows], key) => (key === 'truck' ? minValue(rows.map(r => r.truck_number)) : sortValue(rows[0], key)),
+      ),
+    }
+  }, [filtered, sort])
 
   const canExtend = (r: HoldRequest) =>
     ['PENDING', 'APPROVED', 'EXPIRED'].includes(r.status) && r.status !== 'EXTENSION_REQUESTED'
@@ -367,7 +374,7 @@ export default function ClientHoldRequestsPage() {
                 })}
 
                 {/* Ungrouped (legacy or single-truck holds without pricing) */}
-                {ungrouped.length > 0 && (
+                {sortedUngrouped.length > 0 && (
                   <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">
@@ -432,8 +439,8 @@ export default function ClientHoldRequestsPage() {
             )}
 
             {/* Extension modal for ungrouped holds */}
-            {extending && !Array.from(grouped.values()).flat().some(r => r.id === extending) && (() => {
-              const holdReq = ungrouped.find(r => r.id === extending)
+            {extending && !sortedGroups.some(([, rows]) => rows.some(r => r.id === extending)) && (() => {
+              const holdReq = sortedUngrouped.find(r => r.id === extending)
               if (!holdReq) return null
               const today = new Date().toISOString().split('T')[0]
               const expiresDate = holdReq.expires_at ? holdReq.expires_at.split('T')[0] : today

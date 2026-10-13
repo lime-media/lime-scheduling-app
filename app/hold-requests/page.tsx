@@ -447,34 +447,39 @@ export default function HoldRequestsPage() {
 
   // Group by campaign_group_id or sfdc_opportunity_id so multi-truck reservations
   // are reviewed as one unit. Salesforce pushes share sfdc_opportunity_id;
-  // client holds share campaign_group_id.
-  const grouped = new Map<string, HoldRequest[]>()
-  const ungrouped: HoldRequest[] = []
-  for (const r of filtered) {
-    const groupKey = r.campaign_group_id || r.sfdc_opportunity_id
-    if (groupKey) {
-      const group = grouped.get(groupKey) ?? []
-      group.push(r)
-      grouped.set(groupKey, group)
-    } else {
-      ungrouped.push(r)
+  // client holds share campaign_group_id. Then the chosen sort orders the table
+  // rows, the campaign cards, and the trucks within each card; with none
+  // chosen, the API's order (newest first) stands. Memoized with the filter
+  // above, so typing in a dialog does not regroup and re-sort the list.
+  const { sortedGroups, sortedUngrouped } = useMemo(() => {
+    const grouped = new Map<string, HoldRequest[]>()
+    const ungrouped: HoldRequest[] = []
+    for (const r of filtered) {
+      const groupKey = r.campaign_group_id || r.sfdc_opportunity_id
+      if (groupKey) {
+        const group = grouped.get(groupKey) ?? []
+        group.push(r)
+        grouped.set(groupKey, group)
+      } else {
+        ungrouped.push(r)
+      }
     }
-  }
-  // Single-item "groups" aren't really groups — move them to ungrouped
-  for (const [key, items] of grouped) {
-    if (items.length === 1) {
-      ungrouped.push(items[0])
-      grouped.delete(key)
+    // Single-item "groups" aren't really groups — move them to ungrouped
+    for (const [key, items] of grouped) {
+      if (items.length === 1) {
+        ungrouped.push(items[0])
+        grouped.delete(key)
+      }
     }
-  }
-  // The chosen sort orders the table rows, the campaign cards, and the trucks
-  // within each card. With none chosen, the API's order (newest first) stands.
-  const sortedUngrouped = sortRows(ungrouped, sort, sortValue)
-  const sortedGroups = sortRows(
-    Array.from(grouped.entries()).map(([id, rows]) => [id, sortRows(rows, sort, sortValue)] as const),
-    sort,
-    ([, rows], key) => groupSortValue([...rows], key),
-  )
+    return {
+      sortedUngrouped: sortRows(ungrouped, sort, sortValue),
+      sortedGroups: sortRows(
+        Array.from(grouped.entries()).map(([id, rows]) => [id, sortRows(rows, sort, sortValue)] as const),
+        sort,
+        ([, rows], key) => groupSortValue([...rows], key),
+      ),
+    }
+  }, [filtered, sort])
 
   function Actions({ ids, status, groupKey, requests: actionRequests, quoteOnly = false }: { ids: string[]; status: string; groupKey: string; requests?: HoldRequest[]; quoteOnly?: boolean }) {
     const busy = acting === groupKey
@@ -690,7 +695,7 @@ export default function HoldRequestsPage() {
             })}
 
             {/* Ungrouped (single-truck requests without a campaign group, or legacy rows) */}
-            {ungrouped.length > 0 && (
+            {sortedUngrouped.length > 0 && (
               <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">

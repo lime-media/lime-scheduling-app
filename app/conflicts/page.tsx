@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
@@ -93,6 +93,8 @@ export default function ConflictsPage() {
   const [infeasible,        setInfeasible]        = useState<InfeasibleHold[]>([])
   const conflictSort = useTableSort<ConflictKey>('conflicts.sort.schedule', CONFLICT_COLUMNS.map(c => c.key))
   const infeasibleSort = useTableSort<InfeasibleKey>('conflicts.sort.infeasible', INFEASIBLE_COLUMNS.map(c => c.key))
+  const sortedConflicts = useMemo(() => sortRows(conflicts, conflictSort.sort, conflictValue), [conflicts, conflictSort.sort])
+  const sortedInfeasible = useMemo(() => sortRows(infeasible, infeasibleSort.sort, infeasibleValue), [infeasible, infeasibleSort.sort])
   const [infeasibleLoading, setInfeasibleLoading] = useState(true)
   // A failed audit must never render as "nothing to report" — this is the one
   // table whose job is catching unservable bookings.
@@ -214,7 +216,7 @@ export default function ConflictsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {sortRows(conflicts, conflictSort.sort, conflictValue).map((c) => (
+                  {sortedConflicts.map((c) => (
                     <tr key={c.id} className="hover:bg-red-50/30 transition-colors">
                       <td className="px-4 py-3 font-semibold text-gray-800">{c.truck_number}</td>
                       <td className="px-4 py-3 text-gray-700">{c.hold_client}</td>
@@ -320,7 +322,7 @@ export default function ConflictsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {sortRows(infeasible, infeasibleSort.sort, infeasibleValue).map((h) => (
+                  {sortedInfeasible.map((h) => (
                     <tr key={h.holdId} className="hover:bg-amber-50/30 transition-colors align-top">
                       <td className="px-4 py-3 font-semibold text-gray-800">{h.truckNumber}</td>
                       <td className="px-4 py-3 text-gray-700">{h.clientName}</td>

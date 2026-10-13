@@ -6,6 +6,8 @@ import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
 import { Navbar } from '@/components/Navbar'
 import { AttSoftConflicts } from '@/components/AttSoftConflicts'
+import { SortableTh, useTableSort } from '@/components/SortableTh'
+import { sortRows, type SortValue } from '@/lib/tableSort'
 
 type InfeasibleHold = {
   holdId:       string
@@ -51,6 +53,34 @@ function relativeTime(iso: string): string {
   return `${Math.floor(diffHrs / 24)}d ago`
 }
 
+const CONFLICT_COLUMNS = [
+  { key: 'truck', label: 'Truck' },
+  { key: 'client', label: 'Hold Client' },
+  { key: 'market', label: 'Market' },
+  { key: 'program', label: 'LED Program' },
+  { key: 'dates', label: 'Conflict Dates' },
+  { key: 'detected', label: 'Detected' },
+] as const
+type ConflictKey = typeof CONFLICT_COLUMNS[number]['key']
+const conflictValue = (c: Conflict, key: ConflictKey): SortValue => ({
+  truck: c.truck_number, client: c.hold_client, market: c.hold_market, program: c.scheduled_program,
+  dates: `${c.conflict_start} ${c.conflict_end}`, detected: c.detected_at,
+})[key]
+
+const INFEASIBLE_COLUMNS = [
+  { key: 'truck', label: 'Truck' },
+  { key: 'client', label: 'Client' },
+  { key: 'market', label: 'Market' },
+  { key: 'dates', label: 'Dates' },
+  { key: 'source', label: 'Source' },
+  { key: 'problem', label: 'Problem' },
+] as const
+type InfeasibleKey = typeof INFEASIBLE_COLUMNS[number]['key']
+const infeasibleValue = (h: InfeasibleHold, key: InfeasibleKey): SortValue => ({
+  truck: h.truckNumber, client: h.clientName, market: h.market, dates: `${h.startDate} ${h.endDate}`,
+  source: `${h.source} ${h.origination}`, problem: REASON_LABELS[h.reason] ?? h.reason,
+})[key]
+
 export default function ConflictsPage() {
   const { data: session, status } = useSession()
   const router = useRouter()
@@ -61,6 +91,8 @@ export default function ConflictsPage() {
   // writes, which bypass the feasibility gate on purpose — plus anything that
   // became impossible after a neighbouring job moved.
   const [infeasible,        setInfeasible]        = useState<InfeasibleHold[]>([])
+  const conflictSort = useTableSort<ConflictKey>('conflicts.sort.schedule', CONFLICT_COLUMNS.map(c => c.key))
+  const infeasibleSort = useTableSort<InfeasibleKey>('conflicts.sort.infeasible', INFEASIBLE_COLUMNS.map(c => c.key))
   const [infeasibleLoading, setInfeasibleLoading] = useState(true)
   // A failed audit must never render as "nothing to report" — this is the one
   // table whose job is catching unservable bookings.
@@ -175,17 +207,14 @@ export default function ConflictsPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50/80 border-b border-gray-200">
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Truck</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Hold Client</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Market</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">LED Program</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Conflict Dates</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Detected</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
+                    {CONFLICT_COLUMNS.map(c => (
+                      <SortableTh key={c.key} label={c.label} sortKey={c.key} sort={conflictSort.sort} onSort={conflictSort.sortBy} />
+                    ))}
+                    <SortableTh label="Actions" sort={conflictSort.sort} onSort={conflictSort.sortBy} />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {conflicts.map((c) => (
+                  {sortRows(conflicts, conflictSort.sort, conflictValue).map((c) => (
                     <tr key={c.id} className="hover:bg-red-50/30 transition-colors">
                       <td className="px-4 py-3 font-semibold text-gray-800">{c.truck_number}</td>
                       <td className="px-4 py-3 text-gray-700">{c.hold_client}</td>
@@ -285,16 +314,13 @@ export default function ConflictsPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50/80 border-b border-gray-200">
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Truck</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Client</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Market</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Dates</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Source</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Problem</th>
+                    {INFEASIBLE_COLUMNS.map(c => (
+                      <SortableTh key={c.key} label={c.label} sortKey={c.key} sort={infeasibleSort.sort} onSort={infeasibleSort.sortBy} />
+                    ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {infeasible.map((h) => (
+                  {sortRows(infeasible, infeasibleSort.sort, infeasibleValue).map((h) => (
                     <tr key={h.holdId} className="hover:bg-amber-50/30 transition-colors align-top">
                       <td className="px-4 py-3 font-semibold text-gray-800">{h.truckNumber}</td>
                       <td className="px-4 py-3 text-gray-700">{h.clientName}</td>

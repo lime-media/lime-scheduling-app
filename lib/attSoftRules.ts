@@ -75,6 +75,43 @@ export function releaseBlockedReason(opts: { attTrucks: number; softHolds: numbe
   return null
 }
 
+/** A person's approval of a mass release the safety valve held back (lib/attSoftHolds.ts). */
+export type MassReleaseApproval = { trucks: string[]; by: string; byName: string; at: string }
+
+/** An approval is used by the next sync; one older than this is ignored. */
+export const MASS_RELEASE_APPROVAL_HOURS = 24
+
+/**
+ * Sync step 3's decision on soft holds whose truck is no longer AT&T's.
+ *
+ * Trucks a person approved (within MASS_RELEASE_APPROVAL_HOURS) are released
+ * whatever their number: the valve exists to make a person look, and one
+ * has. The valve is then applied to the rest only, so a different drop that
+ * shows up later is still held back. Pure.
+ */
+export function planPremiseRelease<T extends { truck_number: string }>(opts: {
+  toRelease: T[]
+  softHolds: number
+  attTrucks: number
+  approval: MassReleaseApproval | null
+  now: Date
+}): { release: T[]; keep: T[]; approvedUsed: boolean; blocked: string | null } {
+  const fresh = opts.approval
+    && opts.now.getTime() - new Date(opts.approval.at).getTime() <= MASS_RELEASE_APPROVAL_HOURS * 3600e3
+  const ok = new Set(fresh ? opts.approval!.trucks : [])
+  const approved = opts.toRelease.filter(h => ok.has(h.truck_number))
+  const rest = opts.toRelease.filter(h => !ok.has(h.truck_number))
+  const blocked = rest.length
+    ? releaseBlockedReason({ attTrucks: opts.attTrucks, softHolds: opts.softHolds - approved.length, wouldRelease: rest.length })
+    : null
+  return {
+    release: blocked ? approved : [...approved, ...rest],
+    keep: blocked ? rest : [],
+    approvedUsed: approved.length > 0,
+    blocked,
+  }
+}
+
 /** The months whose 160over90 days decide which trucks are AT&T's, as of `today`. */
 export function attLookback(today: string): { current: { from: string; to: string }; prior: { from: string; to: string } | null } {
   const t = utc(today)

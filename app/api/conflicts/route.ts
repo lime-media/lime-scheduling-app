@@ -11,17 +11,24 @@ export async function GET() {
 
   try {
     const pool   = await getPool()
+    // One row per reservation × LED-program block, over a date range
+    // (lib/scheduleCache.ts mergeScheduleBlocks), with the reservation's own
+    // dates and origin so the page can say what overlaps what.
     const result = await pool.request().query(`
       SELECT
-        id, hold_id, truck_number,
-        CONVERT(varchar(10), conflict_start, 120) AS conflict_start,
-        CONVERT(varchar(10), conflict_end,   120) AS conflict_end,
-        hold_client, hold_market, scheduled_program,
-        status,
-        CONVERT(varchar(30), detected_at, 127) AS detected_at
-      FROM dbo.schedule_conflicts
-      WHERE status = 'ACTIVE'
-      ORDER BY detected_at DESC
+        c.id, c.hold_id, c.truck_number,
+        CONVERT(varchar(10), c.conflict_start, 120) AS conflict_start,
+        CONVERT(varchar(10), c.conflict_end,   120) AS conflict_end,
+        c.hold_client, c.hold_market, c.scheduled_program,
+        c.status,
+        CONVERT(varchar(30), c.detected_at, 127) AS detected_at,
+        CONVERT(varchar(10), h.start_date, 120) AS hold_start,
+        CONVERT(varchar(10), h.end_date,   120) AS hold_end,
+        h.status AS hold_status, h.source AS hold_source
+      FROM dbo.schedule_conflicts c
+      LEFT JOIN dbo.app_holds h ON h.id = c.hold_id
+      WHERE c.status = 'ACTIVE'
+      ORDER BY c.detected_at DESC
     `)
     return NextResponse.json({ conflicts: result.recordset })
   } catch (error) {

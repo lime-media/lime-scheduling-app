@@ -33,6 +33,12 @@ export type InfeasibleHold = {
   detail: string
   /** True when the blocker is a soft hold — resolvable without moving this booking. */
   overridable: boolean
+  /**
+   * For BOOKED: what the hold sits on. The Conflicts page lists LED-program
+   * and AT&T soft-hold clashes in their own sections (schedule_conflicts,
+   * AT&T soft-hold conflicts), so it shows only RESERVATION clashes here.
+   */
+  clashWith?: 'RESERVATION' | 'SCHEDULE' | 'SOFT_HOLD'
 }
 
 export type HoldAuditResult = {
@@ -92,7 +98,9 @@ export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
     // test the window — it treats a straddling job as neither predecessor nor
     // successor — so an audit that only called it would miss the most direct
     // conflict there is.
-    const clash = findWindowClash(jobs, h.start_date, h.end_date)
+    // Another reservation first: it is the clash no other section reports.
+    const clash = findWindowClash(jobs.filter(j => j.source === 'HOLD' && !j.yieldable), h.start_date, h.end_date)
+      ?? findWindowClash(jobs, h.start_date, h.end_date)
     if (clash) {
       infeasible.push({
         holdId: h.id,
@@ -109,6 +117,7 @@ export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
           ? `Overlaps scheduled program "${clash.program || 'unnamed'}" in ${clash.market || 'another market'} from ${clash.start} to ${clash.end}.`
           : `Overlaps another hold (${clash.status ?? 'HOLD'}) from ${clash.start} to ${clash.end}.`,
         overridable: clash.yieldable,
+        clashWith: clash.source === 'SCHEDULE' ? 'SCHEDULE' : clash.yieldable ? 'SOFT_HOLD' : 'RESERVATION',
       })
       continue
     }

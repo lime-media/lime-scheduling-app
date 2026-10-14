@@ -15,6 +15,7 @@ import { warnExpiringHolds } from '@/lib/holdExpiryWarnings'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 import { syncAttSoftHolds } from '@/lib/attSoftHolds'
+import { freeRanges } from '@/lib/attSoftRules'
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────
 
@@ -299,6 +300,30 @@ function conflictKey(holdId: string, truckNumber: string, start: string, end: st
   return `${holdId}|${truckNumber}|${start}|${end}`
 }
 
+const nextDay = (d: string) => new Date(Date.parse(d + 'T00:00:00Z') + 864e5).toISOString().slice(0, 10)
+
+/**
+ * The LED schedule as blocks: consecutive days of one program on one truck
+ * merged into a single range. SCHEDULED_QUERY returns a row per scheduled
+ * day, so without this a reservation over a month of a program raised thirty
+ * one-day conflicts (thirty rows on the Conflicts page, thirty emails) for
+ * what is one problem. A gap of a day or more starts a new block. Pure.
+ */
+export function mergeScheduleBlocks(schedules: ConflictSchedule[]): ConflictSchedule[] {
+  const sorted = [...schedules].sort((a, b) =>
+    a.truck_number.localeCompare(b.truck_number) || a.program.localeCompare(b.program) || a.shift_start.localeCompare(b.shift_start))
+  const out: ConflictSchedule[] = []
+  for (const s of sorted) {
+    const last = out[out.length - 1]
+    if (last && last.truck_number === s.truck_number && last.program === s.program && s.shift_start <= nextDay(last.shift_end)) {
+      if (s.shift_end > last.shift_end) last.shift_end = s.shift_end
+    } else {
+      out.push({ ...s })
+    }
+  }
+  return out
+}
+
 /**
  * Every overlap present in the CURRENT data — the single definition of "this conflict is
  * real", shared by the two passes below so they can never drift apart. detectConflicts()
@@ -312,9 +337,10 @@ export function findConflicts(
   holds:     ConflictHold[]
 ): DetectedConflict[] {
   const found: DetectedConflict[] = []
+  const blocks = mergeScheduleBlocks(schedules)
 
   for (const hold of holds) {
-    const overlapping = schedules.filter(
+    const overlapping = blocks.filter(
       (s) =>
         s.truck_number === hold.truck_number &&
         s.shift_start  <= hold.end_date &&
@@ -403,6 +429,29 @@ export async function reconcileConflicts(
   return { resolved }
 }
 
+/**
+ * What earlier rows say about a newly found conflict over [start, end], for
+ * the same reservation and truck:
+ * - 'dismissed': people dismissed every one of these days ("keep both, stop
+ *   flagging"), so it is not raised again.
+ * - 'reported': some of these days were already raised, so it is recorded
+ *   but not emailed again (a conflict that grew, shifted, or was merged from
+ *   one-day rows).
+ * - 'new': nothing before; record and email. Pure.
+ */
+export function priorDecision(
+  start: string,
+  end: string,
+  prior: { conflict_start: string; conflict_end: string; status: string; resolved_by: string | null }[],
+): 'dismissed' | 'reported' | 'new' {
+  const over = prior.filter(p => p.conflict_start <= end && p.conflict_end >= start)
+  const byPerson = over
+    .filter(p => p.status === 'RESOLVED' && p.resolved_by)
+    .map(p => ({ start: p.conflict_start, end: p.conflict_end }))
+  if (byPerson.length && freeRanges(start, end, byPerson).length === 0) return 'dismissed'
+  return over.length ? 'reported' : 'new'
+}
+
 export async function detectConflicts(
   schedules: ConflictSchedule[],
   holds:     ConflictHold[]
@@ -413,6 +462,27 @@ export async function detectConflicts(
 
   for (const conflict of findConflicts(schedules, holds)) {
     const { hold, program, conflictStart, conflictEnd } = conflict
+
+    // What was recorded before for this reservation on this truck: a person
+    // dismissing these dates, or the conflict already having been reported
+    // (by day, before conflicts were merged into ranges, or before its
+    // window shifted).
+    const prior = await pool
+      .request()
+      .input('holdId',      hold.id)
+      .input('truckNumber', hold.truck_number)
+      .input('from',        conflictStart)
+      .input('to',          conflictEnd)
+      .query(`
+        SELECT CONVERT(varchar(10), conflict_start, 120) AS conflict_start,
+               CONVERT(varchar(10), conflict_end,   120) AS conflict_end,
+               status, resolved_by
+        FROM dbo.schedule_conflicts
+        WHERE hold_id = @holdId AND truck_number = @truckNumber
+          AND conflict_start <= @to AND conflict_end >= @from
+      `)
+    const decision = priorDecision(conflictStart, conflictEnd, prior.recordset)
+    if (decision === 'dismissed') continue
 
     // Skip if this truck+hold+date window is already recorded.
     const existing = await pool
@@ -453,6 +523,9 @@ export async function detectConflicts(
     console.log(
       `[conflicts] new conflict: truck ${hold.truck_number} | hold "${hold.client_name}" ↔ schedule "${program}" (${conflictStart}–${conflictEnd})`
     )
+
+    // Already reported: recorded, but no second email for the same days.
+    if (decision === 'reported') continue
 
     // Fire-and-forget email — don't let email failure break the detection loop
     sendConflictEmail({

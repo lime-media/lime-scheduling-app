@@ -274,6 +274,26 @@ export function validateRosterOverride(o: { action: string; start: string; end: 
   return null
 }
 
+/**
+ * Soft holds are written a month at a time, so one reservation across a month
+ * boundary clashes with two soft-hold pieces. For the Conflicts page these are
+ * one problem: merge the pieces per reservation into one row, with the soft
+ * hold and overlap spanning all of them. Pure.
+ */
+export function mergeSoftHoldClashes<T extends { reservationId: string; softHoldId: string; softHold: Range; overlap: Range }>(
+  clashes: T[],
+): (T & { softHoldIds: string[] })[] {
+  const by = new Map<string, T & { softHoldIds: string[] }>()
+  for (const c of clashes) {
+    const m = by.get(c.reservationId)
+    if (!m) { by.set(c.reservationId, { ...c, softHoldIds: [c.softHoldId] }); continue }
+    m.softHoldIds.push(c.softHoldId)
+    m.softHold = { start: c.softHold.start < m.softHold.start ? c.softHold.start : m.softHold.start, end: c.softHold.end > m.softHold.end ? c.softHold.end : m.softHold.end }
+    m.overlap = { start: c.overlap.start < m.overlap.start ? c.overlap.start : m.overlap.start, end: c.overlap.end > m.overlap.end ? c.overlap.end : m.overlap.end }
+  }
+  return [...by.values()]
+}
+
 /** Can this record be reinstated as a live hold? Release records never can. */
 export function reinstateBlockedByRelease(origination: string | null | undefined): string | null {
   return origination === ATT_RELEASE_ORIGINATION

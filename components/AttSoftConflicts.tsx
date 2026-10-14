@@ -15,6 +15,8 @@ import { sortRows, type SortValue } from '@/lib/tableSort'
 type Row = {
   key: string
   softHoldId: string
+  /** Every monthly soft-hold piece this reservation sits on. */
+  softHoldIds: string[]
   reservationId: string
   truckNumber: string
   softHold: { start: string; end: string }
@@ -55,7 +57,7 @@ const releaseValue = (r: Release, key: ReleaseKey): SortValue => ({
   truck: r.truckNumber, dates: `${r.start} ${r.end}`, for: releaseFor(r), by: r.by,
 })[key]
 
-export function AttSoftConflicts() {
+export function AttSoftConflicts({ onCount }: { onCount?: (n: number) => void } = {}) {
   const [releases, setReleases] = useState<Release[]>([])
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
@@ -81,6 +83,7 @@ export function AttSoftConflicts() {
     }
   }, [])
   useEffect(() => { load() }, [load])
+  useEffect(() => { if (!loading) onCount?.(rows.length) }, [rows.length, loading, onCount])
 
   const release = async (r: Row) => {
     if (!confirm(ATT_RELEASE_WARNING)) return
@@ -128,6 +131,13 @@ export function AttSoftConflicts() {
         body: JSON.stringify({ softHoldId: r.softHoldId, reservationId: r.reservationId }),
       })
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Dismiss failed')
+      // The other monthly pieces of the same soft hold.
+      for (const id of r.softHoldIds.filter(x => x !== r.softHoldId)) {
+        await fetch('/api/holds/att-soft/conflicts', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ softHoldId: id, reservationId: r.reservationId }),
+        })
+      }
       setRows(prev => prev.filter(x => x.key !== r.key))
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Dismiss failed')
@@ -139,17 +149,17 @@ export function AttSoftConflicts() {
   return (
     <section className="mt-10">
       <div className="flex items-center gap-3 mb-1">
-        <h2 className="text-xl font-bold text-gray-900">AT&amp;T Soft Holds With a Conflict</h2>
+        <h2 className="text-xl font-bold text-gray-900">2. On an AT&amp;T soft hold</h2>
         {rows.length > 0 && <span className="bg-blue-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">{rows.length}</span>}
       </div>
       <p className="text-sm text-gray-500 mb-4">
-        A reservation sits on days reserved for AT&amp;T. Release the soft hold for that booking&apos;s dates once operations agrees, or dismiss it if you are not concerned.
+        A reservation sits on days reserved for AT&amp;T. One row per reservation. Release the soft hold for the overlapping dates once operations agrees, or dismiss it if you are not concerned.
       </p>
       {error && <div className="mb-3 bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-800">{error}</div>}
       {loading ? (
         <div className="text-sm text-gray-500">Checking…</div>
       ) : rows.length === 0 ? (
-        <div className="text-sm text-gray-500 bg-white border border-gray-200 rounded-xl px-4 py-6 text-center">No AT&amp;T soft hold has a conflict.</div>
+        <div className="text-sm text-gray-500 bg-white border border-gray-200 rounded-xl px-4 py-6 text-center">No reservation sits on an AT&amp;T soft hold.</div>
       ) : (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
           <table className="w-full text-sm">
@@ -193,9 +203,12 @@ export function AttSoftConflicts() {
         </div>
       )}
 
-      <div className="mt-8">
-        <h3 className="text-base font-semibold text-gray-900 mb-1">Released AT&amp;T soft holds</h3>
-        <p className="text-sm text-gray-500 mb-3">Dates released for a booking, still in effect. Undo puts them back to AT&amp;T at the next sync.</p>
+      {/* History, not a conflict: collapsed so it does not read as more to fix. */}
+      <details className="mt-6">
+        <summary className="cursor-pointer text-sm font-semibold text-gray-700 hover:text-gray-900">
+          Released AT&amp;T soft holds ({releases.length})
+        </summary>
+        <p className="text-sm text-gray-500 mt-2 mb-3">Dates released for a booking, still in effect. Undo puts them back to AT&amp;T at the next sync.</p>
         {releases.length === 0 ? (
           <div className="text-sm text-gray-500 bg-white border border-gray-200 rounded-xl px-4 py-4 text-center">No releases in effect.</div>
         ) : (
@@ -228,7 +241,7 @@ export function AttSoftConflicts() {
             </table>
           </div>
         )}
-      </div>
+      </details>
     </section>
   )
 }

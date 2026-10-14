@@ -5,7 +5,8 @@
  * pushed from Salesforce. Normal per-day yielding to another client's LED
  * shift is not a clash and is not listed.
  *
- * GET  — the clashes not yet dismissed.
+ * GET  — the clashes not yet dismissed, one per reservation: its monthly
+ *        soft-hold pieces merged (mergeSoftHoldClashes), with their ids.
  * POST — { softHoldId, reservationId }: dismiss one ("not concerned"). The
  *        dismissal is an audit-log entry, so who dismissed what stays on record.
  */
@@ -15,6 +16,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
+import { mergeSoftHoldClashes } from '@/lib/attSoftRules'
 
 const DISMISS = 'DISMISS_ATT_SOFT_CONFLICT'
 const iso = (d: Date) => d.toISOString().slice(0, 10)
@@ -58,8 +60,9 @@ export async function GET() {
       })
     }
   }
-  conflicts.sort((a, b) => a.overlap.start.localeCompare(b.overlap.start) || a.truckNumber.localeCompare(b.truckNumber))
-  return NextResponse.json({ conflicts })
+  const merged = mergeSoftHoldClashes(conflicts).map(c => ({ ...c, key: c.reservationId }))
+  merged.sort((a, b) => a.overlap.start.localeCompare(b.overlap.start) || a.truckNumber.localeCompare(b.truckNumber))
+  return NextResponse.json({ conflicts: merged })
 }
 
 export async function POST(req: Request) {

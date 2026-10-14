@@ -2,6 +2,7 @@
 
 import { ATT_RELEASE_WARNING, ATT_RELEASE_MAX_DAYS, validateReleaseRange } from '@/lib/attSoftRules'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
+import { SERVICE_AREA_RADIUS_MILES } from '@/lib/pricing/config'
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 import toast from 'react-hot-toast'
@@ -11,6 +12,8 @@ import { parseDateOnly } from '@/lib/dateOnly'
 import { formatMarketState } from '@/lib/format'
 import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
+import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
+import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
 
 type HoldRequest = {
   id: string
@@ -67,6 +70,42 @@ const SOURCE_LABEL: Record<string, string> = {
 
 function fmtMoney(n: number): string {
   return '$' + Math.round(n).toLocaleString('en-US')
+}
+
+/** Sortable columns, in table order. */
+const SORT_COLUMNS = [
+  { key: 'truck', label: 'Truck' },
+  { key: 'client', label: 'Client' },
+  { key: 'market', label: 'Market' },
+  { key: 'dates', label: 'Dates' },
+  { key: 'source', label: 'Source' },
+  { key: 'created_by', label: 'Created By' },
+  { key: 'pricing', label: 'Pricing' },
+  { key: 'status', label: 'Status' },
+  { key: 'expires', label: 'Expires' },
+] as const
+type SortKey = typeof SORT_COLUMNS[number]['key']
+const SORT_KEYS = SORT_COLUMNS.map(c => c.key)
+
+/** What a reservation shows in each column, as a sortable value. */
+function sortValue(r: HoldRequest, key: SortKey): SortValue {
+  switch (key) {
+    case 'truck':      return r.truck_number
+    case 'client':     return r.company_name
+    case 'market':     return formatMarketState(r.market, r.state)
+    case 'dates':      return `${r.start_date} ${r.end_date}`
+    case 'source':     return SOURCE_LABEL[r.source] ?? r.source
+    case 'created_by': return r.created_by_name
+    case 'pricing':    return r.quoted_total
+    case 'status':     return r.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[r.status] ?? r.status)
+    // Committed reservations show no expiry, so they sort with the blanks.
+    case 'expires':    return r.status === 'COMMITTED' ? null : r.expires_at
+  }
+}
+
+/** A campaign card sorts by its lowest truck number; everything else is shared by its trucks. */
+function groupSortValue(rows: HoldRequest[], key: SortKey): SortValue {
+  return key === 'truck' ? minValue(rows.map(r => r.truck_number)) : sortValue(rows[0], key)
 }
 
 function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; status: string }) {
@@ -131,6 +170,9 @@ export default function HoldRequestsPage() {
   const [requests,     setRequests]     = useState<HoldRequest[]>([])
   const [loading,      setLoading]      = useState(true)
   const [filterStatus, setFilterStatus] = useState<string>('HOLD')
+  // One remembered sort per status tab: AT&T soft holds by truck need not
+  // reorder the reservations tab.
+  const { sort, sortBy, chooseSort } = useTableSort<SortKey>(`reservations.sort.${filterStatus || 'all'}`, SORT_KEYS)
   const [search,       setSearch]       = useState('')
   const [acting,       setActing]       = useState<string | null>(null) // group/row id currently mid-action
 
@@ -405,26 +447,39 @@ export default function HoldRequestsPage() {
 
   // Group by campaign_group_id or sfdc_opportunity_id so multi-truck reservations
   // are reviewed as one unit. Salesforce pushes share sfdc_opportunity_id;
-  // client holds share campaign_group_id.
-  const grouped = new Map<string, HoldRequest[]>()
-  const ungrouped: HoldRequest[] = []
-  for (const r of filtered) {
-    const groupKey = r.campaign_group_id || r.sfdc_opportunity_id
-    if (groupKey) {
-      const group = grouped.get(groupKey) ?? []
-      group.push(r)
-      grouped.set(groupKey, group)
-    } else {
-      ungrouped.push(r)
+  // client holds share campaign_group_id. Then the chosen sort orders the table
+  // rows, the campaign cards, and the trucks within each card; with none
+  // chosen, the API's order (newest first) stands. Memoized with the filter
+  // above, so typing in a dialog does not regroup and re-sort the list.
+  const { sortedGroups, sortedUngrouped } = useMemo(() => {
+    const grouped = new Map<string, HoldRequest[]>()
+    const ungrouped: HoldRequest[] = []
+    for (const r of filtered) {
+      const groupKey = r.campaign_group_id || r.sfdc_opportunity_id
+      if (groupKey) {
+        const group = grouped.get(groupKey) ?? []
+        group.push(r)
+        grouped.set(groupKey, group)
+      } else {
+        ungrouped.push(r)
+      }
     }
-  }
-  // Single-item "groups" aren't really groups — move them to ungrouped
-  for (const [key, items] of grouped) {
-    if (items.length === 1) {
-      ungrouped.push(items[0])
-      grouped.delete(key)
+    // Single-item "groups" aren't really groups — move them to ungrouped
+    for (const [key, items] of grouped) {
+      if (items.length === 1) {
+        ungrouped.push(items[0])
+        grouped.delete(key)
+      }
     }
-  }
+    return {
+      sortedUngrouped: sortRows(ungrouped, sort, sortValue),
+      sortedGroups: sortRows(
+        Array.from(grouped.entries()).map(([id, rows]) => [id, sortRows(rows, sort, sortValue)] as const),
+        sort,
+        ([, rows], key) => groupSortValue([...rows], key),
+      ),
+    }
+  }, [filtered, sort])
 
   function Actions({ ids, status, groupKey, requests: actionRequests, quoteOnly = false }: { ids: string[]; status: string; groupKey: string; requests?: HoldRequest[]; quoteOnly?: boolean }) {
     const busy = acting === groupKey
@@ -537,8 +592,9 @@ export default function HoldRequestsPage() {
           <AttRosterPanel draft={rosterDraft} setDraft={setRosterDraft} onChanged={fetchRequests} />
         )}
 
-        {/* Search */}
-        <div className="relative max-w-md mb-6">
+        {/* Search and sort */}
+        <div className="flex flex-wrap items-center gap-3 mb-6">
+        <div className="relative flex-1 min-w-[16rem] max-w-md">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35m0 0A7.5 7.5 0 104.35 4.35a7.5 7.5 0 0012.3 12.3z" />
           </svg>
@@ -555,6 +611,8 @@ export default function HoldRequestsPage() {
             </button>
           )}
         </div>
+        <SortSelect columns={SORT_COLUMNS} sort={sort} onChange={chooseSort} defaultLabel="Newest first" />
+        </div>
 
         {loading ? (
           <TableSkeleton />
@@ -568,7 +626,7 @@ export default function HoldRequestsPage() {
         ) : (
           <div className="space-y-4">
             {/* Campaign groups — one card per campaign, actions apply to every truck in it */}
-            {Array.from(grouped.entries()).map(([groupId, groupItems]) => {
+            {sortedGroups.map(([groupId, groupItems]) => {
               const first = groupItems[0]
               const ids = groupItems.map((g) => g.id)
               return (
@@ -637,21 +695,20 @@ export default function HoldRequestsPage() {
             })}
 
             {/* Ungrouped (single-truck requests without a campaign group, or legacy rows) */}
-            {ungrouped.length > 0 && (
+            {sortedUngrouped.length > 0 && (
               <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead className="bg-gray-50/80 border-b border-gray-200">
                       <tr>
-                        {['Truck', 'Client', 'Market', 'Dates', 'Source', 'Created By', 'Pricing', 'Status', 'Expires', 'Actions'].map((col) => (
-                          <th key={col} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                            {col}
-                          </th>
+                        {SORT_COLUMNS.map((c) => (
+                          <SortableTh key={c.key} label={c.label} sortKey={c.key} sort={sort} onSort={sortBy} />
                         ))}
+                        <SortableTh label="Actions" sort={sort} onSort={sortBy} />
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {ungrouped.map((r) => {
+                      {sortedUngrouped.map((r) => {
                         const parsedFeatures = parseQuoteFeatures(r.features)
                         return (
                           <Fragment key={r.id}>
@@ -766,7 +823,9 @@ export default function HoldRequestsPage() {
                                                   TRANSPORT {t.transportDays}d · {fmtMoney(t.transportCharge)}
                                                 </span>
                                               ) : (
-                                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-green-100 text-green-800">IN MARKET</span>
+                                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-green-100 text-green-800" title={`Within the ${SERVICE_AREA_RADIUS_MILES}-mile service area: no transport charge`}>
+                                                  {t.distanceMiles <= 50 ? 'LOCAL' : 'NO TRANSPORT'}
+                                                </span>
                                               )}
                                               {t.requiresOverride && (
                                                 <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-purple-100 text-purple-800">NEEDS SOFT-HOLD RELEASE</span>

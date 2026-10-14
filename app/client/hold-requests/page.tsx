@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useState, useEffect, useCallback } from 'react'
+import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 import { ClientHeader } from '@/components/ClientHeader'
@@ -9,6 +9,8 @@ import { useClientAuth, hasHoldRequestsAccess } from '@/lib/useClientAuth'
 import { parseDateOnly } from '@/lib/dateOnly'
 import { formatMarketState } from '@/lib/format'
 import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
+import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
+import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
 
 type HoldRequest = {
   id: string
@@ -91,6 +93,30 @@ function PricingBadge({ tier, total }: { tier: string | null; total: number | nu
   )
 }
 
+/** The status as this page shows it. */
+const statusLabel = (status: string) =>
+  status === 'EXTENSION_REQUESTED' ? 'Ext. Req.' : status === 'HOLD' ? 'Reservation' : status === 'COMMITTED' ? 'Committed' : status
+
+const SORT_COLUMNS = [
+  { key: 'truck', label: 'Truck' },
+  { key: 'market', label: 'Market' },
+  { key: 'dates', label: 'Dates' },
+  { key: 'pricing', label: 'Pricing' },
+  { key: 'status', label: 'Status' },
+] as const
+type SortKey = typeof SORT_COLUMNS[number]['key']
+const SORT_KEYS = SORT_COLUMNS.map(c => c.key)
+
+function sortValue(r: HoldRequest, key: SortKey): SortValue {
+  switch (key) {
+    case 'truck':   return r.truck_number
+    case 'market':  return formatMarketState(r.market, r.state)
+    case 'dates':   return `${r.start_date} ${r.end_date}`
+    case 'pricing': return r.quoted_total
+    case 'status':  return statusLabel(r.status)
+  }
+}
+
 export default function ClientHoldRequestsPage() {
   const { clientUser, authChecked } = useClientAuth()
 
@@ -144,20 +170,37 @@ export default function ClientHoldRequestsPage() {
     } catch { /* handled by UI */ }
   }, [extendReason, extendUntil, fetchRequests])
 
-  const filtered = filterStatus ? requests.filter((r) => r.status === filterStatus) : requests
+  const { sort, sortBy, chooseSort } = useTableSort<SortKey>('client.holdRequests.sort', SORT_KEYS)
+  const filtered = useMemo(
+    () => (filterStatus ? requests.filter((r) => r.status === filterStatus) : requests),
+    [requests, filterStatus],
+  )
 
-  // Group by campaign_group_id for display
-  const grouped = new Map<string, HoldRequest[]>()
-  const ungrouped: HoldRequest[] = []
-  for (const r of filtered) {
-    if (r.campaign_group_id) {
-      const group = grouped.get(r.campaign_group_id) ?? []
-      group.push(r)
-      grouped.set(r.campaign_group_id, group)
-    } else {
-      ungrouped.push(r)
+  // Group by campaign_group_id for display. The chosen sort orders the table,
+  // the campaign cards (by their lowest truck number for "Truck") and the
+  // trucks within each card. Memoized, so typing an extension reason does not
+  // regroup and re-sort the list.
+  const { sortedGroups, sortedUngrouped } = useMemo(() => {
+    const grouped = new Map<string, HoldRequest[]>()
+    const ungrouped: HoldRequest[] = []
+    for (const r of filtered) {
+      if (r.campaign_group_id) {
+        const group = grouped.get(r.campaign_group_id) ?? []
+        group.push(r)
+        grouped.set(r.campaign_group_id, group)
+      } else {
+        ungrouped.push(r)
+      }
     }
-  }
+    return {
+      sortedUngrouped: sortRows(ungrouped, sort, sortValue),
+      sortedGroups: sortRows(
+        Array.from(grouped.entries()).map(([id, rows]) => [id, sortRows(rows, sort, sortValue)] as const),
+        sort,
+        ([, rows], key) => (key === 'truck' ? minValue(rows.map(r => r.truck_number)) : sortValue(rows[0], key)),
+      ),
+    }
+  }, [filtered, sort])
 
   const canExtend = (r: HoldRequest) =>
     ['PENDING', 'APPROVED', 'EXPIRED'].includes(r.status) && r.status !== 'EXTENSION_REQUESTED'
@@ -221,8 +264,11 @@ export default function ClientHoldRequestsPage() {
               </div>
             ) : (
               <div className="space-y-4">
+                <div className="flex justify-end">
+                  <SortSelect columns={SORT_COLUMNS} sort={sort} onChange={chooseSort} defaultLabel="Newest first" />
+                </div>
                 {/* Campaign groups */}
-                {Array.from(grouped.entries()).map(([groupId, groupItems]) => {
+                {sortedGroups.map(([groupId, groupItems]) => {
                   const first = groupItems[0]
                   return (
                     <div key={groupId} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
@@ -328,21 +374,20 @@ export default function ClientHoldRequestsPage() {
                 })}
 
                 {/* Ungrouped (legacy or single-truck holds without pricing) */}
-                {ungrouped.length > 0 && (
+                {sortedUngrouped.length > 0 && (
                   <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">
                         <thead className="bg-gray-50/80 border-b border-gray-200">
                           <tr>
-                            {['Truck', 'Market', 'Dates', 'Pricing', 'Status', ''].map((col) => (
-                              <th key={col} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                                {col}
-                              </th>
+                            {SORT_COLUMNS.map((c) => (
+                              <SortableTh key={c.key} label={c.label} sortKey={c.key} sort={sort} onSort={sortBy} />
                             ))}
+                            <SortableTh label="" sort={sort} onSort={sortBy} />
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100">
-                          {ungrouped.map((r) => {
+                          {sortedUngrouped.map((r) => {
                             const parsedFeatures = parseQuoteFeatures(r.features)
                             return (
                               <Fragment key={r.id}>
@@ -358,7 +403,7 @@ export default function ClientHoldRequestsPage() {
                                   <td className="px-4 py-3">
                                     <div className="flex items-center gap-2">
                                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[r.status] ?? STATUS_BADGE.PENDING}`}>
-                                        {r.status === 'EXTENSION_REQUESTED' ? 'Ext. Req.' : r.status === 'HOLD' ? 'Reservation' : r.status === 'COMMITTED' ? 'Committed' : r.status}
+                                        {statusLabel(r.status)}
                                       </span>
                                       <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
                                     </div>
@@ -394,8 +439,8 @@ export default function ClientHoldRequestsPage() {
             )}
 
             {/* Extension modal for ungrouped holds */}
-            {extending && !Array.from(grouped.values()).flat().some(r => r.id === extending) && (() => {
-              const holdReq = ungrouped.find(r => r.id === extending)
+            {extending && !sortedGroups.some(([, rows]) => rows.some(r => r.id === extending)) && (() => {
+              const holdReq = sortedUngrouped.find(r => r.id === extending)
               if (!holdReq) return null
               const today = new Date().toISOString().split('T')[0]
               const expiresDate = holdReq.expires_at ? holdReq.expires_at.split('T')[0] : today

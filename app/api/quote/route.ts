@@ -27,7 +27,7 @@ import {
   resolveDefaultRateOverrides,
 } from '@/lib/pricing/resolvers'
 
-import type { RateOverrides } from '@/lib/pricing/config'
+import { SERVICE_AREA_RADIUS_MILES, type RateOverrides } from '@/lib/pricing/config'
 
 async function handlePost(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
@@ -237,6 +237,8 @@ async function handlePost(req: NextRequest) {
       local: availability.counts.local,
       nearby: availability.counts.nearby,
       repositioning: availability.counts.repositioning,
+      // The free-transport radius this quote used (a rate agreement may change it).
+      serviceAreaMiles: rateOverrides?.service_area_miles ?? SERVICE_AREA_RADIUS_MILES,
       sufficient: true,
       cannotArrive: availability.counts.cannotArrive,
       wouldStrandSuccessor: availability.counts.wouldStrandSuccessor,

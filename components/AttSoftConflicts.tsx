@@ -6,9 +6,11 @@
  * warning) or dismissed when operations is not concerned. Both are recorded.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import { ATT_RELEASE_WARNING } from '@/lib/attSoftRules'
+import { SortableTh, useTableSort } from '@/components/SortableTh'
+import { sortRows, type SortValue } from '@/lib/tableSort'
 
 type Row = {
   key: string
@@ -25,12 +27,44 @@ const range = (a: string, b: string) => (a === b ? fmt(a) : `${fmt(a)} – ${fmt
 
 type Release = { id: string; truckNumber: string; start: string; end: string; by: string | null; at: string; notes: string }
 
+/** What the "For" column shows: the booking a release was for. */
+const releaseFor = (r: Release) => r.notes.replace(/^AT&T soft hold released for /, '').replace(/ by [^.]*\.$/, '')
+
+const TH = 'text-left px-4 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wider'
+
+const CONFLICT_COLUMNS = [
+  { key: 'truck', label: 'Truck' },
+  { key: 'dates', label: 'Conflict dates' },
+  { key: 'reservation', label: 'Reservation' },
+  { key: 'soft', label: 'AT&T soft hold' },
+] as const
+type ConflictKey = typeof CONFLICT_COLUMNS[number]['key']
+const conflictValue = (r: Row, key: ConflictKey): SortValue => ({
+  truck: r.truckNumber, dates: `${r.overlap.start} ${r.overlap.end}`,
+  reservation: r.reservation.client, soft: `${r.softHold.start} ${r.softHold.end}`,
+})[key]
+
+const RELEASE_COLUMNS = [
+  { key: 'truck', label: 'Truck' },
+  { key: 'dates', label: 'Released dates' },
+  { key: 'for', label: 'For' },
+  { key: 'by', label: 'By' },
+] as const
+type ReleaseKey = typeof RELEASE_COLUMNS[number]['key']
+const releaseValue = (r: Release, key: ReleaseKey): SortValue => ({
+  truck: r.truckNumber, dates: `${r.start} ${r.end}`, for: releaseFor(r), by: r.by,
+})[key]
+
 export function AttSoftConflicts() {
   const [releases, setReleases] = useState<Release[]>([])
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const conflictSort = useTableSort<ConflictKey>('conflicts.sort.attSoft', CONFLICT_COLUMNS.map(c => c.key))
+  const releaseSort = useTableSort<ReleaseKey>('conflicts.sort.attReleases', RELEASE_COLUMNS.map(c => c.key))
+  const sortedRows = useMemo(() => sortRows(rows, conflictSort.sort, conflictValue), [rows, conflictSort.sort])
+  const sortedReleases = useMemo(() => sortRows(releases, releaseSort.sort, releaseValue), [releases, releaseSort.sort])
 
   const load = useCallback(async () => {
     setLoading(true); setError(null)
@@ -121,13 +155,14 @@ export function AttSoftConflicts() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50/80 border-b border-gray-200">
               <tr>
-                {['Truck', 'Conflict dates', 'Reservation', 'AT&T soft hold', ''].map(h => (
-                  <th key={h} className="text-left px-4 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wider">{h}</th>
+                {CONFLICT_COLUMNS.map(c => (
+                  <SortableTh key={c.key} label={c.label} sortKey={c.key} sort={conflictSort.sort} onSort={conflictSort.sortBy} className={TH} />
                 ))}
+                <SortableTh label="" sort={conflictSort.sort} onSort={conflictSort.sortBy} className={TH} />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {rows.map(r => (
+              {sortedRows.map(r => (
                 <tr key={r.key} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium text-gray-900 tabular-nums">#{r.truckNumber}</td>
                   <td className="px-4 py-3 text-gray-800 whitespace-nowrap">{range(r.overlap.start, r.overlap.end)}</td>
@@ -168,17 +203,18 @@ export function AttSoftConflicts() {
             <table className="w-full text-sm">
               <thead className="bg-gray-50/80 border-b border-gray-200">
                 <tr>
-                  {['Truck', 'Released dates', 'For', 'By', ''].map(h => (
-                    <th key={h} className="text-left px-4 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wider">{h}</th>
+                  {RELEASE_COLUMNS.map(c => (
+                    <SortableTh key={c.key} label={c.label} sortKey={c.key} sort={releaseSort.sort} onSort={releaseSort.sortBy} className={TH} />
                   ))}
+                  <SortableTh label="" sort={releaseSort.sort} onSort={releaseSort.sortBy} className={TH} />
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {releases.map(r => (
+                {sortedReleases.map(r => (
                   <tr key={r.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3 font-medium text-gray-900 tabular-nums">#{r.truckNumber}</td>
                     <td className="px-4 py-3 text-gray-800 whitespace-nowrap">{range(r.start, r.end)}</td>
-                    <td className="px-4 py-3 text-gray-600">{r.notes.replace(/^AT&T soft hold released for /, '').replace(/ by [^.]*\.$/, '')}</td>
+                    <td className="px-4 py-3 text-gray-600">{releaseFor(r)}</td>
                     <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{r.by ?? '—'} · {new Date(r.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</td>
                     <td className="px-4 py-3 text-right">
                       <button onClick={() => undo(r)} disabled={busy === r.id}

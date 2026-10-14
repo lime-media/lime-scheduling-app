@@ -11,7 +11,7 @@ import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
 import { format } from 'date-fns'
 import { parseDateOnly } from '@/lib/dateOnly'
-import { validateRosterOverride } from '@/lib/attSoftRules'
+import { softHoldWindow, validateRosterOverride } from '@/lib/attSoftRules'
 
 export type RosterDraft = { action: 'ADD' | 'REMOVE'; truck_number: string; start: string; end: string; reason: string }
 
@@ -133,11 +133,15 @@ function HeldBackRelease({ onChanged }: { onChanged: () => void }) {
 type Override = { id: string; truck_number: string; action: 'ADD' | 'REMOVE'; start_date: string; end_date: string; reason: string; created_by_name: string }
 
 const today = () => new Date().toISOString().slice(0, 10)
-const monthEnd = () => { const d = new Date(); return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).toISOString().slice(0, 10) }
+/** The last day AT&T soft holds are kept for: the end of the sync's three-month window. */
+export const softHoldWindowEnd = () => { const w = softHoldWindow(today()); return w[w.length - 1].end }
 const fmt = (s: string) => format(parseDateOnly(s), 'MMM d, yyyy')
 
-/** A fresh draft: added from today to the end of this month. */
-export const newAddDraft = (): RosterDraft => ({ action: 'ADD', truck_number: '', start: today(), end: monthEnd(), reason: '' })
+/**
+ * A fresh draft, from today through every month that has soft holds — a
+ * change for this month only would leave the next two reserved as before.
+ */
+export const newAddDraft = (): RosterDraft => ({ action: 'ADD', truck_number: '', start: today(), end: softHoldWindowEnd(), reason: '' })
 
 export function AttRosterPanel({ draft, setDraft, onChanged }: {
   draft: RosterDraft | null

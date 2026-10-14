@@ -265,7 +265,7 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
   const onList = (t: string) => attTrucks.has(t) || roster.addTrucks.has(t)
   const toRelease = kept.filter(h => !onList(h.truck_number))
   const approval = await readJsonSetting<MassReleaseApproval>(MASS_RELEASE_APPROVAL_KEY)
-  const plan = planPremiseRelease({ toRelease, softHolds: kept.length, attTrucks: attTrucks.size, approval, now: new Date() })
+  const plan = planPremiseRelease({ toRelease, softHolds: kept.length, attTrucks: attTrucks.size, approval, removedTrucks: roster.removeTrucks, now: new Date() })
   const approvedTrucks = new Set(plan.approvedUsed ? approval!.trucks : [])
   const months = { current: lookback.current.from.slice(0, 7), prior: lookback.prior ? lookback.prior.from.slice(0, 7) : null }
   let releasedPremise = 0
@@ -276,6 +276,7 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
       months: months.prior ? [months.prior, months.current] : [months.current],
       prior_month_counts_through_day: PRIOR_MONTH_GRACE_DAY,
       ...(approvedTrucks.has(h.truck_number) ? { mass_release_approved_by: approval!.byName || approval!.by, approved_at: approval!.at } : {}),
+      ...(roster.removeTrucks.has(h.truck_number) ? { taken_off_att_list: true } : {}),
     })
     if (ok) releasedPremise++
   }

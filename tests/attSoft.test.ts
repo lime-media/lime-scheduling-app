@@ -256,6 +256,20 @@ section('AT&T soft holds: approving a mass release the safety check held back')
     at: new Date(now.getTime() - (MASS_RELEASE_APPROVAL_HOURS + 1) * 3600e3).toISOString() } })
   eq('an approval older than a day is ignored', [stale.release.length, stale.approvedUsed], [0, false])
 
+  // Bryce's case: trucks taken off the AT&T list while the valve held the
+  // drop back. Taking a truck off is a person's decision on it, so it goes.
+  const removed = planPremiseRelease({ ...base, approval: null, removedTrucks: new Set(['T1', 'T2', 'T3']) })
+  eq('trucks taken off the list are released despite the valve', removed.release.map(h => h.truck_number), ['T1', 'T2', 'T3'])
+  eq('the rest are still held back', [removed.keep.length, removed.blocked !== null], [38, true])
+  eq('that is not an approval being used up', removed.approvedUsed, false)
+
+  const offMost = planPremiseRelease({ ...base, approval: null, removedTrucks: new Set(drop.slice(0, 35).map(d => d.truck_number)) })
+  eq('taking most off leaves a small drop, released normally', [offMost.release.length, offMost.blocked], [41, null])
+
+  const removeOfAtt = rosterPlan({ span: { start: '2026-10-01', end: '2026-12-31' }, autoTrucks: new Set(['1001']),
+    overrides: [{ truck_number: '1001', action: 'REMOVE', start: '2026-10-14', end: '2026-12-31' }] })
+  eq('taking off an AT&T truck still only blocks its dates', [[...removeOfAtt.removeTrucks], removeOfAtt.blocks.length], [['1001'], 1])
+
   const small = planPremiseRelease({ ...base, toRelease: drop.slice(0, 3), approval: null })
   eq('a small drop needs no approval', [small.release.length, small.blocked], [3, null])
 }

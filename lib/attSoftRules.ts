@@ -84,7 +84,8 @@ export const MASS_RELEASE_APPROVAL_HOURS = 24
 /**
  * Sync step 3's decision on soft holds whose truck is no longer AT&T's.
  *
- * Trucks a person approved (within MASS_RELEASE_APPROVAL_HOURS) are released
+ * Trucks a person approved (within MASS_RELEASE_APPROVAL_HOURS), or took off
+ * the AT&T list, are released
  * whatever their number: the valve exists to make a person look, and one
  * has. The valve is then applied to the rest only, so a different drop that
  * shows up later is still held back. Pure.
@@ -94,11 +95,14 @@ export function planPremiseRelease<T extends { truck_number: string }>(opts: {
   softHolds: number
   attTrucks: number
   approval: MassReleaseApproval | null
+  /** Trucks someone took off the AT&T list: their release is already a person's decision. */
+  removedTrucks?: Set<string>
   now: Date
 }): { release: T[]; keep: T[]; approvedUsed: boolean; blocked: string | null } {
   const fresh = opts.approval
     && opts.now.getTime() - new Date(opts.approval.at).getTime() <= MASS_RELEASE_APPROVAL_HOURS * 3600e3
-  const ok = new Set(fresh ? opts.approval!.trucks : [])
+  const byApproval = new Set(fresh ? opts.approval!.trucks : [])
+  const ok = new Set([...byApproval, ...(opts.removedTrucks ?? [])])
   const approved = opts.toRelease.filter(h => ok.has(h.truck_number))
   const rest = opts.toRelease.filter(h => !ok.has(h.truck_number))
   const blocked = rest.length
@@ -107,7 +111,7 @@ export function planPremiseRelease<T extends { truck_number: string }>(opts: {
   return {
     release: blocked ? approved : [...approved, ...rest],
     keep: blocked ? rest : [],
-    approvedUsed: approved.length > 0,
+    approvedUsed: opts.toRelease.some(h => byApproval.has(h.truck_number)),
     blocked,
   }
 }
@@ -267,6 +271,9 @@ export type RosterOverride = { truck_number: string; action: 'ADD' | 'REMOVE' } 
  *
  * - `addTrucks`: trucks on the list only because someone added them. They
  *   keep and get soft holds like AT&T's own, but only on their added dates.
+ * - `removeTrucks`: trucks someone took off the list. A person has decided
+ *   on each, so if it is no longer AT&T's anyway, its release is approved
+ *   (planPremiseRelease) rather than held back by the mass-release valve.
  * - `blocks`: per truck, the dates that must have no soft hold — every
  *   REMOVE range, and for an added-only truck every date outside its ADD
  *   ranges. The sync treats these like release records: cut, never filled.
@@ -277,8 +284,9 @@ export function rosterPlan(opts: {
   overrides: RosterOverride[]
   autoTrucks: Set<string>
   span: Range
-}): { addTrucks: Set<string>; blocks: ({ truck_number: string } & Range)[] } {
+}): { addTrucks: Set<string>; removeTrucks: Set<string>; blocks: ({ truck_number: string } & Range)[] } {
   const live = opts.overrides.filter(o => o.end >= opts.span.start && o.start <= opts.span.end)
+  const removeTrucks = new Set(live.filter(o => o.action === 'REMOVE').map(o => o.truck_number))
   const blocks: ({ truck_number: string } & Range)[] = live
     .filter(o => o.action === 'REMOVE')
     .map(o => ({ truck_number: o.truck_number, start: o.start, end: o.end }))
@@ -287,7 +295,7 @@ export function rosterPlan(opts: {
     const added = live.filter(o => o.action === 'ADD' && o.truck_number === t)
     for (const g of freeRanges(opts.span.start, opts.span.end, added)) blocks.push({ truck_number: t, ...g })
   }
-  return { addTrucks, blocks }
+  return { addTrucks, removeTrucks, blocks }
 }
 
 /**

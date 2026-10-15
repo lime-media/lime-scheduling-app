@@ -25,7 +25,8 @@ type QuoteResponse = {
     wouldStrandSuccessor?: number
     originFellBackToGps?: number
     gpsFallbackMarkets?: string[]
-    excluded?: { truckNumber: string; from: string; reason: string; detail: string }[]
+    excluded?: ExcludedTruck[]
+    softHoldWarnings?: { truckNumber: string; warning: string }[]
     requiresOverride?: OverrideOption[]
   }
   pricing: { quoteOnlyRequired?: boolean; brandMarkupPct?: number; clientType?: string | null; dailyRate: number; effectiveDailyRate: number; hourSurcharge: number; truckDays: number; days: number; calendarDays: number; truckCount: number; baseMedia: number; pricingBasis: string; marketSizeTier: { id: number; label: string }; schedule: { daysPerWeek: number; operatingHours: number; activationDays: number } }
@@ -48,6 +49,10 @@ type QuoteResponse = {
   selectedTrucks?: string[]
 }
 
+
+/** A truck that cannot take the campaign, with the dates it could do (lib/quoteAlternatives.ts). */
+type ExcludedTruck = { truckNumber: string; from: string; reason: string; detail: string; earliestStart?: string | null; latestEnd?: string | null }
+type DateOptions = { startFrom?: { date: string; trucks: number }; endBy?: { date: string; trucks: number } }
 
 type FeatureToggles = { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean; studies: string[] }
 
@@ -104,6 +109,9 @@ export default function InternalQuotePage() {
   const [quoteErrorDetail, setQuoteErrorDetail] = useState<string | null>(null)
   // Soft-held trucks offered when the quote has too few free trucks.
   const [quoteErrorOverrides, setQuoteErrorOverrides] = useState<OverrideOption[]>([])
+  // The rest of a "not enough trucks" answer: why each other truck missed, and other dates.
+  const [quoteErrorExcluded, setQuoteErrorExcluded] = useState<ExcludedTruck[]>([])
+  const [quoteErrorDates, setQuoteErrorDates] = useState<DateOptions>({})
   const [marketCandidates, setMarketCandidates] = useState<string[] | null>(null)
 
   // Features
@@ -117,12 +125,16 @@ export default function InternalQuotePage() {
 
   // `reprice`: the same quote again with a new Brand Direct markup — keep the
   // result and the seller's feature choices on screen while it refreshes.
-  const submitQuote = useCallback(async (marketOverride?: string, opts: { reprice?: boolean; quoteOnly?: boolean } = {}) => {
+  // `dates`: re-run with a different start or end (a suggested alternative).
+  const submitQuote = useCallback(async (marketOverride?: string, opts: { reprice?: boolean; quoteOnly?: boolean; dates?: { start_date?: string; end_date?: string } } = {}) => {
     const market = marketOverride || form.market
-    const { start_date, end_date, truck_count } = form
+    const start_date = opts.dates?.start_date ?? form.start_date
+    const end_date = opts.dates?.end_date ?? form.end_date
+    const { truck_count } = form
     if (quoteLoading || !market.trim() || !start_date || !end_date || !truck_count) return
 
     if (marketOverride) setForm(prev => ({ ...prev, market: marketOverride }))
+    if (opts.dates) setForm(prev => ({ ...prev, start_date, end_date }))
     setQuoteLoading(true)
     setQuoteError(null)
     setQuoteErrorDetail(null)
@@ -134,15 +146,19 @@ export default function InternalQuotePage() {
       const res = await fetch('/api/quote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, market, truck_count, sfdc_account_id: account?.id, brand_markup_pct: isBrandDirect ? markupPct : undefined, quote_only: opts.quoteOnly || quoteResult?.pricing.quoteOnlyRequired || undefined }),
+        body: JSON.stringify({ ...form, market, start_date, end_date, truck_count, sfdc_account_id: account?.id, brand_markup_pct: isBrandDirect ? markupPct : undefined, quote_only: opts.quoteOnly || quoteResult?.pricing.quoteOnlyRequired || undefined }),
       })
       const data = await res.json()
 
       setQuoteErrorOverrides([])
+      setQuoteErrorExcluded([])
+      setQuoteErrorDates({})
       if (res.ok && data.insufficient) {
         setQuoteError(data.message)
         setQuoteErrorDetail(data.detail ?? null)
         setQuoteErrorOverrides(data.availability?.requiresOverride ?? [])
+        setQuoteErrorExcluded(data.availability?.excluded ?? [])
+        setQuoteErrorDates(data.availability?.dateOptions ?? {})
       } else if (res.ok) {
         setQuoteResult(data)
         if (data.pricing?.quoteOnlyRequired) setQuoteOnly(true)
@@ -386,9 +402,28 @@ export default function InternalQuotePage() {
                 Price it anyway (quote only, no reservation)
               </button>
             )}
+            {(quoteErrorDates.startFrom || quoteErrorDates.endBy) && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {quoteErrorDates.startFrom && (
+                  <button type="button" disabled={quoteLoading}
+                    onClick={() => submitQuote(undefined, { dates: { start_date: quoteErrorDates.startFrom!.date } })}
+                    className="rounded border border-green-300 bg-white px-2.5 py-1 text-xs font-medium text-green-800 hover:bg-green-50 disabled:opacity-50">
+                    Start {fmtDay(quoteErrorDates.startFrom.date)} instead ({quoteErrorDates.startFrom.trucks} truck{quoteErrorDates.startFrom.trucks === 1 ? '' : 's'})
+                  </button>
+                )}
+                {quoteErrorDates.endBy && (
+                  <button type="button" disabled={quoteLoading}
+                    onClick={() => submitQuote(undefined, { dates: { end_date: quoteErrorDates.endBy!.date } })}
+                    className="rounded border border-green-300 bg-white px-2.5 py-1 text-xs font-medium text-green-800 hover:bg-green-50 disabled:opacity-50">
+                    End {fmtDay(quoteErrorDates.endBy.date)} instead ({quoteErrorDates.endBy.trucks} truck{quoteErrorDates.endBy.trucks === 1 ? '' : 's'})
+                  </button>
+                )}
+              </div>
+            )}
             {quoteErrorOverrides.length > 0 && (
               <SoftHoldReleaseOptions options={quoteErrorOverrides} releasing={releasing} onRelease={releaseForBooking} />
             )}
+            {quoteErrorExcluded.length > 0 && <ExcludedTrucks trucks={quoteErrorExcluded} open />}
           </div>
         )}
 
@@ -424,31 +459,19 @@ export default function InternalQuotePage() {
                 {quoteResult.availability.repositioning > 0 && <p>{quoteResult.availability.repositioning} beyond {quoteResult.availability.serviceAreaMiles ?? 250} mi (transport applies unless waived)</p>}
               </div>
 
-              {/* Trucks ruled out by logistics — shown so thin availability
-                  reads as a constraint, not an empty fleet. */}
+              {/* Trucks ruled out, with why and the dates they could do — shown so
+                  thin availability reads as a constraint, not an empty fleet. */}
               {(quoteResult.availability.excluded?.length ?? 0) > 0 && (
-                <details className="mt-2 group">
-                  <summary className="cursor-pointer text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 list-none flex items-center justify-between">
-                    <span className="font-medium">
-                      {quoteResult.availability.excluded!.length} truck{quoteResult.availability.excluded!.length !== 1 ? 's' : ''} ruled out
-                      {(quoteResult.availability.cannotArrive ?? 0) > 0 && ` · ${quoteResult.availability.cannotArrive} can't arrive in time`}
-                      {(quoteResult.availability.wouldStrandSuccessor ?? 0) > 0 && ` · ${quoteResult.availability.wouldStrandSuccessor} would strand a later booking`}
-                    </span>
-                    <span className="text-amber-600 ml-2 group-open:rotate-180 transition-transform">&#9662;</span>
-                  </summary>
-                  <ul className="mt-1.5 space-y-1">
-                    {quoteResult.availability.excluded!.map((t) => (
-                      <li key={t.truckNumber} className="text-xs text-gray-600 px-3">
-                        <span className="font-medium text-gray-800">Truck {t.truckNumber}</span>
-                        <span className="text-gray-400"> · {t.from}</span>
-                        <span className="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600">
-                          {EXCLUSION_LABELS[t.reason] ?? t.reason}
-                        </span>
-                        <p className="text-gray-500 mt-0.5">{t.detail}</p>
-                      </li>
-                    ))}
-                  </ul>
-                </details>
+                <ExcludedTrucks trucks={quoteResult.availability.excluded!} />
+              )}
+
+              {/* Booked trucks that leave a later AT&T soft hold short (allowed for staff). */}
+              {(quoteResult.availability.softHoldWarnings?.length ?? 0) > 0 && (
+                <div className="mt-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-900">
+                  {quoteResult.availability.softHoldWarnings!.map(w => (
+                    <p key={w.truckNumber}><span className="font-medium">Truck {w.truckNumber}:</span> {w.warning}</p>
+                  ))}
+                </div>
               )}
 
               {/* Available only by displacing a soft hold — a rep decision. */}
@@ -707,3 +730,44 @@ function SoftHoldReleaseOptions({ options, releasing, onRelease }: {
     </div>
   )
 }
+
+const fmtDay = (d: string) => new Date(d + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+
+/**
+ * Trucks that cannot take the campaign: why, and the nearest dates each could
+ * do. Trucks with a date that works come first (earliest start, then latest
+ * end); trucks simply booked through the dates are counted, not listed.
+ */
+function ExcludedTrucks({ trucks, open = false }: { trucks: ExcludedTruck[]; open?: boolean }) {
+  const near = trucks.filter(t => t.earliestStart || t.latestEnd || t.reason !== 'BOOKED')
+  const busy = trucks.length - near.length
+  const sorted = [...near].sort((a, b) =>
+    (a.earliestStart ?? '9999').localeCompare(b.earliestStart ?? '9999')
+    || (b.latestEnd ?? '').localeCompare(a.latestEnd ?? '')
+    || a.truckNumber.localeCompare(b.truckNumber, 'en', { numeric: true }))
+  return (
+    <details className="mt-2 group" open={open}>
+      <summary className="cursor-pointer text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 list-none flex items-center justify-between">
+        <span className="font-medium">
+          Why other trucks don&apos;t fit ({near.length}){busy > 0 && ` · ${busy} more booked through these dates`}
+        </span>
+        <span className="text-amber-600 ml-2 group-open:rotate-180 transition-transform">&#9662;</span>
+      </summary>
+      <ul className="mt-1.5 space-y-1.5">
+        {sorted.map((t) => (
+          <li key={t.truckNumber} className="text-xs text-gray-600 px-3">
+            <span className="font-medium text-gray-800">Truck {t.truckNumber}</span>
+            <span className="text-gray-400"> · {t.from}</span>
+            <span className="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600">
+              {EXCLUSION_LABELS[t.reason] ?? t.reason}
+            </span>
+            {t.earliestStart && <span className="ml-1 text-green-700 font-medium">could start {fmtDay(t.earliestStart)}</span>}
+            {t.latestEnd && <span className="ml-1 text-green-700 font-medium">{t.earliestStart ? 'or ' : ''}could end by {fmtDay(t.latestEnd)}</span>}
+            <p className="text-gray-500 mt-0.5">{t.detail}</p>
+          </li>
+        ))}
+      </ul>
+    </details>
+  )
+}
+

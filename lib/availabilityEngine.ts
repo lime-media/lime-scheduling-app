@@ -37,6 +37,7 @@ import {
 import { checkChainFeasibility, type ChainResult } from '@/lib/chainFeasibility'
 import { loadFleetTimelines } from '@/lib/fleetTimelines'
 import { findWindowClash, windowOccupancy } from '@/lib/truckTimeline'
+import { dateOptions, windowAlternatives, type DateOption } from '@/lib/quoteAlternatives'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -82,6 +83,12 @@ export type AvailableTruck = {
   softHoldOnDates: boolean
   /** Why the truck needs an override, for the rep. Empty when it does not. */
   overrideDetail: string
+  /**
+   * Staff quotes only (softHoldStrandIsWarning): the booking leaves a LATER
+   * AT&T soft hold short of travel time. The truck is usable — soft holds are
+   * placeholders — and the rep is told. Undefined when there is nothing to say.
+   */
+  softHoldWarning?: string
 }
 
 /** A truck that cannot take the campaign, with the reason, for surfacing in the UI. */
@@ -90,6 +97,10 @@ export type InfeasibleTruck = {
   currentMarket: string
   reason: 'CANNOT_ARRIVE' | 'STRANDS_SUCCESSOR' | 'UNKNOWN_ORIGIN' | 'BOOKED'
   detail: string
+  /** The nearest later start that would let it take the campaign (lib/quoteAlternatives.ts). */
+  earliestStart?: string
+  /** The nearest earlier end that would. */
+  latestEnd?: string
 }
 
 export type AvailabilityResult = {
@@ -125,6 +136,11 @@ export type AvailabilityResult = {
    * Distances cannot be computed, so no truck can be offered.
    */
   marketResolved: boolean
+  /**
+   * Other dates with enough trucks: the smallest later start, and the
+   * smallest earlier end. Only computed when there are not enough trucks.
+   */
+  dateOptions: { startFrom?: DateOption; endBy?: DateOption }
   /** Campaign-level flags */
   campaignFlags: {
     shortFlight: boolean
@@ -148,6 +164,12 @@ export type AvailabilityInput = {
    * be computed on the same basis as the trucks offered beside it.
    */
   excludeHoldId?: string
+  /**
+   * Staff quotes: a booking that would leave a LATER AT&T soft hold short of
+   * travel time is allowed, with a warning (AvailableTruck.softHoldWarning).
+   * Off for clients, who never affect AT&T's reservations.
+   */
+  softHoldStrandIsWarning?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -182,7 +204,7 @@ export function legsFromTrucks(trucks: AvailableTruck[]): TruckLeg[] {
 // ---------------------------------------------------------------------------
 
 export async function checkAvailability(input: AvailabilityInput): Promise<AvailabilityResult> {
-  const { market, startDate, endDate, truckCount, serviceAreaMiles, excludeHoldId } = input
+  const { market, startDate, endDate, truckCount, serviceAreaMiles, excludeHoldId, softHoldStrandIsWarning = false } = input
 
   // Resolve campaign market coordinates
   const campaignCoords = await resolveCampaignCoords(market)
@@ -276,12 +298,22 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     // Rule 2: the campaign window itself must be free — of everything but an
     // AT&T soft hold, which a rep may release for these dates.
     const window = windowOccupancy(timelines.get(truckNumber) ?? [], startDate, endDate)
+    // Other dates this truck could do, for when there are not enough trucks.
+    const fit = {
+      jobs: timelines.get(truckNumber) ?? [], start: startDate, end: endDate,
+      campaignCoords: effectiveCampaignCoords, currentCoords, today, serviceAreaMiles, softHoldStrandIsWarning,
+    }
+
     if (window.blocked) {
+      const b = window.blocked
       infeasible.push({
         truckNumber,
         currentMarket,
         reason: 'BOOKED',
-        detail: `Already booked during ${startDate} to ${endDate}.`,
+        detail: b.source === 'SCHEDULE'
+          ? `On ${b.program || 'a program'}${b.market ? ` in ${b.market}` : ''} from ${b.start} to ${b.end}.`
+          : `Reserved (${b.status ?? 'HOLD'})${b.market ? ` in ${b.market}` : ''} from ${b.start} to ${b.end}.`,
+        ...windowAlternatives(fit),
       })
       continue
     }
@@ -297,12 +329,18 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
       serviceAreaMiles,
     })
 
+    // A strand of a later AT&T soft hold: for staff, a warning; otherwise a
+    // rep decision (requiresOverride), as for clients it is never allowed.
+    const strandsSoftHold = !chain.feasible && chain.overridable
+    const strandAllowed = strandsSoftHold && softHoldStrandIsWarning
+
     if (!chain.feasible && !chain.overridable) {
       infeasible.push({
         truckNumber,
         currentMarket,
         reason: chain.blockedBy ?? 'CANNOT_ARRIVE',
         detail: chain.detail ?? '',
+        ...(chain.blockedBy === 'UNKNOWN_ORIGIN' ? {} : windowAlternatives(fit)),
       })
       continue
     }
@@ -336,12 +374,15 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
       hasGps,
       transport,
       chain,
-      requiresOverride: window.softHeld || (!chain.feasible && chain.overridable),
+      requiresOverride: window.softHeld || (strandsSoftHold && !strandAllowed),
       softHoldOnDates: window.softHeld,
       overrideDetail: [
         window.softHeld ? `AT&T soft hold on ${startDate} to ${endDate}.` : '',
-        !chain.feasible ? chain.detail ?? '' : '',
+        strandsSoftHold && !strandAllowed ? chain.detail ?? '' : '',
       ].filter(Boolean).join(' '),
+      softHoldWarning: strandAllowed && chain.successor
+        ? `AT&T's soft hold in ${chain.successor.market} resumes ${chain.successor.startsOn}; the truck needs ${chain.successor.transportDays} travel day${chain.successor.transportDays === 1 ? '' : 's'} and has ${chain.successor.gapDays}.`
+        : undefined,
     })
   }
 
@@ -362,9 +403,12 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
   const chainCost = (t: AvailableTruck) =>
     t.transport.chargePerTruck + Math.max(0, t.chain.successor?.deltaCost ?? 0)
 
+  // At equal cost, a truck that leaves a later AT&T soft hold short goes
+  // after a clean one.
   availableTrucks.sort((a, b) =>
     Number(a.requiresOverride) - Number(b.requiresOverride)
     || chainCost(a) - chainCost(b)
+    || Number(!!a.softHoldWarning) - Number(!!b.softHoldWarning)
     || a.distanceMiles - b.distanceMiles
   )
 
@@ -387,6 +431,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     infeasible,
     counts,
     sufficient: free.length >= truckCount,
+    dateOptions: free.length >= truckCount ? {} : dateOptions({ freeNow: free.length, needed: truckCount, alternatives: infeasible }),
     nearestAcceptedMarket,
     marketResolved: campaignCoords !== null,
     campaignFlags: { shortFlight, rush, leadBusinessDays },

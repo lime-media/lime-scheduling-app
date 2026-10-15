@@ -76,6 +76,8 @@ async function handlePost(req: NextRequest) {
     endDate: end_date,
     truckCount: truck_count,
     serviceAreaMiles: rateOverrides?.service_area_miles,
+    // Same rule as the staff quote, so the hold books the trucks it quoted.
+    softHoldStrandIsWarning: true,
   })
 
   // A quote-only log reserves nothing, so it goes through even when no truck

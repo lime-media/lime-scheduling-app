@@ -45,7 +45,7 @@ import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { computeHoldExpiresAt } from '@/lib/holdExpiry'
-import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, resolveOpportunityOwner } from '@/lib/salesforceClient'
+import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, primaryContactRefusal, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { rotationStints, type OrderLine } from '@/lib/planning/order'
 import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuote, type QuoteRequest } from '@/lib/planning/quote'
@@ -69,6 +69,8 @@ type HoldBody = QuoteRequest & {
   stage?: string
   /** Low conviction: log a priced opportunity, reserve nothing (lib/quoteOnly.ts). */
   quoteOnly?: boolean
+  /** The opportunity's primary contact: a Contact on the account. Required. */
+  primaryContactId?: string
 }
 
 const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
@@ -99,6 +101,9 @@ async function handlePost(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
   if (!body.sfdcAccountId) return NextResponse.json({ error: 'Select a Salesforce account first.' }, { status: 400 })
+  // Every opportunity needs its primary contact, on this account.
+  const contactRefusal = await primaryContactRefusal(body.primaryContactId, body.sfdcAccountId)
+  if (contactRefusal) return NextResponse.json({ error: contactRefusal }, { status: 400 })
   if (!body.requestId || !/^[A-Za-z0-9_-]{8,64}$/.test(body.requestId)) return NextResponse.json({ error: 'Missing booking request id.' }, { status: 400 })
   body.features = body.features ?? { shadowFencing: true, smartDirectional: false, deviceId: false }
   // Holds never displace AT&T: soft-hold trucks are always reserved here.
@@ -322,6 +327,7 @@ async function handlePost(req: NextRequest) {
           clientType: accountInfo?.clientType,
           name: opportunityName(brand, accountName, `Multi-market (${quote.summary.markets} markets) - ${starts[0]} to ${ends[ends.length - 1]}`),
           brand: brand || undefined,
+          primaryContactId: body.primaryContactId,
           stageName: openStage(body.stage),
           closeDate: starts[0],
           amount: quote.summary.grandTotal,

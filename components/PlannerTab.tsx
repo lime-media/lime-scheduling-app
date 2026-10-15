@@ -18,6 +18,7 @@ import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
 import { useEffect, useRef, useState } from 'react'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
+import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
 import { BrandInput } from '@/components/BrandInput'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { ReviewFinding } from '@/lib/planning/claude'
@@ -103,6 +104,8 @@ const tdNum = td + ' text-right tabular-nums'
 
 export function PlannerTab() {
   const [account, setAccount] = useState<SfdcAccount | null>(null)
+  // The opportunity's primary contact: required by sales ops on every opportunity.
+  const [contact, setContact] = useState<SfdcContact | null>(null)
   // The campaign's brand, for the Salesforce opportunity (components/BrandInput.tsx).
   const [brand, setBrand] = useState('')
   const [rows, setRows] = useState<QuoteRow[]>([newRow()])
@@ -255,13 +258,13 @@ export function PlannerTab() {
   }
 
   const placeHolds = async (allowPartial = false, expectedTotal?: number): Promise<void> => {
-    if (!account || !quote) return
+    if (!account || !contact || !quote) return
     const shown = expectedTotal ?? quote.lines.filter(l => selected.has(l.id)).reduce((n, l) => n + l.total, 0)
     setHolding(true); setHoldResult(null)
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, quoteOnly, brand }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, quoteOnly, brand, primaryContactId: contact.id }),
       })
       const data = await readJson(res)
       if (res.status === 409 && data.shortfalls) {
@@ -293,7 +296,13 @@ export function PlannerTab() {
       {/* 1. Client */}
       <div className={card}>
         <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
-        <AccountSearch selected={account} onSelect={a => { setAccount(a); setQuote(null); setHoldResult(null) }} />
+        <AccountSearch selected={account} onSelect={a => { setAccount(a); setContact(null); setQuote(null); setHoldResult(null) }} />
+        {account && (
+          <div className="mt-3">
+            <label className="text-xs font-medium text-gray-600 mb-1 block">Primary contact <span className="text-red-500">*</span></label>
+            <ContactSearch accountId={account.id} selected={contact} onSelect={setContact} />
+          </div>
+        )}
         <div className="mt-3 max-w-sm">
           <BrandInput value={brand} onChange={setBrand} className={input} />
         </div>
@@ -428,6 +437,7 @@ export function PlannerTab() {
         <QuoteResult
           quote={quote}
           account={account}
+          contact={contact}
           holding={holding}
           holdResult={holdResult}
           selected={selected}
@@ -535,9 +545,10 @@ function ImportPanel(p: {
 
 // ---------------------------------------------------------------------------
 
-function QuoteResult({ quote, account, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
+function QuoteResult({ quote, account, contact, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
   quote: MultiMarketQuote
   account: SfdcAccount | null
+  contact: SfdcContact | null
   holding: boolean
   holdResult: { ok: boolean; message: string } | null
   selected: Set<string>
@@ -636,9 +647,10 @@ function QuoteResult({ quote, account, holding, holdResult, selected, onToggle, 
           <div className="mt-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-800 font-medium">✓ {holdResult.message}</div>
         ) : (
           <>
-            <button onClick={onPlaceHolds} disabled={holding || !account || chosen.length === 0}
+            <button onClick={onPlaceHolds} disabled={holding || !account || !contact || chosen.length === 0}
               className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium">
               {!account ? 'Select a client above to place holds'
+                : !contact ? 'Choose the primary contact above'
                 : chosen.length === 0 ? 'Select at least one market to book'
                 : holding ? (quoteOnly ? 'Logging the quote…' : 'Re-checking trucks and placing holds…')
                 : quoteOnly ? `Log quote in Salesforce (no reservation) — ${chosen.length} of ${quote.lines.length} markets, ${fmtMoney(chosenTotal)}`

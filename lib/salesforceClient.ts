@@ -103,6 +103,13 @@ export type CreateOpportunityInput = {
   clientType?: 'Agency' | 'Brand Direct'
   /** Brand_Job_Name__c (50 characters): the brand, already cleaned (lib/brand.ts). */
   brand?: string
+  /**
+   * The opportunity's primary contact (a Contact on the account). Set as
+   * Primary_Contact__c, which Contact Email/Phone read from, and as the
+   * standard ContactId, which makes Salesforce add it as the primary
+   * Opportunity Contact Role — the two places a seller fills it in by hand.
+   */
+  primaryContactId?: string
 }
 
 export type SfdcOpportunityResult = {
@@ -129,6 +136,10 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
   if (input.ownerId) body.OwnerId = input.ownerId
   if (input.clientType) body.Client_Type__c = input.clientType
   if (input.brand) body.Brand_Job_Name__c = input.brand.slice(0, 50)
+  if (input.primaryContactId) {
+    body.Primary_Contact__c = input.primaryContactId
+    body.ContactId = input.primaryContactId
+  }
   if (input.holdStart) body.LED_Hold_Start__c = input.holdStart
   if (input.holdStop) body.LED_Hold_Stop__c = input.holdStop
   if (input.holdExp) body.LED_Hold_Exp__c = input.holdExp
@@ -216,6 +227,7 @@ export function isSfdcConfigured(): boolean {
 // ---------------------------------------------------------------------------
 
 export { soqlString, SAFE_EMAIL } from './soql'
+import { soqlString } from './soql'
 import { SAFE_EMAIL } from './soql'
 
 const ownerCache = new Map<string, { id: string | null; at: number }>()
@@ -240,6 +252,41 @@ export async function findSfdcUserIdByEmail(email: string | null | undefined): P
 }
 
 /** An account's owner and client type, for opportunity ownership and Brand Direct pricing. */
+/**
+ * Whether `contactId` is a Contact on `accountId` — the server's check of the
+ * primary contact a page sends, so an opportunity never points at someone
+ * else's contact. False when it is not; throws when Salesforce cannot be read.
+ */
+/** A Salesforce Contact id (prefix 003, 15 or 18 characters). Pure. */
+export const isContactId = (id: unknown): id is string => typeof id === 'string' && /^003[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/.test(id)
+
+export async function isContactOfAccount(contactId: string, accountId: string): Promise<boolean> {
+  if (!isContactId(contactId)) return false
+  const rows = await sfdcQuery<{ Id: string }>(
+    `SELECT Id FROM Contact WHERE Id = '${soqlString(contactId)}' AND AccountId = '${soqlString(accountId)}' LIMIT 1`,
+  )
+  return rows.length === 1
+}
+
+/**
+ * Why a booking's primary contact is refused, or null when it is fine. Every
+ * opportunity needs one (sales ops' rule), and it must be a Contact on the
+ * chosen account. Salesforce not configured (local dev): not checked. A
+ * Salesforce read failure refuses — nothing is booked on an unchecked contact.
+ */
+export async function primaryContactRefusal(contactId: unknown, accountId: string): Promise<string | null> {
+  if (!isContactId(contactId)) return 'Choose the primary contact for this opportunity.'
+  if (!isSfdcConfigured()) return null
+  try {
+    return (await isContactOfAccount(contactId, accountId))
+      ? null
+      : 'That contact is not on the selected Salesforce account. Choose the primary contact again.'
+  } catch (err) {
+    console.error('[sfdc] primary contact check failed:', err)
+    return 'Could not check the primary contact with Salesforce. Nothing was booked; try again.'
+  }
+}
+
 export async function getSfdcAccountInfo(accountId: string): Promise<{ ownerId: string | null; clientType: 'Agency' | 'Brand Direct' } | null> {
   if (!/^[A-Za-z0-9]{15,18}$/.test(accountId)) return null
   const rows = await sfdcQuery<{ OwnerId: string | null; Owner?: { IsActive?: boolean } | null; Client_Type2__c: string | null }>(

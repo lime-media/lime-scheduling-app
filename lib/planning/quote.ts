@@ -25,6 +25,7 @@ import type { RateOverrides } from '@/lib/pricing/config'
 import { canonicalMarketName, loadStandardMarketCoords, titleCaseMarket } from '@/lib/marketBounds'
 import { haversineDistance } from '@/lib/marketCoordinates'
 import { DEFAULT_RULES, loadPlanningFleet, type ReservedTruck } from './fleet'
+import { loadBookingHolds } from '@/lib/bookingLoad'
 import {
   DEFAULT_ENGINE, planOrder, legsByLine, trucksByLine, lineActivationDays, deliveredTruckDays, lineDelivery, SCHEDULES,
   type LineDelivery,
@@ -58,6 +59,13 @@ export type QuoteRequest = {
   hopLimitRoadMiles?: number
   /** Seller's Brand Direct markup; applied only if Salesforce says the account is Brand Direct. */
   brandMarkupPct?: number
+  /**
+   * Revising an existing booking (lib/bookings.ts bookingKey): its holds are
+   * left out of the fleet so its trucks are free to it, and while it is live
+   * each market keeps its trucks where they still fit. Read from the database,
+   * never trusted from the browser.
+   */
+  revise?: { bookingKey: string }
 }
 
 export type RowError = { rowId: string; message: string; candidates?: string[] }
@@ -367,7 +375,8 @@ export type PreparedQuote = {
   plan: OrderPlan
 }
 
-export async function buildMultiMarketQuote(req: QuoteRequest, lines: OrderLine[], opts: { alternatives?: boolean } = {}): Promise<PreparedQuote> {
+export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: OrderLine[], opts: { alternatives?: boolean } = {}): Promise<PreparedQuote> {
+  const { lines, excludeHoldIds } = await applyRevision(req, requestedLines)
   const today = new Date().toISOString().split('T')[0]
   const planThrough = lines.reduce((m, l) => (l.endDate > m ? l.endDate : m), today)
   const rules = {
@@ -388,7 +397,7 @@ export async function buildMultiMarketQuote(req: QuoteRequest, lines: OrderLine[
     serviceAreaMiles: overrides?.service_area_miles,
   }
   // Load far enough out that the cheaper-start alternatives see the fleet too.
-  const fleet = await loadPlanningFleet({ today, planThrough: addDays(planThrough, START_SHIFTS[START_SHIFTS.length - 1]), rules })
+  const fleet = await loadPlanningFleet({ today, planThrough: addDays(planThrough, START_SHIFTS[START_SHIFTS.length - 1]), rules, excludeHoldIds })
   // One tier per distinct market, in parallel; each line already knows where it is.
   const distinct = [...new Map(lines.map(l => [l.market, l])).values()]
   const tiers = new Map<string, number>(await Promise.all(
@@ -545,3 +554,25 @@ async function buildAlternatives(
   }
   return out
 }
+
+/**
+ * A revision's effect on the order (QuoteRequest.revise): the booking's holds
+ * to leave out of the fleet, and — while the booking is live — each market's
+ * current trucks to keep. A market is the same market when its row still
+ * names it (case and spacing aside); a renamed or new row keeps nothing. An
+ * expired booking keeps nothing: it is re-picked and re-priced.
+ */
+async function applyRevision(req: QuoteRequest, lines: OrderLine[]): Promise<{ lines: OrderLine[]; excludeHoldIds?: Set<string> }> {
+  if (!req.revise?.bookingKey) return { lines }
+  const held = await loadBookingHolds(req.revise.bookingKey)
+  if (held.length === 0) return { lines }
+  const norm = (m: string) => m.trim().toLowerCase().replace(/\s+/g, ' ')
+  const keep = new Map<string, string[]>()
+  for (const h of held.filter(x => x.live)) keep.set(norm(h.market), [...new Set([...(keep.get(norm(h.market)) ?? []), h.truck_number])])
+  const rowMarket = new Map(req.rows.map(r => [r.id, norm(r.market)]))
+  return {
+    lines: keep.size ? lines.map(l => ({ ...l, keepTrucks: keep.get(rowMarket.get(l.id) ?? '') })) : lines,
+    excludeHoldIds: new Set(held.map(h => h.id)),
+  }
+}
+

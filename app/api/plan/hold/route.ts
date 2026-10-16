@@ -46,6 +46,9 @@ import { activeHoldWhere } from '@/lib/holdFilters'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
 import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
+import { loadBookingHolds } from '@/lib/bookingLoad'
+import { reviseRefusal } from '@/lib/bookings'
+import { applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { rotationStints, type OrderLine } from '@/lib/planning/order'
 import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuote, type QuoteRequest } from '@/lib/planning/quote'
@@ -73,6 +76,12 @@ type HoldBody = QuoteRequest & {
   primaryContactId?: string
   /** How long to hold the trucks, in days (default 3, at most MAX_HOLD_DAYS). */
   holdDays?: number
+  /**
+   * Add this booking to an existing open opportunity of the account instead
+   * of creating one. (Revising a booking — QuoteRequest.revise — always goes
+   * onto that booking's own opportunity.)
+   */
+  attachOpportunityId?: string
 }
 
 const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
@@ -112,6 +121,38 @@ async function handlePost(req: NextRequest) {
   const contact = await checkPrimaryContact(body.primaryContactId, body.sfdcAccountId)
   if (contact.refusal) return NextResponse.json({ error: contact.refusal }, { status: 400 })
   const sfdcWarnings: string[] = contact.warning ? [contact.warning] : []
+
+  // Changing a deal instead of starting a new one: a revision replaces a
+  // booking's holds on its own opportunity; an attach adds to another open
+  // opportunity of the account. Either way, the opportunity must be the
+  // account's and not lost.
+  const reviseKey = body.revise?.bookingKey
+  if (reviseKey && body.attachOpportunityId) return NextResponse.json({ error: 'Revise a booking or add to an opportunity, not both.' }, { status: 400 })
+  const reviseHolds = reviseKey ? await loadBookingHolds(reviseKey) : []
+  // A retry of a revision that went through finds the old holds gone; the
+  // retry guard below answers it ("already placed") from the new ones.
+  const retryOfRevision = reviseKey && reviseHolds.length === 0 && await prisma.hold.count({
+    where: { campaign_group_id: { startsWith: `${body.quoteOnly === true ? QUOTE_ONLY_GROUP_PREFIX : 'mm_'}${body.requestId}_` } },
+  }) > 0
+  if (reviseKey && !retryOfRevision) {
+    const refusal = reviseRefusal(reviseHolds)
+    if (refusal) return NextResponse.json({ error: refusal }, { status: 409 })
+  }
+  const targetOppId = reviseKey ? reviseHolds.find(h => h.sfdc_opportunity_id)?.sfdc_opportunity_id ?? null : body.attachOpportunityId ?? null
+  let target: BookingOpportunity | null = null
+  if (targetOppId) {
+    if (!isSfdcConfigured()) return NextResponse.json({ error: 'Salesforce is not configured, so the opportunity cannot be updated.' }, { status: 503 })
+    try {
+      target = await getBookingOpportunity(targetOppId)
+    } catch (err) {
+      console.error('[plan/hold] opportunity read failed:', err)
+      return NextResponse.json({ error: 'Salesforce could not be reached to check the opportunity. Nothing was booked; try again.' }, { status: 503 })
+    }
+    const refusal = opportunityRefusal(target, body.sfdcAccountId)
+    if (refusal) return NextResponse.json({ error: refusal }, { status: 409 })
+  }
+  const reviseIds = reviseHolds.map(h => h.id)
+
   body.features = body.features ?? { shadowFencing: true, smartDirectional: false, deviceId: false }
   // Holds never displace AT&T: soft-hold trucks are always reserved here.
   body.reserveSoftHolds = true
@@ -209,6 +250,8 @@ async function handlePost(req: NextRequest) {
     const to = stretches.reduce((m, x) => (x.stint.end > m ? x.stint.end : m), stretches[0]?.stint.end ?? '')
     const existing = quoteOnly || stretches.length === 0 ? [] : await prisma.hold.findMany({
       where: {
+        // A revision's own holds are being replaced: they do not clash.
+        ...(reviseIds.length ? { id: { notIn: reviseIds } } : {}),
         truck_number: { in: truckNumbers },
         ...activeHoldWhere({ excludeAttSoft: true }),
         start_date: { lte: new Date(to) },
@@ -267,6 +310,7 @@ async function handlePost(req: NextRequest) {
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(lq.id)!,
         expires_at: new Date(),
+        sfdc_opportunity_id: target?.Id ?? null,
       }
     })
 
@@ -280,7 +324,8 @@ async function handlePost(req: NextRequest) {
         state: where.state,
         start_date: new Date(stint.start),
         end_date: new Date(stint.end),
-        status: 'HOLD',
+        // A won opportunity's booking stays committed through a revision.
+        status: target?.IsWon ? 'COMMITTED' : 'HOLD',
         source: 'INTERNAL',
         origination: 'frontend',
         notes: `${lq.market}, part of a ${quote.summary.markets}-market order for ${accountName}${brand ? ` (brand: ${brand})` : ''}.`
@@ -294,12 +339,32 @@ async function handlePost(req: NextRequest) {
         features: JSON.stringify(lineFeatures(lq, body.features)),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(stint.lineId)!,
-        expires_at: expiresAt,
+        expires_at: target?.IsWon ? null : expiresAt,
+        sfdc_opportunity_id: target?.Id ?? null,
       }
     })
     const CHUNK = 200
-    await prisma.$transaction(Array.from({ length: Math.ceil(rows.length / CHUNK) }, (_, i) =>
-      prisma.hold.createMany({ data: rows.slice(i * CHUNK, (i + 1) * CHUNK) })))
+    // A revision replaces the booking's holds in the same transaction: the
+    // old ones go and the new ones land together, or neither does.
+    await prisma.$transaction([
+      ...(reviseIds.length ? [prisma.hold.deleteMany({ where: { id: { in: reviseIds } } })] : []),
+      ...Array.from({ length: Math.ceil(rows.length / CHUNK) }, (_, i) =>
+        prisma.hold.createMany({ data: rows.slice(i * CHUNK, (i + 1) * CHUNK) })),
+    ])
+    if (reviseKey) {
+      await prisma.auditLog.create({
+        data: {
+          action: 'REVISE_BOOKING',
+          truck_number: truckNumbers[0] ?? reviseHolds[0]?.truck_number ?? '',
+          user_id: createdBy,
+          details: JSON.stringify({
+            booking: reviseKey, now: groupPrefix.replace(/_$/, ''), opportunity: target?.Id ?? null,
+            was: reviseHolds.map(h => ({ truck: h.truck_number, market: h.market, start: h.start_date, end: h.end_date, status: h.status })),
+            trucks: truckNumbers, total: quote.summary.grandTotal,
+          }),
+        },
+      }).catch(err => console.error('[plan/hold] revise audit failed:', err))
+    }
 
     // What was quoted and is not being booked, for the opportunity's notes.
     const bookedTrucks = new Map(quote.lines.map(l => [l.id, l.trucks]))
@@ -326,6 +391,27 @@ async function handlePost(req: NextRequest) {
           ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(l.total)}`)] : []),
           ...(unavailable.length ? ['', 'Quoted but no truck available:', ...unavailable] : []),
         ].join('\n')
+        const holdExp = stretches.length ? new Date(Math.min(...stretches.map(x => x.expiresAt.getTime()))).toISOString().split('T')[0] : undefined
+        if (target) {
+          // The deal's own opportunity: revised (REPLACE) or added to (ADD).
+          // The holds are already linked to it, so Salesforce's push back of
+          // the LED fields is an echo (lib/sfdcIntegration.ts trucksToMirror).
+          const ok = await applyBookingToOpportunity({
+            opp: target,
+            mode: reviseKey ? 'REPLACE' : 'ADD',
+            booking: {
+              amount: quote.summary.grandTotal,
+              markets: quote.lines.map(l => l.market),
+              trucks: truckNumbers,
+              ...(quoteOnly || stretches.length === 0 ? {} : { holdStart: starts[0], holdStop: ends[ends.length - 1], holdExp }),
+              description,
+            },
+            by: (token.name as string | undefined) || (token.email as string | undefined) || 'the app',
+            primaryContactId: body.primaryContactId,
+          })
+          if (ok) sfdcOpportunityId = target.Id
+          else sfdcError = 'Salesforce rejected the opportunity update'
+        } else {
         // Owned by the rep who booked it (matched by email), else the account owner.
         const accountInfo = await getSfdcAccountInfo(body.sfdcAccountId).catch(() => null)
         const owner = await resolveOpportunityOwner({ creatorEmail: token.email as string | undefined, accountOwnerId: accountInfo?.ownerId })
@@ -345,7 +431,7 @@ async function handlePost(req: NextRequest) {
           ...(quoteOnly || stretches.length === 0 ? {} : {
             holdStart: starts[0],
             holdStop: ends[ends.length - 1],
-            holdExp: new Date(Math.min(...stretches.map(x => x.expiresAt.getTime()))).toISOString().split('T')[0],
+            holdExp,
             truckNumbers,
           }),
           activationNotes: `Multi-market: ${quote.lines.length} market${quote.lines.length === 1 ? '' : 's'} booked, ${money(quote.summary.grandTotal)}.`
@@ -362,6 +448,7 @@ async function handlePost(req: NextRequest) {
           sfdcError = 'Salesforce rejected the opportunity'
           console.error('[plan/hold] SFDC opportunity creation failed:', result.errors)
         }
+        }
       } catch (err) {
         sfdcError = 'Salesforce could not be reached'
         console.error('[plan/hold] SFDC opportunity creation error:', err)
@@ -369,6 +456,11 @@ async function handlePost(req: NextRequest) {
     }
 
     const leftOut = notSelected.length + unavailable.length
+    // Which opportunity, and what happened to it.
+    const oppDone = !target ? 'Salesforce opportunity created'
+      : reviseKey ? 'Salesforce opportunity updated with the revision'
+      : `Added to Salesforce opportunity "${target.Name}"`
+    const lead = reviseKey ? 'Booking revised: ' : ''
     const checkIt = sfdcOpportunityId && sfdcWarnings.length ? ` Check it: ${sfdcWarnings.join('; ')}.` : ''
     return NextResponse.json({
       ok: true,
@@ -379,11 +471,11 @@ async function handlePost(req: NextRequest) {
       quoteOnly,
       message: quoteOnly
         ? `Quote logged for ${accountName} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} (${money(quote.summary.grandTotal)}); no trucks reserved.`
-          + (sfdcOpportunityId ? ' Salesforce opportunity created.' + checkIt : sfdcError ? ` ${sfdcError}.` : '')
-        : `Placed ${rows.length} hold${rows.length === 1 ? '' : 's'} on ${truckNumbers.length} truck${truckNumbers.length === 1 ? '' : 's'} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} for ${accountName} (${money(quote.summary.grandTotal)})`
-        + (stretches.length ? `, held until ${HELD_UNTIL.format(new Date(Math.min(...stretches.map(x => x.expiresAt.getTime()))))}` : '')
-        + (stretches.some(x => x.expiresAt.getTime() !== stretches[0].expiresAt.getTime()) ? ' (markets starting sooner lapse sooner: a hold ends 3 days before its campaign)' : '') + '.'
-        + (sfdcOpportunityId ? ' Salesforce opportunity created' + (leftOut ? ', with the markets not booked listed in its Description.' : '.') + checkIt
+          + (sfdcOpportunityId ? ` ${oppDone}.` + checkIt : sfdcError ? ` ${sfdcError}.` : '')
+        : `${lead}Placed ${rows.length} hold${rows.length === 1 ? '' : 's'} on ${truckNumbers.length} truck${truckNumbers.length === 1 ? '' : 's'} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} for ${accountName} (${money(quote.summary.grandTotal)})`
+        + (target?.IsWon ? ', committed (the opportunity is won)' : stretches.length ? `, held until ${HELD_UNTIL.format(new Date(Math.min(...stretches.map(x => x.expiresAt.getTime()))))}` : '')
+        + (!target?.IsWon && stretches.some(x => x.expiresAt.getTime() !== stretches[0].expiresAt.getTime()) ? ' (markets starting sooner lapse sooner: a hold ends 3 days before its campaign)' : '') + '.'
+        + (sfdcOpportunityId ? ` ${oppDone}` + (leftOut ? ', with the markets not booked listed in its Description.' : '.') + checkIt
           : sfdcError ? ` ${sfdcError}; the holds are placed. Create the opportunity by hand (holds grouped under ${groupPrefix}*).` : ''),
     })
   } catch (err) {

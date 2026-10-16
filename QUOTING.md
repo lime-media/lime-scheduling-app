@@ -429,6 +429,21 @@ A reservation holds its trucks for **3 days** by default. On both quote tools th
 
 Quote-only logs hold nothing, so they have no hold length. An expiry can still be changed afterwards from Reservations → Edit.
 
+## 6f. Changing a deal without new opportunities
+
+Multi-market plans evolve: a market is dropped or added, dates move. Two ways to keep that on one opportunity:
+
+**Revise a booking** (Reservations → **Revise**, on any booking made in the quote tools). The multi-market planner opens with the booking's account, primary contact, brand, markets, dates, trucks, schedule, hours and options (`GET /api/bookings/revise`). The seller changes what they need, re-quotes, and **Update booking** (`/api/plan/hold` with `revise.bookingKey`):
+
+- **Trucks:** while the booking is still live, a market that stays keeps the trucks it holds, wherever they can still do the (possibly moved) dates; it gets other trucks only where they cannot. The booking's own holds are left out of the fleet while it is planned, so they never block themselves. An **expired** booking keeps nothing: it is re-picked and priced fresh.
+- **One transaction:** the booking's old holds are removed and the new ones written together, or neither. A `REVISE_BOOKING` audit row records what it was.
+- **Same opportunity:** amount, markets, trucks and hold dates become the booking as it now stands; the description starts with a revision note saying what it was. A won opportunity's booking stays committed.
+- **Refused:** Salesforce pushes (change them in Salesforce), client-portal bookings, single-market bookings with lift studies (the planner does not price them), and a Closed Lost opportunity.
+
+**Add to an existing opportunity** (both quote tools, after the primary contact). The picker lists the account's open LED opportunities; choosing one adds the quote to it (`attach_opportunity_id` / `attachOpportunityId`): the new holds link to it, its amount adds, markets and trucks are the union, the hold window widens, and the description notes what was added. For changing or dropping markets already on it, use Revise.
+
+Both are staff only; the client portal is unchanged.
+
 ## 7. What the client sees vs. what's internal
 
 Nothing under an `_internal` key is returned on a client-authenticated route — not the margin check, and not the downstream deadhead flags. Those appear only on the staff routes (`/api/quote`, `/api/quote/hold`) and the MCP endpoint; on the client routes the same values are logged server-side instead. A client-facing response is visible in the browser network tab whether or not the UI renders it.

@@ -21,6 +21,7 @@ import { copyDatesDown } from '@/lib/planner/rows'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
 import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
+import { OpportunityPicker, type OpenOpportunity } from '@/components/OpportunityPicker'
 import { BrandInput } from '@/components/BrandInput'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { ReviewFinding } from '@/lib/planning/claude'
@@ -104,8 +105,16 @@ const th = 'text-left text-xs font-medium text-gray-500 px-2 py-1.5 border-b bor
 const td = 'px-2 py-1.5 border-b border-gray-100 text-sm text-gray-800 align-top'
 const tdNum = td + ' text-right tabular-nums'
 
-export function PlannerTab() {
+/** A booking being revised (Reservations → Revise; /api/bookings/revise). */
+type Revision = { key: string; opportunityName: string | null; clientName: string; live: boolean }
+
+export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: string | null; onReviseDone?: () => void } = {}) {
   const [account, setAccount] = useState<SfdcAccount | null>(null)
+  const [revision, setRevision] = useState<Revision | null>(null)
+  const [reviseError, setReviseError] = useState<string | null>(null)
+  // An existing opportunity to add this order to; null = a new one. (A
+  // revision always goes onto its own booking's opportunity.)
+  const [attachTo, setAttachTo] = useState<OpenOpportunity | null>(null)
   // The opportunity's primary contact: required by sales ops on every opportunity.
   const [contact, setContact] = useState<SfdcContact | null>(null)
   // How long the reservations hold the trucks (default 3 days).
@@ -127,6 +136,31 @@ export function PlannerTab() {
   // booking attempt: new id, and any earlier result no longer applies. (The
   // server also keeps the two in separate id spaces.)
   useEffect(() => { bookingId.current = newBookingId(); setHoldResult(null) }, [quoteOnly])
+
+  // Open a booking for revision: its account, contact, brand, markets and
+  // options, ready to change and re-quote.
+  useEffect(() => {
+    if (!reviseKey) return
+    let alive = true
+    setReviseError(null)
+    fetch(`/api/bookings/revise?key=${encodeURIComponent(reviseKey)}`)
+      .then(async r => { const d = await r.json(); if (!r.ok) throw new Error(d.error || 'That booking could not be opened.'); return d.booking })
+      .then(b => {
+        if (!alive) return
+        if (b.account) setAccount(b.account)
+        setContact(b.contact)
+        setBrand(b.brand ?? '')
+        setRows(b.rows.map((r: { market: string; startDate: string; endDate: string; trucks: number; daysPerWeek: number; hours: number }) =>
+          newRow({ market: r.market, startDate: r.startDate, endDate: r.endDate, trucks: r.trucks, daysPerWeek: r.daysPerWeek, hours: r.hours })))
+        setFeatures(b.features)
+        setAttachTo(null)
+        setRevision({ key: b.key, opportunityName: b.opportunityName, clientName: b.clientName, live: b.live })
+      })
+      .catch(e => { if (alive) setReviseError(e instanceof Error ? e.message : 'That booking could not be opened.') })
+    return () => { alive = false }
+  }, [reviseKey])
+
+  const stopRevising = () => { setRevision(null); onReviseDone?.() }
 
   // Intake
   const [showImport, setShowImport] = useState(false)
@@ -242,6 +276,8 @@ export function PlannerTab() {
     alloyRenews,
     // The server applies it only if Salesforce says the account is Brand Direct.
     brandMarkupPct: isBrandDirect ? clampBrandMarkup(brandMarkupPct) : undefined,
+    // Revising: the server frees the booking's trucks and keeps them where they fit.
+    revise: revision ? { bookingKey: revision.key } : undefined,
   })
 
   const getQuote = async () => {
@@ -268,7 +304,7 @@ export function PlannerTab() {
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, quoteOnly, brand, primaryContactId: contact.id, holdDays }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, quoteOnly, brand, primaryContactId: contact.id, holdDays, attachOpportunityId: revision ? undefined : attachTo?.id }),
       })
       const data = await readJson(res)
       if (res.status === 409 && data.shortfalls) {
@@ -285,6 +321,8 @@ export function PlannerTab() {
       }
       if (!res.ok) throw new Error(data.error || 'Holds could not be placed')
       setHoldResult({ ok: true, message: data.message })
+      // A finished revision: the booking now stands as booked; leave revise mode.
+      if (revision) { setRevision(null); onReviseDone?.() }
     } catch (e) {
       setHoldResult({ ok: false, message: e instanceof Error ? e.message : 'Holds could not be placed' })
     } finally {
@@ -297,14 +335,49 @@ export function PlannerTab() {
 
   return (
     <div>
+      {/* Revising an existing booking (Reservations → Revise) */}
+      {reviseError && (
+        <div className="mb-4 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-800 flex items-start justify-between gap-3">
+          <span>{reviseError}</span>
+          <button onClick={() => { setReviseError(null); onReviseDone?.() }} className="text-xs font-medium underline flex-shrink-0">Start a new quote</button>
+        </div>
+      )}
+      {revision && (
+        <div className="mb-4 bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-sm text-blue-900">
+          <div className="flex items-start justify-between gap-3">
+            <p className="font-semibold">
+              Revising {revision.clientName}&apos;s booking{revision.opportunityName ? <> · <span className="font-normal">{revision.opportunityName}</span></> : null}
+            </p>
+            <button onClick={stopRevising} className="text-xs font-medium text-blue-700 hover:text-blue-900 underline flex-shrink-0">Cancel revision</button>
+          </div>
+          <p className="text-xs text-blue-800 mt-1">
+            Add, drop or change markets and dates, then quote. Booking replaces this booking&apos;s reservations and updates the same Salesforce opportunity
+            {revision.opportunityName ? '' : ' (it has none, so one is created)'}.{' '}
+            {revision.live
+              ? 'Markets that stay keep their current trucks where those can still do the dates.'
+              : 'It has expired, so trucks are picked and priced fresh.'}
+          </p>
+        </div>
+      )}
+
       {/* 1. Client */}
       <div className={card}>
         <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
-        <AccountSearch selected={account} onSelect={a => { setAccount(a); setContact(null); setQuote(null); setHoldResult(null) }} />
+        <AccountSearch selected={account} onSelect={a => {
+          // A booking is revised on its own account; another account is a new quote.
+          if (revision && !window.confirm('Changing the client stops revising this booking and starts a new quote. Continue?')) return
+          if (revision) stopRevising()
+          setAccount(a); setContact(null); setAttachTo(null); setQuote(null); setHoldResult(null)
+        }} />
         {account && (
           <div className="mt-3">
             <label className="text-xs font-medium text-gray-600 mb-1 block">Primary contact <span className="text-red-500">*</span></label>
             <ContactSearch accountId={account.id} selected={contact} onSelect={setContact} />
+            {!revision && (
+              <div className="mt-3">
+                <OpportunityPicker accountId={account.id} value={attachTo} onChange={setAttachTo} />
+              </div>
+            )}
           </div>
         )}
         <div className="mt-3 max-w-sm">
@@ -452,6 +525,8 @@ export function PlannerTab() {
           quote={quote}
           account={account}
           contact={contact}
+          revising={revision !== null}
+          attachName={revision ? null : attachTo?.name ?? null}
           holdDays={holdDays}
           onHoldDays={setHoldDays}
           holding={holding}
@@ -561,10 +636,14 @@ function ImportPanel(p: {
 
 // ---------------------------------------------------------------------------
 
-function QuoteResult({ quote, account, contact, holdDays, onHoldDays, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
+function QuoteResult({ quote, account, contact, revising, attachName, holdDays, onHoldDays, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
   quote: MultiMarketQuote
   account: SfdcAccount | null
   contact: SfdcContact | null
+  /** Booking replaces an existing booking (Reservations → Revise). */
+  revising: boolean
+  /** Booking is added to this existing opportunity. */
+  attachName: string | null
   holdDays: number
   onHoldDays: (days: number) => void
   holding: boolean
@@ -676,8 +755,9 @@ function QuoteResult({ quote, account, contact, holdDays, onHoldDays, holding, h
                 : !contact ? 'Choose the primary contact above'
                 : chosen.length === 0 ? 'Select at least one market to book'
                 : holding ? (quoteOnly ? 'Logging the quote…' : 'Re-checking trucks and placing holds…')
-                : quoteOnly ? `Log quote in Salesforce (no reservation) — ${chosen.length} of ${quote.lines.length} markets, ${fmtMoney(chosenTotal)}`
-                : `Place holds & create Salesforce opportunity — ${chosen.length} of ${quote.lines.length} markets, ${fmtMoney(chosenTotal)}`}
+                : revising ? `Update booking${quoteOnly ? ' (quote only, no reservation)' : ''} — ${chosen.length} of ${quote.lines.length} markets, ${fmtMoney(chosenTotal)}`
+                : quoteOnly ? `Log quote in Salesforce (no reservation)${attachName ? ' on the chosen opportunity' : ''} — ${chosen.length} of ${quote.lines.length} markets, ${fmtMoney(chosenTotal)}`
+                : `Place holds & ${attachName ? 'add to the chosen opportunity' : 'create Salesforce opportunity'} — ${chosen.length} of ${quote.lines.length} markets, ${fmtMoney(chosenTotal)}`}
             </button>
             {chosen.length > 0 && chosen.length < quote.lines.length && (
               <p className="mt-1 text-xs text-gray-500">

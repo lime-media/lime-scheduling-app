@@ -109,6 +109,23 @@ function groupSortValue(rows: HoldRequest[], key: SortKey): SortValue {
   return key === 'truck' ? minValue(rows.map(r => r.truck_number)) : sortValue(rows[0], key)
 }
 
+/**
+ * Revise a booking made in the quote tools: open it in the multi-market
+ * planner to add, drop or change markets and dates on the same opportunity
+ * (app/api/bookings/revise). Not for Salesforce pushes or client bookings.
+ */
+function ReviseLink({ rows }: { rows: HoldRequest[] }) {
+  const key = rows.length ? bookingKey(rows[0]) : null
+  if (!key || rows.some(r => r.source !== 'INTERNAL')) return null
+  return (
+    <a href={`/quote?revise=${encodeURIComponent(key)}`}
+      title="Add, drop or change markets and dates on the same opportunity"
+      className="px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-200 text-blue-700 hover:bg-blue-50 transition-colors">
+      Revise
+    </a>
+  )
+}
+
 function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; status: string }) {
   if (!expiresAt || status === 'COMMITTED') return null
   const expDate = new Date(expiresAt)
@@ -699,6 +716,7 @@ export default function HoldRequestsPage() {
                           Edit
                         </button>
                       )}
+                      {first.status !== 'EXTENSION_REQUESTED' && <ReviseLink rows={groupItems} />}
                     </div>
                   )}
                 </div>
@@ -748,7 +766,10 @@ export default function HoldRequestsPage() {
                                 <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
                               </td>
                               <td className="px-4 py-3">
-                                <Actions ids={[r.id]} status={r.status} groupKey={r.id} requests={[r]} quoteOnly={r.origination === QUOTE_ONLY_ORIGINATION} />
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <Actions ids={[r.id]} status={r.status} groupKey={r.id} requests={[r]} quoteOnly={r.origination === QUOTE_ONLY_ORIGINATION} />
+                                  {['HOLD', 'COMMITTED', 'EXPIRED'].includes(r.status) && <ReviseLink rows={[r]} />}
+                                </div>
                               </td>
                             </tr>
                             {parsedFeatures && (

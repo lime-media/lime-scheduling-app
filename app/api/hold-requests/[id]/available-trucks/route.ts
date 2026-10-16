@@ -40,6 +40,8 @@ export async function GET(
     endDate,
     truckCount: 1,
     excludeHoldId: hold.id,
+    // Staff swap: leaving a later AT&T soft hold short is a warning, as in the quote.
+    softHoldStrandIsWarning: true,
   })
 
   const trucks = result.trucks.map(t => ({
@@ -62,6 +64,7 @@ export async function GET(
     transportDays: t.transport.transportDays,
     transportCharge: t.transport.chargePerTruck,
     requiresOverride: t.requiresOverride,
+    softHoldWarning: t.softHoldWarning ?? null,
   }))
 
   // Current truck first, then cheapest chain (checkAvailability already sorted).

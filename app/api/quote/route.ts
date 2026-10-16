@@ -11,7 +11,8 @@ import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
 import { brandMarkupFor, withMarkup } from '@/lib/pricing/brandMarkup'
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
-import { checkAvailability, legsFromTrucks, overrideOptions } from '@/lib/availabilityEngine'
+import { checkAvailability, legsFromTrucks, overrideOptions, type AvailabilityResult } from '@/lib/availabilityEngine'
+import { insufficientSummary } from '@/lib/quoteAlternatives'
 import {
   computeQuote,
   priceTransport,
@@ -134,6 +135,8 @@ async function handlePost(req: NextRequest) {
       endDate: end_date,
       truckCount: truck_count,
       serviceAreaMiles: rateOverrides?.service_area_miles,
+      // Staff: leaving a later AT&T soft hold short is a warning, not a block.
+      softHoldStrandIsWarning: true,
     }),
     resolveMarketSizeTierId(formalMarket),
   ])
@@ -154,8 +157,12 @@ async function handlePost(req: NextRequest) {
   }
 
   if (!availability.sufficient && body.quote_only !== true) {
-    const freeCount = availability.counts.total
-    const softHeldCount = availability.trucks.filter(t => t.softHoldOnDates).length
+    const summary = insufficientSummary({
+      market: formalMarket, start: start_date, end: end_date, requested: truck_count,
+      free: availability.counts.total,
+      releasable: availability.trucks.filter(t => t.softHoldOnDates).length,
+      options: availability.dateOptions,
+    })
     return NextResponse.json({
       availability: {
         // Trucks an AT&T soft-hold release would free: the way out of "not
@@ -167,14 +174,12 @@ async function handlePost(req: NextRequest) {
         nearby: availability.counts.nearby,
         repositioning: availability.counts.repositioning,
         sufficient: false,
+        excluded: excludedTrucks(availability),
+        dateOptions: availability.dateOptions,
       },
       insufficient: true,
-      // Headline is the operative fact; the counts below are internal detail.
-      message: 'Automatic quote not feasible without changing existing reservations or commitments.',
-      detail: `${freeCount} truck${freeCount !== 1 ? 's' : ''} can reach this market for these dates without a release, but ${truck_count} requested.`
-        + (softHeldCount > 0 ? ` ${softHeldCount} more ${softHeldCount !== 1 ? 'are' : 'is'} held for AT&T and can be released for this booking (below).` : '')
-        + (availability.counts.cannotArrive > 0 ? ` ${availability.counts.cannotArrive} excluded: cannot arrive in time.` : '')
-        + (availability.counts.wouldStrandSuccessor > 0 ? ` ${availability.counts.wouldStrandSuccessor} excluded: would strand a later booking.` : ''),
+      message: summary.message,
+      detail: summary.detail,
     })
   }
 
@@ -248,12 +253,12 @@ async function handlePost(req: NextRequest) {
           .map(t => t.chain.inbound.originFellBackToGps)
           .filter((m): m is string => Boolean(m)),
       )],
-      excluded: availability.infeasible.map(t => ({
-        truckNumber: t.truckNumber,
-        from: t.currentMarket || 'Unknown',
-        reason: t.reason,
-        detail: t.detail,
-      })),
+      excluded: excludedTrucks(availability),
+      // Selected trucks that leave a later AT&T soft hold short (staff rule:
+      // allowed, flagged).
+      softHoldWarnings: selectedTrucks
+        .filter(t => t.softHoldWarning)
+        .map(t => ({ truckNumber: t.truckNumber, warning: t.softHoldWarning! })),
       requiresOverride: overrideOptions(availability),
     },
     pricing: {
@@ -333,3 +338,16 @@ async function handlePost(req: NextRequest) {
 
 // Every run is logged for the Usage page (lib/usageLog.ts).
 export const POST = withUsageLog('quote_classic', 'staff', handlePost)
+
+/** Trucks that cannot take the campaign, with why and the dates they could do. */
+function excludedTrucks(availability: AvailabilityResult) {
+  return availability.infeasible.map(t => ({
+    truckNumber: t.truckNumber,
+    from: t.currentMarket || 'Unknown',
+    reason: t.reason,
+    detail: t.detail,
+    earliestStart: t.earliestStart ?? null,
+    latestEnd: t.latestEnd ?? null,
+  }))
+}
+

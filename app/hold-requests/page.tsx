@@ -164,6 +164,8 @@ type AvailableTruck = {
   transportDays: number
   transportCharge: number
   requiresOverride: boolean
+  /** Leaves a later AT&T soft hold short of travel time (allowed, flagged). */
+  softHoldWarning: string | null
 }
 
 export default function HoldRequestsPage() {
@@ -838,6 +840,9 @@ export default function HoldRequestsPage() {
                                                 ? ' · from its prior booking'
                                                 : ' · current GPS position'}
                                             </span>
+                                            {t.softHoldWarning && (
+                                              <span className="block text-[11px] text-amber-700">{t.softHoldWarning}</span>
+                                            )}
                                             {t.originIsCommitment && t.gpsMarket && (
                                               <span className="block text-[11px] text-gray-400">
                                                 (parked in {t.gpsMarket} today)

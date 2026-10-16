@@ -24,7 +24,9 @@
  *      oldest. Two grid loads at the same moment used to create two.
  *   3. Releases soft holds on trucks that are no longer AT&T's — unless the
  *      run looks wrong (no AT&T trucks at all, or a mass release), in which
- *      case it releases none and reports why (see releaseBlockedReason).
+ *      case it releases none, reports why (see releaseBlockedReason) and
+ *      records the trucks held back. A person can approve those trucks from
+ *      Reservations → AT&T Soft; the next run then releases them.
  *   4. Gives every AT&T truck a soft hold for each month of the window it
  *      does not already have.
  *
@@ -47,7 +49,7 @@ import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
-import { ATT_CLIENT, ATT_MIN_DAYS, PRIOR_MONTH_GRACE_DAY, attLookback, isAttClient, isAttTruck, normalizeClient, planMarketBackfill, planReleaseCuts, planSoftHoldFill, releaseBlockedReason, rosterPlan, softHoldWindow, type RosterOverride } from '@/lib/attSoftRules'
+import { ATT_CLIENT, ATT_MIN_DAYS, PRIOR_MONTH_GRACE_DAY, attLookback, isAttClient, isAttTruck, normalizeClient, planMarketBackfill, planPremiseRelease, planReleaseCuts, planSoftHoldFill, rosterPlan, type MassReleaseApproval, softHoldWindow, type RosterOverride } from '@/lib/attSoftRules'
 import { HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
 
 export { ATT_CLIENT, isAttClient, softHoldWindow }
@@ -96,6 +98,64 @@ async function activeRosterOverrides(from: string, warnings: string[]): Promise<
     return []
   }
 }
+
+/**
+ * The mass release the valve last held back, and a person's approval of one.
+ * Stored as internal app_settings rows (not listed on the Settings page).
+ */
+export const MASS_RELEASE_PENDING_KEY = 'att_soft.mass_release_pending'
+export const MASS_RELEASE_APPROVAL_KEY = 'att_soft.mass_release_approval'
+
+export type MassReleasePending = {
+  reason: string
+  at: string
+  /**
+   * Each truck held back, with its 160over90 days this month and last. Last
+   * month is shown even after the 10th, when it no longer counts: "20 days in
+   * September, none now" is the evidence a person approving needs.
+   */
+  trucks: { truck_number: string; holds: number; current: number; prior: number }[]
+  months: { current: string; prior: string }
+  /** Whether last month still counts toward the rule (through the 10th). */
+  priorCounts: boolean
+}
+
+async function readJsonSetting<T>(key: string): Promise<T | null> {
+  try {
+    const row = await prisma.appSetting.findUnique({ where: { key } })
+    return row ? (JSON.parse(row.value) as T) : null
+  } catch (err) {
+    console.error(`[att-soft] could not read ${key}:`, err)
+    return null
+  }
+}
+
+/** The calendar month before the one starting `monthStart` (YYYY-MM-01). */
+function previousMonth(monthStart: string): { from: string; to: string } {
+  const first = utc(monthStart)
+  return {
+    from: iso(new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() - 1, 1))),
+    to: iso(new Date(first.getTime() - 864e5)),
+  }
+}
+
+/** Write (or, with null, remove) an internal setting. False when it failed — logged, never thrown. */
+async function writeJsonSetting(key: string, value: unknown | null, updatedBy: string | null): Promise<boolean> {
+  try {
+    if (value === null) await prisma.appSetting.deleteMany({ where: { key } })
+    else await prisma.appSetting.upsert({ where: { key }, create: { key, value: JSON.stringify(value), updated_by: updatedBy }, update: { value: JSON.stringify(value), updated_by: updatedBy } })
+    return true
+  } catch (err) {
+    console.error(`[att-soft] could not write ${key}:`, err)
+    return false
+  }
+}
+
+/** What the valve is holding back right now, or null. */
+export const getMassReleasePending = () => readJsonSetting<MassReleasePending>(MASS_RELEASE_PENDING_KEY)
+
+/** Approve releasing these trucks' soft holds at the next sync. False when it could not be saved. */
+export const approveMassRelease = (approval: MassReleaseApproval) => writeJsonSetting(MASS_RELEASE_APPROVAL_KEY, approval, approval.by)
 
 /** The SQL twin of isAttClient: normalised, "contains". */
 const ATT_CLIENT_SQL = `LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(cl.client, ' ', ''), '-', ''), '.', ''), ',', ''), '_', '')) LIKE @clientLike`
@@ -155,6 +215,8 @@ export type SoftHoldSyncResult = {
   releasedDuplicates: number
   releasedPremise: number
   created: number
+  /** Trucks whose soft holds were released as no longer AT&T's this run. */
+  releasedPremiseTrucks: string[]
   /** Trucks that currently count as AT&T's. */
   attTrucks: number
   window: string[]
@@ -221,24 +283,50 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
     span: { start: monthStart, end: window[window.length - 1].end },
   })
   const onList = (t: string) => attTrucks.has(t) || roster.addTrucks.has(t)
-  const toRelease = kept.filter(h => !onList(h.truck_number))
-  const blocked = releaseBlockedReason({ attTrucks: attTrucks.size, softHolds: kept.length, wouldRelease: toRelease.length })
+  const toRelease = kept.filter(h => !onList(h.truck_number)).map(h => ({ ...h, start: iso(h.start_date), end: iso(h.end_date) }))
+  const approval = await readJsonSetting<MassReleaseApproval>(MASS_RELEASE_APPROVAL_KEY)
+  const plan = planPremiseRelease({ toRelease, softHolds: kept.length, attTrucks: attTrucks.size, approval, removes: roster.removes, now: new Date() })
+  const approvedTrucks = new Set(plan.approvedUsed ? approval!.trucks : [])
+  const takenOff = (h: { truck_number: string; start: string; end: string }) =>
+    roster.removes.some(r => r.truck_number === h.truck_number && r.start <= h.end && r.end >= h.start)
+  const months = { current: lookback.current.from.slice(0, 7), prior: lookback.prior ? lookback.prior.from.slice(0, 7) : null }
   let releasedPremise = 0
-  const live: SoftHold[] = kept.filter(h => onList(h.truck_number))
-  if (blocked) {
-    // Keep every soft hold; a person should look before trucks are handed back.
-    warnings.push(`Soft-hold release skipped: ${blocked}. Check the 160over90 schedule and client record.`)
+  const releasedPremiseTrucks = new Set<string>()
+  const live: SoftHold[] = [...kept.filter(h => onList(h.truck_number)), ...plan.keep]
+  for (const h of plan.release) {
+    const ok = await release(h, 'att_soft_not_att_truck', {
+      days_160over90: daysOf(h.truck_number), needs_more_than: ATT_MIN_DAYS,
+      months: months.prior ? [months.prior, months.current] : [months.current],
+      prior_month_counts_through_day: PRIOR_MONTH_GRACE_DAY,
+      ...(approvedTrucks.has(h.truck_number) ? { mass_release_approved_by: approval!.byName || approval!.by, approved_at: approval!.at } : {}),
+      ...(takenOff(h) ? { taken_off_att_list: true } : {}),
+    })
+    if (ok) { releasedPremise++; releasedPremiseTrucks.add(h.truck_number) }
+  }
+  // An approval is used by the first sync that has its trucks to release; one
+  // that is never used lapses after MASS_RELEASE_APPROVAL_HOURS.
+  if (plan.approvedUsed) await writeJsonSetting(MASS_RELEASE_APPROVAL_KEY, null, null)
+  if (plan.blocked) {
+    // Keep these soft holds; a person should look before trucks are handed back.
+    warnings.push(`Soft-hold release skipped: ${plan.blocked}. If that is right (an AT&T program ended), approve it on Reservations → AT&T Soft; otherwise check the 160over90 schedule and client record.`)
     console.error('[att-soft]', warnings[warnings.length - 1])
-    live.push(...toRelease)
-  } else {
-    for (const h of toRelease) {
-      const ok = await release(h, 'att_soft_not_att_truck', {
-        days_160over90: daysOf(h.truck_number), needs_more_than: ATT_MIN_DAYS,
-        months: lookback.prior ? [lookback.prior.from.slice(0, 7), lookback.current.from.slice(0, 7)] : [lookback.current.from.slice(0, 7)],
-        prior_month_counts_through_day: PRIOR_MONTH_GRACE_DAY,
-      })
-      if (ok) releasedPremise++
+    const holdsBy = new Map<string, number>()
+    for (const h of plan.keep) holdsBy.set(h.truck_number, (holdsBy.get(h.truck_number) ?? 0) + 1)
+    // Last month for the reviewer even when it no longer counts (after the 10th).
+    const lastMonth = previousMonth(lookback.current.from)
+    const shownPrior = lookback.prior ? priorDays : await attDaysByTruck(lastMonth.from, lastMonth.to)
+    const saved = await writeJsonSetting(MASS_RELEASE_PENDING_KEY, {
+      reason: plan.blocked, at: new Date().toISOString(),
+      months: { current: months.current, prior: lastMonth.from.slice(0, 7) },
+      priorCounts: lookback.prior !== null,
+      trucks: [...holdsBy].sort(([a], [b]) => a.localeCompare(b, 'en', { numeric: true }))
+        .map(([truck_number, holds]) => ({ truck_number, holds, current: curDays.get(truck_number) ?? 0, prior: shownPrior.get(truck_number) ?? 0 })),
+    } satisfies MassReleasePending, null)
+    if (!saved) {
+      warnings.push('The trucks held back could not be saved for review, so Reservations → AT&T Soft cannot show them yet. The next sync (within 15 minutes) tries again; if this persists, check the server log.')
     }
+  } else {
+    await writeJsonSetting(MASS_RELEASE_PENDING_KEY, null, null)
   }
 
   // Release records (lib/attSoftRelease.ts) — only genuine ones: EXPIRED rows
@@ -317,10 +405,10 @@ export async function syncAttSoftHolds(opts: { today?: string; createdBy?: strin
       console.error(`[att-soft] create for ${g.truck_number} ${g.start}..${g.end} failed:`, err)
     }
   }
-  return finish(attTrucks.size, releasedPremise, created)
+  return finish(attTrucks.size, releasedPremise, created, releasedPremiseTrucks)
 
-  function finish(attCount = 0, premise = 0, made = 0): SoftHoldSyncResult {
-    const result = { releasedPriorMonths, releasedDuplicates, releasedPremise: premise, created: made, attTrucks: attCount, window: window.map(w => `${w.start}..${w.end}`), warnings }
+  function finish(attCount = 0, premise = 0, made = 0, premiseTrucks: Set<string> = new Set()): SoftHoldSyncResult {
+    const result = { releasedPriorMonths, releasedDuplicates, releasedPremise: premise, releasedPremiseTrucks: [...premiseTrucks].sort(), created: made, attTrucks: attCount, window: window.map(w => `${w.start}..${w.end}`), warnings }
     console.log('[att-soft] sync', JSON.stringify(result))
     return result
   }

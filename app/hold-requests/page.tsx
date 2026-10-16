@@ -531,7 +531,7 @@ export default function HoldRequestsPage() {
             Release dates
           </button>
           <button
-            onClick={() => setRosterDraft({ ...newAddDraft(), action: 'REMOVE', truck_number: hold.truck_number, start: hold.start_date < newAddDraft().start ? newAddDraft().start : hold.start_date, end: hold.end_date })}
+            onClick={() => setRosterDraft({ ...newAddDraft(), action: 'REMOVE', truck_number: hold.truck_number })}
             className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
           >
             Take off list

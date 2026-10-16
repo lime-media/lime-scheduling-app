@@ -391,7 +391,7 @@ The pool is the bookable fleet (`HIDDEN_TRUCKS` excluded), with jobs and holds l
 - **Hours model.** 5 × 8 markets as 3 × 12, or the reverse: the change in trucks and order total.
 - **Start date.** If markets are short, the first start 1–6 weeks later that covers every market. Otherwise, a start 1–3 weeks later that cuts transport by $500 or more.
 
-**Holds and Salesforce** (`/api/plan/hold`). The client must be selected, and the rep ticks the markets to book (every market with a truck starts ticked). Changing any market, option or the client clears the quote, so the button always books what is on screen. The selected markets are re-routed from fresh data at the moment of booking. Then:
+**Holds and Salesforce** (`/api/plan/hold`). The client and its primary contact must be selected (see 6d), and the rep ticks the markets to book (every market with a truck starts ticked). Changing any market, option or the client clears the quote, so the button always books what is on screen. The selected markets are re-routed from fresh data at the moment of booking. Then:
 
 - **Price check.** The browser sends the total it showed. If the fresh plan prices differently, nothing is booked and the rep is asked to confirm the new total.
 - **Shortfalls.** If some trucks can no longer be covered, the rep is asked before the rest are booked.
@@ -410,6 +410,15 @@ The pool is the bookable fleet (`HIDDEN_TRUCKS` excluded), with jobs and holds l
 - **Reviewing the list.** It looks for what geometry cannot see: a DMA label naming a different city than its ZIPs, or a digit slip. A suggested ZIP is shown as verified only when code confirms it exists and lies within 60 miles of the DMA's other ZIPs. The rep applies a correction with one click.
 
 Routing, truck choice and every price come only from code. Without the API key, typed markets and CSV/`.xlsx` lists still work.
+
+## 6d. The opportunity's primary contact
+
+Every opportunity needs a primary contact (sales ops' rule). Both booking endpoints, `/api/quote/hold` (`primary_contact_id`) and `/api/plan/hold` (`primaryContactId`), require one, for holds and quote-only logs alike. The rep picks it after the account, from that account's Salesforce Contacts (`GET /api/sfdc/contacts?accountId=&q=`, searching name or email).
+
+- **Checked against the account.** A missing id, or a contact that is not on the chosen account, is refused before anything is booked.
+- **Salesforce down is not a refusal.** If the check cannot reach Salesforce, the booking goes ahead and the rep is told the contact could not be verified, as when the opportunity itself cannot be created. The hold is what protects the truck.
+- **Two places in Salesforce.** The opportunity is created with `Primary_Contact__c` (the field Contact Email / Contact Phone read). The contact is then added as the primary Opportunity Contact Role in a separate step. If that step is refused, the opportunity still stands and the rep is told to check it.
+- The client portal does not ask: clients do not see Salesforce contacts.
 
 ## 7. What the client sees vs. what's internal
 

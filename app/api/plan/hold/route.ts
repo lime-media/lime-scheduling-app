@@ -45,7 +45,7 @@ import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { computeHoldExpiresAt } from '@/lib/holdExpiry'
-import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, primaryContactRefusal, resolveOpportunityOwner } from '@/lib/salesforceClient'
+import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { rotationStints, type OrderLine } from '@/lib/planning/order'
 import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuote, type QuoteRequest } from '@/lib/planning/quote'
@@ -101,10 +101,13 @@ async function handlePost(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
   if (!body.sfdcAccountId) return NextResponse.json({ error: 'Select a Salesforce account first.' }, { status: 400 })
-  // Every opportunity needs its primary contact, on this account.
-  const contactRefusal = await primaryContactRefusal(body.primaryContactId, body.sfdcAccountId)
-  if (contactRefusal) return NextResponse.json({ error: contactRefusal }, { status: 400 })
   if (!body.requestId || !/^[A-Za-z0-9_-]{8,64}$/.test(body.requestId)) return NextResponse.json({ error: 'Missing booking request id.' }, { status: 400 })
+  // Every opportunity needs its primary contact, on this account — checked
+  // after the cheap local guards. A definite no refuses; Salesforce being
+  // unreachable only warns (see checkPrimaryContact).
+  const contact = await checkPrimaryContact(body.primaryContactId, body.sfdcAccountId)
+  if (contact.refusal) return NextResponse.json({ error: contact.refusal }, { status: 400 })
+  const sfdcWarnings: string[] = contact.warning ? [contact.warning] : []
   body.features = body.features ?? { shadowFencing: true, smartDirectional: false, deviceId: false }
   // Holds never displace AT&T: soft-hold trucks are always reserved here.
   body.reserveSoftHolds = true
@@ -348,6 +351,7 @@ async function handlePost(req: NextRequest) {
         })
         if (result.success && result.id) {
           sfdcOpportunityId = result.id
+          sfdcWarnings.push(...(result.warnings ?? []))
           await prisma.hold.updateMany({ where: { campaign_group_id: { startsWith: groupPrefix } }, data: { sfdc_opportunity_id: result.id } })
         } else {
           sfdcError = 'Salesforce rejected the opportunity'
@@ -360,6 +364,7 @@ async function handlePost(req: NextRequest) {
     }
 
     const leftOut = notSelected.length + unavailable.length
+    const checkIt = sfdcOpportunityId && sfdcWarnings.length ? ` Check it: ${sfdcWarnings.join('; ')}.` : ''
     return NextResponse.json({
       ok: true,
       created: stretches.map(x => ({ truckNumber: x.truckNumber, market: x.stint.market, start: x.stint.start, end: x.stint.end })),
@@ -369,9 +374,9 @@ async function handlePost(req: NextRequest) {
       quoteOnly,
       message: quoteOnly
         ? `Quote logged for ${accountName} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} (${money(quote.summary.grandTotal)}); no trucks reserved.`
-          + (sfdcOpportunityId ? ' Salesforce opportunity created.' : sfdcError ? ` ${sfdcError}.` : '')
+          + (sfdcOpportunityId ? ' Salesforce opportunity created.' + checkIt : sfdcError ? ` ${sfdcError}.` : '')
         : `Placed ${rows.length} hold${rows.length === 1 ? '' : 's'} on ${truckNumbers.length} truck${truckNumbers.length === 1 ? '' : 's'} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} for ${accountName} (${money(quote.summary.grandTotal)}).`
-        + (sfdcOpportunityId ? ' Salesforce opportunity created' + (leftOut ? ', with the markets not booked listed in its Description.' : '.')
+        + (sfdcOpportunityId ? ' Salesforce opportunity created' + (leftOut ? ', with the markets not booked listed in its Description.' : '.') + checkIt
           : sfdcError ? ` ${sfdcError}; the holds are placed. Create the opportunity by hand (holds grouped under ${groupPrefix}*).` : ''),
     })
   } catch (err) {

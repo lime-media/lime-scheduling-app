@@ -21,24 +21,36 @@ export function ContactSearch({ accountId, selected, onSelect }: {
   const [error, setError] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
   const debounceRef = useRef<NodeJS.Timeout>()
+  // Only the latest request may set results: a slower earlier one (or one for
+  // the previous account) is dropped when it lands.
+  const latest = useRef(0)
+  const alive = useRef(true)
+  useEffect(() => () => { alive.current = false; if (debounceRef.current) clearTimeout(debounceRef.current) }, [])
 
   const load = useCallback(async (q: string) => {
+    const n = ++latest.current
+    const current = () => alive.current && n === latest.current
     setSearching(true); setError(null)
     try {
       const res = await fetch(`/api/sfdc/contacts?accountId=${encodeURIComponent(accountId)}${q ? `&q=${encodeURIComponent(q)}` : ''}`)
       const data = await res.json()
+      if (!current()) return
       if (!res.ok) throw new Error(data.error || 'Contact search failed')
       setResults(data.contacts ?? [])
     } catch (e) {
+      if (!current()) return
       setError(e instanceof Error ? e.message : 'Contact search failed')
       setResults([])
     } finally {
-      setSearching(false)
+      if (current()) setSearching(false)
     }
   }, [accountId])
 
   // The account's contacts as soon as it is chosen (or changed).
-  useEffect(() => { setQuery(''); setResults(null); load('') }, [load])
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    setQuery(''); setResults(null); load('')
+  }, [load])
 
   const search = (q: string) => {
     if (debounceRef.current) clearTimeout(debounceRef.current)

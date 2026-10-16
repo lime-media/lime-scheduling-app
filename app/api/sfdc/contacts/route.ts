@@ -20,8 +20,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'accountId must be a Salesforce Account id' }, { status: 400 })
   }
   const q = req.nextUrl.searchParams.get('q')?.trim() ?? ''
+  // Typed % and _ are literal here (a contact search is for names), unlike
+  // soqlString's default of leaving LIKE wildcards as typed.
+  const term = soqlString(q).replace(/[%_]/g, '\\$&')
   const match = q
-    ? ` AND (Name LIKE '%${soqlString(q)}%' OR Email LIKE '%${soqlString(q)}%')`
+    ? ` AND (Name LIKE '%${term}%' OR Email LIKE '%${term}%')`
     : ''
 
   try {

@@ -5,7 +5,7 @@
  */
 import { eq, section } from './harness'
 import { getMarketCoords } from '@/lib/marketCoordinates'
-import { dateOptions, fitsWindow, insufficientSummary, windowAlternatives } from '@/lib/quoteAlternatives'
+import { dateOptions, daysShorter, fitsWindow, insufficientSummary, windowAlternatives } from '@/lib/quoteAlternatives'
 import type { TruckJob } from '@/lib/truckTimeline'
 
 const C = (m: string) => getMarketCoords(m)!
@@ -48,8 +48,14 @@ section('quote alternatives: what the rep reads')
 const s = insufficientSummary({ market: 'Raleigh, NC', start: '2026-11-02', end: '2026-11-18', requested: 1, free: 0, releasable: 31,
   options: { startFrom: { date: '2026-11-04', trucks: 4 } } })
 eq('headline states the fact', s.message, 'No truck is free and able to reach Raleigh, NC for Nov 2 – Nov 18.')
-eq('detail gives the ways forward', s.detail, 'To book it: release an AT&T soft hold (31 trucks below), or start Nov 4 instead (4 trucks).')
+eq('detail gives the ways forward, with what each costs', s.detail, 'To book it: release the AT&T soft hold on 1 truck (31 held for AT&T to choose from, below), or start Nov 4 instead (4 trucks, 2 days shorter).')
 eq('partial supply', insufficientSummary({ market: 'Raleigh, NC', start: '2026-11-02', end: '2026-11-18', requested: 3, free: 1, releasable: 0, options: {} }).message,
   'Only 1 of 3 trucks is free and able to reach Raleigh, NC for Nov 2 – Nov 18.')
 eq('nothing works: says so', insufficientSummary({ market: 'Raleigh, NC', start: '2026-11-02', end: '2026-11-18', requested: 1, free: 0, releasable: 0, options: {} }).detail,
   'No date within 14 days either way frees enough trucks. Price it as a quote only, or ask operations.')
+eq('ending earlier is shorter too', daysShorter({ start: '2026-11-02', end: '2026-11-18' }, { endBy: '2026-11-16' }), 2)
+eq('so is starting later', daysShorter({ start: '2026-11-02', end: '2026-11-18' }, { startFrom: '2026-11-04' }), 2)
+eq('releases needed, not soft holds nearby',
+  insufficientSummary({ market: 'Raleigh, NC', start: '2026-11-02', end: '2026-11-18', requested: 3, free: 1, releasable: 2, options: {} }).detail,
+  'To book it: release the AT&T soft hold on 2 trucks (below).')
+

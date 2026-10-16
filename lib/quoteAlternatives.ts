@@ -90,6 +90,17 @@ export function dateOptions(o: {
 const fmt = (d: string) => new Date(d + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
 const span = (a: string, b: string) => (a === b ? fmt(a) : `${fmt(a)} – ${fmt(b)}`)
 const trucksWord = (n: number) => `${n} truck${n === 1 ? '' : 's'}`
+const daysBetween = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 864e5)
+
+/**
+ * How much shorter a date option makes the campaign. Moving the start later
+ * or the end earlier both cut days, which changes the price — the rep should
+ * see that before choosing it. Pure.
+ */
+export const daysShorter = (o: { start: string; end: string }, option: { startFrom?: string; endBy?: string }) =>
+  option.startFrom ? daysBetween(o.start, option.startFrom) : option.endBy ? daysBetween(option.endBy, o.end) : 0
+
+const shorter = (n: number) => `${n} day${n === 1 ? '' : 's'} shorter`
 
 /**
  * What a quote with too few trucks tells the rep: the fact, then every way
@@ -110,9 +121,15 @@ export function insufficientSummary(o: {
     ? `No truck is free and able to reach ${o.market} for ${span(o.start, o.end)}.`
     : `Only ${o.free} of ${trucksWord(o.requested)} ${o.free === 1 ? 'is' : 'are'} free and able to reach ${o.market} for ${span(o.start, o.end)}.`
   const ways: string[] = []
-  if (o.releasable > 0) ways.push(`release an AT&T soft hold (${trucksWord(o.releasable)} below)`)
-  if (o.options.startFrom) ways.push(`start ${fmt(o.options.startFrom.date)} instead (${trucksWord(o.options.startFrom.trucks)})`)
-  if (o.options.endBy) ways.push(`end ${fmt(o.options.endBy.date)} instead (${trucksWord(o.options.endBy.trucks)})`)
+  // How many releases it takes, not how many trucks are soft-held nearby:
+  // "31 trucks" next to "need 1" read as though it were trivially easy.
+  const short = Math.max(1, o.requested - o.free)
+  if (o.releasable > 0) {
+    ways.push(`release the AT&T soft hold on ${trucksWord(Math.min(short, o.releasable))}`
+      + (o.releasable > short ? ` (${o.releasable} held for AT&T to choose from, below)` : ' (below)'))
+  }
+  if (o.options.startFrom) ways.push(`start ${fmt(o.options.startFrom.date)} instead (${trucksWord(o.options.startFrom.trucks)}, ${shorter(daysShorter(o, { startFrom: o.options.startFrom.date }))})`)
+  if (o.options.endBy) ways.push(`end ${fmt(o.options.endBy.date)} instead (${trucksWord(o.options.endBy.trucks)}, ${shorter(daysShorter(o, { endBy: o.options.endBy.date }))})`)
   const detail = ways.length
     ? `To book it: ${ways.length === 1 ? ways[0] : `${ways.slice(0, -1).join(', ')}, or ${ways[ways.length - 1]}`}.`
     : `No date within ${ALTERNATIVE_SHIFT_DAYS} days either way frees enough trucks. Price it as a quote only, or ask operations.`

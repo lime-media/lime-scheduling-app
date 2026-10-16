@@ -270,6 +270,9 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
   const today = new Date().toISOString().split('T')[0]
   const availableTrucks: AvailableTruck[] = []
   const infeasible: InfeasibleTruck[] = []
+  // Excluded trucks whose other dates are worth searching — only searched when
+  // there turn out to be too few trucks (see below).
+  const searchable: { entry: InfeasibleTruck; fit: Parameters<typeof windowAlternatives>[0] }[] = []
 
   for (const truckNumber of allTruckNumbers) {
     // Determine truck location
@@ -313,8 +316,8 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
         detail: b.source === 'SCHEDULE'
           ? `On ${b.program || 'a program'}${b.market ? ` in ${b.market}` : ''} from ${b.start} to ${b.end}.`
           : `Reserved (${b.status ?? 'HOLD'})${b.market ? ` in ${b.market}` : ''} from ${b.start} to ${b.end}.`,
-        ...windowAlternatives(fit),
       })
+      searchable.push({ entry: infeasible[infeasible.length - 1], fit })
       continue
     }
 
@@ -340,8 +343,8 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
         currentMarket,
         reason: chain.blockedBy ?? 'CANNOT_ARRIVE',
         detail: chain.detail ?? '',
-        ...(chain.blockedBy === 'UNKNOWN_ORIGIN' ? {} : windowAlternatives(fit)),
       })
+      if (chain.blockedBy !== 'UNKNOWN_ORIGIN') searchable.push({ entry: infeasible[infeasible.length - 1], fit })
       continue
     }
 
@@ -424,6 +427,12 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     cannotArrive: infeasible.filter(t => t.reason === 'CANNOT_ARRIVE').length,
     wouldStrandSuccessor: infeasible.filter(t => t.reason === 'STRANDS_SUCCESSOR').length,
     originFellBackToGps: availableTrucks.filter(t => t.chain.inbound.originFellBackToGps).length,
+  }
+
+  // Other dates, per excluded truck: up to 28 pure re-checks each, so only
+  // when the quote is short. A quote with enough trucks never needs them.
+  if (free.length < truckCount) {
+    for (const { entry, fit } of searchable) Object.assign(entry, windowAlternatives(fit))
   }
 
   return {

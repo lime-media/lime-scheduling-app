@@ -112,6 +112,9 @@ export default function InternalQuotePage() {
   // The rest of a "not enough trucks" answer: why each other truck missed, and other dates.
   const [quoteErrorExcluded, setQuoteErrorExcluded] = useState<ExcludedTruck[]>([])
   const [quoteErrorDates, setQuoteErrorDates] = useState<DateOptions>({})
+  // The dates the seller typed, kept when a suggested date replaces them, so
+  // they can go back (the suggestion rewrites the form).
+  const [typedDates, setTypedDates] = useState<{ start_date: string; end_date: string } | null>(null)
   const [marketCandidates, setMarketCandidates] = useState<string[] | null>(null)
 
   // Features
@@ -126,7 +129,7 @@ export default function InternalQuotePage() {
   // `reprice`: the same quote again with a new Brand Direct markup — keep the
   // result and the seller's feature choices on screen while it refreshes.
   // `dates`: re-run with a different start or end (a suggested alternative).
-  const submitQuote = useCallback(async (marketOverride?: string, opts: { reprice?: boolean; quoteOnly?: boolean; dates?: { start_date?: string; end_date?: string } } = {}) => {
+  const submitQuote = useCallback(async (marketOverride?: string, opts: { reprice?: boolean; quoteOnly?: boolean; dates?: { start_date?: string; end_date?: string }; restoring?: boolean } = {}) => {
     const market = marketOverride || form.market
     const start_date = opts.dates?.start_date ?? form.start_date
     const end_date = opts.dates?.end_date ?? form.end_date
@@ -134,7 +137,12 @@ export default function InternalQuotePage() {
     if (quoteLoading || !market.trim() || !start_date || !end_date || !truck_count) return
 
     if (marketOverride) setForm(prev => ({ ...prev, market: marketOverride }))
-    if (opts.dates) setForm(prev => ({ ...prev, start_date, end_date }))
+    if (opts.dates) {
+      // Remember what was typed before the first suggestion; going back forgets it.
+      if (opts.restoring) setTypedDates(null)
+      else setTypedDates(prev => prev ?? { start_date: form.start_date, end_date: form.end_date })
+      setForm(prev => ({ ...prev, start_date, end_date }))
+    }
     setQuoteLoading(true)
     setQuoteError(null)
     setQuoteErrorDetail(null)
@@ -342,11 +350,11 @@ export default function InternalQuotePage() {
             </div>
             <div>
               <label className="text-xs font-medium text-gray-600 mb-1 block">Start</label>
-              <input type="date" value={form.start_date} min={todayStr()} onChange={e => setForm(p => ({ ...p, start_date: e.target.value }))} className={inputClass} />
+              <input type="date" value={form.start_date} min={todayStr()} onChange={e => { setTypedDates(null); setForm(p => ({ ...p, start_date: e.target.value })) }} className={inputClass} />
             </div>
             <div>
               <label className="text-xs font-medium text-gray-600 mb-1 block">End</label>
-              <input type="date" value={form.end_date} min={form.start_date || todayStr()} onChange={e => setForm(p => ({ ...p, end_date: e.target.value }))} className={inputClass} />
+              <input type="date" value={form.end_date} min={form.start_date || todayStr()} onChange={e => { setTypedDates(null); setForm(p => ({ ...p, end_date: e.target.value })) }} className={inputClass} />
             </div>
             <div>
               <label className="text-xs font-medium text-gray-600 mb-1 block">Trucks</label>
@@ -380,6 +388,13 @@ export default function InternalQuotePage() {
               ))}
             </div>
             {calDays > 6 && <span className="text-xs text-gray-400">{calDays} calendar days</span>}
+            {typedDates && (typedDates.start_date !== form.start_date || typedDates.end_date !== form.end_date) && (
+              <button type="button" disabled={quoteLoading}
+                onClick={() => submitQuote(undefined, { dates: typedDates, restoring: true })}
+                className="text-xs text-green-700 hover:text-green-900 underline disabled:opacity-50">
+                Back to {fmtDay(typedDates.start_date)} – {fmtDay(typedDates.end_date)}
+              </button>
+            )}
           </div>
 
           <button onClick={() => submitQuote()} disabled={quoteLoading || !complete}
@@ -408,14 +423,14 @@ export default function InternalQuotePage() {
                   <button type="button" disabled={quoteLoading}
                     onClick={() => submitQuote(undefined, { dates: { start_date: quoteErrorDates.startFrom!.date } })}
                     className="rounded border border-green-300 bg-white px-2.5 py-1 text-xs font-medium text-green-800 hover:bg-green-50 disabled:opacity-50">
-                    Start {fmtDay(quoteErrorDates.startFrom.date)} instead ({quoteErrorDates.startFrom.trucks} truck{quoteErrorDates.startFrom.trucks === 1 ? '' : 's'})
+                    Start {fmtDay(quoteErrorDates.startFrom.date)} instead ({quoteErrorDates.startFrom.trucks} truck{quoteErrorDates.startFrom.trucks === 1 ? '' : 's'}, {daysShorterLabel(daysShorter({ start: form.start_date, end: form.end_date }, { startFrom: quoteErrorDates.startFrom.date }))})
                   </button>
                 )}
                 {quoteErrorDates.endBy && (
                   <button type="button" disabled={quoteLoading}
                     onClick={() => submitQuote(undefined, { dates: { end_date: quoteErrorDates.endBy!.date } })}
                     className="rounded border border-green-300 bg-white px-2.5 py-1 text-xs font-medium text-green-800 hover:bg-green-50 disabled:opacity-50">
-                    End {fmtDay(quoteErrorDates.endBy.date)} instead ({quoteErrorDates.endBy.trucks} truck{quoteErrorDates.endBy.trucks === 1 ? '' : 's'})
+                    End {fmtDay(quoteErrorDates.endBy.date)} instead ({quoteErrorDates.endBy.trucks} truck{quoteErrorDates.endBy.trucks === 1 ? '' : 's'}, {daysShorterLabel(daysShorter({ start: form.start_date, end: form.end_date }, { endBy: quoteErrorDates.endBy.date }))})
                   </button>
                 )}
               </div>
@@ -770,4 +785,9 @@ function ExcludedTrucks({ trucks, open = false }: { trucks: ExcludedTruck[]; ope
     </details>
   )
 }
+
+const daysShorterLabel = (n: number) => `${n} day${n === 1 ? '' : 's'} shorter`
+/** Days a suggested start or end cuts from the campaign (lib/quoteAlternatives.ts daysShorter, kept out of the browser bundle). */
+const daysShorter = (o: { start: string; end: string }, opt: { startFrom?: string; endBy?: string }) =>
+  Math.round((opt.startFrom ? Date.parse(opt.startFrom) - Date.parse(o.start) : opt.endBy ? Date.parse(o.end) - Date.parse(opt.endBy) : 0) / 864e5)
 

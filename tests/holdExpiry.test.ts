@@ -12,7 +12,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { computeHoldExpiresAt, HOLD_EXPIRATION_HOURS, MIN_HOLD_WINDOW_HOURS } from '@/lib/holdExpiry'
+import { computeHoldExpiresAt, DEFAULT_HOLD_DAYS, HOLD_EXPIRATION_HOURS, MIN_HOLD_WINDOW_HOURS, holdExpiry, parseHoldDays } from '@/lib/holdExpiry'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -48,3 +48,21 @@ eq('never above the SLA',   runways.every((h) => h <= HOLD_EXPIRATION_HOURS), tr
 
 // A hold is only ever placed against a future start, so the expiry must be too.
 eq('expiry is always in the future', [0, 3, 30].map(startInDays).every((s) => computeHoldExpiresAt(s) > new Date()), true)
+
+section('hold length chosen on the quote tool')
+{
+  const now = new Date('2026-10-16T15:00:00Z')
+  const hrs = (d: Date) => Math.round((d.getTime() - now.getTime()) / 3600e3)
+  const far = '2026-12-01'
+  eq('default is 3 days', hrs(holdExpiry(far, undefined, now).expiresAt), 72)
+  eq('a seller can hold 7 days', hrs(holdExpiry(far, 7, now).expiresAt), 168)
+  eq('or 1 day', hrs(holdExpiry(far, 1, now).expiresAt), 24)
+  eq('not cut short when the campaign is far off', holdExpiry(far, 7, now).cappedByStart, false)
+  // Campaign Oct 27: a hold must end 3 days before, Oct 24 00:00 UTC.
+  const soon = holdExpiry('2026-10-27', 14, now)
+  eq('cut short by the campaign start', [soon.expiresAt.toISOString(), soon.cappedByStart], ['2026-10-24T00:00:00.000Z', true])
+  eq('never under 24 hours, however soon the start', hrs(holdExpiry('2026-10-17', 7, now).expiresAt), 24)
+  eq('parse: missing means the standard 3', parseHoldDays(undefined), DEFAULT_HOLD_DAYS)
+  eq('parse: 1 to 14 accepted', [parseHoldDays(1), parseHoldDays('14')], [1, 14])
+  eq('parse: out of range or fractional refused', [parseHoldDays(0), parseHoldDays(15), parseHoldDays(2.5), parseHoldDays('x')], [null, null, null, null])
+}

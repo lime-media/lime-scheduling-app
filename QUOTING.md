@@ -420,6 +420,15 @@ Every opportunity needs a primary contact (sales ops' rule). Both booking endpoi
 - **Two places in Salesforce.** The opportunity is created with `Primary_Contact__c` (the field Contact Email / Contact Phone read). The contact is then added as the primary Opportunity Contact Role in a separate step. If that step is refused, the opportunity still stands and the rep is told to check it.
 - The client portal does not ask: clients do not see Salesforce contacts.
 
+## 6e. How long a hold lasts
+
+A reservation holds its trucks for **3 days** by default. On both quote tools the seller can choose **1 to 14 days** before booking (`hold_days` on `/api/quote/hold`, `holdDays` on `/api/plan/hold`); the page shows the date it will lapse. Two rules still apply (`lib/holdExpiry.ts`):
+
+- **It ends 3 days before the campaign starts** at the latest, so operations has time to route the truck. A longer choice for a campaign starting soon is cut short, and the page and confirmation say so. In a multi-market booking each market's holds follow their own start date.
+- **It always gets at least 24 hours**, however soon the campaign starts.
+
+Quote-only logs hold nothing, so they have no hold length. An expiry can still be changed afterwards from Reservations → Edit.
+
 ## 7. What the client sees vs. what's internal
 
 Nothing under an `_internal` key is returned on a client-authenticated route — not the margin check, and not the downstream deadhead flags. Those appear only on the staff routes (`/api/quote`, `/api/quote/hold`) and the MCP endpoint; on the client routes the same values are logged server-side instead. A client-facing response is visible in the browser network tab whether or not the UI renders it.

@@ -17,7 +17,7 @@ import { canonicalMarketName } from '@/lib/marketBounds'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
 import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
-import { applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
+import { AMOUNT_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
@@ -280,7 +280,7 @@ async function handlePost(req: NextRequest) {
 
       if (target) {
         // Added to the account's existing opportunity: it grows (lib/opportunityMerge.ts ADD).
-        const ok = await applyBookingToOpportunity({
+        const applied = await applyBookingToOpportunity({
           opp: target,
           mode: 'ADD',
           booking: {
@@ -293,8 +293,9 @@ async function handlePost(req: NextRequest) {
           by: (token.name as string | undefined) || (token.email as string | undefined) || 'the app',
           primaryContactId: primary_contact_id,
         })
-        if (ok) sfdcOpportunityId = target.Id
+        if (applied.ok) sfdcOpportunityId = target.Id
         else sfdcError = 'Salesforce rejected the opportunity update'
+        if (applied.ok && applied.amountLeft) sfdcWarnings.push(AMOUNT_LEFT_NOTE)
       } else {
       // Owned by the rep who booked it (matched by email), else the account owner.
       const owner = await resolveOpportunityOwner({ creatorEmail: token.email as string | undefined, accountOwnerId: accountInfo?.ownerId })

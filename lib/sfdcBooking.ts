@@ -19,6 +19,8 @@ export type BookingOpportunity = OpportunityLed & {
   StageName: string
   IsClosed: boolean
   IsWon: boolean
+  /** Has products (Salesforce CPQ quote lines): Amount is then Salesforce's, not ours to write. */
+  HasOpportunityLineItem: boolean
   Brand_Job_Name__c: string | null
   Primary_Contact__c: string | null
   Primary_Contact__r: { Name: string; Email: string | null; Title: string | null } | null
@@ -28,7 +30,7 @@ export type BookingOpportunity = OpportunityLed & {
 export async function getBookingOpportunity(id: string): Promise<BookingOpportunity | null> {
   if (!isSfdcConfigured() || !OPP_ID.test(id)) return null
   const rows = await sfdcQuery<BookingOpportunity>(
-    `SELECT Id, Name, AccountId, Account.Name, Account.Client_Type2__c, StageName, IsClosed, IsWon, Amount, Markets__c, LED_Trucks__c,
+    `SELECT Id, Name, AccountId, Account.Name, Account.Client_Type2__c, StageName, IsClosed, IsWon, HasOpportunityLineItem, Amount, Markets__c, LED_Trucks__c,
        LED_Hold_Start__c, LED_Hold_Stop__c, LED_Hold_Exp__c, Description, Brand_Job_Name__c,
        Primary_Contact__c, Primary_Contact__r.Name, Primary_Contact__r.Email, Primary_Contact__r.Title
      FROM Opportunity WHERE Id = '${id}' LIMIT 1`,
@@ -47,22 +49,25 @@ export function opportunityRefusal(opp: BookingOpportunity | null, accountId: st
   return closedOpportunityBlocksReactivation({ isClosed: opp.IsClosed, isWon: opp.IsWon, stageName: opp.StageName })
 }
 
-export type OpenOpportunity = { id: string; name: string; stage: string; amount: number | null; holdStart: string | null; holdStop: string | null; createdDate: string }
+export type OpenOpportunity = { id: string; name: string; stage: string; amount: number | null; holdStart: string | null; holdStop: string | null; createdDate: string; hasProducts: boolean }
 
 /** The account's open LED opportunities, newest first — what a quote can be added to. */
 export async function listOpenLedOpportunities(accountId: string): Promise<OpenOpportunity[]> {
   if (!ACCOUNT_ID.test(accountId)) return []
-  const rows = await sfdcQuery<{ Id: string; Name: string; StageName: string; Amount: number | null; LED_Hold_Start__c: string | null; LED_Hold_Stop__c: string | null; CreatedDate: string }>(
-    `SELECT Id, Name, StageName, Amount, LED_Hold_Start__c, LED_Hold_Stop__c, CreatedDate FROM Opportunity
+  const rows = await sfdcQuery<{ Id: string; Name: string; StageName: string; Amount: number | null; LED_Hold_Start__c: string | null; LED_Hold_Stop__c: string | null; CreatedDate: string; HasOpportunityLineItem: boolean }>(
+    `SELECT Id, Name, StageName, Amount, LED_Hold_Start__c, LED_Hold_Stop__c, CreatedDate, HasOpportunityLineItem FROM Opportunity
      WHERE AccountId = '${accountId}' AND IsClosed = false AND Job_Type__c = 'LED' ORDER BY CreatedDate DESC LIMIT 25`,
   )
-  return rows.map(r => ({ id: r.Id, name: r.Name, stage: r.StageName, amount: r.Amount, holdStart: r.LED_Hold_Start__c, holdStop: r.LED_Hold_Stop__c, createdDate: r.CreatedDate }))
+  return rows.map(r => ({ id: r.Id, name: r.Name, stage: r.StageName, amount: r.Amount, holdStart: r.LED_Hold_Start__c, holdStop: r.LED_Hold_Stop__c, createdDate: r.CreatedDate, hasProducts: r.HasOpportunityLineItem }))
 }
 
 /**
  * Write a booking onto an existing opportunity: ADD a quote to it, or REPLACE
  * its booking with a revision. The primary contact is set when the
- * opportunity has none. True when Salesforce accepted it.
+ * opportunity has none. An opportunity with products (a Salesforce CPQ quote)
+ * computes its own Amount and refuses a written one, which would fail the
+ * whole update: the Amount is left to its quote and the rep is told
+ * (`amountLeft`). `ok`: Salesforce accepted it.
  */
 export async function applyBookingToOpportunity(opts: {
   opp: BookingOpportunity
@@ -70,8 +75,13 @@ export async function applyBookingToOpportunity(opts: {
   booking: BookingLed
   by: string
   primaryContactId?: string
-}): Promise<boolean> {
+}): Promise<{ ok: boolean; amountLeft: boolean }> {
   const fields = mergedOpportunityFields(opts.mode, opts.opp, opts.booking, { date: new Date().toISOString().slice(0, 10), by: opts.by })
   if (opts.primaryContactId && !opts.opp.Primary_Contact__c) fields.Primary_Contact__c = opts.primaryContactId
-  return updateOpportunity(opts.opp.Id, fields)
+  const amountLeft = opts.opp.HasOpportunityLineItem
+  if (amountLeft) delete fields.Amount
+  return { ok: await updateOpportunity(opts.opp.Id, fields), amountLeft }
 }
+
+/** What the rep is told when an opportunity's Amount comes from its Salesforce quote. */
+export const AMOUNT_LEFT_NOTE = 'its amount comes from its Salesforce quote and was not changed; update that quote'

@@ -48,7 +48,7 @@ import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
 import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { reviseRefusal } from '@/lib/bookings'
-import { applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
+import { AMOUNT_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { rotationStints, type OrderLine } from '@/lib/planning/order'
 import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuote, type QuoteRequest } from '@/lib/planning/quote'
@@ -396,7 +396,7 @@ async function handlePost(req: NextRequest) {
           // The deal's own opportunity: revised (REPLACE) or added to (ADD).
           // The holds are already linked to it, so Salesforce's push back of
           // the LED fields is an echo (lib/sfdcIntegration.ts trucksToMirror).
-          const ok = await applyBookingToOpportunity({
+          const applied = await applyBookingToOpportunity({
             opp: target,
             mode: reviseKey ? 'REPLACE' : 'ADD',
             booking: {
@@ -409,8 +409,9 @@ async function handlePost(req: NextRequest) {
             by: (token.name as string | undefined) || (token.email as string | undefined) || 'the app',
             primaryContactId: body.primaryContactId,
           })
-          if (ok) sfdcOpportunityId = target.Id
+            if (applied.ok) sfdcOpportunityId = target.Id
           else sfdcError = 'Salesforce rejected the opportunity update'
+          if (applied.ok && applied.amountLeft) sfdcWarnings.push(AMOUNT_LEFT_NOTE)
         } else {
         // Owned by the rep who booked it (matched by email), else the account owner.
         const accountInfo = await getSfdcAccountInfo(body.sfdcAccountId).catch(() => null)

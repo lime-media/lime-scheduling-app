@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from 'react'
 
-export type OpenOpportunity = { id: string; name: string; stage: string; amount: number | null; holdStart: string | null; holdStop: string | null }
+export type OpenOpportunity = { id: string; name: string; stage: string; amount: number | null; holdStart: string | null; holdStop: string | null; hasProducts?: boolean }
 
 const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
 
@@ -41,13 +41,14 @@ export function OpportunityPicker({ accountId, value, onChange }: {
         <option value="">New opportunity</option>
         {(opps ?? []).map(o => (
           <option key={o.id} value={o.id}>
-            Add to: {o.name} · {o.stage}{o.amount != null ? ` · ${money(o.amount)}` : ''}
+            Add to: {o.name} · {o.stage}{o.amount != null ? ` · ${money(o.amount)}` : ''}{o.hasProducts ? ' · amount set by its Salesforce quote' : ''}
           </option>
         ))}
       </select>
       <p className="mt-1 text-xs text-gray-500">
         {opps === null ? 'Loading the account’s open LED opportunities…'
           : error ? error
+          : value?.hasProducts ? 'This quote’s markets and trucks are added to that opportunity. Its amount comes from its Salesforce quote, so update that quote for the new total.'
           : value ? 'This quote’s markets, trucks and amount are added to that opportunity. To change or drop markets already on it, use Revise on the Reservations page.'
           : opps.length ? `${opps.length} open LED opportunit${opps.length === 1 ? 'y' : 'ies'} on this account. Pick one to add to it instead of starting a new one.`
           : 'No open LED opportunities on this account; a new one is created.'}

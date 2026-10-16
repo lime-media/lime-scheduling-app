@@ -5,8 +5,10 @@
  * pushed from Salesforce. Normal per-day yielding to another client's LED
  * shift is not a clash and is not listed.
  *
- * GET  — the clashes not yet dismissed.
- * POST — { softHoldId, reservationId }: dismiss one ("not concerned"). The
+ * GET  — the clashes not yet dismissed, one per reservation: its monthly
+ *        soft-hold pieces merged (mergeSoftHoldClashes), with their ids.
+ * POST — { softHoldIds, reservationId }: dismiss one row ("not concerned"),
+ *        every soft-hold piece it merges, in one write. The
  *        dismissal is an audit-log entry, so who dismissed what stays on record.
  */
 
@@ -15,6 +17,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
+import { mergeSoftHoldClashes } from '@/lib/attSoftRules'
 
 const DISMISS = 'DISMISS_ATT_SOFT_CONFLICT'
 const iso = (d: Date) => d.toISOString().slice(0, 10)
@@ -58,26 +61,31 @@ export async function GET() {
       })
     }
   }
-  conflicts.sort((a, b) => a.overlap.start.localeCompare(b.overlap.start) || a.truckNumber.localeCompare(b.truckNumber))
-  return NextResponse.json({ conflicts })
+  const merged = mergeSoftHoldClashes(conflicts).map(c => ({ ...c, key: `${c.reservationId}|${c.softHoldIds[0]}` }))
+  merged.sort((a, b) => a.overlap.start.localeCompare(b.overlap.start) || a.truckNumber.localeCompare(b.truckNumber))
+  return NextResponse.json({ conflicts: merged })
 }
 
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  const body = await req.json().catch(() => ({})) as { softHoldId?: string; reservationId?: string }
-  if (!body.softHoldId || !body.reservationId) return NextResponse.json({ error: 'softHoldId and reservationId are required' }, { status: 400 })
-  const soft = await prisma.hold.findUnique({ where: { id: body.softHoldId }, select: { truck_number: true, status: true } })
-  if (!soft || soft.status !== 'ATT_SOFT') return NextResponse.json({ error: 'That soft hold no longer exists.' }, { status: 404 })
-  await prisma.auditLog.create({
-    data: {
+  const body = await req.json().catch(() => ({})) as { softHoldIds?: unknown; softHoldId?: string; reservationId?: string }
+  // softHoldIds: every piece the row merges. softHoldId: one (older pages).
+  const ids = [...new Set(Array.isArray(body.softHoldIds) ? body.softHoldIds.map(String) : body.softHoldId ? [body.softHoldId] : [])]
+  if (!ids.length || !body.reservationId) return NextResponse.json({ error: 'softHoldIds and reservationId are required' }, { status: 400 })
+  const soft = await prisma.hold.findMany({ where: { id: { in: ids }, status: 'ATT_SOFT' }, select: { id: true, truck_number: true } })
+  // A piece released since the page loaded has nothing left to dismiss; the
+  // rest still are. None left: the row is stale.
+  if (!soft.length) return NextResponse.json({ error: 'That soft hold no longer exists. Reload the page.' }, { status: 404 })
+  await prisma.auditLog.createMany({
+    data: soft.map(s => ({
       action: DISMISS,
-      truck_number: soft.truck_number,
+      truck_number: s.truck_number,
       user_id: session.user.id,
       // Ids live in details, not hold_id: the soft hold is later deleted (released,
       // expired) and the audit row must never stand in the way of that.
-      details: JSON.stringify({ key: `${body.softHoldId}|${body.reservationId}`, soft_hold_id: body.softHoldId, reservation_id: body.reservationId }),
-    },
+      details: JSON.stringify({ key: `${s.id}|${body.reservationId}`, soft_hold_id: s.id, reservation_id: body.reservationId }),
+    })),
   })
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, dismissed: soft.length })
 }

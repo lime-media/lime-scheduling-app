@@ -16,7 +16,7 @@ import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { computeHoldExpiresAt } from '@/lib/holdExpiry'
-import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, resolveOpportunityOwner } from '@/lib/salesforceClient'
+import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
@@ -39,7 +39,7 @@ async function handlePost(req: NextRequest) {
   const body = await req.json()
   const {
     market, state, start_date, end_date, truck_count,
-    sfdc_account_id, sfdc_account_name, brand: rawBrand,
+    sfdc_account_id, sfdc_account_name, brand: rawBrand, primary_contact_id,
     shadow_fencing, smart_directional, device_id, studies: rawStudies,
     days_per_week, operating_hours, brand_markup_pct, stage, quote_only, expected_total,
   } = body
@@ -55,6 +55,11 @@ async function handlePost(req: NextRequest) {
   if (!sfdc_account_id) {
     return NextResponse.json({ error: 'A Salesforce Account must be selected' }, { status: 400 })
   }
+  // Every opportunity needs its primary contact, on this account. A definite
+  // no refuses; Salesforce being unreachable only warns (see checkPrimaryContact).
+  const contact = await checkPrimaryContact(primary_contact_id, sfdc_account_id)
+  if (contact.refusal) return NextResponse.json({ error: contact.refusal }, { status: 400 })
+  const sfdcWarnings: string[] = contact.warning ? [contact.warning] : []
 
   // Resolve rate overrides first — service_area_miles affects truck selection
   const defaultOverrides = await resolveDefaultRateOverrides()
@@ -263,6 +268,7 @@ async function handlePost(req: NextRequest) {
         ].filter(Boolean).join('\n') || undefined,
         name: opportunityName(brand, sfdc_account_name || 'Client', `${market} - ${start_date} to ${end_date}`),
         brand: brand || undefined,
+        primaryContactId: primary_contact_id,
         // The seller's choice of open stage; never a closed one.
         stageName: openStage(stage),
         closeDate: start_date,
@@ -281,6 +287,7 @@ async function handlePost(req: NextRequest) {
 
       if (result.success && result.id) {
         sfdcOpportunityId = result.id
+        sfdcWarnings.push(...(result.warnings ?? []))
         await prisma.hold.updateMany({
           where: { campaign_group_id: campaignGroupId },
           data: { sfdc_opportunity_id: result.id },
@@ -296,7 +303,8 @@ async function handlePost(req: NextRequest) {
   }
 
   // Never silent: if the opportunity was not created, the rep is told.
-  const sfdcNote = sfdcOpportunityId ? 'Salesforce opportunity created.'
+  const sfdcNote = sfdcOpportunityId
+    ? `Salesforce opportunity created.${sfdcWarnings.length ? ` Check it: ${sfdcWarnings.join('; ')}.` : ''}`
     : sfdcError ? `${sfdcError}: no opportunity was created. Create it in Salesforce by hand.`
     : ''
   return NextResponse.json({

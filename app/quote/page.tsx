@@ -13,6 +13,7 @@ import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
 import { PlannerTab } from '@/components/PlannerTab'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
+import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
 
 // ---------------------------------------------------------------------------
 // Types (mirrors client-side QuoteResponse)
@@ -86,6 +87,8 @@ export default function InternalQuotePage() {
 
   // SFDC Account
   const [account, setAccount] = useState<SfdcAccount | null>(null)
+  // The opportunity's primary contact: required by sales ops on every opportunity.
+  const [contact, setContact] = useState<SfdcContact | null>(null)
   // Brand Direct accounts carry a premium on media; the seller can change it.
   const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
   // Opportunity stage the seller wants the reservation's opportunity to start at.
@@ -237,7 +240,7 @@ export default function InternalQuotePage() {
   }
 
   const placeHold = useCallback(async (expectedOverride?: number) => {
-    if (holdLoading || !quoteResult || !account) return
+    if (holdLoading || !quoteResult || !account || !contact) return
     setHoldLoading(true)
 
     try {
@@ -252,6 +255,7 @@ export default function InternalQuotePage() {
           truck_count: form.truck_count,
           sfdc_account_id: account.id,
           sfdc_account_name: account.name,
+          primary_contact_id: contact.id,
           brand,
           shadow_fencing: toggles.shadowFencing,
           smart_directional: toggles.smartDirectional,
@@ -280,7 +284,7 @@ export default function InternalQuotePage() {
     } finally {
       setHoldLoading(false)
     }
-  }, [holdLoading, quoteResult, account, form, toggles, isBrandDirect, markupPct, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [holdLoading, quoteResult, account, contact, form, toggles, isBrandDirect, markupPct, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (status === 'loading' || !session) return null
 
@@ -334,7 +338,13 @@ export default function InternalQuotePage() {
         {/* Step 1: Client selection */}
         <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 mb-4">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
-          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
+          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setContact(null); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
+          {account && (
+            <div className="mt-3">
+              <label className="text-xs font-medium text-gray-600 mb-1 block">Primary contact <span className="text-red-500">*</span></label>
+              <ContactSearch accountId={account.id} selected={contact} onSelect={setContact} />
+            </div>
+          )}
           <div className="mt-3 max-w-sm">
             <BrandInput value={brand} onChange={setBrand} className={inputClass} />
           </div>
@@ -682,9 +692,9 @@ export default function InternalQuotePage() {
                       {'\u2713'} {holdResult.message}
                     </div>
                   ) : (
-                    <button onClick={() => placeHold()} disabled={holdLoading || quoteLoading || markupPending || !account || holdResult?.ok === true}
+                    <button onClick={() => placeHold()} disabled={holdLoading || quoteLoading || markupPending || !account || !contact || holdResult?.ok === true}
                       className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium transition-colors">
-                      {!account ? 'Select a client above to place hold' : markupPending ? 'Update the price for the new markup first' : holdLoading ? 'Submitting...'
+                      {!account ? 'Select a client above to place hold' : !contact ? 'Choose the primary contact above' : markupPending ? 'Update the price for the new markup first' : holdLoading ? 'Submitting...'
                         : quoteOnly ? `Log quote in Salesforce (no reservation) \u2014 ${fmtMoney(total)}`
                         : `Place Hold \u2014 ${fmtMoney(total)}`}
                     </button>

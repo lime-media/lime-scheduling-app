@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { attLookback, carve, freeRanges, isAttClient, isAttTruck, planMarketBackfill, planReleaseCuts, planSoftHoldFill, reinstateBlockedByRelease, releaseBlockedReason, rosterPlan, validateRosterOverride, ATT_LIST_MAX_DAYS, softHoldWindow, softHoldYieldsOn, validateReleaseRange, ATT_RELEASE_WARNING, ATT_RELEASE_MAX_DAYS } from '@/lib/attSoftRules'
+import { attLookback, carve, freeRanges, isAttClient, isAttTruck, planMarketBackfill, planReleaseCuts, planSoftHoldFill, reinstateBlockedByRelease, releaseBlockedReason, rosterPlan, validateRosterOverride, planPremiseRelease, MASS_RELEASE_APPROVAL_HOURS, ATT_LIST_MAX_DAYS, softHoldWindow, softHoldYieldsOn, validateReleaseRange, ATT_RELEASE_WARNING, ATT_RELEASE_MAX_DAYS } from '@/lib/attSoftRules'
 import { clientBookingRefusal, partnerClashDetail, staffBookingRefusal } from '@/lib/bookingRefusals'
 
 section('AT&T soft holds: who is AT&T')
@@ -227,5 +227,59 @@ section('AT&T list: manual add / take off')
   eq('a year is allowed', validateRosterOverride({ action: 'REMOVE', start: T, end: '2027-10-07', reason: 'x' }, T), null)
   eq('longer than a year refused', validateRosterOverride({ action: 'REMOVE', start: T, end: '2099-12-31', reason: 'x' }, T)?.includes(`${ATT_LIST_MAX_DAYS} days`), true)
   eq('unknown action refused', validateRosterOverride({ action: 'MOVE', start: T, end: T, reason: 'x' }, T), 'Choose add or remove.')
+}
+
+section('AT&T soft holds: approving a mass release the safety check held back')
+{
+  // 41 of 142 soft holds on trucks no longer AT&T's — the Alloy wind-down.
+  const drop = Array.from({ length: 41 }, (_, i) => ({ truck_number: `T${i + 1}`, start: '2026-11-01', end: '2026-11-30' }))
+  const now = new Date('2026-10-14T16:00:00Z')
+  const base = { toRelease: drop, softHolds: 142, attTrucks: 30, now }
+
+  const none = planPremiseRelease({ ...base, approval: null })
+  eq('without approval: held back', [none.release.length, none.keep.length, none.blocked !== null], [0, 41, true])
+
+  const all = planPremiseRelease({ ...base, approval: { trucks: drop.map(d => d.truck_number), by: 'u', byName: 'Andrew', at: '2026-10-14T15:00:00Z' } })
+  eq('approved: all released', [all.release.length, all.keep.length, all.blocked], [41, 0, null])
+  eq('and the approval counts as used', all.approvedUsed, true)
+
+  const some = planPremiseRelease({ ...base, approval: { trucks: drop.slice(0, 35).map(d => d.truck_number), by: 'u', byName: 'A', at: '2026-10-14T15:00:00Z' } })
+  // Why the page approves all or nothing: trucks left out are a small drop
+  // and the normal rule releases them in the same run anyway.
+  eq('approving most: the 6 left are a small drop, so they go too', [some.release.length, some.blocked], [41, null])
+
+  const later = planPremiseRelease({ ...base, toRelease: [...drop, ...Array.from({ length: 40 }, (_, i) => ({ truck_number: `N${i}`, start: '2026-11-01', end: '2026-11-30' }))], softHolds: 182,
+    approval: { trucks: drop.map(d => d.truck_number), by: 'u', byName: 'A', at: '2026-10-14T15:00:00Z' } })
+  eq('a different mass drop is still held back', [later.release.length, later.keep.length, later.blocked !== null], [41, 40, true])
+
+  const stale = planPremiseRelease({ ...base, approval: { trucks: drop.map(d => d.truck_number), by: 'u', byName: 'A',
+    at: new Date(now.getTime() - (MASS_RELEASE_APPROVAL_HOURS + 1) * 3600e3).toISOString() } })
+  eq('an approval older than a day is ignored', [stale.release.length, stale.approvedUsed], [0, false])
+
+  // Bryce's case: trucks taken off the AT&T list while the valve held the
+  // drop back. Taking a truck off is a person's decision on it, so it goes.
+  const nov = (t: string) => ({ truck_number: t, start: '2026-11-01', end: '2026-11-30' })
+  const removed = planPremiseRelease({ ...base, approval: null, removes: ['T1', 'T2', 'T3'].map(nov) })
+  eq('trucks taken off the list are released despite the valve', removed.release.map(h => h.truck_number), ['T1', 'T2', 'T3'])
+  eq('the rest are still held back', [removed.keep.length, removed.blocked !== null], [38, true])
+  eq('that is not an approval being used up', removed.approvedUsed, false)
+
+  const offMost = planPremiseRelease({ ...base, approval: null, removes: drop.slice(0, 35).map(d => nov(d.truck_number)) })
+  eq('taking most off leaves a small drop, released normally', [offMost.release.length, offMost.blocked], [41, null])
+
+  const removeOfAtt = rosterPlan({ span: { start: '2026-10-01', end: '2026-12-31' }, autoTrucks: new Set(['1001']),
+    overrides: [{ truck_number: '1001', action: 'REMOVE', start: '2026-10-14', end: '2026-12-31' }] })
+  eq('taking off an AT&T truck still only blocks its dates', [removeOfAtt.removes.map(r => r.truck_number), removeOfAtt.blocks.length], [['1001'], 1])
+
+  // Sarah's review: a take-off for some dates is not a release of the truck's
+  // other months past the valve.
+  const truckX = [{ truck_number: 'X', start: '2026-11-01', end: '2026-11-30' }, { truck_number: 'X', start: '2026-12-01', end: '2026-12-31' }]
+  const scoped = planPremiseRelease({ toRelease: [...truckX, ...drop], softHolds: 143, attTrucks: 30, approval: null, now,
+    removes: [{ truck_number: 'X', start: '2026-11-01', end: '2026-11-15' }] })
+  eq('taken off Nov 1–15: its November soft hold is released', scoped.release.map(h => `${h.truck_number} ${h.start}`), ['X 2026-11-01'])
+  eq('its December soft hold stays with the held-back drop', scoped.keep.some(h => h.truck_number === 'X' && h.start === '2026-12-01'), true)
+
+  const small = planPremiseRelease({ ...base, toRelease: drop.slice(0, 3), approval: null })
+  eq('a small drop needs no approval', [small.release.length, small.blocked], [3, null])
 }
 

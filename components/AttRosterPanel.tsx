@@ -11,18 +11,143 @@ import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
 import { format } from 'date-fns'
 import { parseDateOnly } from '@/lib/dateOnly'
-import { validateRosterOverride } from '@/lib/attSoftRules'
+import { softHoldWindow, validateRosterOverride } from '@/lib/attSoftRules'
 
 export type RosterDraft = { action: 'ADD' | 'REMOVE'; truck_number: string; start: string; end: string; reason: string }
+
+type Pending = {
+  reason: string
+  at: string
+  months: { current: string; prior: string | null }
+  /** Whether last month still counts toward the rule (through the 10th). Older records: absent. */
+  priorCounts?: boolean
+  trucks: { truck_number: string; holds: number; current: number; prior: number }[]
+}
+
+const monthLabel = (ym: string) => format(parseDateOnly(`${ym}-01`), 'MMM yyyy')
+
+/**
+ * The release the safety valve held back (lib/attSoftHolds.ts), with a way
+ * to approve it when it is right — an AT&T program ending, say.
+ */
+function HeldBackRelease({ onChanged }: { onChanged: () => void }) {
+  const [pending, setPending] = useState<Pending | null>(null)
+  const [reason, setReason] = useState('')
+  const [open, setOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const load = useCallback(async () => {
+    const res = await fetch('/api/holds/att-soft/mass-release')
+    const p: Pending | null = res.ok ? (await res.json()).pending : null
+    setPending(p)
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  if (!pending || pending.trucks.length === 0) return null
+
+  // All or nothing: a truck left out would just be released by the normal
+  // rule as a small drop. Keeping one is done by adding it to the AT&T list.
+  const trucks = pending.trucks.map(t => t.truck_number)
+  const holds = pending.trucks.reduce((n, t) => n + t.holds, 0)
+
+  const approve = async () => {
+    if (!reason.trim()) return
+    if (!confirm(`Release ${holds} AT&T soft hold${holds === 1 ? '' : 's'} on ${trucks.length} truck${trucks.length === 1 ? '' : 's'}? They go back into the general pool. If AT&T books them again, they return to the list automatically.`)) return
+    setSaving(true)
+    try {
+      const res = await fetch('/api/holds/att-soft/mass-release', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trucks, reason }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || 'Could not approve')
+      toast.success(data.message)
+      if (Array.isArray(data.warnings) && data.warnings.length) toast(data.warnings.join('\n'), { icon: '⚠️', duration: 10000 })
+      setOpen(false)
+      setReason('')
+      load()
+      onChanged()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not approve')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="px-4 py-3 border-b border-amber-200 bg-amber-50">
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-sm text-amber-900">
+          <p className="font-semibold">
+            {pending.trucks.length} truck{pending.trucks.length === 1 ? '' : 's'} no longer count as AT&amp;T&apos;s, but their soft holds were kept
+          </p>
+          <p className="text-xs text-amber-800 mt-0.5">
+            The safety check held the release back ({pending.reason}). If an AT&amp;T program ended, approve it. If not, check the 160over90 schedule and client record.
+          </p>
+        </div>
+        <button onClick={() => setOpen(o => !o)}
+          className="flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border border-amber-300 text-amber-900 bg-white hover:bg-amber-100">
+          {open ? 'Hide' : 'Review'}
+        </button>
+      </div>
+      {open && (
+        <div className="mt-3">
+          <div className="max-h-64 overflow-auto bg-white border border-amber-200 rounded-lg">
+            <table className="w-full text-xs">
+              <thead className="bg-amber-50 sticky top-0">
+                <tr className="text-left text-amber-900">
+                  <th className="px-3 py-1.5">Truck</th>
+                  {pending.months.prior && (
+                    <th className="px-3 py-1.5" title={pending.priorCounts === false ? 'Shown for comparison: after the 10th, last month no longer counts toward the rule.' : undefined}>
+                      160over90 days, {monthLabel(pending.months.prior)}{pending.priorCounts === false && <span className="font-normal text-amber-700"> (no longer counts)</span>}
+                    </th>
+                  )}
+                  <th className="px-3 py-1.5">160over90 days, {monthLabel(pending.months.current)}</th>
+                  <th className="px-3 py-1.5">Soft holds</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-amber-100">
+                {pending.trucks.map(t => (
+                  <tr key={t.truck_number}>
+                    <td className="px-3 py-1 font-semibold text-gray-900">{t.truck_number}</td>
+                    {pending.months.prior && <td className="px-3 py-1 text-gray-700">{t.prior}</td>}
+                    <td className="px-3 py-1 text-gray-700">{t.current}</td>
+                    <td className="px-3 py-1 text-gray-700">{t.holds}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-2 text-xs text-amber-800">
+            To keep any of these trucks reserved for AT&amp;T, use <span className="font-medium">Add a truck</span> above first; then approve the rest.
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input type="text" value={reason} maxLength={300} onChange={e => setReason(e.target.value)}
+              placeholder='Why, e.g. "Alloy Build ended"'
+              className="flex-1 min-w-[14rem] border border-amber-200 rounded-lg px-2 py-1.5 text-sm bg-white" />
+            <button onClick={approve} disabled={saving || !reason.trim()}
+              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-50">
+              {saving ? 'Releasing…' : `Release ${holds} soft hold${holds === 1 ? '' : 's'} on ${trucks.length} truck${trucks.length === 1 ? '' : 's'}`}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 type Override = { id: string; truck_number: string; action: 'ADD' | 'REMOVE'; start_date: string; end_date: string; reason: string; created_by_name: string }
 
 const today = () => new Date().toISOString().slice(0, 10)
-const monthEnd = () => { const d = new Date(); return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).toISOString().slice(0, 10) }
+/** The last day AT&T soft holds are kept for: the end of the sync's three-month window. */
+export const softHoldWindowEnd = () => { const w = softHoldWindow(today()); return w[w.length - 1].end }
 const fmt = (s: string) => format(parseDateOnly(s), 'MMM d, yyyy')
 
-/** A fresh draft: added from today to the end of this month. */
-export const newAddDraft = (): RosterDraft => ({ action: 'ADD', truck_number: '', start: today(), end: monthEnd(), reason: '' })
+/**
+ * A fresh draft, from today through every month that has soft holds — a
+ * change for this month only would leave the next two reserved as before.
+ */
+export const newAddDraft = (): RosterDraft => ({ action: 'ADD', truck_number: '', start: today(), end: softHoldWindowEnd(), reason: '' })
 
 export function AttRosterPanel({ draft, setDraft, onChanged }: {
   draft: RosterDraft | null
@@ -33,6 +158,9 @@ export function AttRosterPanel({ draft, setDraft, onChanged }: {
   const [overrides, setOverrides] = useState<Override[]>([])
   const [trucks, setTrucks] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
+  // Bumped after any list change: the held-back release is re-read, since an
+  // added truck is no longer held back.
+  const [version, setVersion] = useState(0)
 
   const load = useCallback(async () => {
     const res = await fetch('/api/holds/att-soft/roster')
@@ -51,6 +179,7 @@ export function AttRosterPanel({ draft, setDraft, onChanged }: {
     toast.success(data.message ?? 'Saved')
     if (data.warning) toast(data.warning, { icon: '⚠️', duration: 8000 })
     load()
+    setVersion(v => v + 1)
     onChanged()
   }
 
@@ -101,6 +230,7 @@ export function AttRosterPanel({ draft, setDraft, onChanged }: {
           </button>
         </div>
       </div>
+      <HeldBackRelease key={version} onChanged={() => { load(); onChanged() }} />
       {overrides.length === 0 ? (
         <p className="px-4 py-3 text-xs text-gray-400">No manual changes in effect.</p>
       ) : (

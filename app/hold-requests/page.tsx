@@ -164,6 +164,8 @@ type AvailableTruck = {
   transportDays: number
   transportCharge: number
   requiresOverride: boolean
+  /** Leaves a later AT&T soft hold short of travel time (allowed, flagged). */
+  softHoldWarning: string | null
 }
 
 export default function HoldRequestsPage() {
@@ -529,7 +531,7 @@ export default function HoldRequestsPage() {
             Release dates
           </button>
           <button
-            onClick={() => setRosterDraft({ ...newAddDraft(), action: 'REMOVE', truck_number: hold.truck_number, start: hold.start_date < newAddDraft().start ? newAddDraft().start : hold.start_date, end: hold.end_date })}
+            onClick={() => setRosterDraft({ ...newAddDraft(), action: 'REMOVE', truck_number: hold.truck_number })}
             className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
           >
             Take off list
@@ -838,6 +840,9 @@ export default function HoldRequestsPage() {
                                                 ? ' · from its prior booking'
                                                 : ' · current GPS position'}
                                             </span>
+                                            {t.softHoldWarning && (
+                                              <span className="block text-[11px] text-amber-700">{t.softHoldWarning}</span>
+                                            )}
                                             {t.originIsCommitment && t.gpsMarket && (
                                               <span className="block text-[11px] text-gray-400">
                                                 (parked in {t.gpsMarket} today)

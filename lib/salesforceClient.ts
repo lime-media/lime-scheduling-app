@@ -103,12 +103,22 @@ export type CreateOpportunityInput = {
   clientType?: 'Agency' | 'Brand Direct'
   /** Brand_Job_Name__c (50 characters): the brand, already cleaned (lib/brand.ts). */
   brand?: string
+  /**
+   * The opportunity's primary contact (a Contact on the account). Set as
+   * Primary_Contact__c, which Contact Email/Phone read from; then, as a
+   * separate best-effort step, added as the primary Opportunity Contact Role —
+   * the two places a seller fills it in by hand. The role is separate so an
+   * org that rejects it cannot take the opportunity down with it.
+   */
+  primaryContactId?: string
 }
 
 export type SfdcOpportunityResult = {
   success: boolean
   id?: string
   errors?: unknown[]
+  /** Created, but something optional was not (the primary contact role). */
+  warnings?: string[]
 }
 
 /**
@@ -129,6 +139,7 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
   if (input.ownerId) body.OwnerId = input.ownerId
   if (input.clientType) body.Client_Type__c = input.clientType
   if (input.brand) body.Brand_Job_Name__c = input.brand.slice(0, 50)
+  if (input.primaryContactId) body.Primary_Contact__c = input.primaryContactId
   if (input.holdStart) body.LED_Hold_Start__c = input.holdStart
   if (input.holdStop) body.LED_Hold_Stop__c = input.holdStop
   if (input.holdExp) body.LED_Hold_Exp__c = input.holdExp
@@ -148,11 +159,36 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
   if (!data.success) {
     console.error('[sfdc] Opportunity creation failed. Status:', res.status, 'Response:', JSON.stringify(data))
   }
+  const warnings: string[] = []
+  if (data.success && data.id && input.primaryContactId) {
+    if (!(await addPrimaryContactRole(data.id, input.primaryContactId))) {
+      warnings.push('the primary contact was set, but could not be added under Contact Roles')
+    }
+  }
   return {
     success: data.success ?? false,
     id: data.id,
     errors: data.errors,
+    ...(warnings.length ? { warnings } : {}),
   }
+}
+
+/**
+ * Add a contact as an opportunity's primary Contact Role. Best-effort: false
+ * (and logged) when Salesforce refuses or cannot be reached; never throws.
+ */
+async function addPrimaryContactRole(opportunityId: string, contactId: string): Promise<boolean> {
+  try {
+    const res = await sfdcFetch('/sobjects/OpportunityContactRole', {
+      method: 'POST',
+      body: JSON.stringify({ OpportunityId: opportunityId, ContactId: contactId, IsPrimary: true }),
+    })
+    if (res.ok) return true
+    console.error(`[sfdc] contact role for ${opportunityId} refused: HTTP ${res.status}`, await res.text().catch(() => ''))
+  } catch (err) {
+    console.error(`[sfdc] contact role for ${opportunityId} failed:`, err)
+  }
+  return false
 }
 
 /**
@@ -216,6 +252,7 @@ export function isSfdcConfigured(): boolean {
 // ---------------------------------------------------------------------------
 
 export { soqlString, SAFE_EMAIL } from './soql'
+import { soqlString } from './soql'
 import { SAFE_EMAIL } from './soql'
 
 const ownerCache = new Map<string, { id: string | null; at: number }>()
@@ -240,6 +277,45 @@ export async function findSfdcUserIdByEmail(email: string | null | undefined): P
 }
 
 /** An account's owner and client type, for opportunity ownership and Brand Direct pricing. */
+/**
+ * Whether `contactId` is a Contact on `accountId` — the server's check of the
+ * primary contact a page sends, so an opportunity never points at someone
+ * else's contact. False when it is not; throws when Salesforce cannot be read.
+ */
+/** A Salesforce Contact id (prefix 003, 15 or 18 characters). Pure. */
+export const isContactId = (id: unknown): id is string => typeof id === 'string' && /^003[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/.test(id)
+
+export async function isContactOfAccount(contactId: string, accountId: string): Promise<boolean> {
+  if (!isContactId(contactId)) return false
+  const rows = await sfdcQuery<{ Id: string }>(
+    `SELECT Id FROM Contact WHERE Id = '${soqlString(contactId)}' AND AccountId = '${soqlString(accountId)}' LIMIT 1`,
+  )
+  return rows.length === 1
+}
+
+/**
+ * The booking's primary contact, checked. Every opportunity needs one (sales
+ * ops' rule), and it must be a Contact on the chosen account.
+ * - `refusal`: a definite no — none chosen, or not on the account. The
+ *   booking is refused.
+ * - `warning`: Salesforce could not be read to check. The booking goes
+ *   ahead, as it does when the opportunity itself cannot be created: the hold
+ *   is what keeps the truck from being sold twice, and the rep is told.
+ * Salesforce not configured (local dev): neither.
+ */
+export async function checkPrimaryContact(contactId: unknown, accountId: string): Promise<{ refusal: string | null; warning: string | null }> {
+  if (!isContactId(contactId)) return { refusal: 'Choose the primary contact for this opportunity.', warning: null }
+  if (!isSfdcConfigured()) return { refusal: null, warning: null }
+  try {
+    return (await isContactOfAccount(contactId, accountId))
+      ? { refusal: null, warning: null }
+      : { refusal: 'That contact is not on the selected Salesforce account. Choose the primary contact again.', warning: null }
+  } catch (err) {
+    console.error('[sfdc] primary contact check failed:', err)
+    return { refusal: null, warning: 'the primary contact could not be verified with Salesforce' }
+  }
+}
+
 export async function getSfdcAccountInfo(accountId: string): Promise<{ ownerId: string | null; clientType: 'Agency' | 'Brand Direct' } | null> {
   if (!/^[A-Za-z0-9]{15,18}$/.test(accountId)) return null
   const rows = await sfdcQuery<{ OwnerId: string | null; Owner?: { IsActive?: boolean } | null; Client_Type2__c: string | null }>(

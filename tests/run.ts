@@ -20,7 +20,9 @@ import './places.test'
 import './brand.test'
 import './usageLog.test'
 import './sfdcPush.test'
+import './primaryContact.test'
 import './tableSort.test'
+import './quoteAlternatives.test'
 import { report } from './harness'
 
 process.exit(report())

@@ -17,8 +17,10 @@ import { SHORT_RANGE_MAX_DAYS } from '@/lib/pricing/schedule'
 import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
 import { useEffect, useRef, useState } from 'react'
+import { copyDatesDown } from '@/lib/planner/rows'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
+import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
 import { BrandInput } from '@/components/BrandInput'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { ReviewFinding } from '@/lib/planning/claude'
@@ -106,6 +108,8 @@ export function PlannerTab() {
   const [account, setAccount] = useState<SfdcAccount | null>(null)
   // The opportunity's primary contact: required by sales ops on every opportunity.
   const [contact, setContact] = useState<SfdcContact | null>(null)
+  // How long the reservations hold the trucks (default 3 days).
+  const [holdDays, setHoldDays] = useState(DEFAULT_HOLD_DAYS)
   // The campaign's brand, for the Salesforce opportunity (components/BrandInput.tsx).
   const [brand, setBrand] = useState('')
   const [rows, setRows] = useState<QuoteRow[]>([newRow()])
@@ -264,7 +268,7 @@ export function PlannerTab() {
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, quoteOnly, brand, primaryContactId: contact.id }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, quoteOnly, brand, primaryContactId: contact.id, holdDays }),
       })
       const data = await readJson(res)
       if (res.status === 409 && data.shortfalls) {
@@ -336,7 +340,7 @@ export function PlannerTab() {
               </tr>
             </thead>
             <tbody>
-              {rows.map(r => {
+              {rows.map((r, i) => {
                 const err = errorFor(r.id)
                 return (
                   <tr key={r.id}>
@@ -369,8 +373,18 @@ export function PlannerTab() {
                         {[8, 10, 12].map(h => <option key={h} value={h}>{h} hr</option>)}
                       </select>
                     </td>
-                    <td className={td}>
-                      <button onClick={() => setRows(rs => (rs.length > 1 ? rs.filter(x => x.id !== r.id) : rs))} className="text-gray-400 hover:text-red-600 text-sm" title="Remove">✕</button>
+                    <td className={td + ' whitespace-nowrap'}>
+                      <div className="flex items-center gap-3">
+                        {/* Same flight for the markets below: copy this row's dates down. */}
+                        {i < rows.length - 1 && r.startDate && r.endDate && (
+                          <button onClick={() => setRows(rs => copyDatesDown(rs, r.id))}
+                            className="text-xs text-green-700 hover:text-green-800"
+                            title={`Set every market below to ${r.startDate} – ${r.endDate}`}>
+                            Copy dates down
+                          </button>
+                        )}
+                        <button onClick={() => setRows(rs => (rs.length > 1 ? rs.filter(x => x.id !== r.id) : rs))} className="text-gray-400 hover:text-red-600 text-sm" title="Remove">✕</button>
+                      </div>
                     </td>
                   </tr>
                 )
@@ -438,6 +452,8 @@ export function PlannerTab() {
           quote={quote}
           account={account}
           contact={contact}
+          holdDays={holdDays}
+          onHoldDays={setHoldDays}
           holding={holding}
           holdResult={holdResult}
           selected={selected}
@@ -545,10 +561,12 @@ function ImportPanel(p: {
 
 // ---------------------------------------------------------------------------
 
-function QuoteResult({ quote, account, contact, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
+function QuoteResult({ quote, account, contact, holdDays, onHoldDays, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
   quote: MultiMarketQuote
   account: SfdcAccount | null
   contact: SfdcContact | null
+  holdDays: number
+  onHoldDays: (days: number) => void
   holding: boolean
   holdResult: { ok: boolean; message: string } | null
   selected: Set<string>
@@ -647,6 +665,11 @@ function QuoteResult({ quote, account, contact, holding, holdResult, selected, o
           <div className="mt-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-800 font-medium">✓ {holdResult.message}</div>
         ) : (
           <>
+            {/* Hold length: a reservation only (a quote-only log holds nothing). */}
+            {!quoteOnly && (
+              <HoldLength days={holdDays} onChange={onHoldDays}
+                startDates={chosen.map(l => l.delivery.firstDay ?? l.startDate)} />
+            )}
             <button onClick={onPlaceHolds} disabled={holding || !account || !contact || chosen.length === 0}
               className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium">
               {!account ? 'Select a client above to place holds'

@@ -19,6 +19,8 @@ type Pending = {
   reason: string
   at: string
   months: { current: string; prior: string | null }
+  /** Whether last month still counts toward the rule (through the 10th). Older records: absent. */
+  priorCounts?: boolean
   trucks: { truck_number: string; holds: number; current: number; prior: number }[]
 }
 
@@ -95,7 +97,11 @@ function HeldBackRelease({ onChanged }: { onChanged: () => void }) {
               <thead className="bg-amber-50 sticky top-0">
                 <tr className="text-left text-amber-900">
                   <th className="px-3 py-1.5">Truck</th>
-                  {pending.months.prior && <th className="px-3 py-1.5">160over90 days, {monthLabel(pending.months.prior)}</th>}
+                  {pending.months.prior && (
+                    <th className="px-3 py-1.5" title={pending.priorCounts === false ? 'Shown for comparison: after the 10th, last month no longer counts toward the rule.' : undefined}>
+                      160over90 days, {monthLabel(pending.months.prior)}{pending.priorCounts === false && <span className="font-normal text-amber-700"> (no longer counts)</span>}
+                    </th>
+                  )}
                   <th className="px-3 py-1.5">160over90 days, {monthLabel(pending.months.current)}</th>
                   <th className="px-3 py-1.5">Soft holds</th>
                 </tr>

@@ -1,0 +1,112 @@
+/**
+ * Evolving a deal without new opportunities: revising a booking in the planner
+ * (lib/bookings.ts, lib/planning/order.ts keepTrucks) and adding a quote to an
+ * existing opportunity (lib/opportunityMerge.ts).
+ * Run with: npm test
+ */
+import { eq, section } from './harness'
+import { keptPrices, reviseRefusal, reviseRows, type RevisableHold } from '@/lib/bookings'
+import { keepBookedPrices } from '@/lib/planning/quote'
+import { mergedOpportunityFields } from '@/lib/opportunityMerge'
+import { planOrder, DEFAULT_ENGINE, type OrderLine } from '@/lib/planning/order'
+import type { PlanTruck } from '@/lib/planning/planner'
+
+const feat = (o: Record<string, unknown> = {}) => JSON.stringify({ daysPerWeek: 5, operatingHours: 10, truckCount: 2, shadowFencing: 5000, smartDirectionalIncluded: false, deviceIdIncluded: true, ...o })
+const hold = (o: Partial<RevisableHold> = {}): RevisableHold => ({
+  id: 'h1', campaign_group_id: 'mm_abc_1', sfdc_opportunity_id: '006X', truck_number: '0382', market: 'Albany, NY',
+  start_date: '2026-11-09', end_date: '2026-12-04', status: 'HOLD', source: 'INTERNAL', origination: 'frontend',
+  features: feat(), truck_count: 2, live: true, ...o,
+})
+
+section('revise: what can be revised')
+eq('a quote-tool booking', reviseRefusal([hold()]), null)
+eq('gone', reviseRefusal([]), 'That booking no longer exists.')
+eq('a Salesforce push is changed in Salesforce', reviseRefusal([hold({ source: 'SALESFORCE' })]), 'This booking came from Salesforce; change it there.')
+eq('a client booking is the client\'s', reviseRefusal([hold({ source: 'CLIENT' })])?.startsWith('This booking was made in the client portal'), true)
+eq('lift studies would be dropped: refused', reviseRefusal([hold({ features: feat({ studies: ['web_lift'] }) })])?.includes('lift studies'), true)
+
+section('revise: the booking as planner rows')
+const booking = [
+  hold({ id: 'a1', truck_number: '0382' }),
+  hold({ id: 'a2', truck_number: '0912', start_date: '2026-11-10', end_date: '2026-12-06' }),
+  hold({ id: 'b1', campaign_group_id: 'mm_abc_2', market: 'Buffalo, NY', truck_number: '4840', truck_count: 1, features: feat({ daysPerWeek: 7, operatingHours: 8 }) }),
+]
+const r = reviseRows(booking)
+eq('one row per market', r.rows.map(x => x.market), ['Albany, NY', 'Buffalo, NY'])
+eq('dates span the market\'s holds', [r.rows[0].startDate, r.rows[0].endDate], ['2026-11-09', '2026-12-06'])
+eq('trucks, schedule and hours as booked', r.rows.map(x => [x.trucks, x.daysPerWeek, x.hours]), [[2, 5, 10], [1, 7, 8]])
+eq('options as booked', r.features, { shadowFencing: true, smartDirectional: false, deviceId: true })
+eq('live: each market keeps its trucks', r.rows.map(x => x.keepTrucks), [['0382', '0912'], ['4840']])
+const expired = reviseRows(booking.map(h => ({ ...h, live: false, status: 'EXPIRED' })))
+eq('expired: nothing kept, re-picked and re-priced', [expired.live, expired.rows.every(x => x.keepTrucks.length === 0)], [false, true])
+eq('quote-only logs are recognized', reviseRows([hold({ origination: 'quote_only', status: 'EXPIRED', live: false, truck_number: 'UNASSIGNED' })]).quoteOnly, true)
+eq('quote-only placeholder truck is never "kept"',
+  reviseRows([hold({ origination: 'quote_only', truck_number: 'UNASSIGNED' })]).rows[0].keepTrucks, [])
+
+section('revise: a market keeps its truck where it still fits')
+const S = { ...DEFAULT_ENGINE, today: '2026-10-16' }
+const dallas = { lat: 32.78, lng: -96.80 }
+const line = (keepTrucks?: string[]): OrderLine => ({ id: 'L1', market: 'Dallas', ...dallas, startDate: '2026-11-09', endDate: '2026-11-20', trucks: 1, daysPerWeek: 5, hours: 8, keepTrucks })
+const at = (n: string, lat: number, lng: number): PlanTruck => ({ truckNumber: n, jobs: [], gps: { lat, lng }, gpsLabel: n })
+const fleet = [at('NEAR', 32.80, -96.79), at('KEPT', 30.27, -97.74) /* Austin, ~180 mi */]
+eq('without a revision, the nearest truck wins', planOrder([line()], fleet, S).trucks.map(t => t.truckNumber), ['NEAR'])
+eq('revising, the truck it already holds is kept', planOrder([line(['KEPT'])], fleet, S).trucks.map(t => t.truckNumber), ['KEPT'])
+const busyKept: PlanTruck = { ...at('KEPT', 30.27, -97.74), jobs: [{ start: '2026-11-12', end: '2026-11-14', market: 'Austin', state: 'TX', lat: 30.27, lng: -97.74, source: 'SCHEDULE', yieldable: false }] }
+eq('but not where it no longer fits (now busy on the new dates)', planOrder([line(['KEPT'])], [fleet[0], busyKept], S).trucks.map(t => t.truckNumber), ['NEAR'])
+
+section('opportunity: adding a quote to an existing one')
+const existing = {
+  Amount: 210000, Markets__c: 'Albany, NY; Buffalo, NY', LED_Trucks__c: 'LED-0382;LED-4840',
+  LED_Hold_Start__c: '2026-11-09', LED_Hold_Stop__c: '2026-12-04', LED_Hold_Exp__c: '2026-10-30', Description: 'Booked: …',
+}
+const add = mergedOpportunityFields('ADD', existing,
+  { amount: 30000, markets: ['Providence, RI'], trucks: ['0912'], holdStart: '2026-11-02', holdStop: '2026-11-20', holdExp: '2026-10-28', description: 'Providence, RI: 1 truck' },
+  { date: '2026-10-16', by: 'Madison' })
+eq('amount adds', add.Amount, 240000)
+eq('markets and trucks are the union', [add.Markets__c, add.LED_Trucks__c], ['Albany, NY; Buffalo, NY; Providence, RI', 'LED-0382;LED-4840;LED-0912'])
+eq('the hold window widens', [add.LED_Hold_Start__c, add.LED_Hold_Stop__c], ['2026-11-02', '2026-12-04'])
+eq('the earliest expiry still to come', add.LED_Hold_Exp__c, '2026-10-28')
+eq('the description keeps the old and says what was added',
+  String(add.Description).startsWith('Booked: …\n\nAdded 2026-10-16 by Madison ($30,000):\nProvidence'), true)
+const addQuoteOnly = mergedOpportunityFields('ADD', existing, { amount: 5000, markets: ['Boston, MA'], trucks: [], description: 'Boston quote' }, { date: '2026-10-16', by: 'M' })
+eq('a quote-only addition sets no LED hold fields', ['LED_Trucks__c', 'LED_Hold_Start__c', 'LED_Hold_Exp__c'].some(k => k in addQuoteOnly), false)
+const pastExp = mergedOpportunityFields('ADD', { ...existing, LED_Hold_Exp__c: '2026-10-01' },
+  { amount: 1, markets: [], trucks: [], holdStart: '2026-11-02', holdStop: '2026-11-20', holdExp: '2026-10-28', description: '' }, { date: '2026-10-16', by: 'M' })
+eq('an expiry already past does not win', pastExp.LED_Hold_Exp__c, '2026-10-28')
+
+section('opportunity: a revision replaces the booking on it')
+const rep = mergedOpportunityFields('REPLACE', existing,
+  { amount: 180000, markets: ['Albany, NY'], trucks: ['0382'], holdStart: '2026-11-16', holdStop: '2026-12-04', holdExp: '2026-11-01', description: 'Booked: Albany' },
+  { date: '2026-10-16', by: 'Bryce' })
+eq('figures are the booking as it now stands', [rep.Amount, rep.Markets__c, rep.LED_Trucks__c, rep.LED_Hold_Start__c], [180000, 'Albany, NY', 'LED-0382', '2026-11-16'])
+eq('the previous figures go to the revision note',
+  String(rep.Description).startsWith('Revised 2026-10-16 by Bryce. Was: amount $210,000; markets Albany, NY; Buffalo, NY; 2026-11-09 to 2026-12-04.'), true)
+
+section('revise: unchanged markets keep their booked price')
+{
+  const booked = [
+    { ...hold({ id: 'a1', truck_number: '0382' }), quoted_total: 42000 },
+    { ...hold({ id: 'a2', truck_number: '0912' }), quoted_total: 42000 },
+    { ...hold({ id: 'b1', campaign_group_id: 'mm_abc_2', market: 'Buffalo, NY', truck_number: '4840', truck_count: 1 }), quoted_total: 21000 },
+  ]
+  const opts = { shadowFencing: true, smartDirectional: false, deviceId: true }
+  const asBooked = [
+    { id: 'r1', market: 'Albany, NY', startDate: '2026-11-09', endDate: '2026-12-04', trucks: 2, daysPerWeek: 5, hours: 10 },
+    { id: 'r2', market: 'Buffalo, NY', startDate: '2026-11-09', endDate: '2026-12-04', trucks: 1, daysPerWeek: 5, hours: 10 },
+  ]
+  eq('unchanged markets keep their price', [...keptPrices(booked, asBooked, opts)].map(([id, k]) => [id, k.total]), [['r1', 42000], ['r2', 21000]])
+  const moved = [{ ...asBooked[0], endDate: '2026-12-11' }, asBooked[1]]
+  eq('a market whose dates moved is priced today', [...keptPrices(booked, moved, opts).keys()], ['r2'])
+  eq('a new market is priced today', [...keptPrices(booked, [...asBooked, { ...asBooked[1], id: 'r3', market: 'Boston, MA' }], opts).keys()], ['r1', 'r2'])
+  eq('changing the options reprices every market', keptPrices(booked, asBooked, { ...opts, deviceId: false }).size, 0)
+  eq('an expired booking keeps no prices', keptPrices(booked.map(h => ({ ...h, live: false })), asBooked, opts).size, 0)
+
+  const line = (o: Record<string, unknown>) => ({ id: 'r1', total: 50000, media: 47000, missing: 0, transport: { outcome: 'BILLED', billed: 3000, absorbedCost: 0 },
+    dailyRate: 1300, hourSurcharge: 0, baseMedia: 40000, shadowFencing: 7000, smartDirectional: 0, deviceId: 0,
+    assigned: [{ truckNumber: '0382', sharedWith: null, hopRoadMiles: 0 }, { truckNumber: '0912', sharedWith: null, hopRoadMiles: 0 }], ...o }) as never
+  const kept = new Map([['r1', { total: 42000, features: JSON.stringify({ transportCharge: 0, baseMedia: 36000, shadowFencing: 6000 }), trucks: ['0382', '0912'] }]])
+  const [l] = keepBookedPrices([line({})], kept) as unknown as { total: number; media: number; priceKept: boolean; transport: { billed: number } }[]
+  eq('the booked price and its breakdown replace today\'s', [l.total, l.media, l.transport.billed, l.priceKept], [42000, 42000, 0, true])
+  const [swapped] = keepBookedPrices([line({ assigned: [{ truckNumber: '7777', sharedWith: null, hopRoadMiles: 0 }] })], kept) as unknown as { total: number; priceKept?: boolean }[]
+  eq('a market that lost its trucks is priced today', [swapped.total, swapped.priceKept ?? false], [50000, false])
+}

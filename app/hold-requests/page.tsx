@@ -14,6 +14,7 @@ import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
+import { bookingCardKey, bookingKey, isMultiMarket, summarizeBooking } from '@/lib/bookings'
 
 type HoldRequest = {
   id: string
@@ -106,6 +107,23 @@ function sortValue(r: HoldRequest, key: SortKey): SortValue {
 /** A campaign card sorts by its lowest truck number; everything else is shared by its trucks. */
 function groupSortValue(rows: HoldRequest[], key: SortKey): SortValue {
   return key === 'truck' ? minValue(rows.map(r => r.truck_number)) : sortValue(rows[0], key)
+}
+
+/**
+ * Revise a booking made in the quote tools: open it in the multi-market
+ * planner to add, drop or change markets and dates on the same opportunity
+ * (app/api/bookings/revise). Not for Salesforce pushes or client bookings.
+ */
+function ReviseLink({ rows }: { rows: HoldRequest[] }) {
+  const key = rows.length ? bookingKey(rows[0]) : null
+  if (!key || rows.some(r => r.source !== 'INTERNAL')) return null
+  return (
+    <a href={`/quote?revise=${encodeURIComponent(key)}`}
+      title="Add, drop or change markets and dates on the same opportunity"
+      className="px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-200 text-blue-700 hover:bg-blue-50 transition-colors">
+      Revise
+    </a>
+  )
 }
 
 function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; status: string }) {
@@ -285,10 +303,12 @@ export default function HoldRequestsPage() {
   }, [fetchRequests])
 
   const openEdit = async (request: HoldRequest) => {
-    // Find all siblings in the same group
-    const groupKey = request.campaign_group_id || request.sfdc_opportunity_id
+    // Everything in the same booking: all markets of a multi-market quote,
+    // so one Edit (and one expiry change) covers the whole reservation.
+    // The same reservations as the card: this booking, in this status.
+    const groupKey = bookingCardKey(request)
     const siblings = groupKey
-      ? requests.filter(r => (r.campaign_group_id || r.sfdc_opportunity_id) === groupKey)
+      ? requests.filter(r => bookingCardKey(r) === groupKey)
       : [request]
     setEditingGroup(siblings)
     setSelectedTrucks(new Map(siblings.map(r => [r.id, r.truck_number])))
@@ -447,9 +467,9 @@ export default function HoldRequestsPage() {
     [requests, filterStatus, search]
   )
 
-  // Group by campaign_group_id or sfdc_opportunity_id so multi-truck reservations
-  // are reviewed as one unit. Salesforce pushes share sfdc_opportunity_id;
-  // client holds share campaign_group_id. Then the chosen sort orders the table
+  // Group by booking (lib/bookings.ts) so multi-truck and multi-market
+  // reservations are reviewed and managed as one unit: every market of a
+  // multi-market quote, a campaign group, or a Salesforce opportunity. Then the chosen sort orders the table
   // rows, the campaign cards, and the trucks within each card; with none
   // chosen, the API's order (newest first) stands. Memoized with the filter
   // above, so typing in a dialog does not regroup and re-sort the list.
@@ -457,7 +477,9 @@ export default function HoldRequestsPage() {
     const grouped = new Map<string, HoldRequest[]>()
     const ungrouped: HoldRequest[] = []
     for (const r of filtered) {
-      const groupKey = r.campaign_group_id || r.sfdc_opportunity_id
+      // One card per booking and status (lib/bookings.ts bookingCardKey), so a
+      // card's totals, expiry, status and actions all cover the same holds.
+      const groupKey = bookingCardKey(r)
       if (groupKey) {
         const group = grouped.get(groupKey) ?? []
         group.push(r)
@@ -631,15 +653,30 @@ export default function HoldRequestsPage() {
             {sortedGroups.map(([groupId, groupItems]) => {
               const first = groupItems[0]
               const ids = groupItems.map((g) => g.id)
+              // A multi-market booking: one card, its figures summed across markets.
+              const multi = isMultiMarket(first)
+              const booking = summarizeBooking(groupItems)
+              // The same booking's reservations in other statuses (markets lapse
+              // on their own schedules): each has its own card under its filter.
+              const otherParts = new Map<string, Set<string>>()
+              const key = bookingKey(first)
+              for (const r of requests) {
+                if (key && r.status !== first.status && bookingKey(r) === key) {
+                  const label = r.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[r.status] ?? r.status)
+                  otherParts.set(label, new Set([...(otherParts.get(label) ?? []), r.market]))
+                }
+              }
               return (
                 <div key={groupId} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
                   <div className="px-4 py-3 bg-gray-50/80 border-b border-gray-200 flex items-center justify-between flex-wrap gap-3">
                     <div className="flex items-center gap-3 flex-wrap">
                       <span className="text-sm font-semibold text-gray-900">
-                        {first.company_name} — {first.truck_count ?? groupItems.length} truck{(first.truck_count ?? groupItems.length) === 1 ? '' : 's'} · {formatMarketState(first.market, first.state)}
+                        {multi
+                          ? <>{first.company_name} — {booking.trucks} truck{booking.trucks === 1 ? '' : 's'} across {booking.markets.length} market{booking.markets.length === 1 ? '' : 's'}</>
+                          : <>{first.company_name} — {first.truck_count ?? groupItems.length} truck{(first.truck_count ?? groupItems.length) === 1 ? '' : 's'} · {formatMarketState(first.market, first.state)}</>}
                       </span>
                       <span className="text-xs text-gray-500">
-                        {format(parseDateOnly(first.start_date), 'MMM d')} &ndash; {format(parseDateOnly(first.end_date), 'MMM d, yyyy')}
+                        {format(parseDateOnly(booking.start), 'MMM d')} &ndash; {format(parseDateOnly(booking.end), 'MMM d, yyyy')}
                       </span>
                       {first.created_by_name && (
                         <span className="text-xs text-gray-400">by {first.created_by_name}</span>
@@ -649,15 +686,29 @@ export default function HoldRequestsPage() {
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${SOURCE_BADGE[first.source] ?? SOURCE_BADGE.INTERNAL}`}>
                         {SOURCE_LABEL[first.source] ?? first.source}
                       </span>
-                      <PricingBadge tier={first.pricing_tier} total={first.quoted_total} />
-                      <ExpirationBadge expiresAt={first.expires_at} status={first.status} />
+                      <PricingBadge tier={multi ? booking.tier : first.pricing_tier} total={multi ? booking.total : first.quoted_total} />
+                      {multi && booking.unpricedMarkets > 0 && (
+                        <span className="text-xs text-amber-700" title="These markets have no price on file; the total above leaves them out">
+                          + {booking.unpricedMarkets} unpriced
+                        </span>
+                      )}
+                      {/* The earliest expiry in the booking is the one to act on. */}
+                      <ExpirationBadge expiresAt={booking.earliestExpiry} status={first.status} />
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[first.status] ?? STATUS_BADGE.HOLD}`}>
                         {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[first.status] ?? first.status)}
                       </span>
                     </div>
                   </div>
+                  {otherParts.size > 0 && (
+                    <div className="px-4 py-1.5 text-xs text-gray-600 bg-blue-50/60 border-b border-blue-100">
+                      Also in this booking:{' '}
+                      {[...otherParts].map(([label, markets]) => `${markets.size} market${markets.size === 1 ? '' : 's'} ${label}`).join(', ')}
+                      {' '}(shown under {[...otherParts.keys()].length === 1 ? 'that filter' : 'those filters'}). This card and its Edit cover the {booking.markets.length} {STATUS_LABEL[first.status] ?? first.status} market{booking.markets.length === 1 ? '' : 's'} only.
+                    </div>
+                  )}
                   {(() => {
-                    const parsedFeatures = parseQuoteFeatures(first.features)
+                    // One market's breakdown would misstate a multi-market booking.
+                    const parsedFeatures = multi ? null : parseQuoteFeatures(first.features)
                     return parsedFeatures ? (
                       <div className="px-4 py-3 bg-white border-b border-gray-100">
                         <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Quote breakdown</div>
@@ -690,6 +741,7 @@ export default function HoldRequestsPage() {
                           Edit
                         </button>
                       )}
+                      {first.status !== 'EXTENSION_REQUESTED' && <ReviseLink rows={groupItems} />}
                     </div>
                   )}
                 </div>
@@ -739,7 +791,10 @@ export default function HoldRequestsPage() {
                                 <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
                               </td>
                               <td className="px-4 py-3">
-                                <Actions ids={[r.id]} status={r.status} groupKey={r.id} requests={[r]} quoteOnly={r.origination === QUOTE_ONLY_ORIGINATION} />
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <Actions ids={[r.id]} status={r.status} groupKey={r.id} requests={[r]} quoteOnly={r.origination === QUOTE_ONLY_ORIGINATION} />
+                                  {['HOLD', 'COMMITTED', 'EXPIRED'].includes(r.status) && <ReviseLink rows={[r]} />}
+                                </div>
                               </td>
                             </tr>
                             {parsedFeatures && (
@@ -773,9 +828,16 @@ export default function HoldRequestsPage() {
               <div className="px-6 py-4 border-b border-gray-100">
                 <h2 className="text-lg font-bold text-gray-900">Edit Reservation</h2>
                 <p className="text-sm text-gray-500 mt-0.5">
-                  {first.company_name} &middot; {formatMarketState(first.market, first.state)} &middot;{' '}
-                  {format(parseDateOnly(first.start_date), 'MMM d')} &ndash; {format(parseDateOnly(first.end_date), 'MMM d, yyyy')}
-                  {editingGroup.length > 1 && <span className="ml-1">({editingGroup.length} trucks)</span>}
+                  {(() => {
+                    const b = summarizeBooking(editingGroup)
+                    return (
+                      <>
+                        {first.company_name} &middot; {b.markets.length > 1 ? `${b.markets.length} markets` : formatMarketState(first.market, first.state)} &middot;{' '}
+                        {format(parseDateOnly(b.start), 'MMM d')} &ndash; {format(parseDateOnly(b.end), 'MMM d, yyyy')}
+                        {editingGroup.length > 1 && <span className="ml-1">({b.trucks} trucks)</span>}
+                      </>
+                    )
+                  })()}
                 </p>
               </div>
               <div className="px-6 py-4 space-y-4 overflow-y-auto flex-1">
@@ -794,7 +856,7 @@ export default function HoldRequestsPage() {
                             return (
                               <div key={r.id}>
                                 {editingGroup.length > 1 && (
-                                  <div className="text-xs text-gray-500 mb-1">Truck {r.truck_number}</div>
+                                  <div className="text-xs text-gray-500 mb-1">Truck {r.truck_number} &middot; {formatMarketState(r.market, r.state)}</div>
                                 )}
                                 {available.length > 1 ? (
                                   <>
@@ -916,8 +978,8 @@ export default function HoldRequestsPage() {
                         Cancel this reservation{editingGroup.length > 1 ? ` (${editingGroup.length} trucks)` : ''}?
                       </p>
                       <p className="text-xs text-red-600 mt-1">
-                        {editingGroup.map(r => r.truck_number).join(', ')} &middot; {first.market} &middot;{' '}
-                        {first.start_date} to {first.end_date}
+                        {editingGroup.map(r => r.truck_number).join(', ')} &middot; {[...new Set(editingGroup.map(r => r.market))].join(', ')} &middot;{' '}
+                        {(({ start, end }) => `${start} to ${end}`)(summarizeBooking(editingGroup))}
                       </p>
                     </div>
                     <div>

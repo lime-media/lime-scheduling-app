@@ -14,6 +14,8 @@ import { Navbar } from '@/components/Navbar'
 import { PlannerTab } from '@/components/PlannerTab'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
+import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
+import { OpportunityPicker, type OpenOpportunity } from '@/components/OpportunityPicker'
 
 // ---------------------------------------------------------------------------
 // Types (mirrors client-side QuoteResponse)
@@ -84,11 +86,21 @@ export default function InternalQuotePage() {
 
   // Tab state
   const [activeTab, setActiveTab] = useState<'builder' | 'classic' | 'planner'>('builder')
+  // Reservations → Revise opens /quote?revise=<booking>: the planner, with that booking loaded.
+  const [reviseKey, setReviseKey] = useState<string | null>(null)
+  useEffect(() => {
+    const key = new URLSearchParams(window.location.search).get('revise')
+    if (key) { setReviseKey(key); setActiveTab('planner') }
+  }, [])
 
   // SFDC Account
   const [account, setAccount] = useState<SfdcAccount | null>(null)
   // The opportunity's primary contact: required by sales ops on every opportunity.
   const [contact, setContact] = useState<SfdcContact | null>(null)
+  // How long the reservation holds the trucks (default 3 days).
+  const [holdDays, setHoldDays] = useState(DEFAULT_HOLD_DAYS)
+  // An existing opportunity to add this quote to; null = a new one.
+  const [attachTo, setAttachTo] = useState<OpenOpportunity | null>(null)
   // Brand Direct accounts carry a premium on media; the seller can change it.
   const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
   // Opportunity stage the seller wants the reservation's opportunity to start at.
@@ -256,6 +268,8 @@ export default function InternalQuotePage() {
           sfdc_account_id: account.id,
           sfdc_account_name: account.name,
           primary_contact_id: contact.id,
+          hold_days: holdDays,
+          attach_opportunity_id: attachTo?.id,
           brand,
           shadow_fencing: toggles.shadowFencing,
           smart_directional: toggles.smartDirectional,
@@ -284,7 +298,7 @@ export default function InternalQuotePage() {
     } finally {
       setHoldLoading(false)
     }
-  }, [holdLoading, quoteResult, account, contact, form, toggles, isBrandDirect, markupPct, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [holdLoading, quoteResult, account, contact, holdDays, attachTo, form, toggles, isBrandDirect, markupPct, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (status === 'loading' || !session) return null
 
@@ -322,7 +336,7 @@ export default function InternalQuotePage() {
         </div>
 
         {activeTab === 'planner' ? (
-          <PlannerTab />
+          <PlannerTab reviseKey={reviseKey} onReviseDone={() => { setReviseKey(null); window.history.replaceState(null, '', '/quote') }} />
         ) : activeTab === 'classic' ? (
           <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden" style={{ minHeight: 'calc(100vh - 200px)' }}>
             <iframe
@@ -338,11 +352,14 @@ export default function InternalQuotePage() {
         {/* Step 1: Client selection */}
         <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 mb-4">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
-          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setContact(null); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
+          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setContact(null); setAttachTo(null); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
           {account && (
             <div className="mt-3">
               <label className="text-xs font-medium text-gray-600 mb-1 block">Primary contact <span className="text-red-500">*</span></label>
               <ContactSearch accountId={account.id} selected={contact} onSelect={setContact} />
+              <div className="mt-3">
+                <OpportunityPicker accountId={account.id} value={attachTo} onChange={setAttachTo} />
+              </div>
             </div>
           )}
           <div className="mt-3 max-w-sm">
@@ -684,6 +701,11 @@ export default function InternalQuotePage() {
                         {quoteResult.pricing.quoteOnlyRequired && <span className="block text-amber-800">Not enough trucks are free for these dates, so this can only be logged as a quote.</span>}
                       </span>
                     </label>
+                  )}
+
+                  {/* Hold length: a reservation only (a quote-only log holds nothing). */}
+                  {!quoteOnly && !holdResult?.ok && (
+                    <HoldLength days={holdDays} onChange={setHoldDays} startDates={[form.start_date]} />
                   )}
 
                   {/* Hold button */}

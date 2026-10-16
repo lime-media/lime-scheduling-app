@@ -102,25 +102,9 @@ export function softHoldYieldsOn(date: string, otherClientShifts: { shift_start:
   return (otherClientShifts ?? []).some(s => s.shift_start <= date && s.shift_end >= date)
 }
 
-/**
- * The parts of [start, end] not covered by any of `taken` — the days a truck
- * still needs a soft hold for, after its existing soft holds and any dates
- * someone released for a booking. Dates are YYYY-MM-DD. Pure.
- */
-export function freeRanges(start: string, end: string, taken: { start: string; end: string }[]): { start: string; end: string }[] {
-  const next = (d: string) => iso(new Date(utc(d).getTime() + 864e5))
-  const prev = (d: string) => iso(new Date(utc(d).getTime() - 864e5))
-  const blocks = taken.filter(t => t.end >= start && t.start <= end).sort((a, b) => a.start.localeCompare(b.start))
-  const out: { start: string; end: string }[] = []
-  let cursor = start
-  for (const b of blocks) {
-    if (b.start > cursor) out.push({ start: cursor, end: prev(b.start) < end ? prev(b.start) : end })
-    if (b.end >= cursor) cursor = next(b.end)
-    if (cursor > end) return out
-  }
-  if (cursor <= end) out.push({ start: cursor, end })
-  return out
-}
+// freeRanges lives in lib/ranges.ts (shared with conflict detection).
+export { freeRanges } from '@/lib/ranges'
+import { freeRanges } from '@/lib/ranges'
 
 /** Release rows (lib/attSoftRelease.ts) carry this origination. */
 export const ATT_RELEASE_ORIGINATION = 'att_soft_release'
@@ -277,21 +261,29 @@ export function validateRosterOverride(o: { action: string; start: string; end: 
 /**
  * Soft holds are written a month at a time, so one reservation across a month
  * boundary clashes with two soft-hold pieces. For the Conflicts page these are
- * one problem: merge the pieces per reservation into one row, with the soft
- * hold and overlap spanning all of them. Pure.
+ * one problem: merge a reservation's pieces into one row when they run on
+ * from each other (one ends the day before the next starts), with the soft
+ * hold and overlap spanning them. Pieces with a gap between them (a month
+ * released in the middle) stay separate rows, so no row shows a soft hold on
+ * days that have none. Pure.
  */
 export function mergeSoftHoldClashes<T extends { reservationId: string; softHoldId: string; softHold: Range; overlap: Range }>(
   clashes: T[],
 ): (T & { softHoldIds: string[] })[] {
-  const by = new Map<string, T & { softHoldIds: string[] }>()
-  for (const c of clashes) {
-    const m = by.get(c.reservationId)
-    if (!m) { by.set(c.reservationId, { ...c, softHoldIds: [c.softHoldId] }); continue }
-    m.softHoldIds.push(c.softHoldId)
-    m.softHold = { start: c.softHold.start < m.softHold.start ? c.softHold.start : m.softHold.start, end: c.softHold.end > m.softHold.end ? c.softHold.end : m.softHold.end }
-    m.overlap = { start: c.overlap.start < m.overlap.start ? c.overlap.start : m.overlap.start, end: c.overlap.end > m.overlap.end ? c.overlap.end : m.overlap.end }
+  const nextDay = (d: string) => addDaysIso(d, 1)
+  const sorted = [...clashes].sort((a, b) => a.reservationId.localeCompare(b.reservationId) || a.softHold.start.localeCompare(b.softHold.start))
+  const out: (T & { softHoldIds: string[] })[] = []
+  for (const c of sorted) {
+    const m = out[out.length - 1]
+    if (m && m.reservationId === c.reservationId && c.softHold.start <= nextDay(m.softHold.end)) {
+      m.softHoldIds.push(c.softHoldId)
+      if (c.softHold.end > m.softHold.end) m.softHold = { start: m.softHold.start, end: c.softHold.end }
+      m.overlap = { start: c.overlap.start < m.overlap.start ? c.overlap.start : m.overlap.start, end: c.overlap.end > m.overlap.end ? c.overlap.end : m.overlap.end }
+    } else {
+      out.push({ ...c, softHold: { ...c.softHold }, overlap: { ...c.overlap }, softHoldIds: [c.softHoldId] })
+    }
   }
-  return [...by.values()]
+  return out
 }
 
 /** Can this record be reinstated as a live hold? Release records never can. */

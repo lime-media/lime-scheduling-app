@@ -15,7 +15,7 @@ import { warnExpiringHolds } from '@/lib/holdExpiryWarnings'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 import { syncAttSoftHolds } from '@/lib/attSoftHolds'
-import { freeRanges } from '@/lib/attSoftRules'
+import { freeRanges } from '@/lib/ranges'
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────
 
@@ -132,10 +132,10 @@ export async function refreshCache(): Promise<RefreshSummary> {
   // against its new dates in the same pass.
   const reconciled = await reconcileConflicts(schedules, holds).catch((err) => {
     console.error('[scheduleCache] conflict reconcile failed:', err)
-    return { resolved: 0 }
+    return { resolved: 0, resolvedIds: [] as string[] }
   })
 
-  await detectConflicts(schedules, holds)
+  await detectConflicts(schedules, holds, new Set(reconciled.resolvedIds))
   console.log(
     `[scheduleCache] refresh complete — ${expiry.expired} hold(s) expired ` +
     `(${expiry.opportunities_closed} opportunit${expiry.opportunities_closed === 1 ? 'y' : 'ies'} closed lost, ` +
@@ -292,12 +292,16 @@ export interface DetectedConflict {
 }
 
 /**
- * Identity of a conflict: which hold, on which truck, over which window. Deliberately not
- * the program name — the same schedule block comes back under slightly different program
- * strings across runs, which would make an unchanged conflict look new every hour.
+ * Identity of a conflict: which hold, on which truck, against which program, over which
+ * window. The program is part of it: a reservation clashing with two programs is two
+ * problems, and dismissing one must not hide the other. Compared trimmed, case- and
+ * space-insensitive, so a cosmetic difference in the LED program name cannot split one
+ * conflict into two (none has been seen in production; this keeps it that way).
  */
-function conflictKey(holdId: string, truckNumber: string, start: string, end: string): string {
-  return `${holdId}|${truckNumber}|${start}|${end}`
+export const programKey = (program: string) => program.trim().toLowerCase().replace(/\s+/g, ' ')
+
+function conflictKey(holdId: string, truckNumber: string, program: string, start: string, end: string): string {
+  return `${holdId}|${truckNumber}|${programKey(program)}|${start}|${end}`
 }
 
 const nextDay = (d: string) => new Date(Date.parse(d + 'T00:00:00Z') + 864e5).toISOString().slice(0, 10)
@@ -352,7 +356,7 @@ export function findConflicts(
       const conflictEnd   = hold.end_date   < sched.shift_end   ? hold.end_date   : sched.shift_end
 
       found.push({
-        key:           conflictKey(hold.id, hold.truck_number, conflictStart, conflictEnd),
+        key:           conflictKey(hold.id, hold.truck_number, sched.program, conflictStart, conflictEnd),
         hold,
         program:       sched.program,
         conflictStart,
@@ -383,11 +387,11 @@ export function findConflicts(
 export async function reconcileConflicts(
   schedules: ConflictSchedule[],
   holds:     ConflictHold[]
-): Promise<{ resolved: number }> {
+): Promise<{ resolved: number; resolvedIds: string[] }> {
   // An empty schedule set means the upstream LED query returned nothing. That is far more
   // likely to be an outage than every program in the fleet being cancelled at once, and
   // acting on it would auto-resolve the entire board. Detection sits out the same case.
-  if (schedules.length === 0) return { resolved: 0 }
+  if (schedules.length === 0) return { resolved: 0, resolvedIds: [] }
 
   const pool = await getPool()
 
@@ -395,7 +399,7 @@ export async function reconcileConflicts(
 
   const active = await pool.request().query(`
     SELECT
-      id, hold_id, truck_number,
+      id, hold_id, truck_number, scheduled_program,
       CONVERT(varchar(10), conflict_start, 120) AS conflict_start,
       CONVERT(varchar(10), conflict_end,   120) AS conflict_end
     FROM dbo.schedule_conflicts
@@ -403,11 +407,12 @@ export async function reconcileConflicts(
   `)
 
   let resolved = 0
+  const resolvedIds: string[] = []
 
   for (const row of active.recordset as {
-    id: string; hold_id: string; truck_number: string; conflict_start: string; conflict_end: string
+    id: string; hold_id: string; truck_number: string; scheduled_program: string | null; conflict_start: string; conflict_end: string
   }[]) {
-    if (live.has(conflictKey(row.hold_id, row.truck_number, row.conflict_start, row.conflict_end))) continue
+    if (live.has(conflictKey(row.hold_id, row.truck_number, row.scheduled_program ?? '', row.conflict_start, row.conflict_end))) continue
 
     // Guarded on status so a human resolving the same row mid-sweep is not overwritten.
     await pool
@@ -420,41 +425,48 @@ export async function reconcileConflicts(
       `)
 
     resolved++
+    resolvedIds.push(row.id)
     console.log(
       `[conflicts] auto-resolved: truck ${row.truck_number} | hold ${row.hold_id} ` +
       `(${row.conflict_start}–${row.conflict_end}) — overlap no longer present`
     )
   }
 
-  return { resolved }
+  return { resolved, resolvedIds }
 }
 
 /**
  * What earlier rows say about a newly found conflict over [start, end], for
- * the same reservation and truck:
+ * the same reservation, truck and program:
  * - 'dismissed': people dismissed every one of these days ("keep both, stop
  *   flagging"), so it is not raised again.
- * - 'reported': some of these days were already raised, so it is recorded
- *   but not emailed again (a conflict that grew, shifted, or was merged from
- *   one-day rows).
- * - 'new': nothing before; record and email. Pure.
+ * - 'reported': it is already being shown — an ACTIVE row overlaps, or one
+ *   this sweep just closed (the conflict grew or shifted, or is one-day rows
+ *   becoming a range). Recorded, not emailed again.
+ * - 'new': record and email. Includes a conflict that went away (closed by
+ *   an earlier sweep) and has come back: email is the only push, so a
+ *   recurrence is news.
+ * `justResolved`: ids reconcileConflicts() closed in this same sweep. Pure.
  */
 export function priorDecision(
   start: string,
   end: string,
-  prior: { conflict_start: string; conflict_end: string; status: string; resolved_by: string | null }[],
+  prior: { id: string; conflict_start: string; conflict_end: string; status: string; resolved_by: string | null }[],
+  justResolved: ReadonlySet<string> = new Set(),
 ): 'dismissed' | 'reported' | 'new' {
   const over = prior.filter(p => p.conflict_start <= end && p.conflict_end >= start)
   const byPerson = over
     .filter(p => p.status === 'RESOLVED' && p.resolved_by)
     .map(p => ({ start: p.conflict_start, end: p.conflict_end }))
   if (byPerson.length && freeRanges(start, end, byPerson).length === 0) return 'dismissed'
-  return over.length ? 'reported' : 'new'
+  return over.some(p => p.status === 'ACTIVE' || justResolved.has(p.id)) ? 'reported' : 'new'
 }
 
 export async function detectConflicts(
   schedules: ConflictSchedule[],
-  holds:     ConflictHold[]
+  holds:     ConflictHold[],
+  /** Rows reconcileConflicts() closed in this sweep (see priorDecision). */
+  justResolved: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   if (holds.length === 0 || schedules.length === 0) return
 
@@ -463,44 +475,30 @@ export async function detectConflicts(
   for (const conflict of findConflicts(schedules, holds)) {
     const { hold, program, conflictStart, conflictEnd } = conflict
 
-    // What was recorded before for this reservation on this truck: a person
-    // dismissing these dates, or the conflict already having been reported
-    // (by day, before conflicts were merged into ranges, or before its
-    // window shifted).
-    const prior = await pool
+    // What was recorded before for this reservation, truck and program: a
+    // person dismissing these dates, or the conflict already being shown.
+    const prior = (await pool
       .request()
       .input('holdId',      hold.id)
       .input('truckNumber', hold.truck_number)
       .input('from',        conflictStart)
       .input('to',          conflictEnd)
       .query(`
-        SELECT CONVERT(varchar(10), conflict_start, 120) AS conflict_start,
+        SELECT id, scheduled_program,
+               CONVERT(varchar(10), conflict_start, 120) AS conflict_start,
                CONVERT(varchar(10), conflict_end,   120) AS conflict_end,
                status, resolved_by
         FROM dbo.schedule_conflicts
         WHERE hold_id = @holdId AND truck_number = @truckNumber
           AND conflict_start <= @to AND conflict_end >= @from
-      `)
-    const decision = priorDecision(conflictStart, conflictEnd, prior.recordset)
+      `)).recordset.filter((p: { scheduled_program: string | null }) => programKey(p.scheduled_program ?? '') === programKey(program))
+
+    // Already recorded exactly: nothing to do.
+    if (prior.some((p: { status: string; conflict_start: string; conflict_end: string }) =>
+      p.status === 'ACTIVE' && p.conflict_start === conflictStart && p.conflict_end === conflictEnd)) continue
+
+    const decision = priorDecision(conflictStart, conflictEnd, prior, justResolved)
     if (decision === 'dismissed') continue
-
-    // Skip if this truck+hold+date window is already recorded.
-    const existing = await pool
-      .request()
-      .input('holdId',        hold.id)
-      .input('truckNumber',   hold.truck_number)
-      .input('conflictStart', conflictStart)
-      .input('conflictEnd',   conflictEnd)
-      .query(`
-        SELECT id FROM dbo.schedule_conflicts
-        WHERE hold_id        = @holdId
-          AND truck_number   = @truckNumber
-          AND conflict_start = @conflictStart
-          AND conflict_end   = @conflictEnd
-          AND status         = 'ACTIVE'
-      `)
-
-    if (existing.recordset.length > 0) continue
 
     await pool
       .request()
@@ -524,7 +522,7 @@ export async function detectConflicts(
       `[conflicts] new conflict: truck ${hold.truck_number} | hold "${hold.client_name}" ↔ schedule "${program}" (${conflictStart}–${conflictEnd})`
     )
 
-    // Already reported: recorded, but no second email for the same days.
+    // Already being shown: recorded, but no second email.
     if (decision === 'reported') continue
 
     // Fire-and-forget email — don't let email failure break the detection loop

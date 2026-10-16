@@ -128,16 +128,10 @@ export function AttSoftConflicts({ onCount }: { onCount?: (n: number) => void } 
     try {
       const res = await fetch('/api/holds/att-soft/conflicts', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ softHoldId: r.softHoldId, reservationId: r.reservationId }),
+        // Every monthly piece the row merges, in one call: all dismissed or none.
+        body: JSON.stringify({ softHoldIds: r.softHoldIds, reservationId: r.reservationId }),
       })
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Dismiss failed')
-      // The other monthly pieces of the same soft hold.
-      for (const id of r.softHoldIds.filter(x => x !== r.softHoldId)) {
-        await fetch('/api/holds/att-soft/conflicts', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ softHoldId: id, reservationId: r.reservationId }),
-        })
-      }
       setRows(prev => prev.filter(x => x.key !== r.key))
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Dismiss failed')

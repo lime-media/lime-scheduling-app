@@ -11,7 +11,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { findConflicts, mergeScheduleBlocks, priorDecision, type ConflictHold, type ConflictSchedule } from '@/lib/scheduleCache'
+import { findConflicts, mergeScheduleBlocks, priorDecision, programKey, type ConflictHold, type ConflictSchedule } from '@/lib/scheduleCache'
 import { mergeSoftHoldClashes } from '@/lib/attSoftRules'
 
 function hold(over: Partial<ConflictHold> = {}): ConflictHold {
@@ -94,20 +94,36 @@ eq('other trucks are not merged in',
   mergeScheduleBlocks([day('2026-09-05'), day('2026-09-06', { truck_number: '4322' })]).length, 2)
 eq('the input is not changed', month[0].shift_end, '2026-09-01')
 
-section('Earlier rows: dismissed, already reported, or new')
+section('Earlier rows: dismissed, already shown, or new')
 
+let rid = 0
 const row = (start: string, end: string, status = 'ACTIVE', resolved_by: string | null = null) =>
-  ({ conflict_start: start, conflict_end: end, status, resolved_by })
+  ({ id: `r${++rid}`, conflict_start: start, conflict_end: end, status, resolved_by })
 eq('nothing before: new (emailed)', priorDecision('2026-09-05', '2026-09-25', []), 'new')
-eq('one-day rows from before: reported, not emailed again',
-  priorDecision('2026-09-05', '2026-09-25', [row('2026-09-05', '2026-09-05'), row('2026-09-06', '2026-09-06', 'RESOLVED')]), 'reported')
+eq('still showing (ACTIVE overlaps): recorded, not emailed again',
+  priorDecision('2026-09-05', '2026-09-25', [row('2026-09-05', '2026-09-10')]), 'reported')
+const rollover = [row('2026-09-05', '2026-09-05', 'RESOLVED'), row('2026-09-06', '2026-09-06', 'RESOLVED')]
+eq('one-day rows this sweep just closed (the rollover): not emailed again',
+  priorDecision('2026-09-05', '2026-09-25', rollover, new Set(rollover.map(r => r.id))), 'reported')
+// Sarah's review: a conflict that went away (closed by an earlier sweep) and came back.
+eq('went away and came back: emailed again',
+  priorDecision('2026-09-05', '2026-09-25', [row('2026-09-05', '2026-09-25', 'RESOLVED', null)]), 'new')
 eq('a person dismissed every day: stays dismissed',
   priorDecision('2026-09-05', '2026-09-07', [row('2026-09-05', '2026-09-06', 'RESOLVED', 'u1'), row('2026-09-07', '2026-09-07', 'RESOLVED', 'u2')]), 'dismissed')
-eq('dismissed only some days: raised again (no email)',
-  priorDecision('2026-09-05', '2026-09-25', [row('2026-09-05', '2026-09-06', 'RESOLVED', 'u1')]), 'reported')
-eq('auto-resolved (no person) is not a dismissal',
-  priorDecision('2026-09-05', '2026-09-07', [row('2026-09-05', '2026-09-07', 'RESOLVED', null)]), 'reported')
+eq('dismissed only some days, rest never shown: new',
+  priorDecision('2026-09-05', '2026-09-25', [row('2026-09-05', '2026-09-06', 'RESOLVED', 'u1')]), 'new')
 eq('rows for other dates do not count', priorDecision('2026-09-05', '2026-09-07', [row('2026-08-01', '2026-08-03', 'RESOLVED', 'u1')]), 'new')
+
+section('Conflict identity includes the program')
+// Sarah's review: dismissing reservation R against ATT FIBER must not hide a
+// later TOYOTA clash on the same truck and dates. The detection reads prior
+// rows for the same program only; the key carries it too.
+const fiber = findConflicts([shift({ shift_start: '2026-09-18', shift_end: '2026-09-20' })], [hold()])[0].key
+const toyota = findConflicts([shift({ program: 'TOYOTA', shift_start: '2026-09-18', shift_end: '2026-09-20' })], [hold()])[0].key
+eq('same reservation, truck and dates, different program: different conflicts', fiber === toyota, false)
+eq('a cosmetic difference in the program name is the same conflict',
+  findConflicts([shift({ program: '  att  fiber ', shift_start: '2026-09-18', shift_end: '2026-09-20' })], [hold()])[0].key, fiber)
+eq('programKey', programKey('  ATT   Fiber '), 'att fiber')
 
 section('AT&T soft-hold clashes: one row per reservation')
 
@@ -120,3 +136,11 @@ eq('with both piece ids (dismiss covers both)', merged[0].softHoldIds, ['oct', '
 eq('different reservations stay apart',
   mergeSoftHoldClashes([piece('oct', '2026-10-01', '2026-10-31', '2026-10-20', '2026-10-31'), { ...piece('oct', '2026-10-01', '2026-10-31', '2026-10-02', '2026-10-03'), reservationId: 'r2' }]).length, 2)
 
+
+// Sarah's review: October and December with November released are not one range.
+const gapped = mergeSoftHoldClashes([
+  piece('oct', '2026-10-01', '2026-10-31', '2026-10-20', '2026-10-31'),
+  piece('dec', '2026-12-01', '2026-12-31', '2026-12-01', '2026-12-05'),
+])
+eq('months with a released month between stay separate rows', gapped.map(g => g.softHoldIds), [['oct'], ['dec']])
+eq('and neither claims the released month', gapped.map(g => `${g.softHold.start}..${g.softHold.end}`), ['2026-10-01..2026-10-31', '2026-12-01..2026-12-31'])

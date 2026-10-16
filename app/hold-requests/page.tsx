@@ -14,7 +14,7 @@ import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
-import { bookingKey, isMultiMarket, summarizeBooking } from '@/lib/bookings'
+import { bookingCardKey, bookingKey, isMultiMarket, summarizeBooking } from '@/lib/bookings'
 
 type HoldRequest = {
   id: string
@@ -305,9 +305,10 @@ export default function HoldRequestsPage() {
   const openEdit = async (request: HoldRequest) => {
     // Everything in the same booking: all markets of a multi-market quote,
     // so one Edit (and one expiry change) covers the whole reservation.
-    const groupKey = bookingKey(request)
+    // The same reservations as the card: this booking, in this status.
+    const groupKey = bookingCardKey(request)
     const siblings = groupKey
-      ? requests.filter(r => bookingKey(r) === groupKey && r.status === request.status)
+      ? requests.filter(r => bookingCardKey(r) === groupKey)
       : [request]
     setEditingGroup(siblings)
     setSelectedTrucks(new Map(siblings.map(r => [r.id, r.truck_number])))
@@ -476,7 +477,9 @@ export default function HoldRequestsPage() {
     const grouped = new Map<string, HoldRequest[]>()
     const ungrouped: HoldRequest[] = []
     for (const r of filtered) {
-      const groupKey = bookingKey(r)
+      // One card per booking and status (lib/bookings.ts bookingCardKey), so a
+      // card's totals, expiry, status and actions all cover the same holds.
+      const groupKey = bookingCardKey(r)
       if (groupKey) {
         const group = grouped.get(groupKey) ?? []
         group.push(r)
@@ -653,6 +656,16 @@ export default function HoldRequestsPage() {
               // A multi-market booking: one card, its figures summed across markets.
               const multi = isMultiMarket(first)
               const booking = summarizeBooking(groupItems)
+              // The same booking's reservations in other statuses (markets lapse
+              // on their own schedules): each has its own card under its filter.
+              const otherParts = new Map<string, Set<string>>()
+              const key = bookingKey(first)
+              for (const r of requests) {
+                if (key && r.status !== first.status && bookingKey(r) === key) {
+                  const label = r.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[r.status] ?? r.status)
+                  otherParts.set(label, new Set([...(otherParts.get(label) ?? []), r.market]))
+                }
+              }
               return (
                 <div key={groupId} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
                   <div className="px-4 py-3 bg-gray-50/80 border-b border-gray-200 flex items-center justify-between flex-wrap gap-3">
@@ -673,7 +686,12 @@ export default function HoldRequestsPage() {
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${SOURCE_BADGE[first.source] ?? SOURCE_BADGE.INTERNAL}`}>
                         {SOURCE_LABEL[first.source] ?? first.source}
                       </span>
-                      <PricingBadge tier={first.pricing_tier} total={multi ? booking.total : first.quoted_total} />
+                      <PricingBadge tier={multi ? booking.tier : first.pricing_tier} total={multi ? booking.total : first.quoted_total} />
+                      {multi && booking.unpricedMarkets > 0 && (
+                        <span className="text-xs text-amber-700" title="These markets have no price on file; the total above leaves them out">
+                          + {booking.unpricedMarkets} unpriced
+                        </span>
+                      )}
                       {/* The earliest expiry in the booking is the one to act on. */}
                       <ExpirationBadge expiresAt={booking.earliestExpiry} status={first.status} />
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[first.status] ?? STATUS_BADGE.HOLD}`}>
@@ -681,6 +699,13 @@ export default function HoldRequestsPage() {
                       </span>
                     </div>
                   </div>
+                  {otherParts.size > 0 && (
+                    <div className="px-4 py-1.5 text-xs text-gray-600 bg-blue-50/60 border-b border-blue-100">
+                      Also in this booking:{' '}
+                      {[...otherParts].map(([label, markets]) => `${markets.size} market${markets.size === 1 ? '' : 's'} ${label}`).join(', ')}
+                      {' '}(shown under {[...otherParts.keys()].length === 1 ? 'that filter' : 'those filters'}). This card and its Edit cover the {booking.markets.length} {STATUS_LABEL[first.status] ?? first.status} market{booking.markets.length === 1 ? '' : 's'} only.
+                    </div>
+                  )}
                   {(() => {
                     // One market's breakdown would misstate a multi-market booking.
                     const parsedFeatures = multi ? null : parseQuoteFeatures(first.features)
@@ -954,7 +979,7 @@ export default function HoldRequestsPage() {
                       </p>
                       <p className="text-xs text-red-600 mt-1">
                         {editingGroup.map(r => r.truck_number).join(', ')} &middot; {[...new Set(editingGroup.map(r => r.market))].join(', ')} &middot;{' '}
-                        {summarizeBooking(editingGroup).start} to {summarizeBooking(editingGroup).end}
+                        {(({ start, end }) => `${start} to ${end}`)(summarizeBooking(editingGroup))}
                       </p>
                     </div>
                     <div>

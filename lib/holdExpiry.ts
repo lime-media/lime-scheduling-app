@@ -32,6 +32,8 @@ export const MAX_HOLD_DAYS = 14
 /** A seller's hold length, or null when it is not a whole number of days from 1 to MAX_HOLD_DAYS. */
 export function parseHoldDays(value: unknown): number | null {
   if (value === undefined || value === null || value === '') return DEFAULT_HOLD_DAYS
+  // A number, or digits as text — not whatever Number() can coerce (true is 1, [7] is 7).
+  if (typeof value !== 'number' && !(typeof value === 'string' && /^\d+$/.test(value))) return null
   const n = Number(value)
   return Number.isInteger(n) && n >= 1 && n <= MAX_HOLD_DAYS ? n : null
 }

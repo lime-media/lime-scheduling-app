@@ -65,4 +65,5 @@ section('hold length chosen on the quote tool')
   eq('parse: missing means the standard 3', parseHoldDays(undefined), DEFAULT_HOLD_DAYS)
   eq('parse: 1 to 14 accepted', [parseHoldDays(1), parseHoldDays('14')], [1, 14])
   eq('parse: out of range or fractional refused', [parseHoldDays(0), parseHoldDays(15), parseHoldDays(2.5), parseHoldDays('x')], [null, null, null, null])
+  eq('parse: no coercion (true is not 1 day, [7] is not 7)', [parseHoldDays(true), parseHoldDays([7]), parseHoldDays(' 7'), parseHoldDays('7')], [null, null, null, 7])
 }

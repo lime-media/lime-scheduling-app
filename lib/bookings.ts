@@ -25,6 +25,18 @@ export function bookingKey(r: BookingRow): string | null {
   return multi ? multi[1] : r.campaign_group_id || r.sfdc_opportunity_id || null
 }
 
+/**
+ * What one Reservations card shows: a booking's reservations in ONE status.
+ * Each market's hold lapses on its own (it ends 3 days before its own start),
+ * so a booking is often part on hold, part committed or expired. One card per
+ * status keeps the card, its totals, its expiry and its Edit about exactly the
+ * same reservations; the card notes the booking's other parts.
+ */
+export function bookingCardKey(r: BookingRow & { status: string }): string | null {
+  const key = bookingKey(r)
+  return key ? `${key}|${r.status}` : null
+}
+
 /** Whether a booking's reservations came from a multi-market quote. */
 export const isMultiMarket = (r: BookingRow) => MULTI_MARKET_GROUP.test(r.campaign_group_id ?? '')
 
@@ -41,15 +53,21 @@ export function summarizeBooking(rows: (BookingRow & {
   end_date: string
   quoted_total: number | null
   expires_at: string | null
-})[]): { markets: string[]; trucks: number; total: number | null; start: string; end: string; earliestExpiry: string | null } {
+  pricing_tier?: string | null
+})[]): { markets: string[]; trucks: number; total: number | null; unpricedMarkets: number; tier: string | null; start: string; end: string; earliestExpiry: string | null } {
   const perGroup = new Map<string, number | null>()
   for (const r of rows) if (!perGroup.has(r.campaign_group_id ?? '')) perGroup.set(r.campaign_group_id ?? '', r.quoted_total)
   const totals = [...perGroup.values()]
   const expiries = rows.map(r => r.expires_at).filter((e): e is string => !!e).sort()
+  const tiers = [...new Set(rows.map(r => r.pricing_tier).filter((t): t is string => !!t))]
   return {
     markets: [...new Set(rows.map(r => r.market))],
     trucks: new Set(rows.map(r => r.truck_number)).size,
+    // The priced markets' total; a market with no price is counted, not taken as $0.
     total: totals.every(t => t === null) ? null : totals.reduce<number>((n, t) => n + (t ?? 0), 0),
+    unpricedMarkets: totals.filter(t => t === null).length,
+    // One tier for the card only when every market has it.
+    tier: tiers.length === 1 ? tiers[0] : tiers.length > 1 ? 'Mixed' : null,
     start: rows.map(r => r.start_date).sort()[0],
     end: rows.map(r => r.end_date).sort().reverse()[0],
     earliestExpiry: expiries[0] ?? null,

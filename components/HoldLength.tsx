@@ -11,7 +11,8 @@ import { DEFAULT_HOLD_DAYS, MAX_HOLD_DAYS, holdExpiry } from '@/lib/holdExpiry'
 
 export { DEFAULT_HOLD_DAYS }
 
-const fmt = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+// Central time, as the booking confirmation states it.
+const fmt = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Chicago', timeZoneName: 'short' })
 
 export function HoldLength({ days, onChange, startDates }: {
   days: number

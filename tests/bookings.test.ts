@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { bookingKey, isMultiMarket, summarizeBooking } from '@/lib/bookings'
+import { bookingCardKey, bookingKey, isMultiMarket, summarizeBooking } from '@/lib/bookings'
 
 const h = (campaign_group_id: string | null, truck_number: string, market: string, quoted_total: number | null, extra: Partial<{ sfdc: string; start: string; end: string; exp: string }> = {}) => ({
   campaign_group_id, sfdc_opportunity_id: extra.sfdc ?? null, truck_number, market, quoted_total,
@@ -39,3 +39,15 @@ eq('the earliest expiry is the one to watch', sum.earliestExpiry, '2026-10-16T09
 eq('a truck alternating between markets counts once',
   summarizeBooking([h('mm_c_1', '0794', 'Omaha, NE', 1), h('mm_c_2', '0794', 'Lincoln, NE', 1)]).trucks, 1)
 eq('no prices: no total', summarizeBooking([h('mm_d_1', 'x', 'm', null)]).total, null)
+
+section('bookings: one card per booking and status (Sarah\'s review)')
+// Markets lapse on their own schedules: part on hold, part committed or expired.
+const mixed = [{ ...omg[0], status: 'HOLD' }, { ...omg[1], status: 'COMMITTED' }, { ...omg[2], status: 'HOLD' }]
+eq('the same status shares a card', bookingCardKey(mixed[0]) === bookingCardKey(mixed[2]), true)
+eq('another status is its own card, so its Edit covers exactly it', bookingCardKey(mixed[0]) === bookingCardKey(mixed[1]), false)
+eq('nothing to group: no card key', bookingCardKey({ ...h(null, 'x', 'm', 1), status: 'HOLD' }), null)
+eq('one tier when every market has it', summarizeBooking([{ ...omg[0], pricing_tier: 'Better' }, { ...omg[1], pricing_tier: 'Better' }]).tier, 'Better')
+eq('"Mixed" when markets were priced at different tiers', summarizeBooking([{ ...omg[0], pricing_tier: 'Better' }, { ...omg[1], pricing_tier: 'Best' }]).tier, 'Mixed')
+const partlyPriced = summarizeBooking([h('mm_e_1', 'a', 'A', 5000), h('mm_e_2', 'b', 'B', null)])
+eq('an unpriced market is counted, not taken as $0', [partlyPriced.total, partlyPriced.unpricedMarkets], [5000, 1])
+

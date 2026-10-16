@@ -8,7 +8,7 @@ import { holdReservesNow } from '@/lib/holdFilters'
 import { bookingKey, type RevisableHold } from '@/lib/bookings'
 
 /** Every hold in the booking, any status (an expired booking can be revised too). */
-export async function loadBookingHolds(key: string): Promise<(RevisableHold & { sfdc_opportunity_id: string | null; client_name: string })[]> {
+export async function loadBookingHolds(key: string): Promise<(RevisableHold & { sfdc_opportunity_id: string | null; client_name: string; quoted_total: number | null })[]> {
   if (!/^[A-Za-z0-9_-]{6,80}$/.test(key)) return []
   const rows = await prisma.hold.findMany({
     where: {
@@ -37,6 +37,7 @@ export async function loadBookingHolds(key: string): Promise<(RevisableHold & { 
       origination: h.origination,
       features: h.features,
       truck_count: h.truck_count,
+      quoted_total: h.quoted_total,
       live: holdReservesNow(h, now),
     }))
 }

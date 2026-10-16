@@ -708,7 +708,10 @@ function QuoteResult({ quote, account, contact, revising, attachName, holdDays, 
                   <td className={tdNum}>
                     {l.transport.billed > 0 ? fmtMoney(l.transport.billed) : <span className="text-gray-400">{l.transport.outcome === 'ABSORBED' ? 'included' : '—'}</span>}
                   </td>
-                  <td className={tdNum + ' font-medium'}>{fmtMoney(l.total)}</td>
+                  <td className={tdNum + ' font-medium'}>
+                    {fmtMoney(l.total)}
+                    {l.priceKept && <span className="block text-[11px] font-normal text-blue-700" title="Unchanged in this revision: keeps the price already booked">booked price kept</span>}
+                  </td>
                   <td className={td + ' text-xs min-w-[16rem]'}>
                     {l.arrivals.map(a => <ArrivalLine key={a.truckNumber} a={a} />)}
                     {l.missing > 0 && <div className="text-red-700">{l.missing} not covered</div>}

@@ -159,3 +159,40 @@ export function reviseRows(holds: RevisableHold[]): {
     quoteOnly: holds.every(h => h.origination === QUOTE_ONLY_ORIGINATION),
   }
 }
+
+/** A market whose booked price a revision keeps. */
+export type KeptPrice = { total: number; features: string | null; trucks: string[] }
+
+/**
+ * Markets of a LIVE booking that a revision leaves unchanged — same market
+ * (case and spacing aside), dates, trucks, schedule and hours, with the
+ * booking's options unchanged — keep their booked price: a revision never
+ * quietly reprices what the client already has (transport stops being free
+ * as a campaign gets close, for instance). The planner applies it only where
+ * the market also keeps its trucks (lib/planning/quote.ts). An expired
+ * booking keeps no prices. Keyed by the request row's id. Pure.
+ */
+export function keptPrices(
+  holds: (RevisableHold & { quoted_total: number | null })[],
+  rows: { id: string; market: string; startDate: string; endDate: string; trucks: number; daysPerWeek: number; hours: number }[],
+  features: { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean },
+): Map<string, KeptPrice> {
+  const out = new Map<string, KeptPrice>()
+  const booked = reviseRows(holds)
+  if (!booked.live || booked.quoteOnly) return out
+  const sameOptions = booked.features.shadowFencing === features.shadowFencing
+    && booked.features.smartDirectional === features.smartDirectional
+    && booked.features.deviceId === features.deviceId
+  if (!sameOptions) return out
+  const norm = (m: string) => m.trim().toLowerCase().replace(/\s+/g, ' ')
+  for (const row of rows) {
+    const b = booked.rows.find(x => norm(x.market) === norm(row.market))
+    if (!b || b.startDate !== row.startDate || b.endDate !== row.endDate || b.trucks !== row.trucks
+      || b.daysPerWeek !== row.daysPerWeek || b.hours !== row.hours) continue
+    const group = holds.filter(h => norm(h.market) === norm(row.market) && h.live)
+    const total = group.find(h => h.quoted_total != null)?.quoted_total
+    if (total == null) continue
+    out.set(row.id, { total, features: group.find(h => h.features)?.features ?? null, trucks: b.keepTrucks })
+  }
+  return out
+}

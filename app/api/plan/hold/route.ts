@@ -235,12 +235,15 @@ async function handlePost(req: NextRequest) {
       const state = name.split(',')[1]?.trim() ?? ''
       place.set(l.id, { market: (await canonicalMarketName(name, state || undefined)) ?? name, state })
     }
+    // One clock for every hold, so equal lengths give equal expiries (the
+    // confirmation compares them to say whether markets lapse at different times).
+    const holdClock = new Date()
     const stretches = plan.trucks.flatMap(t => t.jobs.flatMap(job => rotationStints(job).map(st => ({
       truckNumber: t.truckNumber,
       stint: st,
       partner: job.lines.length > 1 ? job.lines.find(l => l.id !== st.lineId)!.market : null,
       // Each market's hold runs the seller's length, cut by its own start date.
-      expiresAt: holdExpiry(job.start, holdDays).expiresAt,
+      expiresAt: holdExpiry(job.start, holdDays, holdClock).expiresAt,
     }))))
 
     // All or nothing: any stretch that now clashes stops the whole booking.

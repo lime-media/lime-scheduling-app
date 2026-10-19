@@ -214,3 +214,40 @@ export function keptPrices(
   }
   return out
 }
+
+/** The last date (YYYY-MM-DD) a hold may run to and still leave 3 full days before its campaign starts (lib/holdExpiry.ts). */
+function lastHoldDate(startDate: string): string {
+  const d = new Date(startDate + 'T00:00:00Z')
+  d.setUTCDate(d.getUTCDate() - 4)
+  return d.toISOString().slice(0, 10)
+}
+
+/**
+ * What one expiry change in a booking's Edit dialog does to each hold.
+ *
+ * One booking, one start date (a single market): every hold takes the date
+ * chosen, as before. A multi-market booking whose markets start on different
+ * dates: a market whose 3-days-before-start limit falls before the chosen
+ * date stops at that limit (or keeps a later expiry it already has), so
+ * extending the booking can't run an earlier market's hold into its campaign.
+ * `changed` is false for a hold already on its resulting date. Pure.
+ */
+export function expiryEdits(
+  rows: { id: string; market: string; start_date: string; expires_at: string | null }[],
+  chosen: string,
+): { id: string; market: string; expiresOn: string; heldAtStartLimit: boolean; changed: boolean }[] {
+  const oneStart = new Set(rows.map(r => r.start_date)).size <= 1
+  return rows.map(r => {
+    const current = r.expires_at ? r.expires_at.slice(0, 10) : null
+    const limit = lastHoldDate(r.start_date)
+    const heldAtStartLimit = !oneStart && chosen > limit
+    const expiresOn = heldAtStartLimit ? (current && current > limit ? current : limit) : chosen
+    return { id: r.id, market: r.market, expiresOn, heldAtStartLimit, changed: expiresOn !== current }
+  })
+}
+
+/** The date (YYYY-MM-DD) the booking's soonest hold expires, as its card's badge shows. */
+export function earliestExpiryDate(rows: { expires_at: string | null }[]): string {
+  const dates = rows.map(r => r.expires_at?.slice(0, 10)).filter((d): d is string => !!d).sort()
+  return dates[0] ?? ''
+}

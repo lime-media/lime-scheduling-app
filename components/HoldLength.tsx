@@ -17,12 +17,14 @@ const fmt = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short',
 export function HoldLength({ days, onChange, startDates }: {
   days: number
   onChange: (days: number) => void
-  /** Campaign start date(s), YYYY-MM-DD; the soonest decides the earliest lapse. */
+  /** The start date each hold is capped by, YYYY-MM-DD, as the server computes it; the soonest decides the earliest lapse. */
   startDates: string[]
 }) {
   const starts = startDates.filter(Boolean).sort()
-  const first = starts.length ? holdExpiry(starts[0], days) : null
-  const varies = starts.length > 1 && starts.some(s => holdExpiry(s, days).expiresAt.getTime() !== first!.expiresAt.getTime())
+  // One clock for every start, so equal lengths compare equal.
+  const now = new Date()
+  const first = starts.length ? holdExpiry(starts[0], days, now) : null
+  const varies = starts.length > 1 && starts.some(s => holdExpiry(s, days, now).expiresAt.getTime() !== first!.expiresAt.getTime())
   return (
     <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-gray-700">
       <label htmlFor="hold-days" className="font-medium">Hold the trucks for</label>
@@ -37,6 +39,9 @@ export function HoldLength({ days, onChange, startDates }: {
           {varies ? 'first lapses' : 'lapses'} {fmt.format(first.expiresAt)}
           {first.cappedByStart && (
             <span className="text-amber-700"> · cut short: a hold ends 3 days before its campaign starts</span>
+          )}
+          {first.atMinimum && (
+            <span className="text-amber-700"> · the 24-hour minimum: the campaign starts too soon for a longer hold</span>
           )}
         </span>
       )}

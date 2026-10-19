@@ -18,3 +18,24 @@ export function copyDatesDown<T extends Dated>(rows: T[], fromId: string): T[] {
   if (!startDate || !endDate) return rows
   return rows.map((r, j) => (j > i && (r.startDate !== startDate || r.endDate !== endDate) ? { ...r, startDate, endDate } : r))
 }
+
+/**
+ * The start date each hold of a multi-market booking is capped by, as
+ * app/api/plan/hold computes it: a truck's job starts on its line's start
+ * date, or on the earlier of the two starts when it is shared week to week
+ * with another booked market (lib/planning/order.ts buildJobs). The planner's
+ * hold-length preview uses this so it shows the expiry the server will store.
+ */
+export function holdStartDates(
+  lines: { market: string; startDate: string; assigned: { sharedWith: string | null }[] }[],
+): string[] {
+  const out = new Set<string>()
+  for (const l of lines) {
+    if (l.assigned.length === 0) out.add(l.startDate)
+    for (const a of l.assigned) {
+      const partner = a.sharedWith ? lines.find(p => p !== l && p.market === a.sharedWith) : undefined
+      out.add(partner && partner.startDate < l.startDate ? partner.startDate : l.startDate)
+    }
+  }
+  return [...out]
+}

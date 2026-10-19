@@ -115,7 +115,7 @@ async function handlePost(req: NextRequest) {
 
   const campaignGroupId = `cg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const resolvedState = state || market.split(',')[1]?.trim() || null
-  const { expiresAt, cappedByStart } = holdExpiry(start_date, holdDays)
+  const { expiresAt, cappedByStart, atMinimum } = holdExpiry(start_date, holdDays)
 
   // ── Server-side price recomputation ──────────────────────────────────────
   const calendarDays = countCalendarDays(start_date, end_date)
@@ -361,7 +361,8 @@ async function handlePost(req: NextRequest) {
     message: quoteOnly
       ? `Quote logged for ${sfdc_account_name || 'client'}; no trucks reserved.${selectedTrucks.length ? '' : ' No truck was free, so transport is not priced.'} ${sfdcNote}`
       : `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}, held until ${HELD_UNTIL.format(expiresAt)}`
-        + (cappedByStart ? ' (3 days before the campaign starts, the latest a hold can run)' : '') + `. ${sfdcNote}`,
+        + (cappedByStart ? ' (3 days before the campaign starts, the latest a hold can run)'
+          : atMinimum ? ' (the 24-hour minimum: the campaign starts too soon for a longer hold)' : '') + `. ${sfdcNote}`,
     _internal: {
       chainFlags: successorImpact,
       _warning: 'INTERNAL ONLY — downstream deadhead, recorded not billed',

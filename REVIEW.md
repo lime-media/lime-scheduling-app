@@ -32,12 +32,16 @@ findings by how close they come to one of those.
 - **Every path where someone chooses a truck runs the conflict check.** New
   entry points (MCP, client portal, internal booking) go through `holdService`
   or its conflict query, not a direct `prisma.hold.create`. *(#51: MCP client
-  holds skipped the truck/date check.)* Paths that mirror a booking made
-  elsewhere (Salesforce pushes, AT&T sync) are the exception: refusing them
-  would drop a record the source system believes is real. They set
-  `skipFeasibilityCheck` and their clashes surface through
-  `/api/holds/infeasible`. Flag a mirror path that refuses, and flag
-  `skipFeasibilityCheck` on any path where a person picks the truck.
+  holds skipped the truck/date check.)*
+- **Mirror paths record, they don't refuse.** A path that copies a booking
+  made elsewhere (the Salesforce hold webhook, AT&T sync) writes the hold even
+  if it clashes, because refusing would drop a record the source system
+  believes is real. Its clashes surface through `/api/holds/infeasible`. Such a
+  path is marked with a `MIRROR PATH` comment; flag a new one that isn't, and
+  flag a mirror path that starts refusing.
+- **`skipFeasibilityCheck` needs a reason next to it.** It's fine when the same
+  request already checked feasibility (the client hold-request flow after
+  `selectTrucksForHold`). Flag it anywhere else a person picks the truck.
 - **Expiry can't release a booking someone is still acting on.** Holds with a
   pending extension or approval are exempt from auto-expiry. *(#51:
   `EXTENSION_REQUESTED` holds expired under the cron.)*

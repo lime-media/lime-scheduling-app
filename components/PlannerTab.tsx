@@ -17,7 +17,7 @@ import { SHORT_RANGE_MAX_DAYS } from '@/lib/pricing/schedule'
 import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
 import { useEffect, useRef, useState } from 'react'
-import { copyDatesDown } from '@/lib/planner/rows'
+import { copyDatesDown, holdStartDates } from '@/lib/planner/rows'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
 import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
@@ -668,7 +668,7 @@ function QuoteResult({ quote, account, contact, holdDays, onHoldDays, holding, h
             {/* Hold length: a reservation only (a quote-only log holds nothing). */}
             {!quoteOnly && (
               <HoldLength days={holdDays} onChange={onHoldDays}
-                startDates={chosen.map(l => l.delivery.firstDay ?? l.startDate)} />
+                startDates={holdStartDates(chosen)} />
             )}
             <button onClick={onPlaceHolds} disabled={holding || !account || !contact || chosen.length === 0}
               className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium">

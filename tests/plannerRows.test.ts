@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { copyDatesDown } from '@/lib/planner/rows'
+import { copyDatesDown, holdStartDates } from '@/lib/planner/rows'
 
 const row = (id: string, startDate = '', endDate = '', trucks = 1) => ({ id, startDate, endDate, trucks })
 const rows = [row('a', '2026-11-02', '2026-11-18', 2), row('b'), row('c', '2026-12-01', '2026-12-05', 3), row('d')]
@@ -19,3 +19,13 @@ eq('a row without both dates copies nothing', copyDatesDown(rows, 'b'), rows)
 eq('unknown row: unchanged', copyDatesDown(rows, 'zz'), rows)
 eq('rows that already match keep their identity', copyDatesDown(rows, 'c')[0] === rows[0], true)
 eq('the input is not changed', rows[1].startDate, '')
+
+section('planner: the start dates holds are capped by')
+{
+  const line = (market: string, startDate: string, sharedWith: (string | null)[]) =>
+    ({ market, startDate, assigned: sharedWith.map(s => ({ sharedWith: s })) })
+  eq('each market its own start', holdStartDates([line('Dallas, TX', '2026-11-02', [null]), line('Austin, TX', '2026-11-09', [null])]).sort(), ['2026-11-02', '2026-11-09'])
+  eq('a shared truck starts with the earlier market', holdStartDates([line('Dallas, TX', '2026-11-02', ['Austin, TX']), line('Austin, TX', '2026-11-09', ['Dallas, TX'])]), ['2026-11-02'])
+  eq('a partner not being booked does not count', holdStartDates([line('Austin, TX', '2026-11-09', ['Dallas, TX'])]), ['2026-11-09'])
+  eq('a market with no truck yet still has its start', holdStartDates([line('Waco, TX', '2026-11-16', [])]), ['2026-11-16'])
+}

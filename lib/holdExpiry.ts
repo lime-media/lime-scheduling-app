@@ -39,7 +39,7 @@ export function parseHoldDays(value: unknown): number | null {
 }
 
 /**
- * When a new hold expires, and whether the campaign start cut it short.
+ * When a new hold expires, and why it is shorter than asked, if it is.
  *
  * The EARLIER of the hold length (default 72h; a seller may choose 1–14 days
  * on the quote tool) and the latest moment that still leaves
@@ -47,20 +47,25 @@ export function parseHoldDays(value: unknown): number | null {
  * never sooner than MIN_HOLD_WINDOW_HOURS from now. The floor wins over the
  * processing cap: a hold ops cannot see is worse than one that outlives its
  * logistics runway, and a short window is the signal to act today rather
- * than a reason to discard the request. `cappedByStart` tells the seller why
- * they got less than they asked for. Pure (pass `now`).
+ * than a reason to discard the request.
+ *
+ * At most one reason is true, and only when it decided `expiresAt`:
+ * `cappedByStart` — it ends 3 days before the campaign starts;
+ * `atMinimum` — the campaign starts so soon that the 24h floor applied.
+ * Pure (pass `now`).
  */
-export function holdExpiry(startDate: string, holdDays: number = DEFAULT_HOLD_DAYS, now: Date = new Date()): { expiresAt: Date; cappedByStart: boolean } {
+export function holdExpiry(startDate: string, holdDays: number = DEFAULT_HOLD_DAYS, now: Date = new Date()): { expiresAt: Date; cappedByStart: boolean; atMinimum: boolean } {
   const requested = addHours(now, holdDays * 24)
 
   const latestByStart = new Date(startDate + 'T00:00:00Z')
   latestByStart.setUTCDate(latestByStart.getUTCDate() - MIN_PROCESSING_DAYS_BEFORE_START)
 
-  const cappedByStart = latestByStart < requested
-  const capped = cappedByStart ? latestByStart : requested
+  const startDecides = latestByStart < requested
+  const capped = startDecides ? latestByStart : requested
 
   const floor = addHours(now, MIN_HOLD_WINDOW_HOURS)
-  return { expiresAt: capped > floor ? capped : floor, cappedByStart }
+  if (capped < floor) return { expiresAt: floor, cappedByStart: false, atMinimum: true }
+  return { expiresAt: capped, cappedByStart: startDecides, atMinimum: false }
 }
 
 /**

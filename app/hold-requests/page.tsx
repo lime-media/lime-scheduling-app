@@ -187,6 +187,8 @@ export default function HoldRequestsPage() {
   const [cancelMode, setCancelMode] = useState(false)
   const [cancelReason, setCancelReason] = useState('')
   const [newExpiresAt, setNewExpiresAt] = useState('')
+  // Whether staff changed the expiry field (it opens on the soonest expiry).
+  const [expiryEdited, setExpiryEdited] = useState(false)
   const [expiredWindowDays, setExpiredWindowDays] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -289,9 +291,11 @@ export default function HoldRequestsPage() {
     // Everything in the same booking: all markets of a multi-market quote,
     // so one Edit (and one expiry change) covers the whole reservation.
     // The same reservations as the card: this booking, in this status.
+    // Taken from the rows on screen (the filter and search), so Edit and Cancel
+    // never reach a reservation the card doesn't show.
     const groupKey = bookingCardKey(request)
     const siblings = groupKey
-      ? requests.filter(r => bookingCardKey(r) === groupKey)
+      ? filtered.filter(r => bookingCardKey(r) === groupKey)
       : [request]
     setEditingGroup(siblings)
     setSelectedTrucks(new Map(siblings.map(r => [r.id, r.truck_number])))
@@ -299,6 +303,7 @@ export default function HoldRequestsPage() {
     setCancelReason('')
     // The soonest expiry, the one the card's badge shows.
     setNewExpiresAt(earliestExpiryDate(siblings))
+    setExpiryEdited(false)
     setAvailableTrucksMap(new Map())
     setTrucksLoading(true)
     try {
@@ -326,7 +331,7 @@ export default function HoldRequestsPage() {
     // Only when the date was edited: the field opens on the soonest expiry, and
     // saving it untouched must not pull later markets back to that date. Then
     // per hold, each market stays inside its own 3-days-before-start limit (lib/bookings.ts).
-    const expiryChanges = newExpiresAt && newExpiresAt !== earliestExpiryDate(editingGroup)
+    const expiryChanges = expiryEdited && newExpiresAt
       ? expiryEdits(editingGroup, newExpiresAt).filter(e => e.changed)
       : []
     const expirationChanged = expiryChanges.length > 0
@@ -453,11 +458,13 @@ export default function HoldRequestsPage() {
         : requests
       const q = search.trim().toLowerCase()
       if (q) {
-        result = result.filter((r) =>
-          [r.company_name, r.truck_number, r.market, r.notes]
-            .filter(Boolean)
-            .some((field) => field!.toLowerCase().includes(q))
-        )
+        const matches = (r: HoldRequest) => [r.company_name, r.truck_number, r.market, r.notes]
+          .filter(Boolean)
+          .some((field) => field!.toLowerCase().includes(q))
+        // A match shows its whole card (booking and status), so a card, its
+        // total and its Edit always cover the same reservations.
+        const cards = new Set(result.filter(matches).map(r => bookingCardKey(r)).filter(Boolean))
+        result = result.filter((r) => { const k = bookingCardKey(r); return k ? cards.has(k) : matches(r) })
       }
       return result
     },
@@ -663,7 +670,8 @@ export default function HoldRequestsPage() {
               const ids = groupItems.map((g) => g.id)
               // A multi-market booking: one card, its figures summed across markets.
               const multi = isMultiMarket(first)
-              const booking = summarizeBooking(groupItems)
+              // Its markets' prices, leaving out any market partly on another card.
+              const booking = summarizeBooking(groupItems, (bookingKey(first) ? rowsByBooking.get(bookingKey(first)!) : undefined) ?? groupItems)
               // The same booking's reservations in other statuses (markets lapse
               // on their own schedules). Each status has its own card: on this
               // list when the filter shows that status (Reservations shows Hold
@@ -703,6 +711,11 @@ export default function HoldRequestsPage() {
                       {multi && booking.unpricedMarkets > 0 && (
                         <span className="text-xs text-amber-700" title="These markets have no price on file; the total above leaves them out">
                           + {booking.unpricedMarkets} unpriced
+                        </span>
+                      )}
+                      {multi && booking.splitMarkets > 0 && (
+                        <span className="text-xs text-amber-700" title="Some of these markets' holds are on another card (another status); their prices are left out of the total above">
+                          + {booking.splitMarkets} split
                         </span>
                       )}
                       {/* The earliest expiry in the booking is the one to act on. */}
@@ -943,7 +956,20 @@ export default function HoldRequestsPage() {
                     </div>
                     {first.pricing_tier && (
                       <div className="bg-gray-50 rounded-lg px-3 py-2.5">
-                        <PricingBadge tier={first.pricing_tier} total={first.quoted_total} />
+                        {/* A multi-market booking: the whole reservation's price, as on its card. */}
+                        {isMultiMarket(first) ? (() => {
+                          const b = summarizeBooking(editingGroup, (bookingKey(first) ? rowsByBooking.get(bookingKey(first)!) : undefined) ?? editingGroup)
+                          return (
+                            <>
+                              <PricingBadge tier={b.tier} total={b.total} />
+                              {(b.unpricedMarkets > 0 || b.splitMarkets > 0) && (
+                                <span className="ml-2 text-xs text-amber-700">
+                                  {[b.unpricedMarkets > 0 ? `${b.unpricedMarkets} unpriced` : '', b.splitMarkets > 0 ? `${b.splitMarkets} split` : ''].filter(Boolean).join(', ')} not in this total
+                                </span>
+                              )}
+                            </>
+                          )
+                        })() : <PricingBadge tier={first.pricing_tier} total={first.quoted_total} />}
                       </div>
                     )}
 
@@ -954,16 +980,17 @@ export default function HoldRequestsPage() {
                         <input
                           type="date"
                           value={newExpiresAt}
-                          onChange={(e) => setNewExpiresAt(e.target.value)}
+                          onChange={(e) => { setNewExpiresAt(e.target.value); setExpiryEdited(true) }}
                           className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                         />
                       ) : null}
-                      {first.expires_at && newExpiresAt && newExpiresAt !== earliestExpiryDate(editingGroup) && (() => {
-                        // Markets that can't run to the date chosen (3 days before their start).
-                        const held = expiryEdits(editingGroup, newExpiresAt).filter(e => e.heldAtStartLimit)
-                        return held.length > 0 && (
+                      {first.expires_at && expiryEdited && newExpiresAt && (() => {
+                        // Markets that can't run to the date chosen (3 days before their start), once each.
+                        const held = new Map<string, string>()
+                        for (const e of expiryEdits(editingGroup, newExpiresAt)) if (e.heldAtStartLimit && !held.has(e.market)) held.set(e.market, e.expiresOn)
+                        return held.size > 0 && (
                           <p className="mt-1.5 text-xs text-amber-700">
-                            {held.map(e => `${e.market} stays at ${format(parseDateOnly(e.expiresOn), 'MMM d')}`).join('; ')}: a hold ends 3 days before its campaign starts.
+                            {[...held].map(([market, on]) => `${market} stays at ${format(parseDateOnly(on), 'MMM d')}`).join('; ')}: a hold ends 3 days before its campaign starts.
                           </p>
                         )
                       })()}
@@ -976,6 +1003,7 @@ export default function HoldRequestsPage() {
                               const d = new Date()
                               d.setDate(d.getDate() + 3)
                               setNewExpiresAt(d.toISOString().split('T')[0])
+                              setExpiryEdited(true)
                             }}
                             className="text-xs text-green-600 hover:text-green-700 font-medium transition-colors"
                           >

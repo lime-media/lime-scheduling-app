@@ -29,10 +29,15 @@ findings by how close they come to one of those.
   truck, dates *and* program. Dropping the program lets a new double-booking
   hide inside an old dismissed one. *(#110: `conflictKey` and the prior-decision
   lookup omitted `scheduled_program`.)*
-- **Every path that creates a hold runs the conflict check.** New entry points
-  (MCP, client portal, Salesforce webhook, cron) go through `holdService` or
-  its conflict query, not a direct `prisma.hold.create`. *(#51: MCP client
-  holds skipped the truck/date check.)*
+- **Every path where someone chooses a truck runs the conflict check.** New
+  entry points (MCP, client portal, internal booking) go through `holdService`
+  or its conflict query, not a direct `prisma.hold.create`. *(#51: MCP client
+  holds skipped the truck/date check.)* Paths that mirror a booking made
+  elsewhere (Salesforce pushes, AT&T sync) are the exception: refusing them
+  would drop a record the source system believes is real. They set
+  `skipFeasibilityCheck` and their clashes surface through
+  `/api/holds/infeasible`. Flag a mirror path that refuses, and flag
+  `skipFeasibilityCheck` on any path where a person picks the truck.
 - **Expiry can't release a booking someone is still acting on.** Holds with a
   pending extension or approval are exempt from auto-expiry. *(#51:
   `EXTENSION_REQUESTED` holds expired under the cron.)*
@@ -155,7 +160,10 @@ after deploy.
 
 ## Do not report
 
-- `node_modules/`, `package-lock.json`, `tsconfig.tsbuildinfo`, `public/`
+- `node_modules/`, `package-lock.json`, `tsconfig.tsbuildinfo`
+- Images and icons in `public/` (`*.png`, `*.ico`). The `public/*.html` files
+  are live tools loaded in the app (the classic quote tool's rate card and
+  pricing math, the saturation calculator) and are reviewed like any other code.
 - Styling-only changes in Tailwind classes, unless they hide information
 - Behavior the PR description explicitly calls out as intended, unless it
   breaks a rule above

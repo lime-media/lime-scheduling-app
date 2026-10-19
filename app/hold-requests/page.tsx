@@ -322,7 +322,6 @@ export default function HoldRequestsPage() {
 
   const handleSaveEdits = async () => {
     if (!editingGroup) return
-    const first = editingGroup[0]
     const truckChanges = editingGroup.filter(r => selectedTrucks.get(r.id) !== r.truck_number)
     // Only when the date was edited: the field opens on the soonest expiry, and
     // saving it untouched must not pull later markets back to that date. Then

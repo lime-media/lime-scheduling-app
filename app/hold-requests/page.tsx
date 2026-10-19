@@ -114,9 +114,14 @@ function groupSortValue(rows: HoldRequest[], key: SortKey): SortValue {
  * planner to add, drop or change markets and dates on the same opportunity
  * (app/api/bookings/revise). Not for Salesforce pushes or client bookings.
  */
-function ReviseLink({ rows }: { rows: HoldRequest[] }) {
+function ReviseLink({ rows, booking }: { rows: HoldRequest[]; booking?: HoldRequest[] }) {
   const key = rows.length ? bookingKey(rows[0]) : null
   if (!key || rows.some(r => r.source !== 'INTERNAL')) return null
+  // Any card of a booking with an extension request waiting: answer it first
+  // (revising would drop it; lib/bookings.ts reviseRefusal).
+  if ((booking ?? rows).some(r => r.status === 'EXTENSION_REQUESTED')) {
+    return <span title="An extension request on this booking is waiting: approve or decline it first" className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 text-gray-400 cursor-not-allowed">Revise</span>
+  }
   return (
     <a href={`/quote?revise=${encodeURIComponent(key)}`}
       title="Add, drop or change markets and dates on the same opportunity"
@@ -785,7 +790,7 @@ export default function HoldRequestsPage() {
                           Edit
                         </button>
                       )}
-                      {first.status !== 'EXTENSION_REQUESTED' && <ReviseLink rows={groupItems} />}
+                      {first.status !== 'EXTENSION_REQUESTED' && <ReviseLink rows={groupItems} booking={(key ? rowsByBooking.get(key) : undefined) ?? groupItems} />}
                     </div>
                   )}
                 </div>
@@ -837,7 +842,7 @@ export default function HoldRequestsPage() {
                               <td className="px-4 py-3">
                                 <div className="flex items-center gap-2 flex-wrap">
                                   <Actions ids={[r.id]} status={r.status} groupKey={r.id} requests={[r]} quoteOnly={r.origination === QUOTE_ONLY_ORIGINATION} />
-                                  {['HOLD', 'COMMITTED', 'EXPIRED'].includes(r.status) && <ReviseLink rows={[r]} />}
+                                  {['HOLD', 'COMMITTED', 'EXPIRED'].includes(r.status) && <ReviseLink rows={[r]} booking={(bookingKey(r) ? rowsByBooking.get(bookingKey(r)!) : undefined) ?? [r]} />}
                                 </div>
                               </td>
                             </tr>

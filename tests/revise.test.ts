@@ -23,6 +23,7 @@ eq('a quote-tool booking', reviseRefusal([hold()]), null)
 eq('gone', reviseRefusal([]), 'That booking no longer exists.')
 eq('a Salesforce push is changed in Salesforce', reviseRefusal([hold({ source: 'SALESFORCE' })]), 'This booking came from Salesforce; change it there.')
 eq('a client booking is the client\'s', reviseRefusal([hold({ source: 'CLIENT' })])?.startsWith('This booking was made in the client portal'), true)
+eq('a pending extension request: refused until it is answered', reviseRefusal([hold(), hold({ id: 'h2', status: 'EXTENSION_REQUESTED' })])?.startsWith('This booking has an extension request waiting'), true)
 eq('lift studies would be dropped: refused', reviseRefusal([hold({ features: feat({ studies: ['web_lift'] }) })])?.includes('lift studies'), true)
 
 section('revise: the booking as planner rows')
@@ -91,6 +92,10 @@ eq('an expiry already past does not win',
     [true, false, false, false, 'LED-0382;LED-4840;LED-0912'])
 }
 
+eq('a listed truck no longer held is dropped, not re-reserved over the new dates',
+  mergedOpportunityFields('ADD', existing, { amount: 1, markets: [], trucks: ['0912'], holdStart: '2026-11-02', holdStop: '2026-11-20', holdExp: '2026-10-28', description: '' },
+    note, [albany, providence]).fields.LED_Trucks__c, 'LED-0382;LED-0912')
+
 section('opportunity: a revision replaces only its own booking on it')
 {
   const was = { amount: 210000, markets: ['Albany, NY', 'Buffalo, NY'] }
@@ -141,12 +146,18 @@ section('revise: unchanged markets keep their booked price')
   const line = (o: Record<string, unknown>) => ({ id: 'r1', trucks: 2, total: 50000, media: 47000, missing: 0, transport: { outcome: 'BILLED', billed: 3000, absorbedCost: 0 },
     dailyRate: 1300, hourSurcharge: 0, baseMedia: 40000, shadowFencing: 7000, smartDirectional: 0, deviceId: 0,
     assigned: [{ truckNumber: '0382', sharedWith: null, hopRoadMiles: 0 }, { truckNumber: '0912', sharedWith: null, hopRoadMiles: 0 }], ...o }) as never
-  const kept = new Map([['r1', { total: 42000, features: JSON.stringify({ transportCharge: 0, baseMedia: 36000, shadowFencing: 6000 }), trucks: ['0382', '0912'], truckCount: 2 }]])
+  const kept = new Map([['r1', { total: 42000, features: JSON.stringify({ transportCharge: 0, baseMedia: 36000, shadowFencing: 6000 }), trucks: ['0382', '0912'], truckCount: 2, markupPct: 0 as number | null }]])
   const [l] = keepBookedPrices([line({})], kept) as unknown as { total: number; media: number; priceKept: boolean; transport: { billed: number } }[]
   eq('the booked price and its breakdown replace today\'s', [l.total, l.media, l.transport.billed, l.priceKept], [42000, 42000, 0, true])
   const [swapped] = keepBookedPrices([line({ assigned: [{ truckNumber: '7777', sharedWith: null, hopRoadMiles: 0 }] })], kept) as unknown as { total: number; priceKept?: boolean }[]
   eq('a market that lost its trucks is priced today', [swapped.total, swapped.priceKept ?? false], [50000, false])
   const [partial] = keepBookedPrices([line({ trucks: 1, assigned: [{ truckNumber: '0382', sharedWith: null, hopRoadMiles: 0 }] })], kept) as unknown as { total: number; priceKept?: boolean }[]
+  const [sameMarkup] = keepBookedPrices([line({})], kept, 0) as unknown as { total: number }[]
+  eq('the same Brand Direct markup keeps the price', sameMarkup.total, 42000)
+  const [newMarkup] = keepBookedPrices([line({})], kept, 10) as unknown as { total: number; priceKept?: boolean }[]
+  eq('a changed markup reprices the market', [newMarkup.total, newMarkup.priceKept ?? false], [50000, false])
+  const unknown = new Map([['r1', { ...kept.get('r1')!, markupPct: null }]])
+  eq('holds booked before the markup was recorded: kept as before', (keepBookedPrices([line({})], unknown, 10) as unknown as { total: number }[])[0].total, 42000)
   eq('a partial booking that dropped a truck is priced today, not at the 2-truck price', [partial.total, partial.priceKept ?? false], [50000, false])
 
   // Dallas booked twice: March ($30,000) and June ($45,000).

@@ -145,6 +145,8 @@ export function reviseRefusal(holds: RevisableHold[]): string | null {
     const f = parseFeatures(h.features)
     return Array.isArray(f.studies) && f.studies.length > 0
   })) return 'This booking includes lift studies, which the multi-market quote does not price. Change it in the single-market quote instead.'
+  // Revising replaces the holds, which would drop the request unanswered.
+  if (holds.some(h => h.status === 'EXTENSION_REQUESTED')) return 'This booking has an extension request waiting. Approve or decline it on Reservations first, then revise.'
   return null
 }
 
@@ -160,6 +162,8 @@ export function reviseRows(holds: RevisableHold[]): {
   features: { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean }
   live: boolean
   quoteOnly: boolean
+  /** The Brand Direct markup it was sold at, or null when the holds predate recording it. */
+  brandMarkupPct: number | null
 } {
   const live = holds.some(h => h.live)
   const byGroup = new Map<string, RevisableHold[]>()
@@ -195,11 +199,12 @@ export function reviseRows(holds: RevisableHold[]): {
     },
     live,
     quoteOnly: holds.every(h => h.origination === QUOTE_ONLY_ORIGINATION),
+    brandMarkupPct: typeof f.brandMarkupPct === 'number' ? f.brandMarkupPct : null,
   }
 }
 
-/** A market whose booked price a revision keeps, for the truck count it was booked with. */
-export type KeptPrice = { total: number; features: string | null; trucks: string[]; truckCount: number }
+/** A market whose booked price a revision keeps, for the truck count and Brand Direct markup (null: not recorded) it was booked with. */
+export type KeptPrice = { total: number; features: string | null; trucks: string[]; truckCount: number; markupPct: number | null }
 
 /**
  * Markets of a LIVE booking that a revision leaves unchanged — same market
@@ -234,7 +239,9 @@ export function keptPrices(
     const group = holds.filter(h => (h.campaign_group_id ?? h.id) === b.campaignGroup && h.live)
     const total = group.find(h => h.quoted_total != null)?.quoted_total
     if (total == null) continue
-    out.set(row.id, { total, features: group.find(h => h.features)?.features ?? null, trucks: b.keepTrucks, truckCount: b.trucks })
+    const features = group.find(h => h.features)?.features ?? null
+    const markup = parseFeatures(features).brandMarkupPct
+    out.set(row.id, { total, features, trucks: b.keepTrucks, truckCount: b.trucks, markupPct: typeof markup === 'number' ? markup : null })
   }
   return out
 }

@@ -71,15 +71,18 @@ async function handlePost(req: NextRequest) {
   // Adding this to an existing open opportunity of the account instead of
   // starting a new one (lib/sfdcBooking.ts): it must be the account's and not lost.
   let target: BookingOpportunity | null = null
+  // Salesforce couldn't be reached to check it: the hold is still placed
+  // (unlinked) and the rep is told to add it to the opportunity by hand.
+  let attachUnreachable = false
   if (attach_opportunity_id) {
     if (!isSfdcConfigured()) return NextResponse.json({ error: 'Salesforce is not configured, so the opportunity cannot be updated.' }, { status: 503 })
     try {
       target = await getBookingOpportunity(String(attach_opportunity_id))
     } catch (err) {
       console.error('[quote/hold] opportunity read failed:', err)
-      return NextResponse.json({ error: 'Salesforce could not be reached to check the opportunity. Nothing was booked; try again.' }, { status: 503 })
+      attachUnreachable = true
     }
-    const refusal = opportunityRefusal(target, sfdc_account_id)
+    const refusal = attachUnreachable ? null : opportunityRefusal(target, sfdc_account_id)
     if (refusal) return NextResponse.json({ error: refusal }, { status: 409 })
   }
 
@@ -208,6 +211,8 @@ async function handlePost(req: NextRequest) {
     studiesTotal: quote.best.reachOk ? studies.length * quote.best.studyCost : 0,
     transportCharge,
     successorImpact,
+    // Added to an existing opportunity: lapsing never closes it (expiryClosesOpportunity).
+    ...(target ? { attachedToOpportunity: true } : {}),
   })
 
   // Find a ClientUser linked to this SFDC Account if one exists.
@@ -271,7 +276,9 @@ async function handlePost(req: NextRequest) {
   // Create Salesforce Opportunity
   let sfdcOpportunityId: string | null = null
   let sfdcError: string | null = null
-  if (isSfdcConfigured()) {
+  if (attachUnreachable) {
+    sfdcError = 'Salesforce could not be reached to add it to the opportunity'
+  } else if (isSfdcConfigured()) {
     try {
       const parsedFeatures = parseQuoteFeatures(featuresJson)
       const activationNotes = parsedFeatures
@@ -350,7 +357,10 @@ async function handlePost(req: NextRequest) {
   // Never silent: if the opportunity was not created, the rep is told.
   const sfdcNote = sfdcOpportunityId
     ? `${target ? `Added to Salesforce opportunity "${target.Name}".` : 'Salesforce opportunity created.'}${sfdcWarnings.length ? ` Check it: ${sfdcWarnings.join('; ')}.` : ''}`
-    : sfdcError ? `${sfdcError}: no opportunity was created. Create it in Salesforce by hand.`
+    // An existing opportunity is updated by hand; creating one would duplicate it.
+    : sfdcError ? (target || attachUnreachable
+      ? `${sfdcError}. Update ${target ? `"${target.Name}"` : 'the opportunity you picked'} in Salesforce by hand with this booking.`
+      : `${sfdcError}: no opportunity was created. Create it in Salesforce by hand.`)
     : ''
   return NextResponse.json({
     ok: true,

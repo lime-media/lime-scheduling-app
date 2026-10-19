@@ -106,7 +106,11 @@ const td = 'px-2 py-1.5 border-b border-gray-100 text-sm text-gray-800 align-top
 const tdNum = td + ' text-right tabular-nums'
 
 /** A booking being revised (Reservations → Revise; /api/bookings/revise). */
-type Revision = { key: string; opportunityName: string | null; clientName: string; live: boolean }
+type Revision = {
+  key: string; opportunityName: string | null; clientName: string; live: boolean
+  /** The latest expiry of its live holds (ISO), which a revision won't cut back; how many markets are committed. */
+  heldUntil: string | null; committedMarkets: number
+}
 
 export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: string | null; onReviseDone?: () => void } = {}) {
   const [account, setAccount] = useState<SfdcAccount | null>(null)
@@ -156,8 +160,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         // Reopen in the mode it was logged in: a quote-only log reserved nothing,
         // so revising it must not reserve trucks unless the rep unticks it.
         setQuoteOnly(b.quoteOnly === true)
+        if (typeof b.brandMarkupPct === 'number') { revisedMarkup.current = b.brandMarkupPct; setBrandMarkupPct(b.brandMarkupPct) }
         setAttachTo(null)
-        setRevision({ key: b.key, opportunityName: b.opportunityName, clientName: b.clientName, live: b.live })
+        setRevision({ key: b.key, opportunityName: b.opportunityName, clientName: b.clientName, live: b.live, heldUntil: b.heldUntil ?? null, committedMarkets: b.committedMarkets ?? 0 })
       })
       .catch(e => { if (alive) setReviseError(e instanceof Error ? e.message : 'That booking could not be opened.') })
     return () => { alive = false }
@@ -199,7 +204,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     setQuote(null); setHoldResult(null)
   }, [rows, features, alloyRenews, account, brandMarkupPct])
   // A new client starts at the default markup.
-  useEffect(() => { setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT) }, [account?.id])
+  // A new account starts at the default markup; a revised booking at the one it was sold at.
+  const revisedMarkup = useRef<number | null>(null)
+  useEffect(() => { setBrandMarkupPct(revisedMarkup.current ?? DEFAULT_BRAND_MARKUP_PCT); revisedMarkup.current = null }, [account?.id])
 
   const updateRow = (id: string, patch: Partial<QuoteRow>) => {
     setRows(rs => rs.map(r => (r.id === id ? { ...r, ...patch } : r)))
@@ -359,6 +366,8 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
             {revision.live
               ? 'Markets that stay keep their current trucks where those can still do the dates.'
               : 'It has expired, so trucks are picked and priced fresh.'}
+            {revision.live && revision.heldUntil && ` Its holds run to ${new Date(revision.heldUntil).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Chicago' })} at the latest; a market that stays keeps an expiry later than the hold length below.`}
+            {revision.committedMarkets > 0 && ` ${revision.committedMarkets} market${revision.committedMarkets === 1 ? ' is' : 's are'} committed and stay${revision.committedMarkets === 1 ? 's' : ''} committed.`}
           </p>
         </div>
       )}

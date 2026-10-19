@@ -10,7 +10,7 @@ import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import type { LinkedHold } from '@/lib/opportunityMerge'
 
 /** Every hold in the booking, any status (an expired booking can be revised too). */
-export async function loadBookingHolds(key: string): Promise<(RevisableHold & { sfdc_opportunity_id: string | null; client_name: string; quoted_total: number | null })[]> {
+export async function loadBookingHolds(key: string): Promise<(RevisableHold & { sfdc_opportunity_id: string | null; client_name: string; quoted_total: number | null; expires_at: Date | null })[]> {
   if (!/^[A-Za-z0-9_-]{6,80}$/.test(key)) return []
   const rows = await prisma.hold.findMany({
     where: {
@@ -40,6 +40,7 @@ export async function loadBookingHolds(key: string): Promise<(RevisableHold & { 
       features: h.features,
       truck_count: h.truck_count,
       quoted_total: h.quoted_total,
+      expires_at: h.expires_at,
       live: holdReservesNow(h, now),
     }))
 }

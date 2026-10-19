@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const { rows, features, live, quoteOnly } = reviseRows(holds)
+  const { rows, features, live, quoteOnly, brandMarkupPct } = reviseRows(holds)
   return NextResponse.json({
     booking: {
       key,
@@ -53,7 +53,11 @@ export async function GET(req: NextRequest) {
         : null,
       brand: opp?.Brand_Job_Name__c ?? '',
       clientName: holds[0].client_name,
-      rows, features, live, quoteOnly,
+      rows, features, live, quoteOnly, brandMarkupPct,
+      // What a revision keeps (app/api/plan/hold): the latest expiry of the
+      // live holds, and the markets ops marked committed.
+      heldUntil: holds.filter(h => h.live && h.expires_at).map(h => h.expires_at!.toISOString()).sort().reverse()[0] ?? null,
+      committedMarkets: new Set(holds.filter(h => h.live && h.status === 'COMMITTED').map(h => h.market.trim().toLowerCase())).size,
     },
   })
 }

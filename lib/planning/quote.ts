@@ -409,7 +409,7 @@ export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: O
 
   const run = (ls: OrderLine[], settings = s) => planOrder(ls, fleet.trucks, settings)
   const plan = run(lines)
-  const priced = keepBookedPrices(await priceLines(lines, plan, req.features, overrides, tiers, markupPct), kept)
+  const priced = keepBookedPrices(await priceLines(lines, plan, req.features, overrides, tiers, markupPct), kept, markupPct)
   const summary = summarize(priced, plan)
 
   const alternatives = opts.alternatives === false ? [] : await buildAlternatives(lines, plan, summary, { run, price: (ls, p) => priceLines(ls, p, req.features, overrides, tiers, markupPct), s, trucks: fleet.trucks })
@@ -599,12 +599,13 @@ async function applyRevision(req: QuoteRequest, lines: OrderLine[]): Promise<{ l
  * changed, and today's price applies). The booked breakdown replaces today's
  * so the line, its breakdown and the total agree. Pure.
  */
-export function keepBookedPrices(lines: LineQuote[], kept?: Map<string, KeptPrice>): LineQuote[] {
+export function keepBookedPrices(lines: LineQuote[], kept?: Map<string, KeptPrice>, markupPct = 0): LineQuote[] {
   if (!kept?.size) return lines
   return lines.map(l => {
     const k = kept.get(l.id)
     // Also the truck count it was booked with: a partial booking that drops trucks is repriced.
-    if (!k || l.trucks !== k.truckCount || l.missing > 0 || l.assigned.length === 0
+    // And the markup: a changed Brand Direct markup reprices every market alike.
+    if (!k || l.trucks !== k.truckCount || (k.markupPct !== null && k.markupPct !== markupPct) || l.missing > 0 || l.assigned.length === 0
       || !l.assigned.every(a => k.trucks.includes(a.truckNumber))) return l
     let f: Record<string, unknown> = {}
     try { f = k.features ? JSON.parse(k.features) : {} } catch { /* booked total alone */ }

@@ -122,8 +122,9 @@ function ledFields(
   }
   // A quote-only addition reserves nothing: the opportunity's LED fields stay as they are.
   if (mode === 'ADD' && !booking.holdStart) return { fields: {}, windowLeft: false }
-  const listed = mode === 'ADD' ? splitList(existing.LED_Trucks__c, /;/) : []
-  const trucks = [...new Set([...listed, ...linked.map(h => ledTruck(h.truck))])]
+  // Only trucks something holds now, in both modes: a listed truck whose
+  // hold lapsed would otherwise be mirrored again over the new window.
+  const trucks = [...new Set(linked.map(h => ledTruck(h.truck)))]
   if (linked.some(h => h.fromSalesforce)) return { fields: { LED_Trucks__c: trucks.join(';') }, windowLeft: true }
   const exps = linked.map(h => h.expires).filter((e): e is string => !!e && e >= today).sort()
   return {

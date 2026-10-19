@@ -31,6 +31,14 @@ export type QuoteFeatures = {
   requestedStart?: string
   requestedEnd?: string
   /**
+   * Booked onto an opportunity that already existed (a quote added to it, or
+   * a revision of such a booking). Its lapsing never closes that opportunity:
+   * the deal isn't the app's to lose (lib/sfdcIntegration.ts).
+   */
+  attachedToOpportunity?: boolean
+  /** The Brand Direct markup (%) folded into these prices; 0 for other clients. A revision keeps it. */
+  brandMarkupPct?: number
+  /**
    * Deadhead this booking adds to each truck's next job, captured at hold time.
    * Recorded for review only — never part of any total, and deliberately absent
    * from buildActivationNotes() so it cannot reach a Salesforce buyer view.

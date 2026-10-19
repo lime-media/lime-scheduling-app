@@ -153,6 +153,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         setRows(b.rows.map((r: { market: string; startDate: string; endDate: string; trucks: number; daysPerWeek: number; hours: number }) =>
           newRow({ market: r.market, startDate: r.startDate, endDate: r.endDate, trucks: r.trucks, daysPerWeek: r.daysPerWeek, hours: r.hours })))
         setFeatures(b.features)
+        // Reopen in the mode it was logged in: a quote-only log reserved nothing,
+        // so revising it must not reserve trucks unless the rep unticks it.
+        setQuoteOnly(b.quoteOnly === true)
         setAttachTo(null)
         setRevision({ key: b.key, opportunityName: b.opportunityName, clientName: b.clientName, live: b.live })
       })
@@ -365,8 +368,11 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
         <AccountSearch selected={account} onSelect={a => {
           // A booking is revised on its own account; another account is a new quote.
-          if (revision && !window.confirm('Changing the client stops revising this booking and starts a new quote. Continue?')) return
-          if (revision) stopRevising()
+          // A booking that loaded without one (no Salesforce opportunity) needs
+          // its account picked, and that keeps the revision.
+          const changingClient = !!revision && !!account
+          if (changingClient && !window.confirm('Changing the client stops revising this booking and starts a new quote. Continue?')) return
+          if (changingClient) stopRevising()
           setAccount(a); setContact(null); setAttachTo(null); setQuote(null); setHoldResult(null)
         }} />
         {account && (

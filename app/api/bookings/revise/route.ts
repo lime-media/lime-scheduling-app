@@ -12,6 +12,7 @@ import { loadBookingHolds } from '@/lib/bookingLoad'
 import { reviseRefusal, reviseRows } from '@/lib/bookings'
 import { getBookingOpportunity, opportunityRefusal } from '@/lib/sfdcBooking'
 import { clientTypeOf } from '@/lib/pricing/brandMarkup'
+import { isSfdcConfigured } from '@/lib/salesforceClient'
 
 export async function GET(req: NextRequest) {
   const denied = await requireStaff(req)
@@ -24,6 +25,8 @@ export async function GET(req: NextRequest) {
   const oppId = holds.find(h => h.sfdc_opportunity_id)?.sfdc_opportunity_id ?? null
   let opp = null
   if (oppId) {
+    // Saving the revision has to update this opportunity, which needs Salesforce.
+    if (!isSfdcConfigured()) return NextResponse.json({ error: 'Salesforce is not configured, so this booking\'s opportunity cannot be updated.' }, { status: 503 })
     try {
       opp = await getBookingOpportunity(oppId)
     } catch (err) {

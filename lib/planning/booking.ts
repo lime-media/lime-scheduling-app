@@ -31,6 +31,8 @@ export function lineFeatures(l: LineQuote, f: QuoteRequest['features']): QuoteFe
     deviceIdIncluded: f.deviceId,
     deviceId: l.deviceId,
     transportCharge: l.transport.billed,
+    requestedStart: l.startDate,
+    requestedEnd: l.endDate,
   }
 }
 

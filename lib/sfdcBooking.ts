@@ -7,6 +7,7 @@
 import { isSfdcConfigured, sfdcQuery, updateOpportunity } from '@/lib/salesforceClient'
 import { closedOpportunityBlocksReactivation } from '@/lib/sfdcIntegration'
 import { mergedOpportunityFields, type BookingLed, type OpportunityLed } from '@/lib/opportunityMerge'
+import { loadOpportunityReservingHolds } from '@/lib/bookingLoad'
 
 const OPP_ID = /^006[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/
 const ACCOUNT_ID = /^001[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/
@@ -63,11 +64,14 @@ export async function listOpenLedOpportunities(accountId: string): Promise<OpenO
 
 /**
  * Write a booking onto an existing opportunity: ADD a quote to it, or REPLACE
- * its booking with a revision. The primary contact is set when the
- * opportunity has none. An opportunity with products (a Salesforce CPQ quote)
- * computes its own Amount and refuses a written one, which would fail the
- * whole update: the Amount is left to its quote and the rep is told
- * (`amountLeft`). `ok`: Salesforce accepted it.
+ * its booking with a revision. Call it after the booking's holds are written:
+ * the truck list and hold window come from every hold reserving a truck on
+ * the opportunity then. The primary contact is set when the opportunity has
+ * none. An opportunity with products (a Salesforce CPQ quote) computes its
+ * own Amount and refuses a written one, which would fail the whole update:
+ * the Amount is left to its quote and the rep is told (`amountLeft`).
+ * `windowLeft`: Salesforce reserved some of its trucks, so its hold dates
+ * were not changed (WINDOW_LEFT_NOTE). `ok`: Salesforce accepted it.
  */
 export async function applyBookingToOpportunity(opts: {
   opp: BookingOpportunity
@@ -75,13 +79,19 @@ export async function applyBookingToOpportunity(opts: {
   booking: BookingLed
   by: string
   primaryContactId?: string
-}): Promise<{ ok: boolean; amountLeft: boolean }> {
-  const fields = mergedOpportunityFields(opts.mode, opts.opp, opts.booking, { date: new Date().toISOString().slice(0, 10), by: opts.by })
+  /** REPLACE: the revised booking as it stood. */
+  was?: { amount: number | null; markets: string[] }
+}): Promise<{ ok: boolean; amountLeft: boolean; windowLeft: boolean }> {
+  const linked = await loadOpportunityReservingHolds(opts.opp.Id)
+  const { fields, windowLeft } = mergedOpportunityFields(opts.mode, opts.opp, opts.booking, { date: new Date().toISOString().slice(0, 10), by: opts.by }, linked, opts.was)
   if (opts.primaryContactId && !opts.opp.Primary_Contact__c) fields.Primary_Contact__c = opts.primaryContactId
   const amountLeft = opts.opp.HasOpportunityLineItem
   if (amountLeft) delete fields.Amount
-  return { ok: await updateOpportunity(opts.opp.Id, fields), amountLeft }
+  return { ok: await updateOpportunity(opts.opp.Id, fields), amountLeft, windowLeft }
 }
+
+/** What the rep is told when Salesforce reserved trucks on the opportunity and its hold dates were left alone. */
+export const WINDOW_LEFT_NOTE = 'some of its trucks were reserved in Salesforce, so its LED hold dates were left as they were; check them'
 
 /** What the rep is told when an opportunity's Amount comes from its Salesforce quote. */
 export const AMOUNT_LEFT_NOTE = 'its amount comes from its Salesforce quote and was not changed; update that quote'

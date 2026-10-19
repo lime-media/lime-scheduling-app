@@ -24,6 +24,13 @@ export type QuoteFeatures = {
   studiesTotal?: number
   transportCharge?: number
   /**
+   * The dates the client asked for in this market (YYYY-MM-DD). A hold's own
+   * dates can differ: a truck shared between two markets holds its days in
+   * each plus travel. Revising reads these (lib/bookings.ts reviseRows).
+   */
+  requestedStart?: string
+  requestedEnd?: string
+  /**
    * Deadhead this booking adds to each truck's next job, captured at hold time.
    * Recorded for review only — never part of any total, and deliberately absent
    * from buildActivationNotes() so it cannot reach a Salesforce buyer view.

@@ -47,8 +47,8 @@ import { canonicalMarketName } from '@/lib/marketBounds'
 import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
 import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { loadBookingHolds } from '@/lib/bookingLoad'
-import { reviseRefusal } from '@/lib/bookings'
-import { AMOUNT_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
+import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
+import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { rotationStints, type OrderLine } from '@/lib/planning/order'
 import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuote, type QuoteRequest } from '@/lib/planning/quote'
@@ -148,7 +148,11 @@ async function handlePost(req: NextRequest) {
       console.error('[plan/hold] opportunity read failed:', err)
       return NextResponse.json({ error: 'Salesforce could not be reached to check the opportunity. Nothing was booked; try again.' }, { status: 503 })
     }
-    const refusal = opportunityRefusal(target, body.sfdcAccountId)
+    // A revised booking whose opportunity no longer exists in Salesforce is
+    // revised as one without an opportunity, as the planner said when it
+    // opened it (app/api/bookings/revise): a new opportunity is created.
+    // An opportunity picked to add to must exist.
+    const refusal = reviseKey && !target ? null : opportunityRefusal(target, body.sfdcAccountId)
     if (refusal) return NextResponse.json({ error: refusal }, { status: 409 })
   }
   const reviseIds = reviseHolds.map(h => h.id)
@@ -411,10 +415,16 @@ async function handlePost(req: NextRequest) {
             },
             by: (token.name as string | undefined) || (token.email as string | undefined) || 'the app',
             primaryContactId: body.primaryContactId,
+            // What the revised booking added to the opportunity, to take back off.
+            ...(reviseKey ? { was: {
+              amount: summarizeBooking(reviseHolds.map(h => ({ ...h, expires_at: null }))).total,
+              markets: [...new Set(reviseHolds.map(h => h.market))],
+            } } : {}),
           })
             if (applied.ok) sfdcOpportunityId = target.Id
           else sfdcError = 'Salesforce rejected the opportunity update'
           if (applied.ok && applied.amountLeft) sfdcWarnings.push(AMOUNT_LEFT_NOTE)
+          if (applied.ok && applied.windowLeft) sfdcWarnings.push(WINDOW_LEFT_NOTE)
         } else {
         // Owned by the rep who booked it (matched by email), else the account owner.
         const accountInfo = await getSfdcAccountInfo(body.sfdcAccountId).catch(() => null)

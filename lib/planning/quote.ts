@@ -26,7 +26,7 @@ import { canonicalMarketName, loadStandardMarketCoords, titleCaseMarket } from '
 import { haversineDistance } from '@/lib/marketCoordinates'
 import { DEFAULT_RULES, loadPlanningFleet, type ReservedTruck } from './fleet'
 import { loadBookingHolds } from '@/lib/bookingLoad'
-import { keptPrices, type KeptPrice } from '@/lib/bookings'
+import { keptPrices, reviseRows, type KeptPrice } from '@/lib/bookings'
 import {
   DEFAULT_ENGINE, planOrder, legsByLine, trucksByLine, lineActivationDays, deliveredTruckDays, lineDelivery, SCHEDULES,
   type LineDelivery,
@@ -571,11 +571,23 @@ async function applyRevision(req: QuoteRequest, lines: OrderLine[]): Promise<{ l
   if (held.length === 0) return { lines }
   const kept = keptPrices(held, req.rows, req.features)
   const norm = (m: string) => m.trim().toLowerCase().replace(/\s+/g, ' ')
+  // Each row keeps the trucks of the booked market it continues: the one with
+  // its dates when the same market was booked twice, else the first of that
+  // market not already taken (its dates may have moved).
+  const booked = reviseRows(held).rows.filter(b => b.keepTrucks.length)
+  const taken = new Set<string>()
+  const pick = (r: QuoteRow, sameDates: boolean) => booked.find(b => !taken.has(b.campaignGroup) && norm(b.market) === norm(r.market)
+    && (!sameDates || (b.startDate === r.startDate && b.endDate === r.endDate)))
   const keep = new Map<string, string[]>()
-  for (const h of held.filter(x => x.live)) keep.set(norm(h.market), [...new Set([...(keep.get(norm(h.market)) ?? []), h.truck_number])])
-  const rowMarket = new Map(req.rows.map(r => [r.id, norm(r.market)]))
+  for (const sameDates of [true, false]) {
+    for (const r of req.rows) {
+      if (keep.has(r.id)) continue
+      const b = pick(r, sameDates)
+      if (b) { taken.add(b.campaignGroup); keep.set(r.id, b.keepTrucks) }
+    }
+  }
   return {
-    lines: keep.size ? lines.map(l => ({ ...l, keepTrucks: keep.get(rowMarket.get(l.id) ?? '') })) : lines,
+    lines: keep.size ? lines.map(l => ({ ...l, keepTrucks: keep.get(l.id) })) : lines,
     excludeHoldIds: new Set(held.map(h => h.id)),
     kept,
   }
@@ -591,7 +603,9 @@ export function keepBookedPrices(lines: LineQuote[], kept?: Map<string, KeptPric
   if (!kept?.size) return lines
   return lines.map(l => {
     const k = kept.get(l.id)
-    if (!k || l.missing > 0 || l.assigned.length === 0 || !l.assigned.every(a => k.trucks.includes(a.truckNumber))) return l
+    // Also the truck count it was booked with: a partial booking that drops trucks is repriced.
+    if (!k || l.trucks !== k.truckCount || l.missing > 0 || l.assigned.length === 0
+      || !l.assigned.every(a => k.trucks.includes(a.truckNumber))) return l
     let f: Record<string, unknown> = {}
     try { f = k.features ? JSON.parse(k.features) : {} } catch { /* booked total alone */ }
     const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback)

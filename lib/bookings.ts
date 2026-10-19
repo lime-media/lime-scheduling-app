@@ -104,6 +104,8 @@ export type RevisedRow = {
   hours: number
   /** Trucks this market holds now and should keep where they still fit (live bookings only). */
   keepTrucks: string[]
+  /** The campaign group this market was booked as. */
+  campaignGroup: string
 }
 
 /** Not a real truck: what quote-only logs carry when no truck could be priced. */
@@ -152,17 +154,22 @@ export function reviseRows(holds: RevisableHold[]): {
     const g = h.campaign_group_id ?? h.id
     byGroup.set(g, [...(byGroup.get(g) ?? []), h])
   }
-  const rows = [...byGroup.values()].map(group => {
+  const rows = [...byGroup.entries()].map(([campaignGroup, group]) => {
     const f = parseFeatures(group[0].features)
     const trucks = [...new Set(group.map(h => h.truck_number).filter(t => !NO_TRUCK.has(t)))]
+    // The dates the client asked for, as booked. Older holds don't store
+    // them: their span is the best there is (a shared truck's travel days
+    // can widen or shift it).
+    const asked = (k: string) => (typeof f[k] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(f[k] as string) ? f[k] as string : null)
     return {
       market: group[0].market,
-      startDate: group.map(h => h.start_date).sort()[0],
-      endDate: group.map(h => h.end_date).sort().reverse()[0],
+      startDate: asked('requestedStart') ?? group.map(h => h.start_date).sort()[0],
+      endDate: asked('requestedEnd') ?? group.map(h => h.end_date).sort().reverse()[0],
       trucks: Math.max(1, group[0].truck_count ?? (Number(f.truckCount) || trucks.length || 1)),
       daysPerWeek: Number(f.daysPerWeek) || 5,
       hours: Number(f.operatingHours) || 8,
       keepTrucks: live ? trucks : [],
+      campaignGroup,
     }
   }).sort((a, b) => a.startDate.localeCompare(b.startDate) || a.market.localeCompare(b.market))
   const f = parseFeatures(holds.find(h => h.features)?.features ?? null)
@@ -178,8 +185,8 @@ export function reviseRows(holds: RevisableHold[]): {
   }
 }
 
-/** A market whose booked price a revision keeps. */
-export type KeptPrice = { total: number; features: string | null; trucks: string[] }
+/** A market whose booked price a revision keeps, for the truck count it was booked with. */
+export type KeptPrice = { total: number; features: string | null; trucks: string[]; truckCount: number }
 
 /**
  * Markets of a LIVE booking that a revision leaves unchanged — same market
@@ -203,14 +210,18 @@ export function keptPrices(
     && booked.features.deviceId === features.deviceId
   if (!sameOptions) return out
   const norm = (m: string) => m.trim().toLowerCase().replace(/\s+/g, ' ')
+  const used = new Set<string>()
   for (const row of rows) {
-    const b = booked.rows.find(x => norm(x.market) === norm(row.market))
-    if (!b || b.startDate !== row.startDate || b.endDate !== row.endDate || b.trucks !== row.trucks
-      || b.daysPerWeek !== row.daysPerWeek || b.hours !== row.hours) continue
-    const group = holds.filter(h => norm(h.market) === norm(row.market) && h.live)
+    // The same market can be booked twice (two flights): match on its dates too, and each booked market once.
+    const b = booked.rows.find(x => !used.has(x.campaignGroup) && norm(x.market) === norm(row.market)
+      && x.startDate === row.startDate && x.endDate === row.endDate)
+    if (!b || b.trucks !== row.trucks || b.daysPerWeek !== row.daysPerWeek || b.hours !== row.hours) continue
+    used.add(b.campaignGroup)
+    // That market's own holds, not another flight's in the same market.
+    const group = holds.filter(h => (h.campaign_group_id ?? h.id) === b.campaignGroup && h.live)
     const total = group.find(h => h.quoted_total != null)?.quoted_total
     if (total == null) continue
-    out.set(row.id, { total, features: group.find(h => h.features)?.features ?? null, trucks: b.keepTrucks })
+    out.set(row.id, { total, features: group.find(h => h.features)?.features ?? null, trucks: b.keepTrucks, truckCount: b.trucks })
   }
   return out
 }

@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
-import { SFDC_SERVICE_USER_EMAIL, appHoldExpOf, opportunityMarketCandidates, pushedHoldExpiry, trucksToMirror, withAppHoldExp } from '@/lib/sfdcIntegration'
+import { SFDC_SERVICE_USER_EMAIL, appHasNotReleased, appHoldExpOf, opportunityMarketCandidates, pushedHoldExpiry, trucksToMirror, withAppHoldExp } from '@/lib/sfdcIntegration'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { ledFieldsDiffer, ledWindowFields } from '@/lib/opportunityMerge'
 import { loadOpportunityReservingHolds } from '@/lib/bookingLoad'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
-import { holdReservesNow } from '@/lib/holdFilters'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
 import { soqlString } from '@/lib/soql'
 import { endOfDayUtc } from '@/lib/dateOnly'
@@ -100,16 +99,16 @@ export async function POST(req: NextRequest) {
   // it; the push that follows then matches, so this can't loop. Opportunities
   // made purely in Salesforce (no app booking, or only quote-only logs) are
   // mirrored below as before.
-  // While the app holds trucks there (live, booked — not a quote-only log), the
-  // opportunity is the app's. Once its booking lapses or is released, Salesforce
-  // is in charge again and the push is mirrored below. Matched on the 15-char
-  // id prefix: Salesforce may send either the 15- or 18-character form.
-  const opp15 = opportunityId.slice(0, 15)
+  // While the app holds trucks there (booked, not yet released — not a
+  // quote-only log), the opportunity is the app's. A hold past its expiry the
+  // sweep hasn't reached still counts: the sweep releases it and re-syncs LED
+  // Trucks. Once the app's booking is released, Salesforce is in charge again
+  // and the push is mirrored below.
   const appHolds = await prisma.hold.findMany({
-    where:  { sfdc_opportunity_id: { startsWith: opp15 }, source: { not: 'SALESFORCE' }, origination: { not: QUOTE_ONLY_ORIGINATION } },
-    select: { status: true, expires_at: true },
+    where:  { sfdc_opportunity_id: opportunityId, source: { not: 'SALESFORCE' }, origination: { not: QUOTE_ONLY_ORIGINATION } },
+    select: { status: true },
   })
-  if (appHolds.some(h => holdReservesNow(h, now))) {
+  if (appHolds.some(appHasNotReleased)) {
     const want = ledWindowFields(await loadOpportunityReservingHolds(opportunityId), now.toISOString().slice(0, 10))
     if (!ledFieldsDiffer(want, truckNumbers, holdExp ?? null)) {
       return NextResponse.json({ results: [], app_owned: true })
@@ -148,15 +147,16 @@ export async function POST(req: NextRequest) {
     results.push({ truck_number: hold.truck_number, hold_id: hold.id, action: 'removed' })
   }
 
-  // Here the app holds nothing live on the opportunity (it would have returned
-  // above), so every pushed truck is mirrored except one the app still holds
-  // (trucksToMirror), including one from an app booking that lapsed: a mirror
-  // path records, and a clash surfaces through /api/holds/infeasible.
+  // Here the app has released everything on the opportunity (it would have
+  // returned above), so every pushed truck is mirrored, including one from an
+  // app booking that lapsed: a mirror path records, and a clash surfaces
+  // through /api/holds/infeasible. A later Reinstate removes such copies of
+  // its own trucks.
   const linkedHolds = await prisma.hold.findMany({
-    where: { sfdc_opportunity_id: { startsWith: opp15 } },
-    select: { truck_number: true, source: true, origination: true, status: true, expires_at: true, features: true, sfdc_hold_exp: true },
+    where: { sfdc_opportunity_id: opportunityId },
+    select: { truck_number: true, source: true, origination: true, status: true, features: true, sfdc_hold_exp: true },
   })
-  const toMirror = trucksToMirror(truckNumbers, linkedHolds, now)
+  const toMirror = trucksToMirror(truckNumbers, linkedHolds)
   const skippedAppHeld = truckNumbers.filter(t => !toMirror.includes(t))
   // The LED Hold Exp the app last wrote here, as recorded on this
   // opportunity's Salesforce-made rows. A push carrying it is the app's echo:

@@ -214,10 +214,19 @@ export async function PATCH(
     // path, so any of them may have been taken: check them all before blocking
     // any again (lib/bookings.ts reinstateRefusal).
     // One query for the whole booking, matched back to each lapsed hold.
+    // Copies of this booking's own trucks that Salesforce's push mirrored onto
+    // the same opportunity while it sat expired (the app had released it, so
+    // the webhook recorded what Salesforce listed): the same deal, not a
+    // clash. They're removed below as the app takes its trucks back.
+    const mirrored = hold.sfdc_opportunity_id ? await prisma.hold.findMany({
+      where:  { sfdc_opportunity_id: hold.sfdc_opportunity_id, source: 'SALESFORCE', truck_number: { in: revived.map(h => h.truck_number) } },
+      select: { id: true, truck_number: true },
+    }) : []
     const taken = await prisma.hold.findMany({
       where: {
-        // Not this booking's own holds: only someone else's booking is a clash.
-        id:  { notIn: booking.map(h => h.id) },
+        // Not this booking's own holds (or Salesforce's copies of them): only
+        // someone else's booking is a clash.
+        id:  { notIn: [...booking.map(h => h.id), ...mirrored.map(m => m.id)] },
         AND: [
           activeHoldWhere(),
           { OR: revived.map(h => ({ truck_number: h.truck_number, start_date: { lte: h.end_date }, end_date: { gte: h.start_date } })) },
@@ -240,7 +249,8 @@ export async function PATCH(
     const newExpiresAt = won ? null : bookingHoldExpiry(capStarts(booking), DEFAULT_HOLD_DAYS, new Date(), keepUntil, STAFF_MIN_DAYS_BEFORE_START).expiresAt
     const newStatus = won ? 'COMMITTED' : 'HOLD'
 
-    // The reinstate and its audit rows land together.
+    // The reinstate, the removal of Salesforce's copies of its trucks, and the
+    // audit rows land together.
     const [reinstated] = await prisma.$transaction([
       prisma.hold.updateMany({
         where: { id: { in: ids }, status: 'EXPIRED' },
@@ -250,6 +260,18 @@ export async function PATCH(
         where: { id: { in: live.map(h => h.id) }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
         data:  { expires_at: newExpiresAt },
       })] : []),
+      ...(mirrored.length ? [
+        prisma.hold.deleteMany({ where: { id: { in: mirrored.map(m => m.id) } } }),
+        prisma.auditLog.createMany({
+          data: mirrored.map(m => ({
+            action:       'DELETE_HOLD',
+            truck_number: m.truck_number,
+            user_id:      session.user.id,
+            hold_id:      m.id,
+            details:      JSON.stringify({ reason: 'salesforce_copy_of_reinstated_app_truck', opportunityId: hold.sfdc_opportunity_id }),
+          })),
+        }),
+      ] : []),
       prisma.auditLog.createMany({
         data: lapsed.map(h => ({
           action:       'REINSTATE_HOLD',

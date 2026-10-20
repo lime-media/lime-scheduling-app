@@ -9,10 +9,9 @@ import { ledFieldsDiffer, ledWindowFields, type LinkedHold } from '@/lib/opportu
 import { reinstatableHolds, reinstateRefusal } from '@/lib/bookings'
 import { opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 
-const later = new Date(Date.now() + 86_400_000)
-const row = (truck_number: string, source: string, origination: string | null = 'frontend', status = 'HOLD', expires_at: Date | null = later) => ({ truck_number, source, origination, status, expires_at })
+const row = (truck_number: string, source: string, origination: string | null = 'frontend', status = 'HOLD') => ({ truck_number, source, origination, status })
 
-section('Salesforce push: only trucks the app holds now are its own')
+section('Salesforce push: trucks the app hasn\'t released are its own')
 eq('created in Salesforce (nothing linked): mirror every truck', trucksToMirror(['9269'], []), ['9269'])
 eq('created by a quote tool: nothing to mirror', trucksToMirror(['7423', '0820'], [row('7423', 'INTERNAL'), row('0820', 'INTERNAL')]), [])
 eq('client portal booking: echo', trucksToMirror(['7423'], [row('7423', 'CLIENT', null)]), [])
@@ -21,7 +20,10 @@ eq('a live app booking is the app\'s: not mirrored', trucksToMirror(['7423'], [r
 // (mirror paths record; clashes surface through /api/holds/infeasible), never
 // dropped silently.
 eq('a lapsed app booking: Salesforce is in charge again, mirror it', trucksToMirror(['7423'], [row('7423', 'INTERNAL', 'frontend', 'EXPIRED')]), ['7423'])
-eq('an app hold past its expiry but not yet swept: not held, mirror it', trucksToMirror(['7423'], [row('7423', 'INTERNAL', 'frontend', 'HOLD', new Date(Date.now() - 60_000))]), ['7423'])
+// Past its expiry but not yet swept: Salesforce still lists it until the sweep
+// releases it and re-syncs, so mirroring now would re-reserve a truck the app
+// is about to release.
+eq('an app hold past expiry the sweep hasn\'t reached: still the app\'s', trucksToMirror(['7423'], [row('7423', 'INTERNAL', 'frontend', 'HOLD')]), [])
 eq('quote-only log made a booking in Salesforce: mirror it', trucksToMirror(['7423'], [row('7423', 'INTERNAL', 'quote_only')]), ['7423'])
 eq('a rep adds a truck to an app quote in Salesforce: only the new truck is mirrored', trucksToMirror(['7423', '1106'], [row('7423', 'INTERNAL')]), ['1106'])
 eq('trucks already mirrored from Salesforce are still updated', trucksToMirror(['9269'], [row('9269', 'SALESFORCE', null)]), ['9269'])

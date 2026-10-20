@@ -155,9 +155,10 @@ findings by how close they come to one of those.
 - **While the app holds trucks on an opportunity, it's the app's.** For
   app-made bookings, trucks and Hold Exp change only in the app: the hold
   webhook never creates, changes or deletes holds from a push's LED fields on
-  such an opportunity (live app holds, matched on the 15-char id prefix). Once
-  the app's booking lapses or is released, Salesforce is in charge again and a
-  push is mirrored (recorded, never dropped). Anything that writes Salesforce
+  such an opportunity (any app hold not yet EXPIRED: one past its expiry
+  counts until the sweep releases it and re-syncs). Once the app's booking is
+  released, Salesforce is in charge again and a push is mirrored (recorded,
+  never dropped); Reinstate removes such copies of its own trucks. Anything that writes Salesforce
   for a Closed Lost reopen does it after the holds are saved, undoing them if
   Salesforce refuses, so the push it fires finds them live.
   When the push differs from what the app would write (`ledFieldsDiffer`), the

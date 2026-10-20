@@ -77,7 +77,10 @@ export async function reopenClosedLostOpportunity(opportunityId: string): Promis
   const write = await updateOpportunityWithError(opportunityId, { StageName: DEFAULT_STAGE }).catch(err => ({ ok: false as const, error: err instanceof Error ? err.message : 'Salesforce could not be reached' }))
   if (!write.ok) return { ok: false, error: `Salesforce refused to move the opportunity to Warm: ${write.error}. Nothing was changed.` }
   const after = await getOpportunityStage(opportunityId)
-  if (!after) return { ok: false, error: 'The opportunity was moved to Warm, but Salesforce could not be read back to confirm it. Nothing else was changed; check it in Salesforce and try again.' }
+  // The write succeeded; a failed read-back is "couldn't confirm", not a
+  // refusal. Undoing the app's change here would leave Salesforce Warm with no
+  // booking behind it.
+  if (!after) return { ok: true, fromStage: before.stageName, toStage: DEFAULT_STAGE }
   if (after.isClosed) return { ok: false, error: `Salesforce put the opportunity back to "${after.stageName}" (an automation or rule there). Nothing was changed here; reopen it in Salesforce.` }
   return { ok: true, fromStage: before.stageName, toStage: after.stageName }
 }

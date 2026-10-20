@@ -152,7 +152,11 @@ export async function syncOpportunityLedWindow(opportunityId: string | null): Pr
   let recorded: { id: string; features: string | null }[] = []
   try {
     fields = ledWindowFields(await loadOpportunityReservingHolds(opportunityId), new Date().toISOString().slice(0, 10))
-    if (fields.LED_Hold_Exp__c) {
+    // A date is recorded; a Hold Exp cleared (nothing reserves a truck) clears
+    // the record too, so a rep later entering that same date in Salesforce isn't
+    // taken for an echo. Left out (all committed): Salesforce keeps its date, and
+    // so does the record.
+    if (fields.LED_Hold_Exp__c !== undefined) {
       recorded = await prisma.hold.findMany({
         where:  { sfdc_opportunity_id: opportunityId, source: 'SALESFORCE' },
         select: { id: true, features: true },

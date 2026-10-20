@@ -197,7 +197,11 @@ export async function POST(req: NextRequest) {
         where: { id: existing.id },
         data: {
           ...(known ? { market: known.market, state: known.state } : {}),
-          client_name: accountName, start_date, end_date, sfdc_hold_exp,
+          client_name: accountName, start_date, end_date,
+          // The echo carries the app's own date, not one Salesforce set: keep
+          // what the row had, so a booking pushed with Hold Exp blank still
+          // never closes as lost (expiryClosesOpportunity).
+          sfdc_hold_exp: echo ? existing.sfdc_hold_exp : sfdc_hold_exp,
           ...(isCommitted || committedNow || (reactivated && revivedAsCommitted) ? {} : { expires_at: effectiveExpiry }),
           ...(reactivated && { status: revivedAsCommitted ? 'COMMITTED' : 'HOLD' }),
           ...(reactivated && revivedAsCommitted && { expires_at: null }),
@@ -214,7 +218,7 @@ export async function POST(req: NextRequest) {
           hold_id:      updated.id,
           details:      JSON.stringify({
             source: 'salesforce', opportunityId, accountName, start_date, end_date,
-            sfdc_hold_exp,
+            sfdc_hold_exp: echo ? existing.sfdc_hold_exp : sfdc_hold_exp,
             ...(isCommitted
               ? { expires_at_untouched: 'hold_is_committed' }
               : { expires_at: effectiveExpiry }),

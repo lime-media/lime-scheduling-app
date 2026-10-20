@@ -77,7 +77,7 @@ function bookingSummary(holds: Hold[]) {
  * approve_extension, deny_extension and update_expiration act on its WHOLE
  * booking in one request (one transaction, one email): a booking is one quote.
  * Every expiry change or release (reinstate, approve or deny extension, update
- * expiration, cancel) then syncs the opportunity's LED Trucks and Hold Exp to
+ * expiration, cancel, truck swap) then syncs the opportunity's LED Trucks and Hold Exp to
  * Salesforce: the app owns them (lib/sfdcBooking.ts syncOpportunityLedWindow).
  */
 export async function PATCH(
@@ -155,7 +155,10 @@ export async function PATCH(
       },
     })
 
-    return NextResponse.json({ ok: true, old_truck: oldTruck, new_truck: truck_number })
+    // The old truck comes off Salesforce's LED Trucks, or its next push would
+    // mirror it as a new reservation (lib/sfdcBooking.ts syncOpportunityLedWindow).
+    const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
+    return NextResponse.json({ ok: true, old_truck: oldTruck, new_truck: truck_number, sfdcWarning })
   }
 
   // ── reinstate ───────────────────────────────────────────────────────────
@@ -206,7 +209,8 @@ export async function PATCH(
     // One query for the whole booking, matched back to each lapsed hold.
     const taken = await prisma.hold.findMany({
       where: {
-        id:  { notIn: ids },
+        // Not this booking's own holds: only someone else's booking is a clash.
+        id:  { notIn: booking.map(h => h.id) },
         AND: [
           activeHoldWhere(),
           { OR: lapsed.map(h => ({ truck_number: h.truck_number, start_date: { lte: h.end_date }, end_date: { gte: h.start_date } })) },

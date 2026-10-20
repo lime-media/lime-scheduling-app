@@ -3,6 +3,8 @@
  * API routes (SFDC activation notes) and the client-side QuoteBreakdown component.
  */
 
+import { APP_HOLD_EXP_KEY } from '@/lib/sfdcIntegration'
+
 export type QuoteFeatures = {
   dailyRate?: number
   hourSurcharge?: number
@@ -62,7 +64,7 @@ export function parseQuoteFeatures(features: string | null | undefined): QuoteFe
   if (!features) return null
   try {
     const f = JSON.parse(features) as QuoteFeatures
-    return f && typeof f === 'object' && Object.keys(f).some(k => k !== 'appHoldExp') ? f : null
+    return f && typeof f === 'object' && Object.keys(f).some(k => k !== APP_HOLD_EXP_KEY) ? f : null
   } catch {
     return null
   }

@@ -31,11 +31,19 @@ export function trucksToMirror(
  * quote, multi-market or the client portal — except:
  *   - a Salesforce push with no Hold Exp (the 72h fallback): a rep leaving an
  *     optional field blank must not lose their deal;
- *   - a quote-only log: it never reserved anything, and stays open by design.
+ *   - a quote-only log: it never reserved anything, and stays open by design;
+ *   - a hold added to an opportunity that already existed (features
+ *     `attachedToOpportunity`): the rep's deal isn't the app's to close.
  */
-export function expiryClosesOpportunity(h: { sfdc_opportunity_id: string | null; source: string; sfdc_hold_exp: Date | null; origination: string | null }): boolean {
+/** Whether a hold's features mark it as added to an existing opportunity. */
+export function attachedToOpportunity(features: string | null | undefined): boolean {
+  try { return !!features && JSON.parse(features).attachedToOpportunity === true } catch { return false }
+}
+
+export function expiryClosesOpportunity(h: { sfdc_opportunity_id: string | null; source: string; sfdc_hold_exp: Date | null; origination: string | null; features?: string | null }): boolean {
   if (!h.sfdc_opportunity_id) return false
   if (h.origination === QUOTE_ONLY_ORIGINATION) return false
+  if (attachedToOpportunity(h.features)) return false
   return h.source !== 'SALESFORCE' || h.sfdc_hold_exp !== null
 }
 
@@ -45,9 +53,47 @@ export function expiryClosesOpportunity(h: { sfdc_opportunity_id: string | null;
  * expire it again, silently. Reopening the deal is a Salesforce
  * decision; the message says so. An unknown stage (null) never blocks.
  */
+/**
+ * What the 15-minute reconcile does to a hold linked to an Opportunity, given
+ * that Opportunity's stage, or null to leave it. Committed means Closed Won
+ * in Salesforce, in both directions: a won deal commits its holds; a committed
+ * hold whose deal is no longer won goes back to HOLD (reopened) or EXPIRED
+ * (Closed Lost), so "change it in Salesforce first" (lib/bookings.ts
+ * closedWonRefusal) always has a way back. No loop with the outward close:
+ * committed holds count as active, so the app never closes their deal as lost.
+ * Pure.
+ */
+export function reconcileTarget(status: string, stage: { isClosed: boolean; isWon: boolean }): 'COMMITTED' | 'HOLD' | 'EXPIRED' | null {
+  if (stage.isClosed && stage.isWon) return status === 'COMMITTED' ? null : 'COMMITTED'
+  if (stage.isClosed) return status === 'EXPIRED' ? null : 'EXPIRED'
+  return status === 'COMMITTED' ? 'HOLD' : null
+}
+
 export function closedOpportunityBlocksReactivation(stage: { isClosed: boolean; isWon: boolean; stageName: string } | null): string | null {
   if (!stage || !stage.isClosed || stage.isWon) return null
   return `Its Salesforce Opportunity is "${stage.stageName}", so the hold would be released again within 15 minutes. Reopen the Opportunity in Salesforce first, then try again.`
+}
+
+/**
+ * Reinstating or revising onto a Closed Lost opportunity: staff may move the
+ * deal back to WARM instead of being sent to Salesforce. `allowed` — nothing
+ * stands in the way (open, won, or the stage is unknown); `reopenable` — Closed
+ * Lost, so ask the person first; `reopen` — Closed Lost and they said yes.
+ * Closed Won is never reopened. Only staff paths pass `reopenOpportunity`
+ * (Reservations reinstate, the planner's revise); the client portal and MCP
+ * never do, so for them a lost deal still refuses.
+ */
+export function reactivationDecision(
+  stage: { isClosed: boolean; isWon: boolean; stageName: string } | null,
+  reopenOpportunity: boolean,
+): { kind: 'allowed' } | { kind: 'reopenable' | 'reopen'; stageName: string } {
+  if (!stage || !stage.isClosed || stage.isWon) return { kind: 'allowed' }
+  return { kind: reopenOpportunity ? 'reopen' : 'reopenable', stageName: stage.stageName }
+}
+
+/** What the person is asked before a Closed Lost opportunity is moved back to WARM. */
+export function reopenQuestion(stageName: string): string {
+  return `This opportunity is "${stageName}" in Salesforce. Move it back to Warm and continue?`
 }
 
 /**

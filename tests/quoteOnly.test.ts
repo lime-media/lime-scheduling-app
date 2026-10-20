@@ -22,7 +22,10 @@ section('Quote only: the hourly sweep and reconcile leave it alone')
   const cache = fs.readFileSync('lib/scheduleCache.ts', 'utf8')
   eq('expiry only looks at HOLD / EXTENSION_REQUESTED', /status:\s*\{\s*in:\s*\['HOLD',\s*'EXTENSION_REQUESTED'\]\s*\}/.test(cache), true)
   const reconcile = fs.readFileSync('lib/sfdcOpportunityReconcile.ts', 'utf8')
-  eq('reconcile only looks at HOLD / EXTENSION_REQUESTED', /RECONCILABLE_STATUSES = \['HOLD', 'EXTENSION_REQUESTED'\]/.test(reconcile), true)
+  // Quote-only rows are EXPIRED from the start, so the reconcile must never read
+  // EXPIRED rows (it also reads COMMITTED since #120: committed means Closed Won).
+  const reconcilable = /RECONCILABLE_STATUSES = \[([^\]]*)\]/.exec(reconcile)?.[1] ?? ''
+  eq('reconcile never looks at EXPIRED (quote-only) rows', reconcilable.length > 0 && !reconcilable.includes('EXPIRED'), true)
 }
 
 section('Quote only: the opportunity carries no LED truck or hold fields')

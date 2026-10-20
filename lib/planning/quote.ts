@@ -25,6 +25,8 @@ import type { RateOverrides } from '@/lib/pricing/config'
 import { canonicalMarketName, loadStandardMarketCoords, titleCaseMarket } from '@/lib/marketBounds'
 import { haversineDistance } from '@/lib/marketCoordinates'
 import { DEFAULT_RULES, loadPlanningFleet, type ReservedTruck } from './fleet'
+import { loadBookingHolds } from '@/lib/bookingLoad'
+import { keptPrices, reviseRows, type KeptPrice } from '@/lib/bookings'
 import {
   DEFAULT_ENGINE, planOrder, legsByLine, trucksByLine, lineActivationDays, deliveredTruckDays, lineDelivery, SCHEDULES,
   type LineDelivery,
@@ -58,6 +60,13 @@ export type QuoteRequest = {
   hopLimitRoadMiles?: number
   /** Seller's Brand Direct markup; applied only if Salesforce says the account is Brand Direct. */
   brandMarkupPct?: number
+  /**
+   * Revising an existing booking (lib/bookings.ts bookingKey): its holds are
+   * left out of the fleet so its trucks are free to it, and while it is live
+   * each market keeps its trucks where they still fit. Read from the database,
+   * never trusted from the browser.
+   */
+  revise?: { bookingKey: string }
 }
 
 export type RowError = { rowId: string; message: string; candidates?: string[] }
@@ -132,6 +141,8 @@ export type LineQuote = {
   /** Where each assigned truck comes from to reach this market, as the single-market quote shows it. */
   arrivals: Arrival[]
   missing: number
+  /** Revising a live booking: this market is unchanged and keeps its booked price (lib/bookings.ts keptPrices). */
+  priceKept?: boolean
 }
 
 export type Arrival = {
@@ -367,7 +378,8 @@ export type PreparedQuote = {
   plan: OrderPlan
 }
 
-export async function buildMultiMarketQuote(req: QuoteRequest, lines: OrderLine[], opts: { alternatives?: boolean } = {}): Promise<PreparedQuote> {
+export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: OrderLine[], opts: { alternatives?: boolean } = {}): Promise<PreparedQuote> {
+  const { lines, excludeHoldIds, kept } = await applyRevision(req, requestedLines)
   const today = new Date().toISOString().split('T')[0]
   const planThrough = lines.reduce((m, l) => (l.endDate > m ? l.endDate : m), today)
   const rules = {
@@ -388,7 +400,7 @@ export async function buildMultiMarketQuote(req: QuoteRequest, lines: OrderLine[
     serviceAreaMiles: overrides?.service_area_miles,
   }
   // Load far enough out that the cheaper-start alternatives see the fleet too.
-  const fleet = await loadPlanningFleet({ today, planThrough: addDays(planThrough, START_SHIFTS[START_SHIFTS.length - 1]), rules })
+  const fleet = await loadPlanningFleet({ today, planThrough: addDays(planThrough, START_SHIFTS[START_SHIFTS.length - 1]), rules, excludeHoldIds })
   // One tier per distinct market, in parallel; each line already knows where it is.
   const distinct = [...new Map(lines.map(l => [l.market, l])).values()]
   const tiers = new Map<string, number>(await Promise.all(
@@ -397,7 +409,7 @@ export async function buildMultiMarketQuote(req: QuoteRequest, lines: OrderLine[
 
   const run = (ls: OrderLine[], settings = s) => planOrder(ls, fleet.trucks, settings)
   const plan = run(lines)
-  const priced = await priceLines(lines, plan, req.features, overrides, tiers, markupPct)
+  const priced = keepBookedPrices(await priceLines(lines, plan, req.features, overrides, tiers, markupPct), kept, markupPct)
   const summary = summarize(priced, plan)
 
   const alternatives = opts.alternatives === false ? [] : await buildAlternatives(lines, plan, summary, { run, price: (ls, p) => priceLines(ls, p, req.features, overrides, tiers, markupPct), s, trucks: fleet.trucks })
@@ -545,3 +557,73 @@ async function buildAlternatives(
   }
   return out
 }
+
+/**
+ * A revision's effect on the order (QuoteRequest.revise): the booking's holds
+ * to leave out of the fleet, and — while the booking is live — each market's
+ * current trucks to keep. A market is the same market when its row still
+ * names it (case and spacing aside); a renamed or new row keeps nothing. An
+ * expired booking keeps nothing: it is re-picked and re-priced.
+ */
+async function applyRevision(req: QuoteRequest, lines: OrderLine[]): Promise<{ lines: OrderLine[]; excludeHoldIds?: Set<string>; kept?: Map<string, KeptPrice> }> {
+  if (!req.revise?.bookingKey) return { lines }
+  const held = await loadBookingHolds(req.revise.bookingKey)
+  if (held.length === 0) return { lines }
+  const kept = keptPrices(held, req.rows, req.features)
+  const norm = (m: string) => m.trim().toLowerCase().replace(/\s+/g, ' ')
+  // Each row keeps the trucks of the booked market it continues: the one with
+  // its dates when the same market was booked twice, else the first of that
+  // market not already taken (its dates may have moved).
+  const booked = reviseRows(held).rows.filter(b => b.keepTrucks.length)
+  const taken = new Set<string>()
+  const pick = (r: QuoteRow, sameDates: boolean) => booked.find(b => !taken.has(b.campaignGroup) && norm(b.market) === norm(r.market)
+    && (!sameDates || (b.startDate === r.startDate && b.endDate === r.endDate)))
+  const keep = new Map<string, string[]>()
+  for (const sameDates of [true, false]) {
+    for (const r of req.rows) {
+      if (keep.has(r.id)) continue
+      const b = pick(r, sameDates)
+      if (b) { taken.add(b.campaignGroup); keep.set(r.id, b.keepTrucks) }
+    }
+  }
+  return {
+    lines: keep.size ? lines.map(l => ({ ...l, keepTrucks: keep.get(l.id) })) : lines,
+    excludeHoldIds: new Set(held.map(h => h.id)),
+    kept,
+  }
+}
+
+/**
+ * Unchanged markets of a live booking keep their booked price — where they
+ * also kept their trucks and are fully covered (otherwise the delivery
+ * changed, and today's price applies). The booked breakdown replaces today's
+ * so the line, its breakdown and the total agree. Pure.
+ */
+export function keepBookedPrices(lines: LineQuote[], kept?: Map<string, KeptPrice>, markupPct = 0): LineQuote[] {
+  if (!kept?.size) return lines
+  return lines.map(l => {
+    const k = kept.get(l.id)
+    // Also the truck count it was booked with: a partial booking that drops trucks is repriced.
+    // And the markup: a changed Brand Direct markup reprices every market alike.
+    if (!k || l.trucks !== k.truckCount || (k.markupPct !== null && k.markupPct !== markupPct) || l.missing > 0 || l.assigned.length === 0
+      || !l.assigned.every(a => k.trucks.includes(a.truckNumber))) return l
+    let f: Record<string, unknown> = {}
+    try { f = k.features ? JSON.parse(k.features) : {} } catch { /* booked total alone */ }
+    const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback)
+    const billed = num(f.transportCharge, 0)
+    return {
+      ...l,
+      dailyRate: num(f.dailyRate, l.dailyRate),
+      hourSurcharge: num(f.hourSurcharge, l.hourSurcharge),
+      baseMedia: num(f.baseMedia, l.baseMedia),
+      shadowFencing: num(f.shadowFencing, l.shadowFencing),
+      smartDirectional: num(f.smartDirectional, l.smartDirectional),
+      deviceId: num(f.deviceId, l.deviceId),
+      media: k.total - billed,
+      transport: { ...l.transport, billed, outcome: billed > 0 ? 'BILLED' : l.transport.outcome === 'BILLED' ? 'ABSORBED' : l.transport.outcome },
+      total: k.total,
+      priceKept: true,
+    }
+  })
+}
+

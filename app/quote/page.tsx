@@ -14,6 +14,9 @@ import { Navbar } from '@/components/Navbar'
 import { PlannerTab } from '@/components/PlannerTab'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
+import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
+import { OpportunityPicker, type OpenOpportunity } from '@/components/OpportunityPicker'
+import { SalesforceFailureModal } from '@/components/SalesforceFailureModal'
 
 // ---------------------------------------------------------------------------
 // Types (mirrors client-side QuoteResponse)
@@ -84,11 +87,21 @@ export default function InternalQuotePage() {
 
   // Tab state
   const [activeTab, setActiveTab] = useState<'builder' | 'classic' | 'planner'>('builder')
+  // Reservations → Revise opens /quote?revise=<booking>: the planner, with that booking loaded.
+  const [reviseKey, setReviseKey] = useState<string | null>(null)
+  useEffect(() => {
+    const key = new URLSearchParams(window.location.search).get('revise')
+    if (key) { setReviseKey(key); setActiveTab('planner') }
+  }, [])
 
   // SFDC Account
   const [account, setAccount] = useState<SfdcAccount | null>(null)
   // The opportunity's primary contact: required by sales ops on every opportunity.
   const [contact, setContact] = useState<SfdcContact | null>(null)
+  // How long the reservation holds the trucks (default 3 days).
+  const [holdDays, setHoldDays] = useState(DEFAULT_HOLD_DAYS)
+  // An existing opportunity to add this quote to; null = a new one.
+  const [attachTo, setAttachTo] = useState<OpenOpportunity | null>(null)
   // Brand Direct accounts carry a premium on media; the seller can change it.
   const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
   // Opportunity stage the seller wants the reservation's opportunity to start at.
@@ -125,7 +138,9 @@ export default function InternalQuotePage() {
 
   // Hold
   const [holdLoading, setHoldLoading] = useState(false)
-  const [holdResult, setHoldResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [holdResult, setHoldResult] = useState<{ ok: boolean; message: string; sfdcFailure?: string | null } | null>(null)
+  // Salesforce failed after the booking saved: a red pop-up until dismissed.
+  const [sfdcFailureOpen, setSfdcFailureOpen] = useState(false)
 
   const quoteRef = useRef<HTMLDivElement>(null)
 
@@ -256,6 +271,8 @@ export default function InternalQuotePage() {
           sfdc_account_id: account.id,
           sfdc_account_name: account.name,
           primary_contact_id: contact.id,
+          hold_days: holdDays,
+          attach_opportunity_id: attachTo?.id,
           brand,
           shadow_fencing: toggles.shadowFencing,
           smart_directional: toggles.smartDirectional,
@@ -278,13 +295,14 @@ export default function InternalQuotePage() {
         setHoldResult({ ok: false, message: 'Nothing was booked. Re-quote to see the current price.' })
         return
       }
-      setHoldResult({ ok: res.ok, message: data.message || data.error || 'Unknown error' })
+      setHoldResult({ ok: res.ok, message: (res.ok && data.confirmation) || data.message || data.error || 'Unknown error', sfdcFailure: res.ok ? data.sfdcFailure ?? null : null })
+      setSfdcFailureOpen(Boolean(res.ok && data.sfdcFailure))
     } catch {
       setHoldResult({ ok: false, message: 'Network error.' })
     } finally {
       setHoldLoading(false)
     }
-  }, [holdLoading, quoteResult, account, contact, form, toggles, isBrandDirect, markupPct, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [holdLoading, quoteResult, account, contact, holdDays, attachTo, form, toggles, isBrandDirect, markupPct, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (status === 'loading' || !session) return null
 
@@ -322,7 +340,7 @@ export default function InternalQuotePage() {
         </div>
 
         {activeTab === 'planner' ? (
-          <PlannerTab />
+          <PlannerTab reviseKey={reviseKey} onReviseDone={() => { setReviseKey(null); window.history.replaceState(null, '', '/quote') }} />
         ) : activeTab === 'classic' ? (
           <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden" style={{ minHeight: 'calc(100vh - 200px)' }}>
             <iframe
@@ -338,11 +356,14 @@ export default function InternalQuotePage() {
         {/* Step 1: Client selection */}
         <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 mb-4">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
-          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setContact(null); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
+          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setContact(null); setAttachTo(null); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
           {account && (
             <div className="mt-3">
               <label className="text-xs font-medium text-gray-600 mb-1 block">Primary contact <span className="text-red-500">*</span></label>
               <ContactSearch accountId={account.id} selected={contact} onSelect={setContact} />
+              <div className="mt-3">
+                <OpportunityPicker accountId={account.id} value={attachTo} onChange={setAttachTo} />
+              </div>
             </div>
           )}
           <div className="mt-3 max-w-sm">
@@ -686,11 +707,26 @@ export default function InternalQuotePage() {
                     </label>
                   )}
 
+                  {/* Hold length: a reservation only (a quote-only log holds nothing). */}
+                  {!quoteOnly && !holdResult?.ok && (
+                    <HoldLength days={holdDays} onChange={setHoldDays} startDates={[form.start_date]} />
+                  )}
+
                   {/* Hold button */}
                   {holdResult?.ok ? (
-                    <div className="mt-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-800 font-medium">
-                      {'\u2713'} {holdResult.message}
-                    </div>
+                    <>
+                      <div className="mt-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-800 font-medium">
+                        {'\u2713'} {holdResult.message}
+                      </div>
+                      {holdResult.sfdcFailure && (
+                        <div className="mt-2 bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-800">
+                          <span className="font-semibold">Salesforce was not updated.</span> {holdResult.sfdcFailure}
+                        </div>
+                      )}
+                      {holdResult.sfdcFailure && sfdcFailureOpen && (
+                        <SalesforceFailureModal detail={holdResult.sfdcFailure} onClose={() => setSfdcFailureOpen(false)} />
+                      )}
+                    </>
                   ) : (
                     <button onClick={() => placeHold()} disabled={holdLoading || quoteLoading || markupPending || !account || !contact || holdResult?.ok === true}
                       className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium transition-colors">
@@ -720,6 +756,8 @@ export default function InternalQuotePage() {
  * first. A soft hold on the booking's dates is released for those dates only
  * (after the operations warning); a truck whose only problem is a LATER soft
  * hold it would strand cannot be freed by that release, so it gets no button.
+ * Collapsed to its count by default: the list can run long and push the quote
+ * off screen.
  */
 function SoftHoldReleaseOptions({ options, releasing, onRelease }: {
   options: OverrideOption[]
@@ -728,10 +766,14 @@ function SoftHoldReleaseOptions({ options, releasing, onRelease }: {
 }) {
   const releasable = options.filter(t => t.releasable).length
   return (
-    <div className="mt-2 bg-purple-50 border border-purple-200 rounded-lg px-3 py-2 text-xs text-purple-800">
-      <p className="font-medium">
-        {options.length} truck{options.length !== 1 ? 's' : ''} held for AT&amp;T {options.length !== 1 ? 'are' : 'is'} not in this quote
-      </p>
+    <details className="mt-2 group bg-purple-50 border border-purple-200 rounded-lg px-3 py-2 text-xs text-purple-800">
+      <summary className="cursor-pointer list-none flex items-center justify-between font-medium">
+        <span>
+          {options.length} truck{options.length !== 1 ? 's' : ''} on AT&amp;T soft holds, not in this quote
+          {releasable > 0 && <span className="font-normal text-purple-600"> · {releasable} can be released for these dates</span>}
+        </span>
+        <span className="text-purple-600 ml-2 group-open:rotate-180 transition-transform">&#9662;</span>
+      </summary>
       {releasable > 0 && (
         <p className="text-purple-600 mt-0.5">
           Release the soft hold for this booking&apos;s dates to use {releasable !== 1 ? 'them' : 'it'}; the quote re-runs with the truck included.
@@ -752,7 +794,7 @@ function SoftHoldReleaseOptions({ options, releasing, onRelease }: {
           )}
         </div>
       ))}
-    </div>
+    </details>
   )
 }
 

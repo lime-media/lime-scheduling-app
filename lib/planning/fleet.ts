@@ -58,11 +58,13 @@ export async function loadPlanningFleet(opts: {
   today: string
   planThrough: string
   rules: ReservationRules
+  /** A booking being revised: its holds do not count as busy (lib/fleetTimelines.ts). */
+  excludeHoldIds?: Set<string>
 }): Promise<PlanningFleet> {
   const { today, planThrough, rules } = opts
   const [fleet, truckRows, softHolds] = await Promise.all([
     // Look back far enough to see the job a truck is on today.
-    loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS, window: { start: addDays(today, -30), end: planThrough } }),
+    loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS, window: { start: addDays(today, -30), end: planThrough }, excludeHoldIds: opts.excludeHoldIds }),
     query<{ truck_number: string }[]>(ALL_TRUCKS_QUERY),
     // Every soft hold on file, any age: only the latest month is used.
     prisma.hold.findMany({

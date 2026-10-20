@@ -198,13 +198,24 @@ export async function updateOpportunity(
   opportunityId: string,
   fields: Partial<Record<string, unknown>>,
 ): Promise<boolean> {
+  return (await updateOpportunityWithError(opportunityId, fields)).ok
+}
+
+/**
+ * updateOpportunity, with Salesforce's reason when it refuses, for callers
+ * that show it to the person (a validation rule's message, say).
+ */
+export async function updateOpportunityWithError(
+  opportunityId: string,
+  fields: Partial<Record<string, unknown>>,
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const res = await sfdcFetch(`/sobjects/Opportunity/${opportunityId}`, {
     method: 'PATCH',
     body: JSON.stringify(fields),
   })
 
   // SFDC returns 204 No Content on success
-  if (res.status === 204) return true
+  if (res.status === 204) return { ok: true }
 
   // Log why. The common failure is an invalid picklist value (StageName), which
   // is otherwise indistinguishable from any other rejection at the call site.
@@ -213,7 +224,7 @@ export async function updateOpportunity(
     ? `${body[0].errorCode}: ${body[0].message}`
     : `HTTP ${res.status}`
   console.error(`[sfdc] Opportunity ${opportunityId} update failed — ${detail}`, fields)
-  return false
+  return { ok: false, error: detail }
 }
 
 /**

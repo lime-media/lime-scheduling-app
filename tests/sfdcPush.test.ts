@@ -3,7 +3,8 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, opportunityMarketCandidates, trucksToMirror } from '@/lib/sfdcIntegration'
+import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, opportunityMarketCandidates, reactivationDecision, reconcileTarget, reopenQuestion, trucksToMirror } from '@/lib/sfdcIntegration'
+import { opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 
 const NOW = new Date('2026-10-02T12:00:00Z')
 const later = new Date('2026-10-05T23:59:59Z'), earlier = new Date('2026-09-28T00:00:00Z')
@@ -69,4 +70,46 @@ section('Salesforce push: the hold goes where the Opportunity says, never where 
   eq("an app-made name is never read as markets", c(null, 'Nike / Rolling Adz - Des Moines, IA - 2026-10-02 to 2026-10-03'), [])
   eq("nor an app multi-market name", c(null, 'Nike / Clear Trust Media - Multi-market (3 markets) - 2026-10-15 to 2026-11-19'), [])
   eq('dates in the field are dropped', c('Dallas, 2026-10-10', null), ['Dallas'])
+}
+
+section('Salesforce: a hold added to an existing opportunity never closes it')
+{
+  const base = { source: 'INTERNAL', sfdc_hold_exp: null, origination: 'frontend', sfdc_opportunity_id: '006VP00000gRDLxYAO' }
+  eq('an app booking on its own opportunity closes it', expiryClosesOpportunity({ ...base, features: JSON.stringify({ dailyRate: 1 }) }), true)
+  eq('one added to a rep\'s existing deal does not', expiryClosesOpportunity({ ...base, features: JSON.stringify({ attachedToOpportunity: true }) }), false)
+  eq('unreadable features: as before', expiryClosesOpportunity({ ...base, features: '{oops' }), true)
+}
+
+section('Closed Lost: staff may move the opportunity back to WARM')
+{
+  const lost = { isClosed: true, isWon: false, stageName: 'Closed Lost - Budget' }
+  eq('Closed Lost, not yet asked: ask first', reactivationDecision(lost, false), { kind: 'reopenable', stageName: 'Closed Lost - Budget' })
+  eq('Closed Lost, the person agreed: reopen', reactivationDecision(lost, true), { kind: 'reopen', stageName: 'Closed Lost - Budget' })
+  eq('open: allowed, nothing to reopen', reactivationDecision({ isClosed: false, isWon: false, stageName: 'WARM' }, true), { kind: 'allowed' })
+  eq('Closed Won is never reopened', reactivationDecision({ isClosed: true, isWon: true, stageName: 'Closed Won' }, true), { kind: 'allowed' })
+  eq('an unknown stage never blocks', reactivationDecision(null, false), { kind: 'allowed' })
+  eq('the question names the stage', reopenQuestion('Closed Lost - Budget'), 'This opportunity is "Closed Lost - Budget" in Salesforce. Move it back to Warm and continue?')
+
+  const opp = (o: Partial<BookingOpportunity>) => ({ Id: '006X', AccountId: '001A', IsClosed: true, IsWon: false, StageName: 'Closed Lost - Declined', ...o }) as BookingOpportunity
+  eq('opportunityRefusal: Closed Lost still refuses by default (quote tool, attach, client paths)', opportunityRefusal(opp({}), '001A')?.includes('Closed Lost - Declined'), true)
+  eq('opportunityRefusal: a revision the person agreed to reopen passes', opportunityRefusal(opp({}), '001A', { closedLostReopening: true }), null)
+  eq('opportunityRefusal: reopening never skips the account check', opportunityRefusal(opp({}), '001B', { closedLostReopening: true }), 'That opportunity belongs to a different Salesforce account.')
+  // Closed Won is read-only (Andrew, 2026-10-20): no quote added to it, no revision of it.
+  const won = opp({ IsWon: true, StageName: 'Closed Won' })
+  eq('opportunityRefusal: Closed Won takes no added quote or revision', opportunityRefusal(won, '001A'), 'This deal is Closed Won in Salesforce; change it there first.')
+  eq('opportunityRefusal: Closed Won refused even on a reopen request', opportunityRefusal(won, '001A', { closedLostReopening: true }), 'This deal is Closed Won in Salesforce; change it there first.')
+  eq('opportunityRefusal: an open opportunity is fine', opportunityRefusal(opp({ IsClosed: false, StageName: 'WARM' }), '001A'), null)
+}
+
+section('reconcile: committed means Closed Won, in both directions (#120 review)')
+{
+  const won = { isClosed: true, isWon: true }, lost = { isClosed: true, isWon: false }, open = { isClosed: false, isWon: false }
+  eq('won: a hold commits', reconcileTarget('HOLD', won), 'COMMITTED')
+  eq('won: a waiting extension request commits', reconcileTarget('EXTENSION_REQUESTED', won), 'COMMITTED')
+  eq('won: committed stays', reconcileTarget('COMMITTED', won), null)
+  eq('lost: a hold is released', reconcileTarget('HOLD', lost), 'EXPIRED')
+  eq('lost: a committed hold is released (the deal moved Won → Lost)', reconcileTarget('COMMITTED', lost), 'EXPIRED')
+  eq('reopened: a committed hold goes back to HOLD, so it can be changed again', reconcileTarget('COMMITTED', open), 'HOLD')
+  eq('open: an ordinary hold is left alone', reconcileTarget('HOLD', open), null)
+  eq('open: a waiting extension request is left alone', reconcileTarget('EXTENSION_REQUESTED', open), null)
 }

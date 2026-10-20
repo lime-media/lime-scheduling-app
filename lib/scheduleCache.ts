@@ -33,6 +33,7 @@ export interface RefreshSummary {
   att_soft_warnings:     string[]
   sfdc_committed:        number
   sfdc_released:         number
+  sfdc_uncommitted:      number
   sfdc_checked:          number
   holds_expired:              number
   opportunities_closed:       number
@@ -72,7 +73,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
   // committed, not expired out from under itself.
   const sfdc = await reconcileSfdcOpportunities().catch((err) => {
     console.error('[scheduleCache] SFDC opportunity reconcile failed:', err)
-    return { checked: 0, committed: 0, released: 0 }
+    return { checked: 0, committed: 0, released: 0, uncommitted: 0 }
   })
 
   const expiry = await expireHolds().catch((err) => {
@@ -141,7 +142,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     `(${expiry.opportunities_closed} opportunit${expiry.opportunities_closed === 1 ? 'y' : 'ies'} closed lost, ` +
     `${expiry.opportunities_would_close} would close in dry run), ` +
     `${att_soft_released} ATT_SOFT hold(s) released, ` +
-    `${sfdc.committed} committed / ${sfdc.released} released from ${sfdc.checked} SFDC opportunit${sfdc.checked === 1 ? 'y' : 'ies'}, ` +
+    `${sfdc.committed} committed / ${sfdc.uncommitted} back to hold / ${sfdc.released} released from ${sfdc.checked} SFDC opportunit${sfdc.checked === 1 ? 'y' : 'ies'}, ` +
     `${warnings.warned} expiry warning(s) to ${warnings.recipients} user(s), ` +
     `${reconciled.resolved} conflict(s) auto-resolved` +
     (warnings.skipped_no_email > 0 ? ` (${warnings.skipped_no_email} unwarned — no email)` : '')
@@ -153,6 +154,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     att_soft_warnings,
     sfdc_committed:       sfdc.committed,
     sfdc_released:        sfdc.released,
+    sfdc_uncommitted:     sfdc.uncommitted,
     sfdc_checked:         sfdc.checked,
     holds_expired:             expiry.expired,
     opportunities_closed:      expiry.opportunities_closed,
@@ -185,6 +187,11 @@ export async function refreshCache(): Promise<RefreshSummary> {
  * Covers both Salesforce holds (expires_at backfilled from sfdc_hold_exp)
  * and client holds (expires_at from 72h SLA). Holds without expires_at
  * (internal/ATT) are never matched — they don't expire automatically.
+ *
+ * A client's waiting extension request (EXTENSION_REQUESTED) is not released
+ * early: asking moves the booking's expires_at to the date asked (no later
+ * than 3 days before it starts; app/api/client/hold-requests/[id]/extend), so
+ * it is held until staff answer or that date passes, whichever comes first.
  */
 export async function expireHolds(): Promise<{
   expired: number

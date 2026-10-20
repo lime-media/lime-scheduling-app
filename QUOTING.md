@@ -420,6 +420,34 @@ Every opportunity needs a primary contact (sales ops' rule). Both booking endpoi
 - **Two places in Salesforce.** The opportunity is created with `Primary_Contact__c` (the field Contact Email / Contact Phone read). The contact is then added as the primary Opportunity Contact Role in a separate step. If that step is refused, the opportunity still stands and the rep is told to check it.
 - The client portal does not ask: clients do not see Salesforce contacts.
 
+## 6e. How long a hold lasts
+
+A reservation holds its trucks for **3 days** by default. On both quote tools the seller can choose **1 to 14 days** before booking (`hold_days` on `/api/quote/hold`, `holdDays` on `/api/plan/hold`); the page shows the date it will lapse. Two rules still apply (`lib/holdExpiry.ts`):
+
+- **It ends 2 days before the campaign starts** at the latest, so operations has time to route the truck. Three days is the ideal runway; staff may pinch it to two (`STAFF_MIN_DAYS_BEFORE_START`). Holds made outside the staff tools (client portal, MCP, the Salesforce fallback) keep the 3-day runway. Lengths that would run past that are disabled in the selector ("campaign starts too soon") rather than offered and cut short (`availableHoldDays`).
+- **It always gets at least 24 hours**, however soon the campaign starts.
+
+**A multi-market booking is one quote with one expiry.** Every hold in it lapses at the same moment: the seller's length, capped by the **earliest** market's start (`bookingHoldExpiry`). Committed markets have no expiry and don't count, nor do markets already running (`lib/bookings.ts bookingCapStarts`). The confirmation states the one lapse date.
+
+Quote-only logs hold nothing, so they have no hold length. An expiry can be changed afterwards from Reservations → Edit: one date for every hold on the card, no later than 2 days before the booking's earliest start (`lastExpiryDate`). The date field stops there and `update_expiration` refuses a later date (400) instead of cutting it back. Reinstate and approve-extension give the whole booking the same expiry by the same rule. Bookings made under the earlier per-market rule keep their differing expiries until their next edit or reinstate.
+
+A booking is the unit everywhere: one card on Reservations and in the client portal, one status, and Edit, cancel, approve and deny act on the whole booking in one request. A client asks to extend the whole booking (client portal → Request Hold Extension), up to 3 days before its first start (the client runway; staff approving may give up to 2). While the request waits, the booking is held until the date asked, so it never lapses before staff answer; approving gives the booking that date (capped at the staff limit) and denying releases it, and the client is emailed either way. A committed (Closed Won) booking is read-only in the app except for truck swaps: no expiry, cancel, revise or added quote (`closedWonRefusal`); change the deal in Salesforce.
+
+## 6f. Changing a deal without new opportunities
+
+Multi-market plans evolve: a market is dropped or added, dates move. Two ways to keep that on one opportunity:
+
+**Revise a booking** (Reservations → **Revise**, on any booking made in the quote tools). The multi-market planner opens with the booking's account, primary contact, brand, markets, dates, trucks, schedule, hours and options (`GET /api/bookings/revise`). The seller changes what they need, re-quotes, and **Update booking** (`/api/plan/hold` with `revise.bookingKey`):
+
+- **Trucks:** while the booking is still live, a market that stays keeps the trucks it holds, wherever they can still do the (possibly moved) dates; it gets other trucks only where they cannot. The booking's own holds are left out of the fleet while it is planned, so they never block themselves. An **expired** booking keeps nothing: it is re-picked and priced fresh.
+- **One transaction:** the booking's old holds are removed and the new ones written together, or neither. A `REVISE_BOOKING` audit row records what it was.
+- **Same opportunity:** amount, markets, trucks and hold dates become the booking as it now stands; the description starts with a revision note saying what it was. A won opportunity's booking stays committed.
+- **Refused:** Salesforce pushes (change them in Salesforce), client-portal bookings, single-market bookings with lift studies (the planner does not price them), and a Closed Lost opportunity.
+
+**Add to an existing opportunity** (both quote tools, after the primary contact). The picker lists the account's open LED opportunities; choosing one adds the quote to it (`attach_opportunity_id` / `attachOpportunityId`): the new holds link to it, its amount adds, markets and trucks are the union, the hold window widens, and the description notes what was added. For changing or dropping markets already on it, use Revise.
+
+Both are staff only; the client portal is unchanged.
+
 ## 7. What the client sees vs. what's internal
 
 Nothing under an `_internal` key is returned on a client-authenticated route — not the margin check, and not the downstream deadhead flags. Those appear only on the staff routes (`/api/quote`, `/api/quote/hold`) and the MCP endpoint; on the client routes the same values are logged server-side instead. A client-facing response is visible in the browser network tab whether or not the UI renders it.

@@ -57,6 +57,8 @@ export async function loadFleetTimelines(opts: {
   hiddenTrucks?: Set<string>
   /** Omit this hold from the timelines — used when re-evaluating that hold. */
   excludeHoldId?: string
+  /** Omit these holds — a booking being revised, so its own trucks are free to it. */
+  excludeHoldIds?: Set<string>
   /**
    * Explicit schedule window (YYYY-MM-DD, inclusive) instead of the rolling
    * -30/+63 days. For planning programs that run past the rolling window; the
@@ -138,7 +140,7 @@ export async function loadFleetTimelines(opts: {
 
   const timelines = buildTruckTimelines(
     scheduleDays,
-    fleetHolds.filter(h => h.id !== opts.excludeHoldId),
+    fleetHolds.filter(h => h.id !== opts.excludeHoldId && !opts.excludeHoldIds?.has(h.id)),
   )
 
   return { timelines, gpsMap, holds: fleetHolds }

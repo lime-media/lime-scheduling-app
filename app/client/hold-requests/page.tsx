@@ -11,9 +11,13 @@ import { formatMarketState } from '@/lib/format'
 import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
+import { bookingCapStarts, bookingStatus, clientExtendRefusal, marketGroups, summarizeBooking } from '@/lib/bookings'
+import { lastExpiryDate } from '@/lib/holdExpiry'
 
 type HoldRequest = {
   id: string
+  /** The booking this hold belongs to (an opaque label): a booking is shown and extended as one. */
+  booking: string | null
   truck_number: string
   market: string
   state: string
@@ -36,19 +40,27 @@ type HoldRequest = {
 const STATUS_BADGE: Record<string, string> = {
   HOLD:                 'bg-yellow-100 text-yellow-800 border border-yellow-200',
   COMMITTED:            'bg-gray-100 text-gray-700 border border-gray-300',
-  PENDING:              'bg-purple-100 text-purple-800 border border-purple-200',
-  APPROVED:             'bg-green-100 text-green-800 border border-green-200',
-  REJECTED:             'bg-red-100 text-red-800 border border-red-200',
   EXPIRED:              'bg-gray-100 text-gray-500 border border-gray-200',
   EXTENSION_REQUESTED:  'bg-amber-100 text-amber-800 border border-amber-200',
 }
+
+/** The statuses a client's booking can be in, as this page names them. */
+const STATUS_LABEL: Record<string, string> = {
+  HOLD: 'Reservation',
+  EXTENSION_REQUESTED: 'Extension Requested',
+  COMMITTED: 'Confirmed',
+  EXPIRED: 'Expired',
+}
+
+const FILTERS = ['', 'HOLD', 'EXTENSION_REQUESTED', 'COMMITTED', 'EXPIRED'] as const
 
 function fmtMoney(n: number): string {
   return '$' + Math.round(n).toLocaleString('en-US')
 }
 
 function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; status: string }) {
-  if (!expiresAt || status === 'REJECTED') return null
+  // A confirmed booking is booked, not held: it has no expiry to show.
+  if (!expiresAt || status === 'COMMITTED') return null
   const expDate = new Date(expiresAt)
 
   if (status === 'EXPIRED') {
@@ -74,7 +86,7 @@ function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; stat
       className={`text-xs ${isUrgent ? 'text-amber-600 font-medium' : 'text-gray-500'}`}
       title={format(expDate, 'MMM d, yyyy h:mm a')}
     >
-      Expires {format(expDate, 'MMM d, h:mm a')} ({remaining} left)
+      {status === 'EXTENSION_REQUESTED' ? 'Held until' : 'Expires'} {format(expDate, 'MMM d, h:mm a')} ({remaining} left)
     </span>
   )
 }
@@ -94,8 +106,26 @@ function PricingBadge({ tier, total }: { tier: string | null; total: number | nu
 }
 
 /** The status as this page shows it. */
-const statusLabel = (status: string) =>
-  status === 'EXTENSION_REQUESTED' ? 'Ext. Req.' : status === 'HOLD' ? 'Reservation' : status === 'COMMITTED' ? 'Committed' : status
+const statusLabel = (status: string) => STATUS_LABEL[status] ?? status
+
+/**
+ * The dates a client may ask to extend a booking to, or why not. The whole
+ * booking is extended (lib/bookings.ts clientExtendRefusal), from the day
+ * after it now lapses to 3 days before it starts (lib/holdExpiry.ts
+ * lastExpiryDate, the default runway); the server checks the same.
+ */
+function extendWindow(rows: HoldRequest[]): { min: string; max: string } | { refusal: string } {
+  const refusal = clientExtendRefusal(rows)
+  if (refusal) return { refusal }
+  const held = rows.filter(r => r.status === 'HOLD')
+  const today = new Date().toISOString().slice(0, 10)
+  const max = lastExpiryDate([...bookingCapStarts(held, today)].sort()[0])
+  const lapses = held.map(r => r.expires_at?.slice(0, 10)).filter((d): d is string => !!d).sort().reverse()[0] ?? today
+  const after = new Date(lapses + 'T00:00:00Z')
+  after.setUTCDate(after.getUTCDate() + 1)
+  const min = [after.toISOString().slice(0, 10), today].sort().reverse()[0]
+  return min > max ? { refusal: 'This booking starts too soon to be extended.' } : { min, max }
+}
 
 const SORT_COLUMNS = [
   { key: 'truck', label: 'Truck' },
@@ -124,9 +154,12 @@ export default function ClientHoldRequestsPage() {
   const [loading,      setLoading]      = useState(true)
   const [error,        setError]        = useState('')
   const [filterStatus, setFilterStatus] = useState<string>('')
+  // The booking (or single hold) whose extension form is open.
   const [extending,     setExtending]     = useState<string | null>(null)
   const [extendReason,  setExtendReason]  = useState('')
   const [extendUntil,   setExtendUntil]   = useState('')
+  const [extendError,   setExtendError]   = useState('')
+  const [submitting,    setSubmitting]    = useState(false)
 
   const fetchRequests = useCallback(async () => {
     setLoading(true)
@@ -148,62 +181,135 @@ export default function ClientHoldRequestsPage() {
     else if (authChecked) setLoading(false)
   }, [authChecked, clientUser, fetchRequests])
 
-  // Takes every hold-request ID in the campaign — a multi-truck campaign must extend as one
-  // unit, not just the first truck in the group (which silently left the rest to expire on
-  // their own while the group badge misleadingly showed "Extension Requested" for all of them).
-  const requestExtension = useCallback(async (ids: string[]) => {
+  const closeExtend = () => { setExtending(null); setExtendReason(''); setExtendUntil(''); setExtendError('') }
+
+  // ONE request for the whole booking: the server finds every hold in it from
+  // the one named here and marks them all, in one transaction.
+  const requestExtension = useCallback(async (holdId: string) => {
     if (!extendUntil) return
+    setSubmitting(true)
+    setExtendError('')
     try {
-      const results = await Promise.all(ids.map((id) =>
-        fetch(`/api/client/hold-requests/${id}/extend`, {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ reason: extendReason, extend_until: extendUntil }),
-        })
-      ))
-      if (results.every((r) => r.ok)) {
-        setExtending(null)
-        setExtendReason('')
-        setExtendUntil('')
+      const res = await fetch(`/api/client/hold-requests/${holdId}/extend`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ reason: extendReason, extend_until: extendUntil }),
+      })
+      if (res.ok) {
+        closeExtend()
         fetchRequests()
+      } else {
+        const err = await res.json().catch(() => ({}))
+        setExtendError(err.error || 'The request could not be sent. Please try again.')
       }
-    } catch { /* handled by UI */ }
+    } catch {
+      setExtendError('The request could not be sent. Please try again.')
+    } finally {
+      setSubmitting(false)
+    }
   }, [extendReason, extendUntil, fetchRequests])
 
   const { sort, sortBy, chooseSort } = useTableSort<SortKey>('client.holdRequests.sort', SORT_KEYS)
-  const filtered = useMemo(
-    () => (filterStatus ? requests.filter((r) => r.status === filterStatus) : requests),
-    [requests, filterStatus],
-  )
 
-  // Group by campaign_group_id for display. The chosen sort orders the table,
-  // the campaign cards (by their lowest truck number for "Truck") and the
-  // trucks within each card. Memoized, so typing an extension reason does not
+  // One card per booking (every market and truck of one quote), filtered by
+  // the booking's status, never part of one. Holds that belong to no booking
+  // are rows of their own. Memoized, so typing an extension reason does not
   // regroup and re-sort the list.
-  const { sortedGroups, sortedUngrouped } = useMemo(() => {
+  const { sortedGroups, sortedUngrouped, shown } = useMemo(() => {
     const grouped = new Map<string, HoldRequest[]>()
     const ungrouped: HoldRequest[] = []
-    for (const r of filtered) {
-      if (r.campaign_group_id) {
-        const group = grouped.get(r.campaign_group_id) ?? []
-        group.push(r)
-        grouped.set(r.campaign_group_id, group)
-      } else {
-        ungrouped.push(r)
-      }
+    for (const r of requests) {
+      if (r.booking) grouped.set(r.booking, [...(grouped.get(r.booking) ?? []), r])
+      else ungrouped.push(r)
     }
+    const keep = (status: string) => !filterStatus || status === filterStatus
+    const groups = Array.from(grouped.entries()).filter(([, rows]) => keep(bookingStatus(rows).status))
+    const singles = ungrouped.filter(r => keep(r.status))
     return {
-      sortedUngrouped: sortRows(ungrouped, sort, sortValue),
+      shown: groups.length + singles.length,
+      sortedUngrouped: sortRows(singles, sort, sortValue),
       sortedGroups: sortRows(
-        Array.from(grouped.entries()).map(([id, rows]) => [id, sortRows(rows, sort, sortValue)] as const),
+        groups.map(([id, rows]) => [id, sortRows(rows, sort, sortValue)] as const),
         sort,
         ([, rows], key) => (key === 'truck' ? minValue(rows.map(r => r.truck_number)) : sortValue(rows[0], key)),
       ),
     }
-  }, [filtered, sort])
+  }, [requests, filterStatus, sort])
 
-  const canExtend = (r: HoldRequest) =>
-    ['PENDING', 'APPROVED', 'EXPIRED'].includes(r.status) && r.status !== 'EXTENSION_REQUESTED'
+  // Render helpers, called as functions (not components): a component defined
+  // inside the page would remount its inputs on every keystroke.
+
+  /** The extension form for a booking (or a single hold): its dates and reason. */
+  function extendForm(rows: HoldRequest[], inline: boolean) {
+    const w = extendWindow(rows)
+    if ('refusal' in w) return null
+    const target = rows.find(r => r.status === 'HOLD')!
+    const fields = (
+      <>
+        <div>
+          <label className="text-xs font-medium text-gray-600 mb-0.5 block">Extend until <span className="text-red-500">*</span></label>
+          <input
+            type="date"
+            value={extendUntil}
+            min={w.min}
+            max={w.max}
+            onChange={(e) => setExtendUntil(e.target.value)}
+            className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+          />
+          <p className="text-[11px] text-gray-400 mt-0.5">Up to {format(parseDateOnly(w.max), 'MMM d')}, 3 days before it starts.</p>
+        </div>
+        <input
+          type="text"
+          placeholder="Reason (optional)"
+          value={extendReason}
+          onChange={(e) => setExtendReason(e.target.value)}
+          className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+        />
+      </>
+    )
+    const buttons = (
+      <>
+        <button
+          onClick={() => requestExtension(target.id)}
+          disabled={!extendUntil || submitting}
+          className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg text-sm font-medium transition-colors"
+        >
+          {submitting ? 'Sending…' : 'Submit'}
+        </button>
+        <button onClick={closeExtend} className="text-gray-500 hover:text-gray-700 px-2 py-1.5 text-sm transition-colors">
+          Cancel
+        </button>
+      </>
+    )
+    return inline ? (
+      <div className="space-y-2">
+        <div className="flex gap-2 items-end flex-wrap">{fields}{buttons}</div>
+        {extendError && <p className="text-xs text-red-600">{extendError}</p>}
+      </div>
+    ) : (
+      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={closeExtend}>
+        <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 space-y-3" onClick={(e) => e.stopPropagation()}>
+          <h3 className="font-semibold text-gray-900">Request Hold Extension</h3>
+          <div className="flex flex-col gap-2">{fields}</div>
+          {extendError && <p className="text-xs text-red-600">{extendError}</p>}
+          <div className="flex gap-2 justify-end">{buttons}</div>
+        </div>
+      </div>
+    )
+  }
+
+  /** The "Request Hold Extension" link, or why the booking can't be extended (when it is a live reservation). */
+  function extendLink(rows: HoldRequest[], id: string) {
+    const w = extendWindow(rows)
+    if ('refusal' in w) {
+      return bookingStatus(rows).status === 'HOLD' ? <span className="text-xs text-gray-400">{w.refusal}</span> : null
+    }
+    return (
+      <button onClick={() => { closeExtend(); setExtending(id) }} className="text-amber-700 hover:text-amber-800 text-xs font-medium">
+        Request Hold Extension
+      </button>
+    )
+  }
 
   return (
     <div className="flex flex-col h-dvh overflow-hidden bg-gray-50">
@@ -231,10 +337,10 @@ export default function ClientHoldRequestsPage() {
             <div className="flex items-start sm:items-center justify-between mb-4 sm:mb-6 gap-3">
               <div>
                 <h1 className="text-2xl font-bold text-gray-900">My Hold Requests</h1>
-                <p className="text-sm text-gray-500 mt-0.5">Requests you&apos;ve submitted, and their review status</p>
+                <p className="text-sm text-gray-500 mt-0.5">Your reservations, one per booking, and their status</p>
               </div>
               <div className="flex gap-2 flex-shrink-0 flex-wrap">
-                {(['', 'PENDING', 'APPROVED', 'EXPIRED', 'REJECTED'] as const).map((s) => (
+                {FILTERS.map((s) => (
                   <button
                     key={s}
                     onClick={() => setFilterStatus(s)}
@@ -244,7 +350,7 @@ export default function ClientHoldRequestsPage() {
                         : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
                     }`}
                   >
-                    {s || 'All'}
+                    {s ? statusLabel(s) : 'All'}
                   </button>
                 ))}
               </div>
@@ -257,7 +363,7 @@ export default function ClientHoldRequestsPage() {
               </div>
             ) : loading ? (
               <TableSkeleton />
-            ) : filtered.length === 0 ? (
+            ) : shown === 0 ? (
               <div className="text-center py-20 text-gray-400">
                 <p className="font-medium">No hold requests found</p>
                 <p className="text-sm mt-1">Use the AI Assistant to check availability, get a quote, and place a hold</p>
@@ -267,32 +373,37 @@ export default function ClientHoldRequestsPage() {
                 <div className="flex justify-end">
                   <SortSelect columns={SORT_COLUMNS} sort={sort} onChange={chooseSort} defaultLabel="Newest first" />
                 </div>
-                {/* Campaign groups */}
-                {sortedGroups.map(([groupId, groupItems]) => {
-                  const first = groupItems[0]
+                {/* Bookings: one card each, every market and truck in it */}
+                {sortedGroups.map(([bookingId, groupItems]) => {
+                  const { status } = bookingStatus(groupItems)
+                  const live = groupItems.filter(r => r.status === status)
+                  const first = live[0] ?? groupItems[0]
+                  const summary = summarizeBooking(groupItems.map(r => ({ ...r, sfdc_opportunity_id: null })))
+                  const markets = marketGroups(groupItems.map(r => ({ ...r, sfdc_opportunity_id: null })))
+                  const multi = markets.length > 1
                   return (
-                    <div key={groupId} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-                      {/* Campaign header */}
+                    <div key={bookingId} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                      {/* Booking header */}
                       <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between flex-wrap gap-2">
                         <div className="flex items-center gap-3">
                           <span className="text-sm font-semibold text-gray-900">
-                            {first.truck_count ?? groupItems.length} truck{(first.truck_count ?? groupItems.length) === 1 ? '' : 's'} &middot; {first.market}
+                            {summary.trucks} truck{summary.trucks === 1 ? '' : 's'} &middot; {multi ? `${markets.length} markets` : formatMarketState(first.market, first.state)}
                           </span>
                           <span className="text-xs text-gray-500">
-                            {format(parseDateOnly(first.start_date), 'MMM d')} &ndash; {format(parseDateOnly(first.end_date), 'MMM d, yyyy')}
+                            {format(parseDateOnly(summary.start), 'MMM d')} &ndash; {format(parseDateOnly(summary.end), 'MMM d, yyyy')}
                           </span>
                         </div>
                         <div className="flex items-center gap-3">
-                          <PricingBadge tier={first.pricing_tier} total={first.quoted_total} />
-                          <ExpirationBadge expiresAt={first.expires_at} status={first.status} />
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[first.status] ?? STATUS_BADGE.PENDING}`}>
-                            {first.status === 'EXTENSION_REQUESTED' ? 'Extension Requested' : first.status === 'HOLD' ? 'Reservation' : first.status === 'COMMITTED' ? 'Committed' : first.status}
+                          <PricingBadge tier={summary.tier} total={summary.total} />
+                          <ExpirationBadge expiresAt={summarizeBooking(live.map(r => ({ ...r, sfdc_opportunity_id: null }))).earliestExpiry} status={status} />
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.HOLD}`}>
+                            {statusLabel(status)}
                           </span>
                         </div>
                       </div>
-                      {/* Quote breakdown — what's actually being paid for, not just a tier name */}
+                      {/* Quote breakdown — one market's breakdown would misstate a multi-market booking */}
                       {(() => {
-                        const parsedFeatures = parseQuoteFeatures(first.features)
+                        const parsedFeatures = multi ? null : parseQuoteFeatures(first.features)
                         return parsedFeatures ? (
                           <div className="px-4 py-3 bg-white border-b border-gray-100">
                             <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Quote breakdown</div>
@@ -300,80 +411,43 @@ export default function ClientHoldRequestsPage() {
                           </div>
                         ) : null
                       })()}
-                      {/* Truck rows */}
+                      {/* Markets in flight order, each with its trucks */}
                       <div className="divide-y divide-gray-100">
-                        {groupItems.map((r) => (
-                          <div key={r.id} className="px-4 py-2.5 flex items-center justify-between text-sm">
-                            <span className="font-medium text-gray-900">Truck {r.truck_number}</span>
-                            <span className="text-gray-500">{formatMarketState(r.market, r.state)}</span>
+                        {markets.map((m) => (
+                          <div key={m.key}>
+                            {multi && (
+                              <div className="px-4 py-2 bg-gray-50 flex items-center justify-between text-sm">
+                                <span className="font-semibold text-gray-900">{formatMarketState(m.market, m.rows[0].state)}</span>
+                                <span className="text-xs text-gray-600">
+                                  {format(parseDateOnly(m.start), 'MMM d')} &ndash; {format(parseDateOnly(m.end), 'MMM d, yyyy')}
+                                </span>
+                              </div>
+                            )}
+                            {m.rows.map((r) => (
+                              <div key={r.id} className={`${multi ? 'pl-8' : 'px-4'} pr-4 py-2.5 flex items-center justify-between text-sm`}>
+                                <span className="font-medium text-gray-900">Truck {r.truck_number}</span>
+                                {!multi && <span className="text-gray-500">{formatMarketState(r.market, r.state)}</span>}
+                              </div>
+                            ))}
                           </div>
                         ))}
                       </div>
-                      {/* Extension action */}
-                      {canExtend(first) && (() => {
-                        // Min date: the later of today and the current expiration
-                        const today = new Date().toISOString().split('T')[0]
-                        const expiresDate = first.expires_at ? first.expires_at.split('T')[0] : today
-                        const minDate = expiresDate > today ? expiresDate : today
-                        // Max date: day before campaign start
-                        const startDate = new Date(first.start_date + 'T00:00:00Z')
-                        startDate.setUTCDate(startDate.getUTCDate() - 1)
-                        const maxDate = startDate.toISOString().split('T')[0]
-
-                        return (
-                          <div className="px-4 py-2.5 border-t border-gray-100 bg-gray-50">
-                            {extending === first.id ? (
-                              <div className="space-y-2">
-                                <div className="flex gap-2 items-end">
-                                  <div>
-                                    <label className="text-xs font-medium text-gray-600 mb-0.5 block">Extend until <span className="text-red-500">*</span></label>
-                                    <input
-                                      type="date"
-                                      value={extendUntil}
-                                      min={minDate}
-                                      max={maxDate}
-                                      onChange={(e) => setExtendUntil(e.target.value)}
-                                      className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                                    />
-                                  </div>
-                                  <input
-                                    type="text"
-                                    placeholder="Reason (optional)"
-                                    value={extendReason}
-                                    onChange={(e) => setExtendReason(e.target.value)}
-                                    className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                                  />
-                                  <button
-                                    onClick={() => requestExtension(groupItems.map((g) => g.id))}
-                                    disabled={!extendUntil}
-                                    className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg text-sm font-medium transition-colors"
-                                  >
-                                    Submit
-                                  </button>
-                                  <button
-                                    onClick={() => { setExtending(null); setExtendReason(''); setExtendUntil('') }}
-                                    className="text-gray-500 hover:text-gray-700 px-2 py-1.5 text-sm transition-colors"
-                                  >
-                                    Cancel
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              <button
-                                onClick={() => setExtending(first.id)}
-                                className="text-amber-700 hover:text-amber-800 text-xs font-medium"
-                              >
-                                Request Hold Extension
-                              </button>
-                            )}
-                          </div>
-                        )
-                      })()}
+                      {status === 'EXTENSION_REQUESTED' && (
+                        <div className="px-4 py-2 text-xs text-amber-800 bg-amber-50 border-t border-amber-100">
+                          Extension requested{first.extension_until ? ` to ${format(parseDateOnly(first.extension_until), 'MMM d')}` : ''}. The Lime Media team will confirm by email.
+                        </div>
+                      )}
+                      {/* Extension: the whole booking at once */}
+                      {status === 'HOLD' && (
+                        <div className="px-4 py-2.5 border-t border-gray-100 bg-gray-50">
+                          {extending === bookingId ? extendForm(groupItems, true) : extendLink(groupItems, bookingId)}
+                        </div>
+                      )}
                     </div>
                   )
                 })}
 
-                {/* Ungrouped (legacy or single-truck holds without pricing) */}
+                {/* Holds that belong to no booking (legacy single-truck rows) */}
                 {sortedUngrouped.length > 0 && (
                   <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
                     <div className="overflow-x-auto">
@@ -402,21 +476,14 @@ export default function ClientHoldRequestsPage() {
                                   </td>
                                   <td className="px-4 py-3">
                                     <div className="flex items-center gap-2">
-                                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[r.status] ?? STATUS_BADGE.PENDING}`}>
+                                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[r.status] ?? STATUS_BADGE.HOLD}`}>
                                         {statusLabel(r.status)}
                                       </span>
                                       <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
                                     </div>
                                   </td>
                                   <td className="px-4 py-3">
-                                    {canExtend(r) && (
-                                      <button
-                                        onClick={() => setExtending(r.id)}
-                                        className="text-amber-700 hover:text-amber-800 text-xs font-medium"
-                                      >
-                                        Request Hold Extension
-                                      </button>
-                                    )}
+                                    {r.status === 'HOLD' && extendLink([r], r.id)}
                                   </td>
                                 </tr>
                                 {parsedFeatures && (
@@ -438,52 +505,10 @@ export default function ClientHoldRequestsPage() {
               </div>
             )}
 
-            {/* Extension modal for ungrouped holds */}
-            {extending && !sortedGroups.some(([, rows]) => rows.some(r => r.id === extending)) && (() => {
-              const holdReq = sortedUngrouped.find(r => r.id === extending)
-              if (!holdReq) return null
-              const today = new Date().toISOString().split('T')[0]
-              const expiresDate = holdReq.expires_at ? holdReq.expires_at.split('T')[0] : today
-              const minDate = expiresDate > today ? expiresDate : today
-              const startDate = new Date(holdReq.start_date + 'T00:00:00Z')
-              startDate.setUTCDate(startDate.getUTCDate() - 1)
-              const maxDate = startDate.toISOString().split('T')[0]
-
-              return (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => { setExtending(null); setExtendReason(''); setExtendUntil('') }}>
-                  <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6" onClick={(e) => e.stopPropagation()}>
-                    <h3 className="font-semibold text-gray-900 mb-3">Request Hold Extension</h3>
-                    <div className="mb-3">
-                      <label className="text-xs font-medium text-gray-600 mb-1 block">Extend until <span className="text-red-500">*</span></label>
-                      <input
-                        type="date"
-                        value={extendUntil}
-                        min={minDate}
-                        max={maxDate}
-                        onChange={(e) => setExtendUntil(e.target.value)}
-                        className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                      />
-                    </div>
-                    <textarea
-                      placeholder="Reason (optional)"
-                      value={extendReason}
-                      onChange={(e) => setExtendReason(e.target.value)}
-                      rows={2}
-                      className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent resize-none mb-4"
-                    />
-                    <div className="flex gap-2 justify-end">
-                      <button onClick={() => { setExtending(null); setExtendReason(''); setExtendUntil('') }} className="px-4 py-2.5 text-sm text-gray-600 hover:text-gray-800 transition-colors">Cancel</button>
-                      <button
-                        onClick={() => requestExtension([extending])}
-                        disabled={!extendUntil}
-                        className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors"
-                      >
-                        Submit Request
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )
+            {/* Extension form for a hold that belongs to no booking */}
+            {extending && (() => {
+              const single = sortedUngrouped.find(r => r.id === extending)
+              return single ? extendForm([single], false) : null
             })()}
           </>
         )}

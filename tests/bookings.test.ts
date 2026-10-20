@@ -1,0 +1,146 @@
+/**
+ * Grouping reservations into bookings for the Reservations page (lib/bookings.ts).
+ * Run with: npm test
+ */
+import { eq, section } from './harness'
+import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingKey, bookingStatus, clientExtendRefusal, closedWonRefusal, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, reviseRefusal, summarizeBooking } from '@/lib/bookings'
+
+const h = (campaign_group_id: string | null, truck_number: string, market: string, quoted_total: number | null, extra: Partial<{ sfdc: string; start: string; end: string; exp: string }> = {}) => ({
+  campaign_group_id, sfdc_opportunity_id: extra.sfdc ?? null, truck_number, market, quoted_total,
+  start_date: extra.start ?? '2026-11-09', end_date: extra.end ?? '2026-12-06', expires_at: extra.exp ?? '2026-10-30T23:59:00.000Z',
+})
+
+section('bookings: a multi-market quote is one booking')
+// Outdoor Media Group, 2026-10-15: 7 markets, one opportunity, 7 campaign groups.
+const omg = ['Albany, NY', 'Ithaca, NY', 'Rochester, NY'].map((m, i) => h(`mm_365fe279-4ec4_${i + 1}`, `T${i}`, m, 10000 + i, { sfdc: '006VP00000hUk9VYAS' }))
+eq('every market shares the booking key', new Set(omg.map(bookingKey)).size, 1)
+eq('the key is the booking, not a market', bookingKey(omg[0]), 'mm_365fe279-4ec4')
+eq('two-digit market numbers too', bookingKey(h('mm_7f917fdc_14', 'x', 'Ashland, VA', 1)), 'mm_7f917fdc')
+eq('quote-only logs group the same way', bookingKey(h('mmq_abc_2', 'x', 'm', 1)), 'mmq_abc')
+eq('recognized as multi-market', isMultiMarket(omg[0]), true)
+
+section('bookings: everything else groups as before')
+eq('single-market quote: its campaign group', bookingKey(h('cg_1760_ab12cd', 'x', 'm', 1)), 'cg_1760_ab12cd')
+eq('Salesforce push: its opportunity', bookingKey(h(null, 'x', 'm', 1, { sfdc: '006ABC' })), '006ABC')
+eq('on its own: none', bookingKey(h(null, 'x', 'm', 1)), null)
+eq('not multi-market', isMultiMarket(h('cg_1', 'x', 'm', 1)), false)
+
+section('bookings: the headline figures')
+const twoTruckMarket = [
+  h('mm_b_1', '7992', 'Nashville, TN', 5000, { exp: '2026-10-17T11:17:00.000Z' }),
+  h('mm_b_1', '4840', 'Nashville, TN', 5000, { exp: '2026-10-17T11:17:00.000Z' }),
+  h('mm_b_2', '5688', 'Knoxville, TN', 3000, { start: '2026-11-01', exp: '2026-10-16T09:00:00.000Z' }),
+]
+const sum = summarizeBooking(twoTruckMarket)
+eq('total adds each market once, not each hold', sum.total, 8000)
+eq('markets and trucks', [sum.markets.length, sum.trucks], [2, 3])
+eq('dates span the booking', [sum.start, sum.end], ['2026-11-01', '2026-12-06'])
+eq('the earliest expiry is the one to watch', sum.earliestExpiry, '2026-10-16T09:00:00.000Z')
+eq('a truck alternating between markets counts once',
+  summarizeBooking([h('mm_c_1', '0794', 'Omaha, NE', 1), h('mm_c_2', '0794', 'Lincoln, NE', 1)]).trucks, 1)
+eq('no prices: no total', summarizeBooking([h('mm_d_1', 'x', 'm', null)]).total, null)
+
+section('bookings: one card per booking, one status (Andrew, 2026-10-20)')
+// A booking is one quote: booked, committed, extended and expired whole.
+const whole = omg.map(r => ({ ...r, status: 'HOLD' }))
+eq('one status for the whole booking, nothing out of step', bookingStatus(whole), { status: 'HOLD', odd: [] })
+// An older booking (before #118) whose markets lapsed apart: still one card,
+// under the status that needs action first, the odd markets named.
+const older = [{ ...omg[0], status: 'HOLD' }, { ...omg[1], status: 'EXPIRED' }, { ...omg[2], status: 'HOLD' }]
+eq('an older split booking: one card, the odd markets named', bookingStatus(older), { status: 'HOLD', odd: [{ status: 'EXPIRED', markets: ['Ithaca, NY'] }] })
+eq('a waiting extension request comes first', bookingStatus([{ ...omg[0], status: 'HOLD' }, { ...omg[1], status: 'EXTENSION_REQUESTED' }]).status, 'EXTENSION_REQUESTED')
+eq('all expired: expired', bookingStatus(omg.map(r => ({ ...r, status: 'EXPIRED' }))).status, 'EXPIRED')
+eq('one tier when every market has it', summarizeBooking([{ ...omg[0], pricing_tier: 'Better' }, { ...omg[1], pricing_tier: 'Better' }]).tier, 'Better')
+eq('"Mixed" when markets were priced at different tiers', summarizeBooking([{ ...omg[0], pricing_tier: 'Better' }, { ...omg[1], pricing_tier: 'Best' }]).tier, 'Mixed')
+const partlyPriced = summarizeBooking([h('mm_e_1', 'a', 'A', 5000), h('mm_e_2', 'b', 'B', null)])
+eq('an unpriced market is counted, not taken as $0', [partlyPriced.total, partlyPriced.unpricedMarkets], [5000, 1])
+
+
+section('bookings: a multi-market booking is one quote with one expiry')
+{
+  const r = (id: string, market: string, start_date: string, expires_at: string | null, status = 'HOLD') =>
+    ({ id, market, start_date, expires_at, status })
+  // Markets start Oct 25 and Nov 20; their holds drifted apart under the old per-market rule.
+  const booking = [r('a', 'Dallas, TX', '2026-10-25', '2026-10-21T23:59:59Z'), r('b', 'Houston, TX', '2026-11-20', '2026-10-28T23:59:59Z')]
+  eq('every hold of the card gets the one date', expiryEdits(booking, '2026-10-20').map(e => [e.id, e.expiresOn, e.changed]),
+    [['a', '2026-10-20', true], ['b', '2026-10-20', true]])
+  eq('holds that drifted apart come back together on the next edit', expiryEdits(booking, '2026-10-21').map(e => [e.id, e.expiresOn, e.changed]),
+    [['a', '2026-10-21', false], ['b', '2026-10-21', true]])
+  eq('a hold with no expiry gets the date too', expiryEdits([r('c', 'Dallas, TX', '2026-10-25', null)], '2026-10-20')[0].changed, true)
+  eq('the dialog opens on the earliest expiry, as the card badge shows', earliestExpiryDate([booking[1], booking[0], r('x', 'Waco, TX', '2026-12-01', null)]), '2026-10-21')
+
+  // Which starts cap the booking: still-holdable markets only.
+  const today = '2026-10-20'
+  eq('the earliest still-holdable start caps it', [...bookingCapStarts(booking, today)].sort()[0], '2026-10-25')
+  eq('a committed market does not cap it (it has no expiry)',
+    bookingCapStarts([r('a', 'Dallas, TX', '2026-10-25', null, 'COMMITTED'), booking[1]], today), ['2026-11-20'])
+  eq('a market already running does not cap it', bookingCapStarts([r('a', 'Dallas, TX', '2026-10-15', null), booking[1]], today), ['2026-11-20'])
+  eq('nothing left to hold: every start, so there is still a limit',
+    bookingCapStarts([r('a', 'Dallas, TX', '2026-10-15', null, 'COMMITTED')], today), ['2026-10-15'])
+}
+
+section('bookings: a market split across two cards is not counted as whole on either')
+{
+  // Albany's two holds: one still on hold, one lapsed. Buffalo is all on hold.
+  const row = (campaign_group_id: string, truck_number: string, market: string, quoted_total: number | null, status: string) =>
+    ({ campaign_group_id, sfdc_opportunity_id: null, truck_number, market, quoted_total, status,
+       start_date: '2026-11-09', end_date: '2026-12-04', expires_at: '2026-10-30T23:59:00.000Z' })
+  const all = [row('mm_x_1', 'A1', 'Albany, NY', 42000, 'HOLD'), row('mm_x_1', 'A2', 'Albany, NY', 42000, 'EXPIRED'), row('mm_x_2', 'B1', 'Buffalo, NY', 21000, 'HOLD')]
+  const onHold = summarizeBooking(all.filter(r => r.status === 'HOLD'), all)
+  eq('the Hold card counts Buffalo, not half of Albany', [onHold.total, onHold.splitMarkets], [21000, 1])
+  const expired = summarizeBooking(all.filter(r => r.status === 'EXPIRED'), all)
+  eq('the Expired card counts nothing as whole', [expired.total, expired.splitMarkets], [null, 1])
+  eq('without the whole booking, as before', summarizeBooking(all.filter(r => r.status === 'HOLD')).total, 63000)
+}
+
+section('bookings: a multi-market card shows each market as a subgroup')
+{
+  const f = (activationDays?: number) => activationDays === undefined ? null : JSON.stringify({ activationDays })
+  const row = (g: string, truck: string, market: string, start: string, end: string, features: string | null = null) =>
+    ({ campaign_group_id: g, sfdc_opportunity_id: '006X', truck_number: truck, market, start_date: start, end_date: end, features })
+  const rows = [
+    row('mm_b_2', '0912', 'New York City, NY', '2026-11-16T00:00:00.000Z', '2026-11-27T00:00:00.000Z', f(10)),
+    row('mm_b_1', '7314', 'Buffalo, NY', '2026-11-09', '2026-11-28', f(20)),
+    row('mm_b_2', '0382', 'New York City, NY', '2026-11-16', '2026-11-27', f(10)),
+    row('mm_b_3', '4840', 'Albany, NY', '2026-11-09', '2026-11-13'),
+    // A truck alternating weekly: two stretches in one market.
+    row('mm_b_4', '1488', 'Ithaca, NY', '2026-11-23', '2026-11-27', f(10)),
+    row('mm_b_4', '1488', 'Ithaca, NY', '2026-11-09', '2026-11-13', f(10)),
+  ]
+  const g = marketGroups(rows)
+  eq('one subgroup per market line', g.length, 4)
+  eq('ordered by start date, then market', g.map(x => x.market), ['Albany, NY', 'Buffalo, NY', 'Ithaca, NY', 'New York City, NY'])
+  eq('a subgroup spans its holds', [g[2].start, g[2].end], ['2026-11-09', '2026-11-27'])
+  eq('activation days from the quote when stored', [g[1].days, g[1].daysKind], [20, 'activation'])
+  eq('calendar days when not', [g[0].days, g[0].daysKind], [5, 'calendar'])
+  eq('trucks under it, by start then number', g[3].rows.map(r => r.truck_number), ['0382', '0912'])
+  eq('a truck\'s stretches in date order', g[2].rows.map(r => r.start_date), ['2026-11-09', '2026-11-23'])
+  eq('every row lands in exactly one subgroup', g.reduce((n, x) => n + x.rows.length, 0), rows.length)
+  eq('unreadable features fall back to calendar days', marketGroups([row('mm_c_1', '1', 'X', '2026-11-01', '2026-11-03', '{bad')])[0].daysKind, 'calendar')
+}
+
+section('bookings: Closed Won is read-only in the app (Andrew, 2026-10-20)')
+{
+  const wh = (status: string, opp: string | null = '006X') => ({ status, sfdc_opportunity_id: opp })
+  eq('a committed booking is refused', closedWonRefusal([wh('HOLD'), wh('COMMITTED')]), CLOSED_WON_READ_ONLY)
+  eq('Salesforce already says won (before the reconcile): refused', closedWonRefusal([wh('HOLD')], { isWon: true }), CLOSED_WON_READ_ONLY)
+  eq('an open deal on hold: allowed', closedWonRefusal([wh('HOLD')], { isWon: false }), null)
+  eq('no opportunity known: allowed', closedWonRefusal([wh('EXTENSION_REQUESTED')], null), null)
+  // #120 review: a hold committed with no deal behind it has nothing in
+  // Salesforce to change, so it must never be locked.
+  eq('committed with no opportunity: not locked', closedWonRefusal([wh('COMMITTED', null)]), null)
+  const rh = (status: string) => ({ id: 'h1', campaign_group_id: 'mm_a_1', sfdc_opportunity_id: '006X', truck_number: '0382', market: 'Albany, NY',
+    start_date: '2026-11-09', end_date: '2026-12-04', status, source: 'INTERNAL', origination: 'frontend', features: null, truck_count: 1, live: true })
+  eq('a committed booking cannot be revised', reviseRefusal([rh('HOLD'), rh('COMMITTED')]), CLOSED_WON_READ_ONLY)
+}
+
+section('bookings: a client asks to extend the whole booking, or not at all')
+{
+  const s = (...statuses: string[]) => statuses.map(status => ({ status }))
+  eq('every live hold on hold: allowed', clientExtendRefusal(s('HOLD', 'HOLD')), null)
+  eq('an older booking with a lapsed market: the held part may still ask', clientExtendRefusal(s('HOLD', 'EXPIRED')), null)
+  eq('confirmed (won): nothing to extend', clientExtendRefusal(s('HOLD', 'COMMITTED')), 'This booking is confirmed; there is no hold to extend.')
+  eq('a request already waiting', clientExtendRefusal(s('EXTENSION_REQUESTED', 'EXTENSION_REQUESTED')), 'An extension has already been requested for this booking.')
+  eq('all expired: lapsed', clientExtendRefusal(s('EXPIRED')), 'This booking has expired and can no longer be extended.')
+  eq('an AT&T soft hold is never a client\'s', clientExtendRefusal(s('ATT_SOFT')), 'This booking cannot be extended.')
+}

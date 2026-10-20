@@ -70,6 +70,7 @@ export async function GET() {
       sfdc_opportunity_id: h.sfdc_opportunity_id ?? null,
       expires_at:        h.expires_at?.toISOString() ?? null,
       extension_reason:  h.extension_reason ?? null,
+      extension_until:   h.extension_until?.toISOString() ?? null,
       created_at:        h.created_at.toISOString(),
     })),
   })

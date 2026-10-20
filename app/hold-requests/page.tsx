@@ -9,11 +9,14 @@ import toast from 'react-hot-toast'
 import { Navbar } from '@/components/Navbar'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
 import { parseDateOnly } from '@/lib/dateOnly'
+import { useReopenConfirm, type Reopenable } from '@/components/ReopenOpportunityDialog'
 import { formatMarketState } from '@/lib/format'
 import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
+import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingKey, closedWonRefusal, bookingStatus, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
+import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
 
 type HoldRequest = {
   id: string
@@ -37,6 +40,7 @@ type HoldRequest = {
   sfdc_opportunity_id: string | null
   expires_at: string | null
   extension_reason: string | null
+  extension_until: string | null
   created_at: string
 }
 
@@ -108,6 +112,30 @@ function groupSortValue(rows: HoldRequest[], key: SortKey): SortValue {
   return key === 'truck' ? minValue(rows.map(r => r.truck_number)) : sortValue(rows[0], key)
 }
 
+/**
+ * Revise a booking made in the quote tools: open it in the multi-market
+ * planner to add, drop or change markets and dates on the same opportunity
+ * (app/api/bookings/revise). Not for Salesforce pushes or client bookings.
+ */
+function ReviseLink({ rows, booking }: { rows: HoldRequest[]; booking?: HoldRequest[] }) {
+  const key = rows.length ? bookingKey(rows[0]) : null
+  if (!key || rows.some(r => r.source !== 'INTERNAL')) return null
+  // A won deal is changed in Salesforce, never revised here (lib/bookings.ts reviseRefusal).
+  if (closedWonRefusal(booking ?? rows)) return null
+  // Any card of a booking with an extension request waiting: answer it first
+  // (revising would drop it; lib/bookings.ts reviseRefusal).
+  if ((booking ?? rows).some(r => r.status === 'EXTENSION_REQUESTED')) {
+    return <span title="An extension request on this booking is waiting: approve or decline it first" className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 text-gray-400 cursor-not-allowed">Revise</span>
+  }
+  return (
+    <a href={`/quote?revise=${encodeURIComponent(key)}`}
+      title="Add, drop or change markets and dates on the same opportunity"
+      className="px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-200 text-blue-700 hover:bg-blue-50 transition-colors">
+      Revise
+    </a>
+  )
+}
+
 function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; status: string }) {
   if (!expiresAt || status === 'COMMITTED') return null
   const expDate = new Date(expiresAt)
@@ -177,6 +205,8 @@ export default function HoldRequestsPage() {
   const { sort, sortBy, chooseSort } = useTableSort<SortKey>(`reservations.sort.${filterStatus || 'all'}`, SORT_KEYS)
   const [search,       setSearch]       = useState('')
   const [acting,       setActing]       = useState<string | null>(null) // group/row id currently mid-action
+  // Reinstating onto a Closed Lost opportunity: asked before it is moved back to WARM.
+  const reopen = useReopenConfirm()
 
   // Edit modal state — supports multi-truck reservations
   const [editingGroup, setEditingGroup] = useState<HoldRequest[] | null>(null)
@@ -186,6 +216,8 @@ export default function HoldRequestsPage() {
   const [cancelMode, setCancelMode] = useState(false)
   const [cancelReason, setCancelReason] = useState('')
   const [newExpiresAt, setNewExpiresAt] = useState('')
+  // Whether staff changed the expiry field (it opens on the soonest expiry).
+  const [expiryEdited, setExpiryEdited] = useState(false)
   const [expiredWindowDays, setExpiredWindowDays] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -246,24 +278,37 @@ export default function HoldRequestsPage() {
 
   useEffect(() => { fetchRequests() }, [fetchRequests])
 
-  // Runs `action` against every id (a whole campaign group at once, or a single ungrouped row),
-  // reports partial failures individually since one truck in a group can fail (e.g. a conflict)
-  // while the rest succeed, and refetches once regardless so the list reflects whatever did land.
-  const runAction = useCallback(async (ids: string[], action: 'approve' | 'reject' | 'approve_extension' | 'deny_extension' | 'reinstate', groupKey: string) => {
+  // Approve or deny an extension: ONE request for the whole booking (the
+  // server answers it for every hold in it, in one transaction, with one
+  // email to the client). Reinstate runs against every id (each truck is
+  // re-checked for conflicts on its own), reports partial failures
+  // individually, and refetches once regardless so the list reflects whatever
+  // did land.
+  const runAction = useCallback(async (allIds: string[], action: 'approve' | 'reject' | 'approve_extension' | 'deny_extension' | 'reinstate', groupKey: string) => {
+    const ids = action === 'reinstate' ? allIds : allIds.slice(0, 1)
     setActing(groupKey)
     try {
-      const results = await Promise.all(ids.map(async (id) => {
+      const send = async (id: string, reopenOpportunity = false): Promise<{ id: string; ok: boolean; error?: string; reopenable?: Reopenable }> => {
         const res = await fetch(`/api/hold-requests/${id}`, {
           method:  'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ action }),
+          body:    JSON.stringify({ action, ...(reopenOpportunity ? { reopenOpportunity: true } : {}) }),
         })
         if (!res.ok) {
           const err = await res.json().catch(() => ({}))
-          return { id, ok: false, error: err.error || 'Failed' }
+          return { id, ok: false, error: err.error || 'Failed', reopenable: err.reopenable }
         }
         return { id, ok: true }
-      }))
+      }
+      let results = await Promise.all(ids.map(id => send(id)))
+      // Reinstating onto a Closed Lost opportunity: ask once, then retry those
+      // holds one at a time (the first reopens it; the rest find it open).
+      const lost = results.filter(r => r.reopenable)
+      if (lost.length > 0 && await reopen.ask(lost[0].reopenable!.question)) {
+        const retried: typeof results = []
+        for (const r of lost) retried.push(await send(r.id, true))
+        results = results.map(r => retried.find(x => x.id === r.id) ?? r)
+      }
 
       const failed = results.filter((r) => !r.ok)
       const succeeded = results.length - failed.length
@@ -272,7 +317,8 @@ export default function HoldRequestsPage() {
         // A reinstated hold is no longer EXPIRED, so it leaves whichever expired view the
         // button was clicked from. Follow it to Active rather than letting the row vanish.
         if (action === 'reinstate') setFilterStatus('HOLD')
-        toast.success(`${actionLabel} — ${succeeded} truck${succeeded === 1 ? '' : 's'}`)
+        const trucks = action === 'reinstate' ? succeeded : allIds.length
+        toast.success(`${actionLabel} — ${trucks} truck${trucks === 1 ? '' : 's'}`)
       } else if (succeeded > 0) {
         toast.error(`${actionLabel}: ${succeeded} succeeded, ${failed.length} failed — ${failed[0].error}`)
       } else {
@@ -282,19 +328,23 @@ export default function HoldRequestsPage() {
       setActing(null)
       fetchRequests()
     }
-  }, [fetchRequests])
+  }, [fetchRequests]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const openEdit = async (request: HoldRequest) => {
-    // Find all siblings in the same group
-    const groupKey = request.campaign_group_id || request.sfdc_opportunity_id
-    const siblings = groupKey
-      ? requests.filter(r => (r.campaign_group_id || r.sfdc_opportunity_id) === groupKey)
-      : [request]
+    // Everything in the same booking: all markets of a multi-market quote,
+    // so one Edit (and one expiry change, or one cancel) covers the whole
+    // reservation, as its card does. Its live reservations only: an expired
+    // part of an older booking has no truck to swap or date to move.
+    const key = bookingKey(request)
+    const siblings = (key ? rowsByBooking.get(key) ?? [request] : [request])
+      .filter(r => r.status === 'HOLD' || r.status === 'COMMITTED' || r.status === 'EXTENSION_REQUESTED')
     setEditingGroup(siblings)
     setSelectedTrucks(new Map(siblings.map(r => [r.id, r.truck_number])))
     setCancelMode(false)
     setCancelReason('')
-    setNewExpiresAt(siblings[0].expires_at ? siblings[0].expires_at.split('T')[0] : '')
+    // The soonest expiry, the one the card's badge shows.
+    setNewExpiresAt(earliestExpiryDate(siblings))
+    setExpiryEdited(false)
     setAvailableTrucksMap(new Map())
     setTrucksLoading(true)
     try {
@@ -318,10 +368,18 @@ export default function HoldRequestsPage() {
 
   const handleSaveEdits = async () => {
     if (!editingGroup) return
-    const first = editingGroup[0]
     const truckChanges = editingGroup.filter(r => selectedTrucks.get(r.id) !== r.truck_number)
-    const currentExpDate = first.expires_at ? first.expires_at.split('T')[0] : ''
-    const expirationChanged = newExpiresAt !== currentExpDate
+    // A date past the booking's limit is blocked here, not saved and cut back.
+    if (expiryEdited && newExpiresAt && editLastDate && newExpiresAt > editLastDate) {
+      toast.error(`The latest this booking can be held is ${format(parseDateOnly(editLastDate), 'MMM d')}: ${STAFF_MIN_DAYS_BEFORE_START} days before its first market starts.`)
+      return
+    }
+    // Only when the date was edited (saving untouched changes nothing). Every
+    // hold of the card gets the one date: a booking has one expiry (lib/bookings.ts).
+    const expiryChanges = expiryEdited && newExpiresAt
+      ? expiryEdits(editingGroup, newExpiresAt).filter(e => e.changed)
+      : []
+    const expirationChanged = expiryChanges.length > 0
 
     if (truckChanges.length === 0 && !expirationChanged) {
       setEditingGroup(null)
@@ -377,17 +435,20 @@ export default function HoldRequestsPage() {
         }
       }
 
-      // Expiration update — apply to all holds in the group
-      if (expirationChanged && newExpiresAt) {
-        await Promise.all(
-          editingGroup.map(async (r) => {
-            await fetch(`/api/hold-requests/${r.id}`, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'update_expiration', expires_at: newExpiresAt }),
-            })
-          })
-        )
+      // Expiration update — ONE request: the server sets the one date on every
+      // live hold of the booking, in one transaction (see expiryChanges).
+      if (expirationChanged) {
+        const res = await fetch(`/api/hold-requests/${expiryChanges[0].id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'update_expiration', expires_at: expiryChanges[0].expiresOn }),
+        })
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          toast.error(`Expiry not changed: ${err.error || 'request failed'}`)
+          fetchRequests()
+          return
+        }
       }
 
       toast.success('Reservation updated')
@@ -404,21 +465,18 @@ export default function HoldRequestsPage() {
     if (!editingGroup || !cancelReason.trim()) return
     setSaving(true)
     try {
-      const results = await Promise.all(
-        editingGroup.map(async (r) => {
-          const res = await fetch(`/api/hold-requests/${r.id}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'cancel_notify', reason: cancelReason }),
-          })
-          return res.ok
-        })
-      )
-      const succeeded = results.filter(Boolean).length
-      if (succeeded === editingGroup.length) {
-        toast.success(editingGroup[0].source === 'CLIENT' ? 'Reservation cancelled — client notified' : 'Reservation cancelled')
+      // ONE request: the server cancels every live hold of the booking in one
+      // transaction and sends the client one email.
+      const res = await fetch(`/api/hold-requests/${editingGroup[0].id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'cancel_notify', reason: cancelReason }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        toast.success(data.emailed ? 'Reservation cancelled — client notified' : 'Reservation cancelled')
       } else {
-        toast.error(`Cancelled ${succeeded} of ${editingGroup.length} trucks`)
+        toast.error(data.error || 'Reservation not cancelled')
       }
       setEditingGroup(null)
       fetchRequests()
@@ -429,27 +487,58 @@ export default function HoldRequestsPage() {
     }
   }
 
+  // Every reservation by booking, across all statuses. A booking is the unit
+  // (one card, one status: lib/bookings.ts bookingStatus). Built once per
+  // fetch, not per card per render.
+  const rowsByBooking = useMemo(() => {
+    const out = new Map<string, HoldRequest[]>()
+    for (const r of requests) {
+      const key = bookingKey(r)
+      if (key) out.set(key, [...(out.get(key) ?? []), r])
+    }
+    return out
+  }, [requests])
+
+  // A booking's status (and its markets in any other status, for an older booking).
+  const statusOf = useCallback((r: HoldRequest) => {
+    const key = bookingKey(r)
+    return key ? bookingStatus(rowsByBooking.get(key) ?? [r]) : { status: r.status, odd: [] }
+  }, [rowsByBooking])
+
   const filtered = useMemo(
     () => {
-      let result = filterStatus
-        ? requests.filter((r) => filterStatus === 'HOLD' ? (r.status === 'HOLD' || r.status === 'COMMITTED') : r.status === filterStatus)
-        : requests
+      // A filter picks whole bookings by the booking's status, never part of one.
+      const shown = (status: string) => !filterStatus
+        || (filterStatus === 'HOLD' ? status === 'HOLD' || status === 'COMMITTED' : status === filterStatus)
+      let result = requests.filter(r => shown(statusOf(r).status))
       const q = search.trim().toLowerCase()
       if (q) {
-        result = result.filter((r) =>
-          [r.company_name, r.truck_number, r.market, r.notes]
-            .filter(Boolean)
-            .some((field) => field!.toLowerCase().includes(q))
-        )
+        const matches = (r: HoldRequest) => [r.company_name, r.truck_number, r.market, r.notes]
+          .filter(Boolean)
+          .some((field) => field!.toLowerCase().includes(q))
+        // A match shows its whole booking, so a card, its total and its Edit
+        // always cover the same reservations.
+        const cards = new Set(result.filter(matches).map(r => bookingKey(r)).filter(Boolean))
+        result = result.filter((r) => { const k = bookingKey(r); return k ? cards.has(k) : matches(r) })
       }
       return result
     },
-    [requests, filterStatus, search]
+    [requests, filterStatus, search, statusOf]
   )
 
-  // Group by campaign_group_id or sfdc_opportunity_id so multi-truck reservations
-  // are reviewed as one unit. Salesforce pushes share sfdc_opportunity_id;
-  // client holds share campaign_group_id. Then the chosen sort orders the table
+  // The last date the card being edited can be held to: a booking has one
+  // expiry, capped 2 days before its earliest start (lib/holdExpiry.ts). The
+  // date field won't go past it and the server refuses it.
+  const editLastDate = useMemo(() => {
+    if (!editingGroup?.length) return ''
+    const key = bookingKey(editingGroup[0])
+    const starts = bookingCapStarts((key ? rowsByBooking.get(key) : undefined) ?? editingGroup, new Date().toISOString().slice(0, 10))
+    return lastExpiryDate([...starts].sort()[0], new Date(), STAFF_MIN_DAYS_BEFORE_START)
+  }, [editingGroup, rowsByBooking])
+
+  // Group by booking (lib/bookings.ts) so multi-truck and multi-market
+  // reservations are reviewed and managed as one unit: every market of a
+  // multi-market quote, a campaign group, or a Salesforce opportunity. Then the chosen sort orders the table
   // rows, the campaign cards, and the trucks within each card; with none
   // chosen, the API's order (newest first) stands. Memoized with the filter
   // above, so typing in a dialog does not regroup and re-sort the list.
@@ -457,7 +546,9 @@ export default function HoldRequestsPage() {
     const grouped = new Map<string, HoldRequest[]>()
     const ungrouped: HoldRequest[] = []
     for (const r of filtered) {
-      const groupKey = r.campaign_group_id || r.sfdc_opportunity_id
+      // One card per booking (lib/bookings.ts bookingKey): a booking is one
+      // quote, so its totals, expiry, status and actions cover all of it.
+      const groupKey = bookingKey(r)
       if (groupKey) {
         const group = grouped.get(groupKey) ?? []
         group.push(r)
@@ -559,6 +650,7 @@ export default function HoldRequestsPage() {
   return (
     <div className="flex flex-col min-h-dvh bg-gray-50">
       <Navbar />
+      {reopen.dialog}
 
       <div className="flex-1 p-4 sm:p-6 max-w-7xl mx-auto w-full">
         {/* Header */}
@@ -629,17 +721,30 @@ export default function HoldRequestsPage() {
           <div className="space-y-4">
             {/* Campaign groups — one card per campaign, actions apply to every truck in it */}
             {sortedGroups.map(([groupId, groupItems]) => {
-              const first = groupItems[0]
-              const ids = groupItems.map((g) => g.id)
+              // The booking's one status; `odd` is only ever set for a booking made
+              // before the one-expiry rule (#118) whose markets lapsed apart.
+              const { status, odd } = bookingStatus(groupItems)
+              // The row the card speaks for: one in the booking's status.
+              const first = groupItems.find(g => g.status === status) ?? groupItems[0]
+              // What the card's actions act on: its holds in the booking's status.
+              const ids = groupItems.filter(g => g.status === status).map((g) => g.id)
+              // A multi-market booking: one card, its figures summed across markets.
+              const multi = isMultiMarket(first)
+              const booking = summarizeBooking(groupItems)
+              // The expiry to act on: the booking's live holds'.
+              const expiry = summarizeBooking(groupItems.filter(g => g.status === status)).earliestExpiry
+              const key = bookingKey(first)
               return (
                 <div key={groupId} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
                   <div className="px-4 py-3 bg-gray-50/80 border-b border-gray-200 flex items-center justify-between flex-wrap gap-3">
                     <div className="flex items-center gap-3 flex-wrap">
                       <span className="text-sm font-semibold text-gray-900">
-                        {first.company_name} — {first.truck_count ?? groupItems.length} truck{(first.truck_count ?? groupItems.length) === 1 ? '' : 's'} · {formatMarketState(first.market, first.state)}
+                        {multi
+                          ? <>{first.company_name} — {booking.trucks} truck{booking.trucks === 1 ? '' : 's'} across {booking.markets.length} market{booking.markets.length === 1 ? '' : 's'}</>
+                          : <>{first.company_name} — {first.truck_count ?? groupItems.length} truck{(first.truck_count ?? groupItems.length) === 1 ? '' : 's'} · {formatMarketState(first.market, first.state)}</>}
                       </span>
                       <span className="text-xs text-gray-500">
-                        {format(parseDateOnly(first.start_date), 'MMM d')} &ndash; {format(parseDateOnly(first.end_date), 'MMM d, yyyy')}
+                        {format(parseDateOnly(booking.start), 'MMM d')} &ndash; {format(parseDateOnly(booking.end), 'MMM d, yyyy')}
                       </span>
                       {first.created_by_name && (
                         <span className="text-xs text-gray-400">by {first.created_by_name}</span>
@@ -649,15 +754,30 @@ export default function HoldRequestsPage() {
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${SOURCE_BADGE[first.source] ?? SOURCE_BADGE.INTERNAL}`}>
                         {SOURCE_LABEL[first.source] ?? first.source}
                       </span>
-                      <PricingBadge tier={first.pricing_tier} total={first.quoted_total} />
-                      <ExpirationBadge expiresAt={first.expires_at} status={first.status} />
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[first.status] ?? STATUS_BADGE.HOLD}`}>
-                        {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[first.status] ?? first.status)}
+                      <PricingBadge tier={multi ? booking.tier : first.pricing_tier} total={multi ? booking.total : first.quoted_total} />
+                      {multi && booking.unpricedMarkets > 0 && (
+                        <span className="text-xs text-amber-700" title="These markets have no price on file; the total above leaves them out">
+                          + {booking.unpricedMarkets} unpriced
+                        </span>
+                      )}
+                      {/* The earliest expiry in the booking is the one to act on. */}
+                      <ExpirationBadge expiresAt={expiry} status={status} />
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.HOLD}`}>
+                        {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[status] ?? status)}
                       </span>
                     </div>
                   </div>
+                  {odd.length > 0 && (
+                    // Only an older booking (before #118) can be split; the card stays whole.
+                    <div className="px-4 py-1.5 text-xs text-amber-800 bg-amber-50 border-b border-amber-100">
+                      Older booking with markets out of step:{' '}
+                      {odd.map(o => `${o.markets.join(', ')} ${STATUS_LABEL[o.status] ?? o.status}`).join('; ')}.
+                      {' '}Actions here apply to the {STATUS_LABEL[status] ?? status} markets.
+                    </div>
+                  )}
                   {(() => {
-                    const parsedFeatures = parseQuoteFeatures(first.features)
+                    // One market's breakdown would misstate a multi-market booking.
+                    const parsedFeatures = multi ? null : parseQuoteFeatures(first.features)
                     return parsedFeatures ? (
                       <div className="px-4 py-3 bg-white border-b border-gray-100">
                         <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Quote breakdown</div>
@@ -665,31 +785,65 @@ export default function HoldRequestsPage() {
                       </div>
                     ) : null
                   })()}
-                  <div className="divide-y divide-gray-100">
-                    {groupItems.map((r) => (
-                      <div key={r.id} className="px-4 py-2.5 flex items-center justify-between text-sm">
-                        <span className="font-medium text-gray-900">Truck {r.truck_number}</span>
-                        <span className="text-gray-500">{formatMarketState(r.market, r.state)}</span>
-                      </div>
-                    ))}
-                  </div>
-                  {first.status === 'EXTENSION_REQUESTED' && first.extension_reason && (
-                    <div className="px-4 py-2 text-xs text-amber-800 bg-amber-50 border-t border-amber-100">
-                      Reason: {first.extension_reason}
+                  {multi ? (
+                    // Each market as its own subgroup, in flight order: its dates and length, then its trucks.
+                    // The same rows as the card's totals and actions (groupItems), only arranged.
+                    <div className="divide-y divide-gray-100">
+                      {marketGroups(groupItems).map((m) => (
+                        <div key={m.key}>
+                          <div className="px-4 py-2 bg-gray-50 flex items-center justify-between text-sm">
+                            <span className="font-semibold text-gray-900">{formatMarketState(m.market, m.rows[0].state)}</span>
+                            <span className="text-xs text-gray-600">
+                              {format(parseDateOnly(m.start), 'MMM d')} &ndash; {format(parseDateOnly(m.end), 'MMM d, yyyy')}
+                              {' · '}{m.days} {m.daysKind === 'activation' ? 'activation' : 'calendar'} day{m.days === 1 ? '' : 's'}
+                            </span>
+                          </div>
+                          {m.rows.map((r) => (
+                            <div key={r.id} className="pl-8 pr-4 py-2 flex items-center justify-between text-sm">
+                              <span className="font-medium text-gray-900">Truck {r.truck_number}</span>
+                              {/* A truck's own dates, when it covers only part of the market's (alternating trucks). */}
+                              {(r.start_date.slice(0, 10) !== m.start || r.end_date.slice(0, 10) !== m.end) && (
+                                <span className="text-xs text-gray-500">{format(parseDateOnly(r.start_date), 'MMM d')} &ndash; {format(parseDateOnly(r.end_date), 'MMM d')}</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-gray-100">
+                      {groupItems.map((r) => (
+                        <div key={r.id} className="px-4 py-2.5 flex items-center justify-between text-sm">
+                          <span className="font-medium text-gray-900">Truck {r.truck_number}</span>
+                          <span className="text-gray-500">{formatMarketState(r.market, r.state)}</span>
+                        </div>
+                      ))}
                     </div>
                   )}
-                  {(first.status === 'HOLD' || first.status === 'COMMITTED' || first.status === 'EXTENSION_REQUESTED' || first.status === 'EXPIRED') && (
+                  {status === 'EXTENSION_REQUESTED' && (
+                    <div className="px-4 py-2 text-xs text-amber-800 bg-amber-50 border-t border-amber-100">
+                      Extension requested for the whole booking{first.extension_until ? ` until ${format(parseDateOnly(first.extension_until.slice(0, 10)), 'MMM d')}` : ''}.
+                      {first.extension_reason ? ` Reason: ${first.extension_reason}` : ''}
+                    </div>
+                  )}
+                  {status === 'COMMITTED' && closedWonRefusal(groupItems) && (
+                    <div className="px-4 py-1.5 text-xs text-gray-600 bg-gray-50 border-t border-gray-100">
+                      Closed Won: only a truck swap can be made here. Change anything else in Salesforce.
+                    </div>
+                  )}
+                  {(status === 'HOLD' || status === 'COMMITTED' || status === 'EXTENSION_REQUESTED' || status === 'EXPIRED') && (
                     <div className="px-4 py-3 border-t border-gray-100 bg-gray-50/80 flex items-center gap-2">
-                      {first.status === 'EXTENSION_REQUESTED' || first.status === 'EXPIRED' ? (
-                        <Actions ids={ids} status={first.status} groupKey={groupId} quoteOnly={groupItems.some(g => g.origination === QUOTE_ONLY_ORIGINATION)} />
+                      {status === 'EXTENSION_REQUESTED' || status === 'EXPIRED' ? (
+                        <Actions ids={ids} status={status} groupKey={groupId} quoteOnly={groupItems.some(g => g.origination === QUOTE_ONLY_ORIGINATION)} />
                       ) : (
                         <button
                           onClick={() => openEdit(first)}
                           className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
                         >
-                          Edit
+                          {closedWonRefusal(groupItems) ? 'Swap trucks' : 'Edit'}
                         </button>
                       )}
+                      {status !== 'EXTENSION_REQUESTED' && <ReviseLink rows={groupItems} booking={(key ? rowsByBooking.get(key) : undefined) ?? groupItems} />}
                     </div>
                   )}
                 </div>
@@ -739,7 +893,10 @@ export default function HoldRequestsPage() {
                                 <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
                               </td>
                               <td className="px-4 py-3">
-                                <Actions ids={[r.id]} status={r.status} groupKey={r.id} requests={[r]} quoteOnly={r.origination === QUOTE_ONLY_ORIGINATION} />
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <Actions ids={[r.id]} status={r.status} groupKey={r.id} requests={[r]} quoteOnly={r.origination === QUOTE_ONLY_ORIGINATION} />
+                                  {['HOLD', 'COMMITTED', 'EXPIRED'].includes(r.status) && <ReviseLink rows={[r]} booking={(bookingKey(r) ? rowsByBooking.get(bookingKey(r)!) : undefined) ?? [r]} />}
+                                </div>
                               </td>
                             </tr>
                             {parsedFeatures && (
@@ -765,17 +922,26 @@ export default function HoldRequestsPage() {
       {/* Edit / Cancel Modal */}
       {editingGroup && editingGroup.length > 0 && (() => {
         const first = editingGroup[0]
+        // A won deal: truck swaps only (lib/bookings.ts closedWonRefusal).
+        const won = !!closedWonRefusal(editingGroup)
         const currentExpDate = first.expires_at ? first.expires_at.split('T')[0] : ''
-        const hasChanges = editingGroup.some(r => selectedTrucks.get(r.id) !== r.truck_number) || newExpiresAt !== currentExpDate
+        const hasChanges = editingGroup.some(r => selectedTrucks.get(r.id) !== r.truck_number) || (!won && newExpiresAt !== currentExpDate)
         return (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
               <div className="px-6 py-4 border-b border-gray-100">
                 <h2 className="text-lg font-bold text-gray-900">Edit Reservation</h2>
                 <p className="text-sm text-gray-500 mt-0.5">
-                  {first.company_name} &middot; {formatMarketState(first.market, first.state)} &middot;{' '}
-                  {format(parseDateOnly(first.start_date), 'MMM d')} &ndash; {format(parseDateOnly(first.end_date), 'MMM d, yyyy')}
-                  {editingGroup.length > 1 && <span className="ml-1">({editingGroup.length} trucks)</span>}
+                  {(() => {
+                    const b = summarizeBooking(editingGroup)
+                    return (
+                      <>
+                        {first.company_name} &middot; {b.markets.length > 1 ? `${b.markets.length} markets` : formatMarketState(first.market, first.state)} &middot;{' '}
+                        {format(parseDateOnly(b.start), 'MMM d')} &ndash; {format(parseDateOnly(b.end), 'MMM d, yyyy')}
+                        {editingGroup.length > 1 && <span className="ml-1">({b.trucks} trucks)</span>}
+                      </>
+                    )
+                  })()}
                 </p>
               </div>
               <div className="px-6 py-4 space-y-4 overflow-y-auto flex-1">
@@ -794,7 +960,7 @@ export default function HoldRequestsPage() {
                             return (
                               <div key={r.id}>
                                 {editingGroup.length > 1 && (
-                                  <div className="text-xs text-gray-500 mb-1">Truck {r.truck_number}</div>
+                                  <div className="text-xs text-gray-500 mb-1">Truck {r.truck_number} &middot; {formatMarketState(r.market, r.state)}</div>
                                 )}
                                 {available.length > 1 ? (
                                   <>
@@ -871,21 +1037,45 @@ export default function HoldRequestsPage() {
                     </div>
                     {first.pricing_tier && (
                       <div className="bg-gray-50 rounded-lg px-3 py-2.5">
-                        <PricingBadge tier={first.pricing_tier} total={first.quoted_total} />
+                        {/* A multi-market booking: the whole reservation's price, as on its card. */}
+                        {isMultiMarket(first) ? (() => {
+                          const b = summarizeBooking(editingGroup, (bookingKey(first) ? rowsByBooking.get(bookingKey(first)!) : undefined) ?? editingGroup)
+                          return (
+                            <>
+                              <PricingBadge tier={b.tier} total={b.total} />
+                              {(b.unpricedMarkets > 0 || b.splitMarkets > 0) && (
+                                <span className="ml-2 text-xs text-amber-700">
+                                  {[b.unpricedMarkets > 0 ? `${b.unpricedMarkets} unpriced` : '', b.splitMarkets > 0 ? `${b.splitMarkets} split` : ''].filter(Boolean).join(', ')} not in this total
+                                </span>
+                              )}
+                            </>
+                          )
+                        })() : <PricingBadge tier={first.pricing_tier} total={first.quoted_total} />}
                       </div>
                     )}
 
-                    {/* Expiration management */}
+                    {/* Expiration management — none on a won deal: it is booked, not held */}
+                    {won ? (
+                      <p className="text-xs text-gray-600 bg-gray-50 rounded-lg px-3 py-2.5">{CLOSED_WON_READ_ONLY} Only a truck swap can be made here.</p>
+                    ) : (
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Expiration Date</label>
                       {first.expires_at ? (
                         <input
                           type="date"
                           value={newExpiresAt}
-                          onChange={(e) => setNewExpiresAt(e.target.value)}
+                          max={editLastDate || undefined}
+                          onChange={(e) => { setNewExpiresAt(e.target.value); setExpiryEdited(true) }}
                           className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                         />
-                      ) : (
+                      ) : null}
+                      {first.expires_at && editLastDate && (
+                        <p className={`mt-1.5 text-xs ${expiryEdited && newExpiresAt > editLastDate ? 'text-red-700 font-medium' : 'text-gray-500'}`}>
+                          {expiryEdited && newExpiresAt > editLastDate ? 'Too late: ' : ''}
+                          Held until {format(parseDateOnly(editLastDate), 'MMM d')} at the latest ({STAFF_MIN_DAYS_BEFORE_START} days before the first market starts). Every truck on this card gets the same date.
+                        </p>
+                      )}
+                      {!first.expires_at && (
                         <div className="flex items-center gap-2">
                           <p className="text-sm text-gray-500">No expiration set</p>
                           <button
@@ -894,6 +1084,7 @@ export default function HoldRequestsPage() {
                               const d = new Date()
                               d.setDate(d.getDate() + 3)
                               setNewExpiresAt(d.toISOString().split('T')[0])
+                              setExpiryEdited(true)
                             }}
                             className="text-xs text-green-600 hover:text-green-700 font-medium transition-colors"
                           >
@@ -908,6 +1099,7 @@ export default function HoldRequestsPage() {
                         </div>
                       )}
                     </div>
+                    )}
                   </>
                 ) : (
                   <div className="space-y-3">
@@ -916,8 +1108,8 @@ export default function HoldRequestsPage() {
                         Cancel this reservation{editingGroup.length > 1 ? ` (${editingGroup.length} trucks)` : ''}?
                       </p>
                       <p className="text-xs text-red-600 mt-1">
-                        {editingGroup.map(r => r.truck_number).join(', ')} &middot; {first.market} &middot;{' '}
-                        {first.start_date} to {first.end_date}
+                        {editingGroup.map(r => r.truck_number).join(', ')} &middot; {[...new Set(editingGroup.map(r => r.market))].join(', ')} &middot;{' '}
+                        {(({ start, end }) => `${start} to ${end}`)(summarizeBooking(editingGroup))}
                       </p>
                     </div>
                     <div>
@@ -947,12 +1139,14 @@ export default function HoldRequestsPage() {
                     >
                       Close
                     </button>
-                    <button
-                      onClick={() => setCancelMode(true)}
-                      className="flex-1 border border-red-200 text-red-600 rounded-lg py-2.5 text-sm font-medium hover:bg-red-50 transition-colors"
-                    >
-                      Cancel & Notify
-                    </button>
+                    {!won && (
+                      <button
+                        onClick={() => setCancelMode(true)}
+                        className="flex-1 border border-red-200 text-red-600 rounded-lg py-2.5 text-sm font-medium hover:bg-red-50 transition-colors"
+                      >
+                        Cancel & Notify
+                      </button>
+                    )}
                     <button
                       onClick={handleSaveEdits}
                       disabled={saving || !hasChanges}

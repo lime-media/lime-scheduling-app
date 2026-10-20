@@ -69,22 +69,6 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onHoldDeleted }: Ce
     }
   }
 
-  const handleUpgrade = async () => {
-    if (!cell?.hold_id) return
-    const res = await fetch(`/api/holds/${cell.hold_id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'COMMITTED' }),
-    })
-    if (res.ok) {
-      toast.success('Marked committed (won)')
-      onHoldDeleted()
-    } else {
-      const err = await res.json()
-      toast.error(err.error || 'Failed to mark committed')
-    }
-  }
-
   // ── Empty state (nothing selected) ───────────────────────────────────────
   if (!cell) {
     return (
@@ -208,13 +192,10 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onHoldDeleted }: Ce
         {/* Hold management buttons */}
         {isHold && (
           <>
+            {/* No "Mark committed" here: a reservation is committed when its
+                opportunity is Closed Won in Salesforce (the reconcile does it). */}
             {status === 'HOLD_TENTATIVE' && (
-              <button
-                onClick={handleUpgrade}
-                className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 text-sm py-2 rounded-lg font-medium transition-colors"
-              >
-                Mark committed (won)
-              </button>
+              <p className="text-xs text-gray-500">Committed automatically when the Salesforce opportunity is Closed Won.</p>
             )}
             <button
               onClick={handleRelease}

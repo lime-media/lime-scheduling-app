@@ -69,6 +69,23 @@ export function holdExpiry(startDate: string, holdDays: number = DEFAULT_HOLD_DA
 }
 
 /**
+ * The hold lengths worth offering for these start dates: 1 day, and each
+ * longer length that still holds the trucks longer than one day less would.
+ * A length past the point where the start date (or the 24-hour floor) decides
+ * the expiry buys nothing, so the quote tools disable it rather than accept
+ * it and quietly cut it short. In a multi-market booking the LATEST start
+ * decides: a length that still adds time there is worth choosing even though
+ * earlier markets stop sooner. Pure (pass `now`).
+ */
+export function availableHoldDays(startDates: string[], now: Date = new Date()): number[] {
+  const latest = startDates.filter(Boolean).sort().at(-1)
+  const all = Array.from({ length: MAX_HOLD_DAYS }, (_, i) => i + 1)
+  if (!latest) return all
+  return all.filter(n => n === 1
+    || holdExpiry(latest, n, now).expiresAt.getTime() > holdExpiry(latest, n - 1, now).expiresAt.getTime())
+}
+
+/**
  * holdExpiry's date, for callers with no seller choice (the client portal,
  * Salesforce fallback, "approve extension" and "reinstate", which all use
  * the standard 72h).

@@ -4,10 +4,13 @@
  * How long a reservation from the quote tool holds its trucks: 3 days by
  * default, up to MAX_HOLD_DAYS. Shows the date it will lapse, from the same
  * rule the server applies (lib/holdExpiry.ts), including when a campaign
- * starting soon cuts it short. Shared by the single- and multi-market quotes.
+ * starting soon cuts it short. Lengths the start date won't allow are
+ * disabled, not offered and cut short. Shared by the single- and multi-market
+ * quotes.
  */
 
-import { DEFAULT_HOLD_DAYS, MAX_HOLD_DAYS, holdExpiry } from '@/lib/holdExpiry'
+import { useEffect } from 'react'
+import { DEFAULT_HOLD_DAYS, MAX_HOLD_DAYS, availableHoldDays, holdExpiry } from '@/lib/holdExpiry'
 
 export { DEFAULT_HOLD_DAYS }
 
@@ -25,13 +28,21 @@ export function HoldLength({ days, onChange, startDates }: {
   const now = new Date()
   const first = starts.length ? holdExpiry(starts[0], days, now) : null
   const varies = starts.length > 1 && starts.some(s => holdExpiry(s, days, now).expiresAt.getTime() !== first!.expiresAt.getTime())
+  const available = new Set(availableHoldDays(starts, now))
+  const longest = Math.max(...available)
+  // Dates moved so the chosen length no longer fits: fall back to the longest that does.
+  useEffect(() => {
+    if (!available.has(days)) onChange(longest)
+  }, [days, longest]) // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-gray-700">
       <label htmlFor="hold-days" className="font-medium">Hold the trucks for</label>
       <select id="hold-days" value={days} onChange={e => onChange(Number(e.target.value))}
         className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500">
         {Array.from({ length: MAX_HOLD_DAYS }, (_, i) => i + 1).map(n => (
-          <option key={n} value={n}>{n} day{n === 1 ? '' : 's'}{n === DEFAULT_HOLD_DAYS ? ' (standard)' : ''}</option>
+          <option key={n} value={n} disabled={!available.has(n)}>
+            {n} day{n === 1 ? '' : 's'}{n === DEFAULT_HOLD_DAYS ? ' (standard)' : ''}{available.has(n) ? '' : ' — campaign starts too soon'}
+          </option>
         ))}
       </select>
       {first && (

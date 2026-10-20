@@ -12,7 +12,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { computeHoldExpiresAt, DEFAULT_HOLD_DAYS, HOLD_EXPIRATION_HOURS, MIN_HOLD_WINDOW_HOURS, holdExpiry, parseHoldDays } from '@/lib/holdExpiry'
+import { availableHoldDays, computeHoldExpiresAt, DEFAULT_HOLD_DAYS, HOLD_EXPIRATION_HOURS, MIN_HOLD_WINDOW_HOURS, holdExpiry, parseHoldDays } from '@/lib/holdExpiry'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -71,4 +71,22 @@ section('hold length chosen on the quote tool')
   eq('parse: 1 to 14 accepted', [parseHoldDays(1), parseHoldDays('14')], [1, 14])
   eq('parse: out of range or fractional refused', [parseHoldDays(0), parseHoldDays(15), parseHoldDays(2.5), parseHoldDays('x')], [null, null, null, null])
   eq('parse: no coercion (true is not 1 day, [7] is not 7)', [parseHoldDays(true), parseHoldDays([7]), parseHoldDays(' 7'), parseHoldDays('7')], [null, null, null, 7])
+}
+
+section('holdExpiry: which hold lengths the quote tools offer')
+{
+  // Noon UTC on a fixed day, so the cap (start minus 3 days, at midnight) lands mid-range.
+  const now = new Date('2026-10-20T12:00:00Z')
+  const all = Array.from({ length: 14 }, (_, i) => i + 1)
+  eq('a far-off start: every length', availableHoldDays(['2026-12-01'], now), all)
+  eq('no dates yet: every length', availableHoldDays([], now), all)
+  // Start Oct 25: the cap is Oct 22 00:00, 36h away. 1 day (24h) fits; 2 days
+  // (48h) is cut to 36h but still adds 12h; 3+ days add nothing.
+  eq('a start 5 days out: only lengths that still add time', availableHoldDays(['2026-10-25'], now), [1, 2])
+  eq('a disabled length really is cut short', holdExpiry('2026-10-25', 3, now).cappedByStart, true)
+  // Start Oct 22: the cap is already past, so the 24h floor decides every length.
+  eq('the 24-hour minimum: only 1 day', availableHoldDays(['2026-10-22'], now), [1])
+  // Multi-market: the latest start decides; earlier markets just stop sooner.
+  eq('multi-market: the latest start decides', availableHoldDays(['2026-10-25', '2026-12-01'], now), all)
+  eq('the order of start dates does not matter', availableHoldDays(['2026-12-01', '2026-10-25'], now), all)
 }

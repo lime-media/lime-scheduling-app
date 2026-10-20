@@ -288,7 +288,7 @@ export default function HoldRequestsPage() {
     const ids = action === 'reinstate' ? allIds : allIds.slice(0, 1)
     setActing(groupKey)
     try {
-      const send = async (id: string, reopenOpportunity = false): Promise<{ id: string; ok: boolean; error?: string; reopenable?: Reopenable }> => {
+      const send = async (id: string, reopenOpportunity = false): Promise<{ id: string; ok: boolean; error?: string; reopenable?: Reopenable; sfdcWarning?: string | null }> => {
         const res = await fetch(`/api/hold-requests/${id}`, {
           method:  'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -298,7 +298,8 @@ export default function HoldRequestsPage() {
           const err = await res.json().catch(() => ({}))
           return { id, ok: false, error: err.error || 'Failed', reopenable: err.reopenable }
         }
-        return { id, ok: true }
+        const body = await res.json().catch(() => ({}))
+        return { id, ok: true, sfdcWarning: body.sfdcWarning ?? null }
       }
       let results = await Promise.all(ids.map(id => send(id)))
       // Reinstating onto a Closed Lost opportunity: ask once, then retry those
@@ -319,6 +320,9 @@ export default function HoldRequestsPage() {
         if (action === 'reinstate') setFilterStatus('HOLD')
         const trucks = action === 'reinstate' ? succeeded : allIds.length
         toast.success(`${actionLabel} — ${trucks} truck${trucks === 1 ? '' : 's'}`)
+        // Reinstated, but Salesforce's Hold Exp wasn't moved: say so once, and keep it up.
+        const sfdcWarning = results.find(r => r.sfdcWarning)?.sfdcWarning
+        if (sfdcWarning) toast.error(sfdcWarning, { duration: 15000 })
       } else if (succeeded > 0) {
         toast.error(`${actionLabel}: ${succeeded} succeeded, ${failed.length} failed — ${failed[0].error}`)
       } else {

@@ -10,7 +10,8 @@ import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry, last
 import { bookingCapStarts, bookingKey, closedWonRefusal } from '@/lib/bookings'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { closeOpportunityAsLost, getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
-import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
+import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, opportunityHoldExp, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
+import { isSfdcConfigured, updateOpportunityWithError } from '@/lib/salesforceClient'
 import { reopenClosedLostOpportunity } from '@/lib/sfdcBooking'
 import { sendCancellationEmail, sendExtensionDecisionEmail } from '@/lib/email'
 
@@ -254,7 +255,30 @@ export async function PATCH(
       }),
     ])
 
-    return NextResponse.json({ ok: true, status: newStatus, expires_at: newExpiresAt?.toISOString() ?? null, reopened })
+    // Salesforce's LED Hold Exp follows the reinstated booking: the
+    // opportunity shows the date the app now holds to, and a later push from
+    // Salesforce carries it instead of the lapsed one (the hold webhook
+    // expires a reservation whose pushed Hold Exp is past, so without this a
+    // Salesforce-made booking would lapse again at the next edit there).
+    // Best-effort: the reservation stands either way, and the rep is told
+    // when Salesforce wasn't updated.
+    let sfdcWarning: string | null = null
+    if (hold.sfdc_opportunity_id && isSfdcConfigured()) {
+      const onOpportunity = await prisma.hold.findMany({
+        where:  { sfdc_opportunity_id: hold.sfdc_opportunity_id },
+        select: { status: true, expires_at: true },
+      })
+      const holdExp = opportunityHoldExp(onOpportunity)
+      if (holdExp) {
+        const r = await updateOpportunityWithError(hold.sfdc_opportunity_id, { LED_Hold_Exp__c: holdExp })
+          .catch((err: unknown) => ({ ok: false as const, error: err instanceof Error ? err.message : String(err) }))
+        if (!r.ok) {
+          sfdcWarning = `Reinstated, but Salesforce's LED Hold Exp wasn't updated (${r.error}). Set it to ${holdExp} on the opportunity, or a later Salesforce update may expire this reservation again.`
+        }
+      }
+    }
+
+    return NextResponse.json({ ok: true, status: newStatus, expires_at: newExpiresAt?.toISOString() ?? null, reopened, sfdcWarning })
   }
 
   // ── The whole booking: cancel, extensions, expiry ──────────────────────────

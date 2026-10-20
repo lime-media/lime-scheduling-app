@@ -69,6 +69,20 @@ export function reconcileTarget(status: string, stage: { isClosed: boolean; isWo
   return status === 'COMMITTED' ? 'HOLD' : null
 }
 
+/**
+ * The LED Hold Exp an opportunity should show: the earliest expiry still to
+ * come among its live reservations (the rule lib/opportunityMerge.ts uses when
+ * a booking is added), as the date Salesforce stores (YYYY-MM-DD, UTC, like
+ * every other Hold Exp the app writes). Null when nothing on it lapses: all
+ * committed, or nothing live. Pure.
+ */
+export function opportunityHoldExp(holds: { status: string; expires_at: Date | null }[], now: Date = new Date()): string | null {
+  return holds
+    .filter(h => (h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED') && h.expires_at && h.expires_at > now)
+    .map(h => h.expires_at!.toISOString().slice(0, 10))
+    .sort()[0] ?? null
+}
+
 export function closedOpportunityBlocksReactivation(stage: { isClosed: boolean; isWon: boolean; stageName: string } | null): string | null {
   if (!stage || !stage.isClosed || stage.isWon) return null
   return `Its Salesforce Opportunity is "${stage.stageName}", so the hold would be released again within 15 minutes. Reopen the Opportunity in Salesforce first, then try again.`

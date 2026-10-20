@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, opportunityMarketCandidates, reactivationDecision, reconcileTarget, reopenQuestion, trucksToMirror } from '@/lib/sfdcIntegration'
+import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, opportunityHoldExp, opportunityMarketCandidates, reactivationDecision, reconcileTarget, reopenQuestion, trucksToMirror } from '@/lib/sfdcIntegration'
 import { opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 
 const NOW = new Date('2026-10-02T12:00:00Z')
@@ -112,4 +112,18 @@ section('reconcile: committed means Closed Won, in both directions (#120 review)
   eq('reopened: a committed hold goes back to HOLD, so it can be changed again', reconcileTarget('COMMITTED', open), 'HOLD')
   eq('open: an ordinary hold is left alone', reconcileTarget('HOLD', open), null)
   eq('open: a waiting extension request is left alone', reconcileTarget('EXTENSION_REQUESTED', open), null)
+}
+
+section('reinstate: the LED Hold Exp written back to Salesforce')
+{
+  const now = new Date('2026-10-20T12:00:00Z')
+  const h = (status: string, exp: string | null) => ({ status, expires_at: exp ? new Date(exp) : null })
+  eq('a reinstated hold: its expiry date', opportunityHoldExp([h('HOLD', '2026-10-23T12:00:00Z')], now), '2026-10-23')
+  eq('several bookings on one opportunity: the earliest still to come', opportunityHoldExp([h('HOLD', '2026-10-30T23:59:59Z'), h('HOLD', '2026-10-25T12:00:00Z'), h('EXTENSION_REQUESTED', '2026-11-02T23:59:59Z')], now), '2026-10-25')
+  eq('expired and committed holds are ignored', opportunityHoldExp([h('EXPIRED', '2026-10-22T00:00:00Z'), h('COMMITTED', null), h('HOLD', '2026-10-28T12:00:00Z')], now), '2026-10-28')
+  eq('a lapse date already past is ignored', opportunityHoldExp([h('HOLD', '2026-10-19T12:00:00Z'), h('HOLD', '2026-10-24T12:00:00Z')], now), '2026-10-24')
+  eq('nothing that lapses: nothing to write', opportunityHoldExp([h('COMMITTED', null), h('EXPIRED', '2026-10-01T00:00:00Z')], now), null)
+  // A capped expiry is the end of its last day (#118), so the date written is
+  // the day the Salesforce webhook reads back as that same moment.
+  eq('a capped expiry writes its own last day', opportunityHoldExp([h('HOLD', '2026-10-27T23:59:59Z')], now), '2026-10-27')
 }

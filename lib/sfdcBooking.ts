@@ -8,9 +8,10 @@ import { isSfdcConfigured, sfdcQuery, updateOpportunity, updateOpportunityWithEr
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { closedOpportunityBlocksReactivation } from '@/lib/sfdcIntegration'
-import { mergedOpportunityFields, type BookingLed, type OpportunityLed } from '@/lib/opportunityMerge'
+import { ledWindowFields, mergedOpportunityFields, type BookingLed, type OpportunityLed } from '@/lib/opportunityMerge'
 import { loadOpportunityReservingHolds } from '@/lib/bookingLoad'
 import { CLOSED_WON_READ_ONLY } from '@/lib/bookings'
+import { prisma } from '@/lib/prisma'
 
 const OPP_ID = /^006[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/
 const ACCOUNT_ID = /^001[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/
@@ -119,6 +120,52 @@ export async function applyBookingToOpportunity(opts: {
   const amountLeft = opts.opp.HasOpportunityLineItem
   if (amountLeft) delete fields.Amount
   return { ok: await updateOpportunity(opts.opp.Id, fields), amountLeft, windowLeft }
+}
+
+/**
+ * After an expiry change or release (reinstate, approve or deny extension,
+ * Edit expiry, cancel), the
+ * opportunity's LED Trucks and LED Hold Exp are set from the app's holds that
+ * reserve trucks on it now (lib/opportunityMerge.ts ledWindowFields): the app
+ * owns them, so Salesforce shows the date the app holds to, and its push can
+ * neither keep a lapsed truck nor carry a lapsed date back.
+ *
+ * The Hold Exp is recorded as sfdc_hold_exp on the opportunity's
+ * Salesforce-made holds BEFORE the write (the push can arrive before the call
+ * returns), so the push that follows is taken as the echo of this write and
+ * changes no expiry (lib/sfdcIntegration.ts pushedHoldExpiry).
+ *
+ * Best-effort, after the app's own change has committed: never throws.
+ * Returns what to tell the rep when Salesforce wasn't updated, else null.
+ */
+export async function syncOpportunityLedWindow(opportunityId: string): Promise<string | null> {
+  if (!isSfdcConfigured() || !OPP_ID.test(opportunityId)) return null
+  let fields: Record<string, string | null> = {}
+  try {
+    fields = ledWindowFields(await loadOpportunityReservingHolds(opportunityId), new Date().toISOString().slice(0, 10))
+    if (fields.LED_Hold_Exp__c) {
+      await prisma.hold.updateMany({
+        where: { sfdc_opportunity_id: opportunityId, source: 'SALESFORCE' },
+        data:  { sfdc_hold_exp: new Date(fields.LED_Hold_Exp__c) },
+      })
+    }
+    const r = await updateOpportunityWithError(opportunityId, fields)
+    if (r.ok) return null
+    return ledWindowWarning(fields, r.error)
+  } catch (err) {
+    console.error(`[sfdc] LED window sync failed for ${opportunityId}:`, err)
+    return ledWindowWarning(fields, err instanceof Error ? err.message : String(err))
+  }
+}
+
+function ledWindowWarning(fields: Record<string, string | null>, error: string): string {
+  const set = fields.LED_Trucks__c === null
+    ? 'LED Trucks and LED Hold Exp to blank'
+    : [
+        fields.LED_Hold_Exp__c ? `LED Hold Exp to ${fields.LED_Hold_Exp__c}` : null,
+        fields.LED_Trucks__c ? `LED Trucks to ${fields.LED_Trucks__c}` : null,
+      ].filter(Boolean).join(' and ')
+  return `Saved here, but Salesforce wasn't updated (${error}).${set ? ` Set ${set} on the opportunity,` : ' Check the opportunity,'} or a later Salesforce update may expire this booking again.`
 }
 
 /** What the rep is told when Salesforce reserved trucks on the opportunity and its hold dates were left alone. */

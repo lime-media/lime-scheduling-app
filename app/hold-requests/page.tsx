@@ -278,55 +278,38 @@ export default function HoldRequestsPage() {
 
   useEffect(() => { fetchRequests() }, [fetchRequests])
 
-  // Approve or deny an extension: ONE request for the whole booking (the
-  // server answers it for every hold in it, in one transaction, with one
-  // email to the client). Reinstate runs against every id (each truck is
-  // re-checked for conflicts on its own), reports partial failures
-  // individually, and refetches once regardless so the list reflects whatever
-  // did land.
+  // Approve or deny an extension, or reinstate: ONE request for the whole
+  // booking (the server acts on every hold in it, in one transaction: a
+  // reinstate comes back whole or is refused whole, naming any truck taken
+  // since it lapsed), then a refetch so the list reflects what landed.
   const runAction = useCallback(async (allIds: string[], action: 'approve' | 'reject' | 'approve_extension' | 'deny_extension' | 'reinstate', groupKey: string) => {
-    const ids = action === 'reinstate' ? allIds : allIds.slice(0, 1)
     setActing(groupKey)
     try {
-      const send = async (id: string, reopenOpportunity = false): Promise<{ id: string; ok: boolean; error?: string; reopenable?: Reopenable; sfdcWarning?: string | null }> => {
-        const res = await fetch(`/api/hold-requests/${id}`, {
+      const send = async (reopenOpportunity = false): Promise<{ ok: boolean; error?: string; reopenable?: Reopenable; holds?: number; sfdcWarning?: string | null }> => {
+        const res = await fetch(`/api/hold-requests/${allIds[0]}`, {
           method:  'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify({ action, ...(reopenOpportunity ? { reopenOpportunity: true } : {}) }),
         })
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}))
-          return { id, ok: false, error: err.error || 'Failed', reopenable: err.reopenable }
-        }
         const body = await res.json().catch(() => ({}))
-        return { id, ok: true, sfdcWarning: body.sfdcWarning ?? null }
+        if (!res.ok) return { ok: false, error: body.error || 'Failed', reopenable: body.reopenable }
+        return { ok: true, holds: body.holds, sfdcWarning: body.sfdcWarning ?? null }
       }
-      let results = await Promise.all(ids.map(id => send(id)))
-      // Reinstating onto a Closed Lost opportunity: ask once, then retry those
-      // holds one at a time (the first reopens it; the rest find it open).
-      const lost = results.filter(r => r.reopenable)
-      if (lost.length > 0 && await reopen.ask(lost[0].reopenable!.question)) {
-        const retried: typeof results = []
-        for (const r of lost) retried.push(await send(r.id, true))
-        results = results.map(r => retried.find(x => x.id === r.id) ?? r)
-      }
+      let result = await send()
+      // Reinstating onto a Closed Lost opportunity: ask once, then send it again.
+      if (result.reopenable && await reopen.ask(result.reopenable.question)) result = await send(true)
 
-      const failed = results.filter((r) => !r.ok)
-      const succeeded = results.length - failed.length
       const actionLabel = action.replace('_', ' ')
-      if (failed.length === 0) {
+      if (result.ok) {
         // A reinstated hold is no longer EXPIRED, so it leaves whichever expired view the
         // button was clicked from. Follow it to Active rather than letting the row vanish.
         if (action === 'reinstate') setFilterStatus('HOLD')
-        const trucks = action === 'reinstate' ? succeeded : allIds.length
+        const trucks = result.holds ?? allIds.length
         toast.success(`${actionLabel} — ${trucks} truck${trucks === 1 ? '' : 's'}`)
-        // Reinstated, but Salesforce's Hold Exp wasn't moved: say so once, and keep it up.
-        const sfdcWarning = results.find(r => r.sfdcWarning)?.sfdcWarning
-        if (sfdcWarning) toast.error(sfdcWarning, { duration: 15000 })
-      } else if (succeeded > 0) {
-        toast.error(`${actionLabel}: ${succeeded} succeeded, ${failed.length} failed — ${failed[0].error}`)
+        // Saved here, but Salesforce's LED fields weren't updated: say so, and keep it up.
+        if (result.sfdcWarning) toast.error(result.sfdcWarning, { duration: 15000 })
       } else {
-        toast.error(failed[0].error || `Failed to ${actionLabel}`)
+        toast.error(result.error || `Failed to ${actionLabel}`)
       }
     } finally {
       setActing(null)
@@ -447,12 +430,14 @@ export default function HoldRequestsPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'update_expiration', expires_at: expiryChanges[0].expiresOn }),
         })
+        const body = await res.json().catch(() => ({}))
         if (!res.ok) {
-          const err = await res.json().catch(() => ({}))
-          toast.error(`Expiry not changed: ${err.error || 'request failed'}`)
+          toast.error(`Expiry not changed: ${body.error || 'request failed'}`)
           fetchRequests()
           return
         }
+        // Saved here, but Salesforce's LED fields weren't updated: say so, and keep it up.
+        if (body.sfdcWarning) toast.error(body.sfdcWarning, { duration: 15000 })
       }
 
       toast.success('Reservation updated')
@@ -479,6 +464,7 @@ export default function HoldRequestsPage() {
       const data = await res.json().catch(() => ({}))
       if (res.ok) {
         toast.success(data.emailed ? 'Reservation cancelled — client notified' : 'Reservation cancelled')
+        if (data.sfdcWarning) toast.error(data.sfdcWarning, { duration: 15000 })
       } else {
         toast.error(data.error || 'Reservation not cancelled')
       }

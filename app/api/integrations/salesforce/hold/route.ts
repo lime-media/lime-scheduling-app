@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
-import { SFDC_SERVICE_USER_EMAIL, opportunityMarketCandidates, trucksToMirror } from '@/lib/sfdcIntegration'
+import { SFDC_SERVICE_USER_EMAIL, opportunityMarketCandidates, pushedHoldExpiry, trucksToMirror } from '@/lib/sfdcIntegration'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
 import { soqlString } from '@/lib/soql'
 import { endOfDayUtc } from '@/lib/dateOnly'
@@ -150,11 +150,16 @@ export async function POST(req: NextRequest) {
       // A COMMITTED hold is left alone in both directions; that's a real booking,
       // not something this webhook should revert.
       //
-      // Expiry resolution, in order: an explicit Hold Exp always wins; failing
-      // that the row keeps the expiry it already has, so repeated pushes can't
-      // renew a 72h fallback forever; only a row with nothing at all (a legacy
-      // null) gets a fresh default.
-      const effectiveExpiry = explicitExpiry ?? existing.expires_at ?? defaultExpiry
+      // Expiry resolution, in order (lib/sfdcIntegration.ts pushedHoldExpiry):
+      // the echo of the app's own Hold Exp write (the date recorded as this
+      // row's sfdc_hold_exp) keeps the row's expiry, so the app's sync never
+      // re-dates, shortens or revives a hold; otherwise an explicit Hold Exp
+      // wins; failing that the row keeps the expiry it already has, so repeated
+      // pushes can't renew a 72h fallback forever; only a row with nothing at
+      // all (a legacy null) gets a fresh default.
+      const { expiresAt: effectiveExpiry, echo } = pushedHoldExpiry({
+        pushedHoldExp: holdExp ?? null, recordedHoldExp: existing.sfdc_hold_exp, current: existing.expires_at, fallback: defaultExpiry,
+      })
       const expiryDefaulted = explicitExpiry === null && existing.expires_at === null
       const expiryIsPast    = effectiveExpiry <= now
 
@@ -213,6 +218,7 @@ export async function POST(req: NextRequest) {
               ? { expires_at_untouched: 'hold_is_committed' }
               : { expires_at: effectiveExpiry }),
             ...(expiryDefaulted && { expires_at_defaulted: 'no_hold_exp_on_push_72h' }),
+            ...(echo && { expires_at_kept: 'echo_of_app_hold_exp' }),
             ...(explicitExpiry === null && existing.expires_at !== null && {
               expires_at_retained: 'no_hold_exp_on_push_kept_existing',
             }),

@@ -1,5 +1,6 @@
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { holdReservesNow } from '@/lib/holdFilters'
+import { endOfDayUtc } from '@/lib/dateOnly'
 
 // Holds pushed in from Salesforce are attributed to this service user, and
 // automated actions on those holds (e.g. auto-release once a real LED shift
@@ -70,17 +71,27 @@ export function reconcileTarget(status: string, stage: { isClosed: boolean; isWo
 }
 
 /**
- * The LED Hold Exp an opportunity should show: the earliest expiry still to
- * come among its live reservations (the rule lib/opportunityMerge.ts uses when
- * a booking is added), as the date Salesforce stores (YYYY-MM-DD, UTC, like
- * every other Hold Exp the app writes). Null when nothing on it lapses: all
- * committed, or nothing live. Pure.
+ * A Salesforce-made hold's expiry after a push. The app owns LED Hold Exp:
+ * after an expiry change it writes the opportunity's Hold Exp and records that
+ * date as the hold's sfdc_hold_exp (lib/sfdcBooking.ts
+ * syncOpportunityLedWindow), so a push carrying the Hold Exp already recorded
+ * is the echo of the app's own write and the hold keeps its expiry: no
+ * re-derived date, no override, no revival of a lapsed hold. A different Hold
+ * Exp from Salesforce wins (the last day it's valid, to its end); with none,
+ * the hold keeps what it has, and only a row with nothing gets the fallback.
+ * Pure.
  */
-export function opportunityHoldExp(holds: { status: string; expires_at: Date | null }[], now: Date = new Date()): string | null {
-  return holds
-    .filter(h => (h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED') && h.expires_at && h.expires_at > now)
-    .map(h => h.expires_at!.toISOString().slice(0, 10))
-    .sort()[0] ?? null
+export function pushedHoldExpiry(o: {
+  pushedHoldExp: string | null
+  recordedHoldExp: Date | null
+  current: Date | null
+  fallback: Date
+}): { expiresAt: Date; echo: boolean } {
+  const pushed = o.pushedHoldExp?.slice(0, 10) ?? null
+  if (pushed && o.current && o.recordedHoldExp && o.recordedHoldExp.toISOString().slice(0, 10) === pushed) {
+    return { expiresAt: o.current, echo: true }
+  }
+  return { expiresAt: (pushed ? endOfDayUtc(pushed) : null) ?? o.current ?? o.fallback, echo: false }
 }
 
 export function closedOpportunityBlocksReactivation(stage: { isClosed: boolean; isWon: boolean; stageName: string } | null): string | null {

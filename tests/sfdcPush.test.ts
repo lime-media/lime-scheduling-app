@@ -3,7 +3,9 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, opportunityHoldExp, opportunityMarketCandidates, reactivationDecision, reconcileTarget, reopenQuestion, trucksToMirror } from '@/lib/sfdcIntegration'
+import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, opportunityMarketCandidates, pushedHoldExpiry, reactivationDecision, reconcileTarget, reopenQuestion, trucksToMirror } from '@/lib/sfdcIntegration'
+import { ledWindowFields, type LinkedHold } from '@/lib/opportunityMerge'
+import { reinstateRefusal } from '@/lib/bookings'
 import { opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 
 const NOW = new Date('2026-10-02T12:00:00Z')
@@ -114,16 +116,40 @@ section('reconcile: committed means Closed Won, in both directions (#120 review)
   eq('open: a waiting extension request is left alone', reconcileTarget('EXTENSION_REQUESTED', open), null)
 }
 
-section('reinstate: the LED Hold Exp written back to Salesforce')
+section('expiry changes: the LED fields the app writes to Salesforce (it owns them)')
 {
-  const now = new Date('2026-10-20T12:00:00Z')
-  const h = (status: string, exp: string | null) => ({ status, expires_at: exp ? new Date(exp) : null })
-  eq('a reinstated hold: its expiry date', opportunityHoldExp([h('HOLD', '2026-10-23T12:00:00Z')], now), '2026-10-23')
-  eq('several bookings on one opportunity: the earliest still to come', opportunityHoldExp([h('HOLD', '2026-10-30T23:59:59Z'), h('HOLD', '2026-10-25T12:00:00Z'), h('EXTENSION_REQUESTED', '2026-11-02T23:59:59Z')], now), '2026-10-25')
-  eq('expired and committed holds are ignored', opportunityHoldExp([h('EXPIRED', '2026-10-22T00:00:00Z'), h('COMMITTED', null), h('HOLD', '2026-10-28T12:00:00Z')], now), '2026-10-28')
-  eq('a lapse date already past is ignored', opportunityHoldExp([h('HOLD', '2026-10-19T12:00:00Z'), h('HOLD', '2026-10-24T12:00:00Z')], now), '2026-10-24')
-  eq('nothing that lapses: nothing to write', opportunityHoldExp([h('COMMITTED', null), h('EXPIRED', '2026-10-01T00:00:00Z')], now), null)
-  // A capped expiry is the end of its last day (#118), so the date written is
-  // the day the Salesforce webhook reads back as that same moment.
-  eq('a capped expiry writes its own last day', opportunityHoldExp([h('HOLD', '2026-10-27T23:59:59Z')], now), '2026-10-27')
+  const today = '2026-10-20'
+  const lh = (truck: string, expires: string | null, fromSalesforce = false): LinkedHold => ({ truck, market: 'Austin, TX', start: '2026-11-02', end: '2026-11-06', expires, fromSalesforce })
+  eq('a reinstated booking: its trucks and its expiry date', ledWindowFields([lh('0382', '2026-10-23'), lh('7402', '2026-10-23')], today), { LED_Trucks__c: 'LED-0382;LED-7402', LED_Hold_Exp__c: '2026-10-23' })
+  eq('several bookings on one opportunity: every held truck once, the earliest expiry still to come', ledWindowFields([lh('0382', '2026-10-30'), lh('7402', '2026-10-25'), lh('0382', '2026-10-30'), lh('LED-1894', '2026-11-02')], today), { LED_Trucks__c: 'LED-0382;LED-7402;LED-1894', LED_Hold_Exp__c: '2026-10-25' })
+  eq('committed holds are listed but set no Hold Exp', ledWindowFields([lh('0382', null), lh('7402', '2026-10-28')], today), { LED_Trucks__c: 'LED-0382;LED-7402', LED_Hold_Exp__c: '2026-10-28' })
+  eq('all committed: trucks only, no Hold Exp', ledWindowFields([lh('0382', null)], today), { LED_Trucks__c: 'LED-0382' })
+  eq('a lapse date already past is not written', ledWindowFields([lh('0382', '2026-10-19'), lh('7402', '2026-10-24')], today), { LED_Trucks__c: 'LED-0382;LED-7402', LED_Hold_Exp__c: '2026-10-24' })
+  eq('Salesforce-made holds: the app writes the Hold Exp too', ledWindowFields([lh('0382', '2026-10-27', true)], today), { LED_Trucks__c: 'LED-0382', LED_Hold_Exp__c: '2026-10-27' })
+  eq('nothing reserves a truck any more (cancelled, denied): both cleared', ledWindowFields([], today), { LED_Trucks__c: null, LED_Hold_Exp__c: null })
+}
+
+section('Salesforce push: the echo of the app\'s own Hold Exp changes nothing')
+{
+  const current = new Date('2026-10-23T23:59:59Z'), fallback = new Date('2026-10-23T12:00:00Z')
+  const recorded = new Date('2026-10-23T00:00:00Z')
+  eq('the date the app wrote comes back: the hold keeps its expiry', pushedHoldExpiry({ pushedHoldExp: '2026-10-23', recordedHoldExp: recorded, current, fallback }), { expiresAt: current, echo: true })
+  const earlier = new Date('2026-10-22T18:00:00Z')
+  eq('the echo never re-dates a hold (no shortening)', pushedHoldExpiry({ pushedHoldExp: '2026-10-23', recordedHoldExp: recorded, current: earlier, fallback }).expiresAt, earlier)
+  const lapsed = new Date('2026-10-10T23:59:59Z')
+  eq('the echo never revives a lapsed hold', pushedHoldExpiry({ pushedHoldExp: '2026-10-23', recordedHoldExp: recorded, current: lapsed, fallback }).expiresAt, lapsed)
+  eq('a new Hold Exp from Salesforce wins, to the end of its day', pushedHoldExpiry({ pushedHoldExp: '2026-10-30', recordedHoldExp: recorded, current, fallback }), { expiresAt: new Date('2026-10-30T23:59:59.999Z'), echo: false })
+  eq('nothing recorded yet: the pushed date applies', pushedHoldExpiry({ pushedHoldExp: '2026-10-23', recordedHoldExp: null, current, fallback }).echo, false)
+  eq('no Hold Exp pushed: the hold keeps its expiry', pushedHoldExpiry({ pushedHoldExp: null, recordedHoldExp: recorded, current, fallback }).expiresAt, current)
+  eq('no Hold Exp and nothing on the row: the fallback', pushedHoldExpiry({ pushedHoldExp: null, recordedHoldExp: null, current: null, fallback }).expiresAt, fallback)
+}
+
+section('reinstate: the whole booking or none of it')
+{
+  eq('no truck taken since it lapsed: reinstated', reinstateRefusal([]), null)
+  const one = reinstateRefusal([{ truck: '7402', client: 'Bulldog', start: '2026-11-02', end: '2026-11-03' }])
+  eq('one truck taken: refused, naming it', one?.includes('truck 7402 (Bulldog, 2026-11-02 to 2026-11-03)'), true)
+  eq('and pointing at Revise', one?.includes('Revise the booking'), true)
+  const two = reinstateRefusal([{ truck: '7402', client: 'Bulldog', start: '2026-11-02', end: '2026-11-03' }, { truck: '1894', client: 'McCoy', start: '2026-11-01', end: '2026-11-04' }])
+  eq('several taken: every one named', !!two?.includes('7402') && !!two?.includes('1894') && two.startsWith("Can't reinstate: trucks have"), true)
 }

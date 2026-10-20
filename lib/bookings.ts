@@ -64,6 +64,20 @@ export function closedWonRefusal(holds: { status: string; sfdc_opportunity_id: s
 }
 
 /**
+ * Why a booking can't be reinstated, or null: reinstating is all or nothing
+ * (a booking is one quote), so any truck booked by someone else since it
+ * lapsed refuses the whole booking, naming each one. Only then is anything
+ * reinstated or written to Salesforce, which therefore never lists a truck the
+ * app didn't take back. Pure.
+ */
+export function reinstateRefusal(clashes: { truck: string; client: string; start: string; end: string }[]): string | null {
+  if (clashes.length === 0) return null
+  const list = clashes.map(c => `truck ${c.truck} (${c.client}, ${c.start} to ${c.end})`).join('; ')
+  return `Can't reinstate: ${clashes.length === 1 ? 'a truck has' : 'trucks have'} been booked since this lapsed: ${list}. `
+    + 'Revise the booking to pick other trucks (a Salesforce booking: change its trucks in Salesforce).'
+}
+
+/**
  * Why a client may not ask to extend this booking, or null. A request covers
  * the whole booking, so every live hold in it must be an ordinary reservation:
  * a committed (won) booking has nothing to extend, an expired one has lapsed,

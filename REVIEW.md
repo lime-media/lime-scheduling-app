@@ -138,6 +138,16 @@ findings by how close they come to one of those.
   *(Booking-unit cleanup: `update_expiration` turned COMMITTED holds back
   into HOLD, cancel and delete paths ignored Won, and attach accepted a Closed
   Won opportunity id.)*
+- **The app owns LED Hold Exp.** Every expiry change or release (reinstate,
+  approve or deny extension, Edit expiry, cancel) syncs LED Hold Exp and LED
+  Trucks to Salesforce from
+  the app's live holds (`syncOpportunityLedWindow`), and the hold webhook treats
+  the echo of that write as no change (`pushedHoldExpiry`). Listing only held
+  trucks is what stops Salesforce's push from mirroring or reviving a truck the
+  app isn't holding, so a write that lists trucks the app didn't take back is
+  a double-booking. Reinstate is all or nothing for the same reason. Flag a new
+  expiry change or release that doesn't sync. *(Reinstate write-back review: a partial
+  reinstate's push revived a refused truck.)*
 - **Only Salesforce commits a hold, and a lock always has a way back.**
   Committed means Closed Won, in both directions: nothing in the app marks a
   hold committed unless Salesforce says the deal is Closed Won, and the

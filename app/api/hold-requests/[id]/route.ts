@@ -199,18 +199,20 @@ export async function PATCH(
     // While the booking sat expired its trucks read as free to every availability
     // path, so any of them may have been taken: check them all before blocking
     // any again (lib/bookings.ts reinstateRefusal).
-    const clashes = (await Promise.all(lapsed.map(async h => {
-      const c = await prisma.hold.findFirst({
-        where: {
-          truck_number: h.truck_number,
-          id:           { notIn: ids },
-          ...activeHoldWhere(),
-          start_date:   { lte: h.end_date },
-          end_date:     { gte: h.start_date },
-        },
-      })
-      return c && { truck: h.truck_number, client: c.client_name, start: day(c.start_date), end: day(c.end_date) }
-    }))).filter((c): c is NonNullable<typeof c> => !!c)
+    // One query for the whole booking, matched back to each lapsed hold.
+    const taken = await prisma.hold.findMany({
+      where: {
+        id:  { notIn: ids },
+        AND: [
+          activeHoldWhere(),
+          { OR: lapsed.map(h => ({ truck_number: h.truck_number, start_date: { lte: h.end_date }, end_date: { gte: h.start_date } })) },
+        ],
+      },
+    })
+    const clashes = lapsed.flatMap(h => {
+      const c = taken.find(t => t.truck_number === h.truck_number && t.start_date <= h.end_date && t.end_date >= h.start_date)
+      return c ? [{ truck: h.truck_number, client: c.client_name, start: day(c.start_date), end: day(c.end_date) }] : []
+    })
     const refused = reinstateRefusal(clashes)
     if (refused) return NextResponse.json({ error: refused, clashes }, { status: 409 })
 
@@ -229,7 +231,7 @@ export async function PATCH(
     const newStatus = won ? 'COMMITTED' : 'HOLD'
 
     // The reinstate and its audit rows (and the reopen's, if any) land together.
-    await prisma.$transaction([
+    const [reinstated] = await prisma.$transaction([
       prisma.hold.updateMany({
         where: { id: { in: ids }, status: 'EXPIRED' },
         data:  { status: newStatus, expires_at: newExpiresAt, extension_until: null, extension_reason: null },
@@ -263,9 +265,10 @@ export async function PATCH(
     ])
 
     // Salesforce's LED Trucks and Hold Exp follow (lib/sfdcBooking.ts syncOpportunityLedWindow).
-    const sfdcWarning = hold.sfdc_opportunity_id ? await syncOpportunityLedWindow(hold.sfdc_opportunity_id) : null
+    const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
 
-    return NextResponse.json({ ok: true, status: newStatus, holds: ids.length, expires_at: newExpiresAt?.toISOString() ?? null, reopened, sfdcWarning })
+    // What actually came back: a hold reinstated by a request racing this one isn't counted twice.
+    return NextResponse.json({ ok: true, status: newStatus, holds: reinstated.count, expires_at: newExpiresAt?.toISOString() ?? null, reopened, sfdcWarning })
   }
 
   // ── The whole booking: cancel, extensions, expiry ──────────────────────────
@@ -315,7 +318,7 @@ export async function PATCH(
     }
 
     // The released trucks come off Salesforce's LED Trucks, or its next push would mirror them.
-    const sfdcWarning = hold.sfdc_opportunity_id ? await syncOpportunityLedWindow(hold.sfdc_opportunity_id) : null
+    const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
     return NextResponse.json({ ok: true, cancelled: live.length, emailed, sfdcWarning })
   }
 
@@ -356,7 +359,7 @@ export async function PATCH(
       }).catch(err => console.error('[approve-extension] email send failed:', err))
     }
 
-    const sfdcWarning = hold.sfdc_opportunity_id ? await syncOpportunityLedWindow(hold.sfdc_opportunity_id) : null
+    const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
     return NextResponse.json({ ok: true, status: 'HOLD', holds: live.length, expires_at: newExpiresAt.toISOString(), sfdcWarning })
   }
 
@@ -399,7 +402,7 @@ export async function PATCH(
       }),
     ])
 
-    const sfdcWarning = hold.sfdc_opportunity_id ? await syncOpportunityLedWindow(hold.sfdc_opportunity_id) : null
+    const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
     return NextResponse.json({ ok: true, holds: live.length, expires_at: newExp.toISOString(), sfdcWarning })
   }
 
@@ -423,7 +426,7 @@ export async function PATCH(
   // on the Opportunity, and never allowed to fail the request; the helper swallows its
   // own errors.
   // The released trucks come off Salesforce's LED Trucks first, or its next push would mirror them.
-  const sfdcWarning = hold.sfdc_opportunity_id ? await syncOpportunityLedWindow(hold.sfdc_opportunity_id) : null
+  const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
   if (hold.sfdc_opportunity_id && expiryClosesOpportunity(hold)) {
     await closeOpportunityAsLost(hold.sfdc_opportunity_id)
   }

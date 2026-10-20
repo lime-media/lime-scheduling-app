@@ -133,28 +133,46 @@ export async function applyBookingToOpportunity(opts: {
  * The Hold Exp is recorded as sfdc_hold_exp on the opportunity's
  * Salesforce-made holds BEFORE the write (the push can arrive before the call
  * returns), so the push that follows is taken as the echo of this write and
- * changes no expiry (lib/sfdcIntegration.ts pushedHoldExpiry).
+ * changes no expiry (lib/sfdcIntegration.ts pushedHoldExpiry). If the write
+ * fails, each hold's previous sfdc_hold_exp is put back: Salesforce still
+ * holds that date, so its next push stays an echo instead of re-dating (or
+ * expiring) what the app just changed.
  *
  * Best-effort, after the app's own change has committed: never throws.
  * Returns what to tell the rep when Salesforce wasn't updated, else null.
+ * Takes the named hold's opportunity id as is: null (no opportunity) does nothing.
  */
-export async function syncOpportunityLedWindow(opportunityId: string): Promise<string | null> {
-  if (!isSfdcConfigured() || !OPP_ID.test(opportunityId)) return null
+export async function syncOpportunityLedWindow(opportunityId: string | null): Promise<string | null> {
+  if (!opportunityId || !isSfdcConfigured() || !OPP_ID.test(opportunityId)) return null
   let fields: Record<string, string | null> = {}
+  let recorded: { id: string; sfdc_hold_exp: Date | null }[] = []
   try {
     fields = ledWindowFields(await loadOpportunityReservingHolds(opportunityId), new Date().toISOString().slice(0, 10))
     if (fields.LED_Hold_Exp__c) {
-      await prisma.hold.updateMany({
-        where: { sfdc_opportunity_id: opportunityId, source: 'SALESFORCE' },
-        data:  { sfdc_hold_exp: new Date(fields.LED_Hold_Exp__c) },
-      })
+      const where = { sfdc_opportunity_id: opportunityId, source: 'SALESFORCE' }
+      recorded = await prisma.hold.findMany({ where, select: { id: true, sfdc_hold_exp: true } })
+      await prisma.hold.updateMany({ where: { id: { in: recorded.map(h => h.id) } }, data: { sfdc_hold_exp: new Date(fields.LED_Hold_Exp__c) } })
     }
     const r = await updateOpportunityWithError(opportunityId, fields)
     if (r.ok) return null
+    await restoreRecordedHoldExp(recorded)
     return ledWindowWarning(fields, r.error)
   } catch (err) {
     console.error(`[sfdc] LED window sync failed for ${opportunityId}:`, err)
+    await restoreRecordedHoldExp(recorded).catch(e => console.error(`[sfdc] restoring sfdc_hold_exp failed for ${opportunityId}:`, e))
     return ledWindowWarning(fields, err instanceof Error ? err.message : String(err))
+  }
+}
+
+/** Put each Salesforce-made hold's sfdc_hold_exp back to what it was before a failed write, one update per distinct value. */
+async function restoreRecordedHoldExp(rows: { id: string; sfdc_hold_exp: Date | null }[]): Promise<void> {
+  const byValue = new Map<string, string[]>()
+  for (const r of rows) {
+    const k = r.sfdc_hold_exp?.toISOString() ?? ''
+    byValue.set(k, [...(byValue.get(k) ?? []), r.id])
+  }
+  for (const [k, ids] of byValue) {
+    await prisma.hold.updateMany({ where: { id: { in: ids } }, data: { sfdc_hold_exp: k ? new Date(k) : null } })
   }
 }
 

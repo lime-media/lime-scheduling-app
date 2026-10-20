@@ -231,15 +231,6 @@ export async function PATCH(
     const refused = reinstateRefusal(clashes)
     if (refused) return NextResponse.json({ error: refused, clashes }, { status: 409 })
 
-    // Salesforce last, after every check that could still refuse: a reinstate
-    // that fails here never reopens the deal.
-    let reopened: { fromStage: string; toStage: string } | null = null
-    if (decision.kind === 'reopen') {
-      const r = await reopenClosedLostOpportunity(hold.sfdc_opportunity_id!)
-      if (!r.ok) return NextResponse.json({ error: `Can't reinstate: ${r.error}` }, { status: 409 })
-      reopened = r
-    }
-
     const won = stage?.isClosed === true && stage.isWon
     // The booking's one expiry, on every hold of it: the reinstated ones and
     // any still live (an older booking whose markets lapsed apart). A later
@@ -249,7 +240,7 @@ export async function PATCH(
     const newExpiresAt = won ? null : bookingHoldExpiry(capStarts(booking), DEFAULT_HOLD_DAYS, new Date(), keepUntil, STAFF_MIN_DAYS_BEFORE_START).expiresAt
     const newStatus = won ? 'COMMITTED' : 'HOLD'
 
-    // The reinstate and its audit rows (and the reopen's, if any) land together.
+    // The reinstate and its audit rows land together.
     const [reinstated] = await prisma.$transaction([
       prisma.hold.updateMany({
         where: { id: { in: ids }, status: 'EXPIRED' },
@@ -258,18 +249,6 @@ export async function PATCH(
       ...(!won && live.length ? [prisma.hold.updateMany({
         where: { id: { in: live.map(h => h.id) }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
         data:  { expires_at: newExpiresAt },
-      })] : []),
-      ...(reopened ? [prisma.auditLog.create({
-        data: {
-          action:       'REOPEN_OPPORTUNITY',
-          truck_number: hold.truck_number,
-          user_id:      session.user.id,
-          hold_id:      hold.id,
-          details:      JSON.stringify({
-            opportunity_id: hold.sfdc_opportunity_id, from_stage: reopened.fromStage, to_stage: reopened.toStage,
-            by: session.user.email ?? session.user.id, for: 'REINSTATE_HOLD',
-          }),
-        },
       })] : []),
       prisma.auditLog.createMany({
         data: lapsed.map(h => ({
@@ -286,6 +265,48 @@ export async function PATCH(
         })),
       }),
     ])
+
+    // A Closed Lost deal the person agreed to reopen goes back to WARM only now,
+    // with the reinstate saved: a push the stage change sets off finds the
+    // app's holds live, so the webhook treats the opportunity as the app's
+    // rather than mirroring its old trucks. If Salesforce refuses, the
+    // reinstate is undone and nothing changes.
+    let reopened: { fromStage: string; toStage: string } | null = null
+    if (decision.kind === 'reopen') {
+      const r = await reopenClosedLostOpportunity(hold.sfdc_opportunity_id!)
+      if (!r.ok) {
+        await prisma.$transaction([
+          ...lapsed.map(h => prisma.hold.update({
+            where: { id: h.id },
+            data:  { status: 'EXPIRED', expires_at: h.expires_at, extension_until: h.extension_until, extension_reason: h.extension_reason },
+          })),
+          ...(!won ? live.map(h => prisma.hold.update({ where: { id: h.id }, data: { expires_at: h.expires_at } })) : []),
+          prisma.auditLog.createMany({
+            data: lapsed.map(h => ({
+              action:       'REINSTATE_REVERTED',
+              truck_number: h.truck_number,
+              user_id:      session.user.id,
+              hold_id:      h.id,
+              details:      JSON.stringify({ reason: 'salesforce_refused_reopen', error: r.error, booking: bookingKey(h) }),
+            })),
+          }),
+        ])
+        return NextResponse.json({ error: `Can't reinstate: ${r.error}` }, { status: 409 })
+      }
+      reopened = r
+      await prisma.auditLog.create({
+        data: {
+          action:       'REOPEN_OPPORTUNITY',
+          truck_number: hold.truck_number,
+          user_id:      session.user.id,
+          hold_id:      hold.id,
+          details:      JSON.stringify({
+            opportunity_id: hold.sfdc_opportunity_id, from_stage: r.fromStage, to_stage: r.toStage,
+            by: session.user.email ?? session.user.id, for: 'REINSTATE_HOLD',
+          }),
+        },
+      }).catch(err => console.error('[reinstate] reopen audit failed:', err))
+    }
 
     // Salesforce's LED Trucks and Hold Exp follow (lib/sfdcBooking.ts syncOpportunityLedWindow).
     const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)

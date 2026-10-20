@@ -1,4 +1,5 @@
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
+import { holdReservesNow } from '@/lib/holdFilters'
 import { endOfDayUtc } from '@/lib/dateOnly'
 import { APP_HOLD_EXP_KEY } from '@/lib/quoteFeatures'
 
@@ -12,20 +13,23 @@ export const SFDC_SERVICE_USER_EMAIL = 'sfdc-integration@lime-media.com'
  * multi-market, client portal) create Opportunities WITH the LED fields set
  * and hold the trucks themselves (source INTERNAL / CLIENT, linked by
  * sfdc_opportunity_id), so Salesforce's push of those is an echo: mirroring it
- * would double-book. A truck the app booked for this opportunity is the app's
- * in ANY status: a lapsed one comes back through Reinstate (conflict-checked),
- * never through a push, which records without checking — so a push carrying a
- * stale LED Trucks list (say, the one Reinstate's reopen to Warm fires before
- * the holds come back) can't re-create it. Only a quote-only log doesn't count:
- * it never reserved anything, so when a rep fills in the LED fields to make it
- * a real booking, its trucks are mirrored like any other.
+ * would double-book. Only a truck the app holds NOW counts: while the app
+ * holds trucks on an opportunity the webhook doesn't mirror at all (it's the
+ * app's; app/api/integrations/salesforce/hold), so this runs only once the
+ * app's booking has lapsed or been released and Salesforce is in charge again.
+ * Then a truck a rep lists is recorded like any other (a mirror path records,
+ * it doesn't refuse; a clash surfaces through /api/holds/infeasible), never
+ * dropped silently. A quote-only log never reserved anything, so it never
+ * counts. (Reinstate and revise reopen a Closed Lost deal only after their
+ * holds are saved, so the push that fires sees them live.)
  */
 export function trucksToMirror(
   pushedTrucks: string[],
-  linkedHolds: { truck_number: string; source: string; origination: string | null }[],
+  linkedHolds: { truck_number: string; source: string; origination: string | null; status: string; expires_at: Date | null }[],
+  now: Date = new Date(),
 ): string[] {
   const booked = new Set(linkedHolds
-    .filter(h => h.source !== 'SALESFORCE' && h.origination !== QUOTE_ONLY_ORIGINATION)
+    .filter(h => h.source !== 'SALESFORCE' && h.origination !== QUOTE_ONLY_ORIGINATION && holdReservesNow(h, now))
     .map(h => h.truck_number))
   return pushedTrucks.filter(t => !booked.has(t))
 }

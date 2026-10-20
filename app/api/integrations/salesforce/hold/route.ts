@@ -6,6 +6,7 @@ import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { ledFieldsDiffer, ledWindowFields } from '@/lib/opportunityMerge'
 import { loadOpportunityReservingHolds } from '@/lib/bookingLoad'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
+import { holdReservesNow } from '@/lib/holdFilters'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
 import { soqlString } from '@/lib/soql'
 import { endOfDayUtc } from '@/lib/dateOnly'
@@ -99,10 +100,16 @@ export async function POST(req: NextRequest) {
   // it; the push that follows then matches, so this can't loop. Opportunities
   // made purely in Salesforce (no app booking, or only quote-only logs) are
   // mirrored below as before.
-  const appBooked = await prisma.hold.count({
-    where: { sfdc_opportunity_id: opportunityId, source: { not: 'SALESFORCE' }, origination: { not: QUOTE_ONLY_ORIGINATION } },
+  // While the app holds trucks there (live, booked — not a quote-only log), the
+  // opportunity is the app's. Once its booking lapses or is released, Salesforce
+  // is in charge again and the push is mirrored below. Matched on the 15-char
+  // id prefix: Salesforce may send either the 15- or 18-character form.
+  const opp15 = opportunityId.slice(0, 15)
+  const appHolds = await prisma.hold.findMany({
+    where:  { sfdc_opportunity_id: { startsWith: opp15 }, source: { not: 'SALESFORCE' }, origination: { not: QUOTE_ONLY_ORIGINATION } },
+    select: { status: true, expires_at: true },
   })
-  if (appBooked > 0) {
+  if (appHolds.some(h => holdReservesNow(h, now))) {
     const want = ledWindowFields(await loadOpportunityReservingHolds(opportunityId), now.toISOString().slice(0, 10))
     if (!ledFieldsDiffer(want, truckNumbers, holdExp ?? null)) {
       return NextResponse.json({ results: [], app_owned: true })
@@ -115,7 +122,7 @@ export async function POST(req: NextRequest) {
         user_id:      serviceUser.id,
         details:      JSON.stringify({
           opportunityId, pushed: { trucks: truckNumbers, holdExp: holdExp ?? null }, app: want,
-          result: warning ?? (isSfdcConfigured() ? 'rewritten_from_app' : 'salesforce_not_configured'),
+          result: warning ?? (isSfdcConfigured() ? 'sync_requested' : 'salesforce_not_configured'),
         }),
       },
     })
@@ -141,15 +148,15 @@ export async function POST(req: NextRequest) {
     results.push({ truck_number: hold.truck_number, hold_id: hold.id, action: 'removed' })
   }
 
-  // Trucks the app itself booked for this Opportunity, in any status, are the
-  // app's: an echo, never a second reservation (a lapsed one comes back
-  // through Reinstate, which checks for clashes). Stale SALESFORCE holds above
-  // are still reconciled against the full list.
+  // Here the app holds nothing live on the opportunity (it would have returned
+  // above), so every pushed truck is mirrored except one the app still holds
+  // (trucksToMirror), including one from an app booking that lapsed: a mirror
+  // path records, and a clash surfaces through /api/holds/infeasible.
   const linkedHolds = await prisma.hold.findMany({
-    where: { sfdc_opportunity_id: opportunityId },
-    select: { truck_number: true, source: true, origination: true, features: true, sfdc_hold_exp: true },
+    where: { sfdc_opportunity_id: { startsWith: opp15 } },
+    select: { truck_number: true, source: true, origination: true, status: true, expires_at: true, features: true, sfdc_hold_exp: true },
   })
-  const toMirror = trucksToMirror(truckNumbers, linkedHolds)
+  const toMirror = trucksToMirror(truckNumbers, linkedHolds, now)
   const skippedAppHeld = truckNumbers.filter(t => !toMirror.includes(t))
   // The LED Hold Exp the app last wrote here, as recorded on this
   // opportunity's Salesforce-made rows. A push carrying it is the app's echo:

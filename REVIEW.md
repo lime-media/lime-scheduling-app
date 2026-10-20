@@ -148,15 +148,18 @@ findings by how close they come to one of those.
   `sfdc_hold_exp`, which keeps deciding whether a lapse closes the deal.
   Listing only held trucks is what stops Salesforce's push from mirroring or
   reviving a truck the app isn't holding, so a write that lists trucks the app
-  didn't take back is a double-booking; as a backstop, the webhook never
-  re-creates a truck the app booked for that opportunity, in any status
-  (`trucksToMirror`; a lapsed one comes back through Reinstate). Reinstate is
-  all or nothing for the same reason. Flag a new release or re-date path that
+  didn't take back is a double-booking. Reinstate is all or nothing for the
+  same reason. Flag a new release or re-date path that
   doesn't sync. *(Reinstate write-back review: a partial reinstate's push
   revived a refused truck; delete, chat, conflict and sweep releases didn't sync.)*
-- **An opportunity the app booked on is the app's.** For app-made bookings,
-  trucks and Hold Exp change only in the app: the hold webhook never creates,
-  changes or deletes holds from a push's LED fields on such an opportunity.
+- **While the app holds trucks on an opportunity, it's the app's.** For
+  app-made bookings, trucks and Hold Exp change only in the app: the hold
+  webhook never creates, changes or deletes holds from a push's LED fields on
+  such an opportunity (live app holds, matched on the 15-char id prefix). Once
+  the app's booking lapses or is released, Salesforce is in charge again and a
+  push is mirrored (recorded, never dropped). Anything that writes Salesforce
+  for a Closed Lost reopen does it after the holds are saved, undoing them if
+  Salesforce refuses, so the push it fires finds them live.
   When the push differs from what the app would write (`ledFieldsDiffer`), the
   app writes its own values back and records `SFDC_LED_FIELDS_OVERRIDDEN`; the
   follow-up push matches, so it can't loop (compare Hold Exp only when the app

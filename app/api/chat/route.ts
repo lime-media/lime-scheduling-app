@@ -12,6 +12,7 @@ import { CHAT_CONTEXT_QUERY, CHAT_SCHEDULE_WINDOW_QUERY } from '@/lib/scheduleQu
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { formatMarketState } from '@/lib/format'
 import { checkTruckFeasibility } from '@/lib/availabilityEngine'
+import { CLOSED_WON_READ_ONLY } from '@/lib/bookings'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -224,6 +225,10 @@ async function executeReleaseHold(
 
   if (!hold) {
     return { success: false, message: `No active hold found for truck ${truck ?? hold_id}.` }
+  }
+  // A won deal is never released from here (lib/bookings.ts closedWonRefusal).
+  if (hold.status === 'COMMITTED') {
+    return { success: false, message: `Truck ${hold.truck_number} is committed to "${hold.client_name}". ${CLOSED_WON_READ_ONLY}` }
   }
 
   await prisma.auditLog.create({

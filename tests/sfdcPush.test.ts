@@ -94,4 +94,9 @@ section('Closed Lost: staff may move the opportunity back to WARM')
   eq('opportunityRefusal: Closed Lost still refuses by default (quote tool, attach, client paths)', opportunityRefusal(opp({}), '001A')?.includes('Closed Lost - Declined'), true)
   eq('opportunityRefusal: a revision the person agreed to reopen passes', opportunityRefusal(opp({}), '001A', { closedLostReopening: true }), null)
   eq('opportunityRefusal: reopening never skips the account check', opportunityRefusal(opp({}), '001B', { closedLostReopening: true }), 'That opportunity belongs to a different Salesforce account.')
+  // Closed Won is read-only (Andrew, 2026-10-20): no quote added to it, no revision of it.
+  const won = opp({ IsWon: true, StageName: 'Closed Won' })
+  eq('opportunityRefusal: Closed Won takes no added quote or revision', opportunityRefusal(won, '001A'), 'This deal is Closed Won in Salesforce; change it there first.')
+  eq('opportunityRefusal: Closed Won refused even on a reopen request', opportunityRefusal(won, '001A', { closedLostReopening: true }), 'This deal is Closed Won in Salesforce; change it there first.')
+  eq('opportunityRefusal: an open opportunity is fine', opportunityRefusal(opp({ IsClosed: false, StageName: 'WARM' }), '001A'), null)
 }

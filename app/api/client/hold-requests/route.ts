@@ -7,6 +7,8 @@ import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
 import { createClientHold } from '@/lib/holdRequestService'
+import { sendHoldRequestEmail } from '@/lib/email'
+import { bookingKey } from '@/lib/bookings'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { createOpportunity, isSfdcConfigured, getSfdcAccountInfo } from '@/lib/salesforceClient'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
@@ -33,9 +35,21 @@ export async function GET(req: NextRequest) {
     orderBy: { created_at: 'desc' },
   })
 
+  // The booking each hold belongs to (lib/bookings.ts bookingKey): the portal
+  // shows and extends a booking as one, not a card per market. Sent as an
+  // opaque label, since a key can be a Salesforce opportunity id.
+  const labels = new Map<string, string>()
+  const bookingOf = (r: typeof holds[number]) => {
+    const key = bookingKey(r)
+    if (!key) return null
+    if (!labels.has(key)) labels.set(key, `b${labels.size + 1}`)
+    return labels.get(key)!
+  }
+
   return NextResponse.json({
     holdRequests: holds.map((r) => ({
       id:                r.id,
+      booking:           bookingOf(r),
       truck_number:      r.truck_number,
       market:            r.market,
       state:             r.state ?? '',
@@ -273,6 +287,8 @@ async function handleAutoSelectHold(
         // Already vetted by selectTrucksForHold above — re-checking would reload
         // the fleet timelines once per truck.
         skipFeasibilityCheck: true,
+        // One email for the booking, below, not one per truck.
+        skipEmail: true,
         truck_number: truck.truckNumber,
         market,
         state: resolvedState,
@@ -296,6 +312,16 @@ async function handleAutoSelectHold(
   if (created.length === 0) {
     return NextResponse.json({ error: 'Failed to create holds' }, { status: 500 })
   }
+
+  // ONE email for the booking, naming every truck it holds.
+  await sendHoldRequestEmail({
+    companyName:  session.companyName,
+    truckNumbers: created,
+    market,
+    startDate:    start_date,
+    endDate:      end_date,
+    notes:        [brand ? `Brand: ${brand}` : null, notes || null, `${pricingTier} tier at $${Math.round(serverTotal).toLocaleString('en-US')}`].filter(Boolean).join(' | '),
+  }).catch((e) => console.error('[client/hold-requests] email failed:', e))
 
   // Create Salesforce Opportunity if the client has an SFDC Account ID
   if (session.sfdcAccountId && isSfdcConfigured() && created.length > 0) {

@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
+import { CLOSED_WON_READ_ONLY } from '@/lib/bookings'
 
 export async function PUT(
   req: NextRequest,
@@ -25,6 +26,15 @@ export async function PUT(
 
   const body = await req.json()
   const { status, notes, start_date, end_date, client_name, market, state, truck_number } = body
+
+  // A committed hold is a Closed Won deal: read-only here except a truck swap
+  // (logistics; the deal is unchanged) and a note (lib/bookings.ts closedWonRefusal).
+  if (hold.status === 'COMMITTED') {
+    const changes = Object.keys(body).filter(k => body[k] !== undefined && !(k === 'status' && body[k] === 'COMMITTED'))
+    if (changes.some(k => k !== 'truck_number' && k !== 'notes')) {
+      return NextResponse.json({ error: CLOSED_WON_READ_ONLY }, { status: 409 })
+    }
+  }
 
   // If swapping trucks, check for conflicts on the new truck
   if (truck_number && truck_number !== hold.truck_number) {
@@ -52,6 +62,8 @@ export async function PUT(
     where: { id: params.id },
     data: {
       ...(status && { status }),
+      // Committed is booked, not held: no expiry left to show or sweep.
+      ...(status === 'COMMITTED' && { expires_at: null, extension_until: null, extension_reason: null }),
       ...(notes !== undefined && { notes }),
       ...(start_date && { start_date: new Date(start_date) }),
       ...(end_date && { end_date: new Date(end_date) }),
@@ -92,6 +104,11 @@ export async function DELETE(
   // Sales can only delete their own holds
   if (session.user.role === 'SALES' && hold.created_by !== session.user.id) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  }
+
+  // A won deal is never deleted here (lib/bookings.ts closedWonRefusal).
+  if (hold.status === 'COMMITTED') {
+    return NextResponse.json({ error: CLOSED_WON_READ_ONLY }, { status: 409 })
   }
 
   await prisma.auditLog.create({

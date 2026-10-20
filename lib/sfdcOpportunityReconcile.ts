@@ -156,7 +156,14 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
         },
       })
 
-      await prisma.hold.update({ where: { id: hold.id }, data: { status: target } })
+      // Committed is booked, not held: the expiry (and any waiting extension
+      // request) goes, so no screen shows a lapse date on a won deal.
+      await prisma.hold.update({
+        where: { id: hold.id },
+        data: target === 'COMMITTED'
+          ? { status: target, expires_at: null, extension_until: null, extension_reason: null }
+          : { status: target },
+      })
 
       if (target === 'COMMITTED') summary.committed++
       else summary.released++

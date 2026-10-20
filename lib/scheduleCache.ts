@@ -185,6 +185,11 @@ export async function refreshCache(): Promise<RefreshSummary> {
  * Covers both Salesforce holds (expires_at backfilled from sfdc_hold_exp)
  * and client holds (expires_at from 72h SLA). Holds without expires_at
  * (internal/ATT) are never matched — they don't expire automatically.
+ *
+ * A client's waiting extension request (EXTENSION_REQUESTED) is not released
+ * early: asking moves the booking's expires_at to the date asked (no later
+ * than 3 days before it starts; app/api/client/hold-requests/[id]/extend), so
+ * it is held until staff answer or that date passes, whichever comes first.
  */
 export async function expireHolds(): Promise<{
   expired: number

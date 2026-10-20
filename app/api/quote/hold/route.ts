@@ -245,8 +245,8 @@ async function handlePost(req: NextRequest) {
           state:             resolvedState ?? '',
           start_date:        new Date(start_date),
           end_date:          new Date(end_date),
-          // A won opportunity's additions are committed, as its sweep would make them.
-          status:            quoteOnly ? QUOTE_ONLY_STATUS : target?.IsWon ? 'COMMITTED' : 'HOLD',
+          // Never committed here: a Closed Won opportunity takes no additions (opportunityRefusal).
+          status:            quoteOnly ? QUOTE_ONLY_STATUS : 'HOLD',
           source:            'INTERNAL',
           origination:       quoteOnly ? QUOTE_ONLY_ORIGINATION : 'frontend',
           notes:             `${quoteOnly ? `${QUOTE_ONLY_NOTE} ` : ''}Internal quote for ${sfdc_account_name || 'Unknown'}${brand ? ` (brand: ${brand})` : ''}`,
@@ -259,7 +259,7 @@ async function handlePost(req: NextRequest) {
           features:          featuresJson,
           truck_count:       quoteOnly ? truck_count : selectedTrucks.length,
           campaign_group_id: campaignGroupId,
-          expires_at:        quoteOnly ? new Date() : target?.IsWon ? null : expiresAt,
+          expires_at:        quoteOnly ? new Date() : expiresAt,
           sfdc_opportunity_id: target?.Id ?? null,
         },
       })

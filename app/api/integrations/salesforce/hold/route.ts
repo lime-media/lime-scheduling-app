@@ -117,6 +117,15 @@ export async function POST(req: NextRequest) {
   const toMirror = trucksToMirror(truckNumbers, linkedHolds, now)
   const skippedAppHeld = truckNumbers.filter(t => !toMirror.includes(t))
 
+  // The Opportunity's stage, asked at most once per push and only when a hold
+  // would be revived, expired or created: a Closed Won deal's holds are
+  // committed (booked, no expiry), never expired by a past Hold Exp and never
+  // created as tentative HOLDs waiting for the reconcile. A null stage means
+  // "couldn't ask": the old behaviour stands and the reconcile settles it.
+  let stagePromise: ReturnType<typeof getOpportunityStage> | null = null
+  const opportunityStage = () => (stagePromise ??= getOpportunityStage(opportunityId))
+  const isWon = (s: Awaited<ReturnType<typeof getOpportunityStage>>) => s?.isClosed === true && s.isWon === true
+
   for (const truck_number of toMirror) {
     // Only a market the Opportunity names is written. When Salesforce can't be
     // reached, or the Opportunity names none, an existing hold keeps its market.
@@ -160,15 +169,17 @@ export async function POST(req: NextRequest) {
       // that may well be legitimate.
       let revivalStage: Awaited<ReturnType<typeof getOpportunityStage>> = null
       if (existing.status === 'EXPIRED' && !expiryIsPast) {
-        revivalStage = await getOpportunityStage(opportunityId)
+        revivalStage = await opportunityStage()
       }
       const blockedByClosedLost = revivalStage?.isClosed === true && revivalStage.isWon === false
       // A won deal coming back is a real booking, not a tentative hold.
-      const revivedAsCommitted  = revivalStage?.isClosed === true && revivalStage.isWon === true
+      const revivedAsCommitted  = isWon(revivalStage)
 
       const reactivated = existing.status === 'EXPIRED' && !expiryIsPast && !blockedByClosedLost
-      const expiredNow  =
-        expiryIsPast && (existing.status === 'HOLD' || existing.status === 'EXTENSION_REQUESTED')
+      const pastDue = expiryIsPast && (existing.status === 'HOLD' || existing.status === 'EXTENSION_REQUESTED')
+      // A past Hold Exp on a won deal does not release it: the deal is booked.
+      const committedNow = pastDue && isWon(await opportunityStage())
+      const expiredNow   = pastDue && !committedNow
 
       // A committed booking's expiry is meaningless — nothing expires it — so don't
       // restamp one. Left unguarded, a re-saved Closed Won Opportunity would write
@@ -181,8 +192,10 @@ export async function POST(req: NextRequest) {
         data: {
           ...(known ? { market: known.market, state: known.state } : {}),
           client_name: accountName, start_date, end_date, sfdc_hold_exp,
-          ...(isCommitted ? {} : { expires_at: effectiveExpiry }),
+          ...(isCommitted || committedNow || (reactivated && revivedAsCommitted) ? {} : { expires_at: effectiveExpiry }),
           ...(reactivated && { status: revivedAsCommitted ? 'COMMITTED' : 'HOLD' }),
+          ...(reactivated && revivedAsCommitted && { expires_at: null }),
+          ...(committedNow && { status: 'COMMITTED', expires_at: null, extension_until: null, extension_reason: null }),
           ...(expiredNow  && { status: 'EXPIRED' }),
         },
       })
@@ -212,6 +225,7 @@ export async function POST(req: NextRequest) {
               stage_name: revivalStage?.stageName,
             }),
             ...(expiredNow  && { expired_on_push: 'expiry_already_passed' }),
+            ...(committedNow && { committed_on_push: 'opportunity_closed_won' }),
             ...(existing.status === 'EXPIRED' && !reactivated && {
               left_expired: 'expiry_already_passed',
             }),
@@ -222,6 +236,8 @@ export async function POST(req: NextRequest) {
       // No prior row, so there is nothing to preserve — an absent Hold Exp gets
       // the one-time 72h fallback here.
       const newExpiry = explicitExpiry ?? defaultExpiry
+      // A Closed Won deal's truck is booked: committed, no expiry.
+      const won = isWon(await opportunityStage())
 
       const created = await prisma.hold.create({
         // MIRROR PATH — no feasibility gate by design. This reflects a booking
@@ -237,7 +253,7 @@ export async function POST(req: NextRequest) {
           end_date,
           // An Opportunity pushed with a Hold Exp already in the past has nothing
           // left to reserve — record it, but don't let it block the truck.
-          status:              newExpiry <= now ? 'EXPIRED' : 'HOLD',
+          status:              won ? 'COMMITTED' : newExpiry <= now ? 'EXPIRED' : 'HOLD',
           source:              'SALESFORCE',
           notes:               `Auto-created from Salesforce Opportunity ${opportunityId}`
                                  + (known ? '' : destination.status === 'unreachable'
@@ -247,7 +263,7 @@ export async function POST(req: NextRequest) {
           created_by:          serviceUser.id,
           sfdc_opportunity_id: opportunityId,
           sfdc_hold_exp,
-          expires_at:          newExpiry,
+          expires_at:          won ? null : newExpiry,
         },
       })
       results.push({ truck_number, hold_id: created.id, action: 'created' })
@@ -259,9 +275,10 @@ export async function POST(req: NextRequest) {
           hold_id:      created.id,
           details:      JSON.stringify({
             source: 'salesforce', opportunityId, accountName, start_date, end_date,
-            sfdc_hold_exp, expires_at: newExpiry,
-            ...(explicitExpiry === null && { expires_at_defaulted: 'no_hold_exp_on_push_72h' }),
-            ...(newExpiry <= now && { created_expired: 'expiry_already_passed' }),
+            sfdc_hold_exp, expires_at: won ? null : newExpiry,
+            ...(won && { created_committed: 'opportunity_closed_won' }),
+            ...(!won && explicitExpiry === null && { expires_at_defaulted: 'no_hold_exp_on_push_72h' }),
+            ...(!won && newExpiry <= now && { created_expired: 'expiry_already_passed' }),
           }),
         },
       })

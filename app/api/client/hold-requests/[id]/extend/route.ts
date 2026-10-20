@@ -2,13 +2,33 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
 import { sendAssistanceRequestEmail } from '@/lib/email'
+import { bookingCapStarts, bookingKey, clientExtendRefusal } from '@/lib/bookings'
+import { loadBookingHolds } from '@/lib/bookingLoad'
+import { lastExpiryDate } from '@/lib/holdExpiry'
+import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
 /**
  * POST /api/client/hold-requests/[id]/extend
  *
- * Client requests an extension on a hold with a specific date.
- * The hold's status flips to EXTENSION_REQUESTED, the requested date and
- * reason are stored, and a notification email goes to the team.
+ * A client asks to extend a booking to a date. A booking is one quote, so the
+ * request covers the WHOLE booking the hold belongs to (lib/bookings.ts
+ * bookingKey): every one of the client's holds in it, every market and truck.
+ *
+ * - Refused unless every live hold is an ordinary reservation
+ *   (clientExtendRefusal): not a confirmed (Closed Won) booking, not an
+ *   expired one, not one with a request already waiting.
+ * - The date may be no later than the client's limit: 3 days before the
+ *   booking's first start (lastExpiryDate, the default runway). Later is a
+ *   400 naming the limit, never quietly cut back. Staff approving may still
+ *   give up to 2 days (app/api/hold-requests/[id]).
+ * - While the request waits, the booking stays held until the date asked
+ *   (its expiry is set to that date's end, which the limit keeps no later than
+ *   3 days before the start): the sweep never releases a booking a client is
+ *   still waiting on, and an unanswered request lapses at that date at the
+ *   latest. Staff approve (the booking gets that date, capped at their limit)
+ *   or deny (the booking is released).
+ * - Status, date, reason and the audit row land in one transaction; the team
+ *   gets ONE email for the booking.
  */
 export async function POST(
   req: NextRequest,
@@ -20,15 +40,13 @@ export async function POST(
   const { id } = await params
   const { reason, extend_until } = await req.json().catch(() => ({ reason: '', extend_until: '' }))
 
-  if (!extend_until) {
-    return NextResponse.json({ error: 'extend_until date is required' }, { status: 400 })
+  if (typeof extend_until !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(extend_until)) {
+    return NextResponse.json({ error: 'extend_until date is required (YYYY-MM-DD)' }, { status: 400 })
   }
-
   const extendDate = new Date(extend_until + 'T23:59:59Z')
   if (isNaN(extendDate.getTime())) {
     return NextResponse.json({ error: 'Invalid extend_until date' }, { status: 400 })
   }
-
   if (extendDate <= new Date()) {
     return NextResponse.json({ error: 'Extension date must be in the future' }, { status: 400 })
   }
@@ -38,33 +56,69 @@ export async function POST(
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
 
-  if (hold.status === 'EXPIRED') {
-    return NextResponse.json({ error: 'Cannot extend an expired hold' }, { status: 400 })
+  // The whole booking, as far as it is this client's.
+  const key = bookingKey(hold)
+  const ids = key ? (await loadBookingHolds(key)).map(h => h.id) : [hold.id]
+  const holds = (await prisma.hold.findMany({ where: { id: { in: ids.includes(hold.id) ? ids : [...ids, hold.id] } } }))
+    .filter(h => h.client_user_id === session.id)
+
+  const refusal = clientExtendRefusal(holds)
+  if (refusal) return NextResponse.json({ error: refusal }, { status: 400 })
+
+  const held = holds.filter(h => h.status === 'HOLD')
+  const today = new Date().toISOString().slice(0, 10)
+  const starts = bookingCapStarts(held.map(h => ({ start_date: h.start_date.toISOString().slice(0, 10), status: h.status })), today)
+  const lastDate = lastExpiryDate([...starts].sort()[0])
+  if (extend_until > lastDate) {
+    return NextResponse.json({
+      error: `The latest this booking can be held is ${lastDate}: 3 days before it starts.`,
+      lastDate,
+    }, { status: 400 })
+  }
+  const currentExpiry = held.map(h => h.expires_at).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0]
+  if (currentExpiry && extendDate <= currentExpiry) {
+    return NextResponse.json({ error: `This booking is already held until ${currentExpiry.toISOString().slice(0, 10)}. Choose a later date.` }, { status: 400 })
   }
 
-  if (hold.status === 'EXTENSION_REQUESTED') {
-    return NextResponse.json({ error: 'Extension already requested' }, { status: 400 })
-  }
+  // The audit row's user is a staff record (FK to app_users); a client has
+  // none, so the service user stands in, as for client holds.
+  const serviceUser = await prisma.user.findFirst({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } })
 
-  await prisma.hold.update({
-    where: { id },
-    data: {
-      status: 'EXTENSION_REQUESTED',
-      extension_reason: reason || null,
-      extension_until: extendDate,
-    },
-  })
+  await prisma.$transaction([
+    prisma.hold.updateMany({
+      where: { id: { in: held.map(h => h.id) }, status: 'HOLD' },
+      data: {
+        status: 'EXTENSION_REQUESTED',
+        extension_reason: reason || null,
+        extension_until: extendDate,
+        // Held until the date asked while staff decide (see above).
+        expires_at: extendDate,
+      },
+    }),
+    prisma.auditLog.create({
+      data: {
+        action:       'REQUEST_HOLD_EXTENSION',
+        truck_number: held[0].truck_number,
+        user_id:      serviceUser?.id ?? held[0].created_by,
+        hold_id:      held[0].id,
+        details:      JSON.stringify({
+          booking: key, client: session.companyName, client_user_id: session.id,
+          holds: held.map(h => h.id), extend_until: extend_until, reason: reason || null,
+          was_expires_at: currentExpiry?.toISOString() ?? null,
+        }),
+      },
+    }),
+  ])
 
-  const formattedDate = extendDate.toISOString().split('T')[0]
-
+  const markets = [...new Set(held.map(h => h.market))]
+  const trucks = [...new Set(held.map(h => h.truck_number))]
   await sendAssistanceRequestEmail({
     companyName: session.companyName,
-    market:      hold.market,
-    state:       hold.state ?? undefined,
-    startDate:   hold.start_date.toISOString().split('T')[0],
-    endDate:     hold.end_date.toISOString().split('T')[0],
-    details:     `Hold extension requested for Truck ${hold.truck_number}. Extend until: ${formattedDate}.${reason ? ` Reason: ${reason}` : ''}`,
+    market:      markets.join(', '),
+    startDate:   held.map(h => h.start_date.toISOString().slice(0, 10)).sort()[0],
+    endDate:     held.map(h => h.end_date.toISOString().slice(0, 10)).sort().reverse()[0],
+    details:     `Hold extension requested for the whole booking: ${trucks.length} truck${trucks.length === 1 ? '' : 's'} (${trucks.join(', ')}) across ${markets.length} market${markets.length === 1 ? '' : 's'}. Extend until: ${extend_until}.${reason ? ` Reason: ${reason}` : ''} Approve or deny it on Reservations.`,
   }).catch((e) => console.error('[hold-extend] email failed:', e))
 
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, holds: held.length, extend_until })
 }

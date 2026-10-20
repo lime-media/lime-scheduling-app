@@ -129,8 +129,8 @@ export async function POST(req: NextRequest) {
     }
 
     sendHoldRequestEmail({
-      companyName: clientUser.company_name,
-      truckNumber: truck_number,
+      companyName:  clientUser.company_name,
+      truckNumbers: [truck_number],
       market:      market ?? '',
       startDate:   start_date,
       endDate:     end_date,

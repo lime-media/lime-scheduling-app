@@ -431,6 +431,8 @@ A reservation holds its trucks for **3 days** by default. On both quote tools th
 
 Quote-only logs hold nothing, so they have no hold length. An expiry can be changed afterwards from Reservations → Edit: one date for every hold on the card, no later than 2 days before the booking's earliest start (`lastExpiryDate`). The date field stops there and `update_expiration` refuses a later date (400) instead of cutting it back. Reinstate and approve-extension give the whole booking the same expiry by the same rule. Bookings made under the earlier per-market rule keep their differing expiries until their next edit or reinstate.
 
+A booking is the unit everywhere: one card on Reservations and in the client portal, one status, and Edit, cancel, approve and deny act on the whole booking in one request. A client asks to extend the whole booking (client portal → Request Hold Extension), up to 3 days before its first start (the client runway; staff approving may give up to 2). While the request waits, the booking is held until the date asked, so it never lapses before staff answer; approving gives the booking that date (capped at the staff limit) and denying releases it, and the client is emailed either way. A committed (Closed Won) booking is read-only in the app except for truck swaps: no expiry, cancel, revise or added quote (`closedWonRefusal`); change the deal in Salesforce.
+
 ## 6f. Changing a deal without new opportunities
 
 Multi-market plans evolve: a market is dropped or added, dates move. Two ways to keep that on one opportunity:

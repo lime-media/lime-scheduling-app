@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import type { Hold } from '@prisma/client'
 import { reinstateBlockedByRelease } from '@/lib/attSoftRules'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { getServerSession } from 'next-auth'
@@ -6,41 +7,64 @@ import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry, lastExpiryDate } from '@/lib/holdExpiry'
-import { bookingCapStarts, bookingKey } from '@/lib/bookings'
+import { bookingCapStarts, bookingKey, closedWonRefusal } from '@/lib/bookings'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { closeOpportunityAsLost, getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { reopenClosedLostOpportunity } from '@/lib/sfdcBooking'
-import { sendCancellationEmail } from '@/lib/email'
+import { sendCancellationEmail, sendExtensionDecisionEmail } from '@/lib/email'
 
 type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration' | 'reinstate'
 
+// The status of the hold the request names. Committed (Closed Won) allows a
+// truck swap only: cancel, expiry edits and everything else on a won deal are
+// changed in Salesforce (lib/bookings.ts closedWonRefusal).
 const VALID_FROM: Record<Action, string[]> = {
   swap_truck:         ['HOLD', 'COMMITTED'],
-  cancel_notify:      ['HOLD', 'COMMITTED', 'EXTENSION_REQUESTED'],
+  cancel_notify:      ['HOLD', 'EXTENSION_REQUESTED'],
   approve_extension:  ['EXTENSION_REQUESTED'],
   deny_extension:     ['EXTENSION_REQUESTED'],
-  update_expiration:  ['HOLD', 'COMMITTED', 'EXTENSION_REQUESTED'],
+  update_expiration:  ['HOLD', 'EXTENSION_REQUESTED'],
   reinstate:          ['EXPIRED'],
 }
 
+type HoldWithClient = Hold & { client_user: { username: string; email: string | null; company_name: string } | null }
+
 /**
- * The start dates that cap this hold's booking's one expiry (a multi-market
- * booking is one quote: every hold lapses together, capped by its earliest
- * market's start; lib/bookings.ts bookingCapStarts). A hold on its own is
- * capped by its own start.
+ * Every hold of the booking this hold belongs to (lib/bookings.ts bookingKey:
+ * all markets of a multi-market quote, a campaign group, or a Salesforce
+ * opportunity), or the hold alone. A booking is one quote: extensions, cancel
+ * and expiry edits act on all of it in one request.
  */
-async function bookingStarts(hold: { id: string; campaign_group_id: string | null; sfdc_opportunity_id: string | null; start_date: Date; status: string }): Promise<string[]> {
-  const today = new Date().toISOString().slice(0, 10)
+async function loadBooking(hold: HoldWithClient): Promise<HoldWithClient[]> {
   const key = bookingKey(hold)
-  const booking = key ? await loadBookingHolds(key) : []
-  const rows: { start_date: string; status: string }[] = booking.some(h => h.id === hold.id) ? booking
-    : [...booking, { start_date: hold.start_date.toISOString().slice(0, 10), status: hold.status }]
-  return bookingCapStarts(rows, today)
+  const ids = key ? (await loadBookingHolds(key)).map(h => h.id) : []
+  if (!ids.includes(hold.id)) ids.push(hold.id)
+  return prisma.hold.findMany({
+    where:   { id: { in: ids } },
+    include: { client_user: { select: { username: true, email: true, company_name: true } } },
+  })
+}
+
+/** The start dates that cap the booking's one expiry (lib/bookings.ts bookingCapStarts). */
+function capStarts(booking: Hold[]): string[] {
+  const today = new Date().toISOString().slice(0, 10)
+  return bookingCapStarts(booking.map(h => ({ start_date: h.start_date.toISOString().slice(0, 10), status: h.status })), today)
 }
 
 /** The end of a YYYY-MM-DD day, as a hand-set expiry is stored. */
 const endOfDay = (d: string) => new Date(d + 'T23:59:59Z')
+const day = (d: Date) => d.toISOString().slice(0, 10)
+
+/** The booking's span and markets, for the client's email. */
+function bookingSummary(holds: Hold[]) {
+  return {
+    markets:   [...new Set(holds.map(h => h.market))],
+    trucks:    [...new Set(holds.map(h => h.truck_number))],
+    startDate: holds.map(h => day(h.start_date)).sort()[0],
+    endDate:   holds.map(h => day(h.end_date)).sort().reverse()[0],
+  }
+}
 
 /**
  * PATCH /api/hold-requests/[id]
@@ -48,6 +72,10 @@ const endOfDay = (d: string) => new Date(d + 'T23:59:59Z')
  * Staff actions on a Hold record from the unified Reservations page.
  * Actions: swap_truck, cancel_notify, approve_extension, deny_extension,
  * update_expiration, reinstate.
+ *
+ * swap_truck and reinstate act on the named hold. cancel_notify,
+ * approve_extension, deny_extension and update_expiration act on its WHOLE
+ * booking in one request (one transaction, one email): a booking is one quote.
  */
 export async function PATCH(
   req: NextRequest,
@@ -71,6 +99,9 @@ export async function PATCH(
   })
   if (!hold) return NextResponse.json({ error: 'Hold not found' }, { status: 404 })
 
+  if (hold.status === 'COMMITTED' && action !== 'swap_truck') {
+    return NextResponse.json({ error: closedWonRefusal([hold]) }, { status: 409 })
+  }
   if (!VALID_FROM[action].includes(hold.status)) {
     return NextResponse.json(
       { error: `Cannot ${action.replace('_', ' ')} a hold with status ${hold.status}` },
@@ -79,6 +110,7 @@ export async function PATCH(
   }
 
   // ── swap_truck ──────────────────────────────────────────────────────────
+  // Allowed on a won deal: moving a truck is logistics; the deal is unchanged.
   if (action === 'swap_truck') {
     if (!truck_number) {
       return NextResponse.json({ error: 'truck_number is required' }, { status: 400 })
@@ -122,49 +154,6 @@ export async function PATCH(
     return NextResponse.json({ ok: true, old_truck: oldTruck, new_truck: truck_number })
   }
 
-  // ── cancel_notify ───────────────────────────────────────────────────────
-  if (action === 'cancel_notify') {
-    await prisma.auditLog.create({
-      data: {
-        action:       'CANCEL_HOLD',
-        truck_number: hold.truck_number,
-        user_id:      session.user.id,
-        hold_id:      hold.id,
-        details:      JSON.stringify({
-          client_name: hold.client_name,
-          status: hold.status,
-          reason,
-        }),
-      },
-    })
-
-    await prisma.hold.delete({ where: { id: hold.id } })
-
-    // Email the client if we have their email
-    let emailed = false
-    const clientEmail = hold.client_user?.email
-    if (reason && clientEmail) {
-      const startDate = hold.start_date.toISOString().split('T')[0]
-      const endDate = hold.end_date.toISOString().split('T')[0]
-      try {
-      await sendCancellationEmail({
-        to:          clientEmail,
-        companyName: hold.client_user!.company_name,
-        truckNumber: hold.truck_number,
-        market:      hold.market,
-        startDate,
-        endDate,
-        reason,
-      })
-      emailed = true
-      } catch (err) {
-        console.error('[cancel-notify] email send failed:', err)
-      }
-    }
-
-    return NextResponse.json({ ok: true, emailed })
-  }
-
   // ── reinstate ───────────────────────────────────────────────────────────
   // Puts an expired hold back in play with a fresh window. The expiry is recomputed rather than
   // restored: the old value is what lapsed, and for the short-lead holds this exists to rescue it
@@ -173,6 +162,8 @@ export async function PATCH(
   // While the hold's Opportunity is Closed Lost (closed by expireHolds() or by a rep) the
   // reconcile (every 15 minutes) would release it again, so the person is asked first whether to
   // move the deal back to WARM (409 `reopenable`); the request comes back with reopenOpportunity.
+  // A Closed Won opportunity's hold comes back COMMITTED with no expiry: the deal is won, so the
+  // truck is booked, not held (and nothing about the deal changes).
   // Staff only: this route takes staff sessions; the client portal reinstates nothing.
   if (action === 'reinstate') {
     // A quote-only log was never a reservation: it may have no truck
@@ -224,14 +215,16 @@ export async function PATCH(
       reopened = r
     }
 
+    const won = stage?.isClosed === true && stage.isWon
     // The booking's one expiry: every hold of a reinstated card lands on the same moment.
-    const newExpiresAt = bookingHoldExpiry(await bookingStarts(hold), DEFAULT_HOLD_DAYS, new Date(), null, STAFF_MIN_DAYS_BEFORE_START).expiresAt
+    const newExpiresAt = won ? null : bookingHoldExpiry(capStarts(await loadBooking(hold)), DEFAULT_HOLD_DAYS, new Date(), null, STAFF_MIN_DAYS_BEFORE_START).expiresAt
+    const newStatus = won ? 'COMMITTED' : 'HOLD'
 
     // The reinstate and its audit rows (and the reopen's, if any) land together.
     await prisma.$transaction([
       prisma.hold.update({
         where: { id: hold.id },
-        data:  { status: 'HOLD', expires_at: newExpiresAt, extension_until: null, extension_reason: null },
+        data:  { status: newStatus, expires_at: newExpiresAt, extension_until: null, extension_reason: null },
       }),
       ...(reopened ? [prisma.auditLog.create({
         data: {
@@ -253,42 +246,103 @@ export async function PATCH(
           hold_id:      hold.id,
           details:      JSON.stringify({
             lapsed_expires_at: hold.expires_at,
-            new_expires_at:    newExpiresAt.toISOString(),
+            new_expires_at:    newExpiresAt?.toISOString() ?? null,
+            status:            newStatus,
           }),
         },
       }),
     ])
 
-    return NextResponse.json({ ok: true, status: 'HOLD', expires_at: newExpiresAt.toISOString(), reopened })
+    return NextResponse.json({ ok: true, status: newStatus, expires_at: newExpiresAt?.toISOString() ?? null, reopened })
+  }
+
+  // ── The whole booking: cancel, extensions, expiry ──────────────────────────
+  const booking = await loadBooking(hold)
+  // Its live, held reservations: what these actions change.
+  const live = booking.filter(h => h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED')
+  // A won deal is read-only: refuse when any of the booking is committed, or
+  // Salesforce already says Closed Won (the reconcile commits it within 15 minutes).
+  const stage = hold.sfdc_opportunity_id ? await getOpportunityStage(hold.sfdc_opportunity_id) : null
+  const won = closedWonRefusal(booking, stage?.isClosed ? { isWon: stage.isWon } : null)
+  if (won) return NextResponse.json({ error: won }, { status: 409 })
+
+  // ── cancel_notify ───────────────────────────────────────────────────────
+  if (action === 'cancel_notify') {
+    await prisma.$transaction([
+      prisma.auditLog.createMany({
+        data: live.map(h => ({
+          action:       'CANCEL_HOLD',
+          truck_number: h.truck_number,
+          user_id:      session.user.id,
+          hold_id:      h.id,
+          details:      JSON.stringify({ client_name: h.client_name, status: h.status, reason, booking: bookingKey(h) }),
+        })),
+      }),
+      prisma.hold.deleteMany({ where: { id: { in: live.map(h => h.id) } } }),
+    ])
+
+    // One email to the client for the whole booking, when there is a reason and an address.
+    let emailed = false
+    const client = live.find(h => h.client_user?.email)?.client_user
+    if (reason && client?.email) {
+      const s = bookingSummary(live)
+      try {
+        await sendCancellationEmail({
+          to:           client.email,
+          companyName:  client.company_name,
+          truckNumbers: s.trucks,
+          markets:      s.markets,
+          startDate:    s.startDate,
+          endDate:      s.endDate,
+          reason,
+        })
+        emailed = true
+      } catch (err) {
+        console.error('[cancel-notify] email send failed:', err)
+      }
+    }
+
+    return NextResponse.json({ ok: true, cancelled: live.length, emailed })
   }
 
   // ── approve_extension ───────────────────────────────────────────────────
   if (action === 'approve_extension') {
-    // The booking's one expiry: the date the client asked for, but never past
-    // the booking's limit (2 days before its earliest start), or the standard
-    // length when none was asked.
-    const starts = await bookingStarts(hold)
+    // The booking's one expiry, on every live hold: the date the client asked
+    // for, but never past the staff limit (2 days before its earliest start),
+    // or the standard length when none was asked.
+    const starts = capStarts(booking)
     const limit = endOfDay(lastExpiryDate([...starts].sort()[0], new Date(), STAFF_MIN_DAYS_BEFORE_START))
-    const newExpiresAt = hold.extension_until
-      ? (hold.extension_until > limit ? limit : hold.extension_until)
+    const asked = live.map(h => h.extension_until).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0]
+    const newExpiresAt = asked
+      ? (asked > limit ? limit : asked)
       : bookingHoldExpiry(starts, DEFAULT_HOLD_DAYS, new Date(), null, STAFF_MIN_DAYS_BEFORE_START).expiresAt
 
-    await prisma.hold.update({
-      where: { id: hold.id },
-      data:  { status: 'HOLD', expires_at: newExpiresAt, extension_until: null, extension_reason: null },
-    })
+    await prisma.$transaction([
+      prisma.hold.updateMany({
+        where: { id: { in: live.map(h => h.id) } },
+        data:  { status: 'HOLD', expires_at: newExpiresAt, extension_until: null, extension_reason: null },
+      }),
+      prisma.auditLog.createMany({
+        data: live.map(h => ({
+          action:       'APPROVE_HOLD_EXTENSION',
+          truck_number: h.truck_number,
+          user_id:      session.user.id,
+          hold_id:      h.id,
+          details:      JSON.stringify({ new_expires_at: newExpiresAt.toISOString(), booking: bookingKey(h) }),
+        })),
+      }),
+    ])
 
-    await prisma.auditLog.create({
-      data: {
-        action:       'APPROVE_HOLD_EXTENSION',
-        truck_number: hold.truck_number,
-        user_id:      session.user.id,
-        hold_id:      hold.id,
-        details:      JSON.stringify({ new_expires_at: newExpiresAt.toISOString() }),
-      },
-    })
+    const client = live.find(h => h.client_user?.email)?.client_user
+    if (client?.email) {
+      const s = bookingSummary(live)
+      await sendExtensionDecisionEmail({
+        to: client.email, companyName: client.company_name, markets: s.markets,
+        startDate: s.startDate, endDate: s.endDate, heldUntil: day(newExpiresAt),
+      }).catch(err => console.error('[approve-extension] email send failed:', err))
+    }
 
-    return NextResponse.json({ ok: true, status: 'HOLD', expires_at: newExpiresAt.toISOString() })
+    return NextResponse.json({ ok: true, status: 'HOLD', holds: live.length, expires_at: newExpiresAt.toISOString() })
   }
 
   // ── update_expiration ────────────────────────────────────────────────────
@@ -302,7 +356,7 @@ export async function PATCH(
     }
     // Refused, not quietly cut back: the booking's one expiry can't run past
     // 2 days before its earliest start (the Edit dialog blocks the same date).
-    const earliest = [...await bookingStarts(hold)].sort()[0]
+    const earliest = [...capStarts(booking)].sort()[0]
     const lastDate = lastExpiryDate(earliest, new Date(), STAFF_MIN_DAYS_BEFORE_START)
     if (newExpiresAtStr > lastDate) {
       return NextResponse.json({
@@ -310,54 +364,59 @@ export async function PATCH(
         lastDate,
       }, { status: 400 })
     }
-    if (hold.sfdc_opportunity_id) {
-      const closed = closedOpportunityBlocksReactivation(await getOpportunityStage(hold.sfdc_opportunity_id))
-      if (closed) return NextResponse.json({ error: `Can't change the expiry: ${closed}` }, { status: 409 })
-    }
+    const closed = closedOpportunityBlocksReactivation(stage)
+    if (closed) return NextResponse.json({ error: `Can't change the expiry: ${closed}` }, { status: 409 })
 
-    await prisma.hold.update({
-      where: { id: hold.id },
-      data: {
-        expires_at: newExp,
-        status: 'HOLD',
-        extension_until: null,
-        extension_reason: null,
-      },
-    })
+    // Every live hold of the booking to the one date.
+    await prisma.$transaction([
+      prisma.hold.updateMany({
+        where: { id: { in: live.map(h => h.id) } },
+        data:  { expires_at: newExp, status: 'HOLD', extension_until: null, extension_reason: null },
+      }),
+      prisma.auditLog.createMany({
+        data: live.map(h => ({
+          action:       'UPDATE_HOLD_EXPIRATION',
+          truck_number: h.truck_number,
+          user_id:      session.user.id,
+          hold_id:      h.id,
+          details:      JSON.stringify({ new_expires_at: newExp.toISOString(), booking: bookingKey(h) }),
+        })),
+      }),
+    ])
 
-    await prisma.auditLog.create({
-      data: {
-        action:       'UPDATE_HOLD_EXPIRATION',
-        truck_number: hold.truck_number,
-        user_id:      session.user.id,
-        hold_id:      hold.id,
-        details:      JSON.stringify({ new_expires_at: newExp.toISOString() }),
-      },
-    })
-
-    return NextResponse.json({ ok: true, expires_at: newExp.toISOString() })
+    return NextResponse.json({ ok: true, holds: live.length, expires_at: newExp.toISOString() })
   }
 
   // ── deny_extension ──────────────────────────────────────────────────────
-  await prisma.hold.update({ where: { id: hold.id }, data: { status: 'EXPIRED' } })
+  // Denying releases the whole booking.
+  await prisma.$transaction([
+    prisma.hold.updateMany({ where: { id: { in: live.map(h => h.id) } }, data: { status: 'EXPIRED' } }),
+    prisma.auditLog.createMany({
+      data: live.map(h => ({
+        action:       'DENY_HOLD_EXTENSION',
+        truck_number: h.truck_number,
+        user_id:      session.user.id,
+        hold_id:      h.id,
+        details:      JSON.stringify({ booking: bookingKey(h) }),
+      })),
+    }),
+  ])
 
-  await prisma.auditLog.create({
-    data: {
-      action:       'DENY_HOLD_EXTENSION',
-      truck_number: hold.truck_number,
-      user_id:      session.user.id,
-      hold_id:      hold.id,
-      details:      JSON.stringify({}),
-    },
-  })
-
-  // Denying the extension expires the hold, so settle Salesforce the same way the
-  // sweep does (expiryClosesOpportunity). Only closes if this was the
-  // Opportunity's last active hold, and never allowed to fail the request; the
-  // helper swallows its own errors.
+  // Denying the extension expires the booking, so settle Salesforce the same way the
+  // sweep does (expiryClosesOpportunity), once. Only closes if no active hold is left
+  // on the Opportunity, and never allowed to fail the request; the helper swallows its
+  // own errors.
   if (hold.sfdc_opportunity_id && expiryClosesOpportunity(hold)) {
     await closeOpportunityAsLost(hold.sfdc_opportunity_id)
   }
 
-  return NextResponse.json({ ok: true, status: 'EXPIRED' })
+  const client = live.find(h => h.client_user?.email)?.client_user
+  if (client?.email) {
+    const s = bookingSummary(live)
+    await sendExtensionDecisionEmail({
+      to: client.email, companyName: client.company_name, markets: s.markets, startDate: s.startDate, endDate: s.endDate,
+    }).catch(err => console.error('[deny-extension] email send failed:', err))
+  }
+
+  return NextResponse.json({ ok: true, status: 'EXPIRED', holds: live.length })
 }

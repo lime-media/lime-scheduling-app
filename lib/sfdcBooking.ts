@@ -10,6 +10,7 @@ import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { closedOpportunityBlocksReactivation } from '@/lib/sfdcIntegration'
 import { mergedOpportunityFields, type BookingLed, type OpportunityLed } from '@/lib/opportunityMerge'
 import { loadOpportunityReservingHolds } from '@/lib/bookingLoad'
+import { CLOSED_WON_READ_ONLY } from '@/lib/bookings'
 
 const OPP_ID = /^006[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/
 const ACCOUNT_ID = /^001[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/
@@ -42,13 +43,17 @@ export async function getBookingOpportunity(id: string): Promise<BookingOpportun
 }
 
 /**
- * Why a booking cannot go onto this opportunity, or null. It must be the
- * chosen account's, and not lost: a Closed Lost opportunity would release
- * the new holds again at the next sweep (closedOpportunityBlocksReactivation).
+ * Why a booking cannot go onto this opportunity (attach) or replace its
+ * booking (revise), or null. It must be the chosen account's, and open: a
+ * Closed Won deal is read-only in the app (lib/bookings.ts closedWonRefusal),
+ * and a Closed Lost one would release the new holds again at the next sweep
+ * (closedOpportunityBlocksReactivation). The attach picker already lists open
+ * opportunities only; this is the server's word on it.
  */
 export function opportunityRefusal(opp: BookingOpportunity | null, accountId: string, opts: { closedLostReopening?: boolean } = {}): string | null {
   if (!opp) return 'That Salesforce opportunity could not be found.'
   if (opp.AccountId !== accountId) return 'That opportunity belongs to a different Salesforce account.'
+  if (opp.IsClosed && opp.IsWon) return CLOSED_WON_READ_ONLY
   // Off by default. Only a staff revision the person agreed to reopen passes
   // it (app/api/plan/hold); attach, the quote tool and the revise loader don't.
   if (opts.closedLostReopening && opp.IsClosed && !opp.IsWon) return null

@@ -48,9 +48,13 @@ findings by how close they come to one of those.
 - **`skipFeasibilityCheck` needs a reason next to it.** It's fine when the same
   request already checked feasibility (the client hold-request flow after
   `selectTrucksForHold`). Flag it anywhere else a person picks the truck.
-- **Expiry can't release a booking someone is still acting on.** Holds with a
-  pending extension or approval are exempt from auto-expiry. *(#51:
-  `EXTENSION_REQUESTED` holds expired under the cron.)*
+- **Expiry can't release a booking someone is still acting on.** A pending
+  extension request holds the booking until staff answer, or until the date
+  the client asked for (never past the booking's limit), whichever comes
+  first: asking sets the booking's `expires_at` to that date. *(#51:
+  `EXTENSION_REQUESTED` holds expired under the cron; the booking-unit
+  cleanup PR: a request left `expires_at` alone, so it still lapsed at the
+  original date while waiting.)*
 - **Date-only values expire at the end of the day,** not at midnight UTC when
   the day begins. *(#51: SFDC `sfdc_hold_exp`.)*
 - **Webhooks only touch the rows they own.** The Salesforce hold webhook
@@ -107,11 +111,30 @@ findings by how close they come to one of those.
 
 ### Grouped bookings and totals
 
-- **A card and its actions cover the same rows.** If a multi-market booking is
-  grouped into one card, the total, status badge, expiry badge, Edit dialog and
-  bulk actions all use the same set of rows, filtered the same way. Mixed
-  statuses (some markets committed, some on hold, some expired) are the normal
-  case, not an edge case. *(#115.)*
+- **A booking is the unit.** A booking (`bookingKey`: every market of a
+  multi-market quote, a campaign group, or an opportunity) has one card, one
+  status, one total, one expiry, and its actions act on all of it, on
+  Reservations and in the client portal alike. Mixed statuses only exist in
+  bookings made before #118; those still get one card that names the markets
+  out of step. *(#115 split a booking into a card per status; Andrew,
+  2026-10-20: "It is one quote.")*
+- **A card and its actions cover the same rows.** The card's total, status
+  badge, expiry badge, Edit dialog and actions all use the same set of rows,
+  filtered the same way. *(#115.)*
+- **Client portal actions act on the whole booking.** A client never acts on
+  one market or one truck of a booking: an extension request (and anything
+  added later) covers every hold of it, in one request, with one email.
+  *(Booking-unit cleanup: the portal grouped by `campaign_group_id`, so a
+  multi-market booking's extension request marked one market and staff
+  approved one market's date.)*
+- **Closed Won is read-only in the app, except truck swaps.** A committed hold
+  is a won deal (`closedWonRefusal`): no cancel, delete, expiry edit, revise or
+  quote added to the opportunity; the server refuses with "change it in
+  Salesforce first". A truck swap (logistics; the deal is unchanged) is the
+  one change allowed. Any new path that changes or deletes holds checks it.
+  *(Booking-unit cleanup: `update_expiration` turned COMMITTED holds back
+  into HOLD, cancel and delete paths ignored Won, and attach accepted a Closed
+  Won opportunity id.)*
 - **A multi-market booking is one quote: one expiry for the whole booking,
   capped by the earliest market's start, on every hold.** Booking, Edit,
   reinstate and approve-extension all set the same date on every hold, and a

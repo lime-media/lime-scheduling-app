@@ -2,6 +2,7 @@ import { prisma } from '@/lib/prisma'
 import { sfdcQuery, updateOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { SFDC_SERVICE_USER_EMAIL, reconcileTarget } from '@/lib/sfdcIntegration'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry } from '@/lib/holdExpiry'
+import { recordWon } from '@/lib/transportMetricsRecord'
 
 /**
  * Opportunity stage reconcile.
@@ -49,6 +50,8 @@ interface OpportunityStage {
   StageName: string
   IsClosed:  boolean
   IsWon:     boolean
+  /** Read by the reconcile's batch query (deal-value metrics); not by getOpportunityStage. */
+  Amount?:   number | null
 }
 
 export interface SfdcReconcileSummary {
@@ -116,7 +119,7 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
   for (const batch of chunk(uniqueIds, SOQL_ID_CHUNK)) {
     const list = batch.map((id) => `'${id}'`).join(',')
     const rows = await sfdcQuery<OpportunityStage>(
-      `SELECT Id, StageName, IsClosed, IsWon FROM Opportunity WHERE Id IN (${list})`
+      `SELECT Id, StageName, IsClosed, IsWon, Amount FROM Opportunity WHERE Id IN (${list})`
     )
     for (const row of rows) stages.set(normalizeId(row.Id), row)
   }
@@ -132,6 +135,10 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
   }
 
   const serviceUser = await prisma.user.findUnique({ where: { email: SFDC_SERVICE_USER_EMAIL } })
+
+  // Opportunities that went Closed Won this pass: their Amount is recorded
+  // against what the app quoted (lib/transportMetricsRecord.ts recordWon).
+  const wonNow = new Map<string, { stage: OpportunityStage; client: string }>()
 
   for (const [key, group] of byOpportunity) {
     const stage = stages.get(key)
@@ -180,6 +187,7 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
       })
 
       if (target === 'COMMITTED') summary.committed++
+      if (target === 'COMMITTED' && hold.sfdc_opportunity_id) wonNow.set(hold.sfdc_opportunity_id, { stage, client: hold.client_name })
       else if (target === 'HOLD') summary.uncommitted++
       else summary.released++
 
@@ -188,6 +196,10 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
         `Opportunity ${stage.StageName} → ${target}`
       )
     }
+  }
+
+  for (const [opportunityId, w] of wonNow) {
+    await recordWon({ opportunityId, amount: w.stage.Amount ?? null, stageName: w.stage.StageName, clientName: w.client })
   }
 
   return summary

@@ -1,0 +1,64 @@
+/**
+ * GET /api/ops/transport?from=YYYY-MM-DD&to=YYYY-MM-DD
+ *
+ * Transport and deal-value KPIs (lib/transportMetrics.ts) for bookings made in
+ * the range (default: the last 30 days), from app_transport_legs and
+ * app_deal_values: quoted transport (local / absorbed / billed, $ charged vs
+ * our estimated cost, by client and market), planned vs actual, churn, and the
+ * app's quote vs Salesforce's Amount at Closed Won. Any signed-in staff user.
+ */
+
+import { NextRequest, NextResponse } from 'next/server'
+import { getServerSession } from 'next-auth'
+import { authOptions } from '@/lib/auth'
+import { prisma } from '@/lib/prisma'
+import { churnKpis, dealDrift, plannedVsActual, transportKpis, type DealRow, type LegRow } from '@/lib/transportMetrics'
+
+const isDate = (v: string | null): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v)
+const MAX_ROWS = 20000
+
+export async function GET(req: NextRequest) {
+  const session = await getServerSession(authOptions)
+  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const sp = req.nextUrl.searchParams
+  const to = isDate(sp.get('to')) ? sp.get('to')! : new Date().toISOString().slice(0, 10)
+  const from = isDate(sp.get('from')) ? sp.get('from')! : new Date(Date.parse(to) - 30 * 86_400_000).toISOString().slice(0, 10)
+  const range = { gte: new Date(from + 'T00:00:00Z'), lte: new Date(to + 'T23:59:59Z') }
+
+  try {
+    // Bookings made in the range, and every later leg of their holds.
+    const booked = await prisma.transportLeg.findMany({ where: { event: 'BOOKED', created_at: range }, select: { hold_id: true }, take: MAX_ROWS })
+    const holdIds = [...new Set(booked.map(b => b.hold_id).filter((id): id is string => !!id))]
+    const legs = holdIds.length
+      ? await prisma.transportLeg.findMany({ where: { hold_id: { in: holdIds } }, take: MAX_ROWS })
+      : []
+    const legRows: LegRow[] = legs.map(l => ({ ...l, charge: Number(l.charge), est_cost: Number(l.est_cost) }))
+
+    // Opportunities booked in the range, and every value captured for them.
+    const dealsBooked = await prisma.dealValue.findMany({
+      where: { event: { in: ['BOOKED', 'REVISED'] }, captured_at: range, sfdc_opportunity_id: { not: null } },
+      select: { sfdc_opportunity_id: true }, take: MAX_ROWS,
+    })
+    const oppIds = [...new Set(dealsBooked.map(d => d.sfdc_opportunity_id!))]
+    const deals = oppIds.length ? await prisma.dealValue.findMany({ where: { sfdc_opportunity_id: { in: oppIds } }, take: MAX_ROWS }) : []
+    const dealRows: DealRow[] = deals.map(d => ({
+      ...d,
+      app_quoted_total: d.app_quoted_total == null ? null : Number(d.app_quoted_total),
+      sf_amount: d.sf_amount == null ? null : Number(d.sf_amount),
+    }))
+
+    return NextResponse.json({
+      from, to,
+      transport: transportKpis(legRows),
+      plannedVsActual: plannedVsActual(legRows),
+      churn: churnKpis(legRows),
+      deals: dealDrift(dealRows),
+      truncated: booked.length >= MAX_ROWS || legs.length >= MAX_ROWS,
+    })
+  } catch (err) {
+    // Most likely the tables don't exist yet (migration not run).
+    console.error('[ops/transport] failed:', err)
+    return NextResponse.json({ error: 'Transport metrics are not available yet (has the transport metrics migration run?).' }, { status: 503 })
+  }
+}

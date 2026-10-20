@@ -16,6 +16,7 @@ import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 import { syncAttSoftHolds } from '@/lib/attSoftHolds'
 import { freeRanges } from '@/lib/ranges'
+import { recordAmountChanges, recordExecuted } from '@/lib/transportMetricsRecord'
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────
 
@@ -88,6 +89,12 @@ export async function refreshCache(): Promise<RefreshSummary> {
     console.error('[scheduleCache] expiry warnings failed:', err)
     return { candidates: 0, warned: 0, recipients: 0, skipped_already_warned: 0, skipped_no_email: 0 }
   })
+
+  // Transport and deal-value metrics: what actually ran each campaign that
+  // started, and won deals' Amount changes. Best-effort; never fails the sweep.
+  const metricsExecuted = await recordExecuted()
+  const metricsAmounts = await recordAmountChanges()
+  if (metricsExecuted || metricsAmounts) console.log(`[scheduleCache] metrics: ${metricsExecuted} executed leg(s), ${metricsAmounts} amount change(s)`)
 
   const [schedulesRaw, holdsRaw] = await Promise.all([
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),

@@ -448,6 +448,23 @@ Multi-market plans evolve: a market is dropped or added, dates move. Two ways to
 
 Both are staff only; the client portal is unchanged.
 
+## 6g. Transport metrics (Transport page)
+
+What bookings quote for transport, how it changes, what actually happens, and how quotes compare with the contract. Recorded by `lib/transportMetricsRecord.ts` (best-effort: a recording failure never blocks a booking); KPIs in `lib/transportMetrics.ts`; shown at `/ops/transport` to any staff user, for bookings made in a date range.
+
+- **`app_transport_legs`**, one row per truck per event:
+  - `BOOKED` / `REVISED`: written when a booking is placed or revised, from what the quote already worked out (single-market: each selected truck and its priced leg; multi-market: each market's arrivals).
+  - `SWAPPED`: a truck swapped onto a hold, its origin measured at the swap.
+  - `EXECUTED`: written by the 15-minute sweep on a campaign's first day (or within 3 days, once per hold) for the truck actually on the hold, from its last job before the start, else its GPS that morning.
+  - Each row: origin and how it was found, miles, travel days, **outcome** (`LOCAL` inside the service area, `BILLED` when the client pays for the move, `ABSORBED` when we do), **charge** (what the client pays; a swapped or executed truck keeps the slot's quoted charge), and **est_cost** (our estimated cost of the move, `absorbedLegCost`, for any out-of-area truck, billed or not). Quote-only logs record nothing.
+- **`app_deal_values`**: the app's quoted total per booking (`BOOKED`, `REVISED`); Salesforce's **Amount** when the reconcile sees the opportunity go Closed Won (`WON`); and the Amount again whenever it changes after (`AMOUNT_CHANGED`, checked by the sweep).
+
+The page shows:
+- **Quoted transport** (each hold's latest plan): trucks, % local / absorbed / billed, $ charged vs our estimated cost, by client and market.
+- **Planned vs actual** (holds that have started): average quoted vs actual miles, how often a different truck ran it or the outcome changed, and **unpriced repositioning** (quoted local, ran from outside the area) with its cost.
+- **Changes after booking**: share of bookings swapped or revised, and changes per booking.
+- **Quote vs Salesforce contract** (won deals): the app's quoted total (the latest figure of each booking on the opportunity) against the Amount at Closed Won and now, with the biggest gaps.
+
 ## 7. What the client sees vs. what's internal
 
 Nothing under an `_internal` key is returned on a client-authenticated route — not the margin check, and not the downstream deadhead flags. Those appear only on the staff routes (`/api/quote`, `/api/quote/hold`) and the MCP endpoint; on the client routes the same values are logged server-side instead. A client-facing response is visible in the browser network tab whether or not the UI renders it.

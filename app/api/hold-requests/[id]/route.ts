@@ -13,6 +13,7 @@ import { closeOpportunityAsLost, getOpportunityStage } from '@/lib/sfdcOpportuni
 import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { reopenClosedLostOpportunity } from '@/lib/sfdcBooking'
 import { sendCancellationEmail, sendExtensionDecisionEmail } from '@/lib/email'
+import { recordSwap } from '@/lib/transportMetricsRecord'
 
 type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration' | 'reinstate'
 
@@ -151,6 +152,7 @@ export async function PATCH(
         details:      JSON.stringify({ old_truck: oldTruck, new_truck: truck_number }),
       },
     })
+    await recordSwap(hold.id, session.user.id)
 
     return NextResponse.json({ ok: true, old_truck: oldTruck, new_truck: truck_number })
   }

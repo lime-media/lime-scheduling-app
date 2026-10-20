@@ -5,7 +5,9 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
-import { computeHoldExpiresAt } from '@/lib/holdExpiry'
+import { DEFAULT_HOLD_DAYS, bookingHoldExpiry, lastExpiryDate } from '@/lib/holdExpiry'
+import { bookingCapStarts, bookingKey } from '@/lib/bookings'
+import { loadBookingHolds } from '@/lib/bookingLoad'
 import { closeOpportunityAsLost, getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { reopenClosedLostOpportunity } from '@/lib/sfdcBooking'
@@ -21,6 +23,24 @@ const VALID_FROM: Record<Action, string[]> = {
   update_expiration:  ['HOLD', 'COMMITTED', 'EXTENSION_REQUESTED'],
   reinstate:          ['EXPIRED'],
 }
+
+/**
+ * The start dates that cap this hold's booking's one expiry (a multi-market
+ * booking is one quote: every hold lapses together, capped by its earliest
+ * market's start; lib/bookings.ts bookingCapStarts). A hold on its own is
+ * capped by its own start.
+ */
+async function bookingStarts(hold: { id: string; campaign_group_id: string | null; sfdc_opportunity_id: string | null; start_date: Date; status: string }): Promise<string[]> {
+  const today = new Date().toISOString().slice(0, 10)
+  const key = bookingKey(hold)
+  const booking = key ? await loadBookingHolds(key) : []
+  const rows: { start_date: string; status: string }[] = booking.some(h => h.id === hold.id) ? booking
+    : [...booking, { start_date: hold.start_date.toISOString().slice(0, 10), status: hold.status }]
+  return bookingCapStarts(rows, today)
+}
+
+/** The end of a YYYY-MM-DD day, as a hand-set expiry is stored. */
+const endOfDay = (d: string) => new Date(d + 'T23:59:59Z')
 
 /**
  * PATCH /api/hold-requests/[id]
@@ -204,7 +224,8 @@ export async function PATCH(
       reopened = r
     }
 
-    const newExpiresAt = computeHoldExpiresAt(hold.start_date.toISOString().split('T')[0])
+    // The booking's one expiry: every hold of a reinstated card lands on the same moment.
+    const newExpiresAt = bookingHoldExpiry(await bookingStarts(hold), DEFAULT_HOLD_DAYS).expiresAt
 
     // The reinstate and its audit rows (and the reopen's, if any) land together.
     await prisma.$transaction([
@@ -243,9 +264,14 @@ export async function PATCH(
 
   // ── approve_extension ───────────────────────────────────────────────────
   if (action === 'approve_extension') {
+    // The booking's one expiry: the date the client asked for, but never past
+    // the booking's limit (3 days before its earliest start), or the standard
+    // length when none was asked.
+    const starts = await bookingStarts(hold)
+    const limit = endOfDay(lastExpiryDate([...starts].sort()[0]))
     const newExpiresAt = hold.extension_until
-      ? hold.extension_until
-      : computeHoldExpiresAt(hold.start_date.toISOString().split('T')[0])
+      ? (hold.extension_until > limit ? limit : hold.extension_until)
+      : bookingHoldExpiry(starts, DEFAULT_HOLD_DAYS).expiresAt
 
     await prisma.hold.update({
       where: { id: hold.id },
@@ -270,9 +296,19 @@ export async function PATCH(
     if (!newExpiresAtStr) {
       return NextResponse.json({ error: 'expires_at is required' }, { status: 400 })
     }
-    const newExp = new Date(newExpiresAtStr + 'T23:59:59Z')
+    const newExp = /^\d{4}-\d{2}-\d{2}$/.test(newExpiresAtStr) ? endOfDay(newExpiresAtStr) : new Date(NaN)
     if (isNaN(newExp.getTime())) {
       return NextResponse.json({ error: 'Invalid date' }, { status: 400 })
+    }
+    // Refused, not quietly cut back: the booking's one expiry can't run past
+    // 3 days before its earliest start (the Edit dialog blocks the same date).
+    const earliest = [...await bookingStarts(hold)].sort()[0]
+    const lastDate = lastExpiryDate(earliest)
+    if (newExpiresAtStr > lastDate) {
+      return NextResponse.json({
+        error: `The latest this booking can be held is ${lastDate}: 3 days before its first market starts (${earliest}).`,
+        lastDate,
+      }, { status: 400 })
     }
     if (hold.sfdc_opportunity_id) {
       const closed = closedOpportunityBlocksReactivation(await getOpportunityStage(hold.sfdc_opportunity_id))

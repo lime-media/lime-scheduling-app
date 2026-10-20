@@ -27,8 +27,10 @@ export function bookingKey(r: BookingRow): string | null {
 
 /**
  * What one Reservations card shows: a booking's reservations in ONE status.
- * Each market's hold lapses on its own (it ends 3 days before its own start),
- * so a booking is often part on hold, part committed or expired. One card per
+ * A booking has one expiry, but ops commit markets one by one and a market's
+ * holds can be cancelled or reinstated on their own (and bookings made before
+ * the one-expiry rule lapsed per market), so a booking is often part on hold,
+ * part committed or expired. One card per
  * status keeps the card, its totals, its expiry and its Edit about exactly the
  * same reservations; the card notes the booking's other parts.
  */
@@ -285,64 +287,30 @@ export function keptPrices(
   return out
 }
 
-/** The last date (YYYY-MM-DD) a hold may run to and still leave 3 full days before its campaign starts (lib/holdExpiry.ts). */
-function lastHoldDate(startDate: string): string {
-  const d = new Date(startDate + 'T00:00:00Z')
-  d.setUTCDate(d.getUTCDate() - 4)
-  return d.toISOString().slice(0, 10)
-}
-
 /**
- * The start each hold's expiry is capped by: the start of its truck's job.
- * A truck that alternates weekly between two markets has one hold per
- * stretch, but the server capped them all by the job's first day
- * (app/api/plan/hold, holdExpiry(job.start)). Back-to-back stretches of one
- * truck (no day between them) are one job.
+ * The start dates that cap a booking's one expiry (lib/holdExpiry.ts
+ * bookingHoldExpiry, lastExpiryDate): every hold that can still be held, so
+ * not a committed one (it has no expiry) and not a market whose campaign has
+ * already started. When none is left, every start. Pure.
  */
-function jobStarts(rows: { id: string; truck_number: string; start_date: string; end_date: string }[]): Map<string, string> {
-  const out = new Map<string, string>()
-  const byTruck = new Map<string, typeof rows>()
-  for (const r of rows) byTruck.set(r.truck_number, [...(byTruck.get(r.truck_number) ?? []), r])
-  const nextDay = (d: string) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + 1); return x.toISOString().slice(0, 10) }
-  for (const stretches of byTruck.values()) {
-    let start = '', end = ''
-    for (const r of [...stretches].sort((x, y) => x.start_date.localeCompare(y.start_date))) {
-      if (!start || r.start_date > nextDay(end)) start = r.start_date
-      if (!end || r.end_date > end) end = r.end_date
-      out.set(r.id, start)
-    }
-  }
-  return out
+export function bookingCapStarts(rows: { start_date: string; status: string }[], today: string): string[] {
+  const starts = rows.filter(r => r.status !== 'COMMITTED' && r.start_date.slice(0, 10) >= today).map(r => r.start_date.slice(0, 10))
+  return starts.length ? starts : rows.map(r => r.start_date.slice(0, 10))
 }
 
 /**
- * What one expiry change in a booking's Edit dialog does to each hold.
- *
- * Moving the date EARLIER than the booking's soonest expiry applies to every
- * hold. EXTENDING never shortens a hold: each keeps the later of its own
- * expiry and the date chosen. And when the booking's jobs start on different
- * dates (a multi-market booking), a hold stops at its job's 3-days-before-start
- * limit, or keeps a later expiry it already has, so extending can't run an
- * earlier market into its campaign. One start date: no limit, as before.
- * `changed` is false for a hold already on its resulting date. Pure.
+ * What one expiry change in a booking's Edit dialog does to each hold. A
+ * multi-market booking is one quote with one expiry, so every hold of the
+ * card gets the chosen date (the dialog and the server keep it on or before
+ * the booking's limit: lib/holdExpiry.ts lastExpiryDate). Holds that drifted
+ * apart under the earlier per-market rule come back together on the next
+ * edit. `changed` is false for a hold already on that date. Pure.
  */
 export function expiryEdits(
-  rows: { id: string; market: string; truck_number: string; start_date: string; end_date: string; expires_at: string | null }[],
+  rows: { id: string; market: string; expires_at: string | null }[],
   chosen: string,
-): { id: string; market: string; expiresOn: string; heldAtStartLimit: boolean; changed: boolean }[] {
-  const starts = jobStarts(rows)
-  const oneStart = new Set(starts.values()).size <= 1
-  const earliest = earliestExpiryDate(rows)
-  const extending = !earliest || chosen > earliest
-  return rows.map(r => {
-    const current = r.expires_at ? r.expires_at.slice(0, 10) : null
-    if (!extending) return { id: r.id, market: r.market, expiresOn: chosen, heldAtStartLimit: false, changed: chosen !== current }
-    const limit = lastHoldDate(starts.get(r.id) ?? r.start_date)
-    const heldAtStartLimit = !oneStart && chosen > limit
-    const later = current && current > chosen ? current : chosen
-    const expiresOn = heldAtStartLimit ? (current && current > limit ? current : limit) : later
-    return { id: r.id, market: r.market, expiresOn, heldAtStartLimit, changed: expiresOn !== current }
-  })
+): { id: string; market: string; expiresOn: string; changed: boolean }[] {
+  return rows.map(r => ({ id: r.id, market: r.market, expiresOn: chosen, changed: chosen !== (r.expires_at ? r.expires_at.slice(0, 10) : null) }))
 }
 
 /** The date (YYYY-MM-DD) the booking's soonest hold expires, as its card's badge shows. */

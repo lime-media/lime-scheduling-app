@@ -424,10 +424,12 @@ Every opportunity needs a primary contact (sales ops' rule). Both booking endpoi
 
 A reservation holds its trucks for **3 days** by default. On both quote tools the seller can choose **1 to 14 days** before booking (`hold_days` on `/api/quote/hold`, `holdDays` on `/api/plan/hold`); the page shows the date it will lapse. Two rules still apply (`lib/holdExpiry.ts`):
 
-- **It ends 3 days before the campaign starts** at the latest, so operations has time to route the truck. A longer choice for a campaign starting soon is cut short, and the page and confirmation say so. In a multi-market booking each market's holds follow their own start date.
+- **It ends 3 days before the campaign starts** at the latest, so operations has time to route the truck. Lengths that would run past that are disabled in the selector ("campaign starts too soon") rather than offered and cut short (`availableHoldDays`).
 - **It always gets at least 24 hours**, however soon the campaign starts.
 
-Quote-only logs hold nothing, so they have no hold length. An expiry can still be changed afterwards from Reservations → Edit.
+**A multi-market booking is one quote with one expiry.** Every hold in it lapses at the same moment: the seller's length, capped by the **earliest** market's start (`bookingHoldExpiry`). Committed markets have no expiry and don't count, nor do markets already running (`lib/bookings.ts bookingCapStarts`). The confirmation states the one lapse date.
+
+Quote-only logs hold nothing, so they have no hold length. An expiry can be changed afterwards from Reservations → Edit: one date for every hold on the card, no later than 3 days before the booking's earliest start (`lastExpiryDate`). The date field stops there and `update_expiration` refuses a later date (400) instead of cutting it back. Reinstate and approve-extension give the whole booking the same expiry by the same rule. Bookings made under the earlier per-market rule keep their differing expiries until their next edit or reinstate.
 
 ## 6f. Changing a deal without new opportunities
 

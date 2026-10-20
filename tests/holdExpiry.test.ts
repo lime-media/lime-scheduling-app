@@ -12,7 +12,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { availableHoldDays, computeHoldExpiresAt, DEFAULT_HOLD_DAYS, HOLD_EXPIRATION_HOURS, MIN_HOLD_WINDOW_HOURS, holdExpiry, parseHoldDays } from '@/lib/holdExpiry'
+import { availableHoldDays, bookingHoldExpiry, lastExpiryDate, computeHoldExpiresAt, DEFAULT_HOLD_DAYS, HOLD_EXPIRATION_HOURS, MIN_HOLD_WINDOW_HOURS, holdExpiry, parseHoldDays } from '@/lib/holdExpiry'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -86,7 +86,19 @@ section('holdExpiry: which hold lengths the quote tools offer')
   eq('a disabled length really is cut short', holdExpiry('2026-10-25', 3, now).cappedByStart, true)
   // Start Oct 22: the cap is already past, so the 24h floor decides every length.
   eq('the 24-hour minimum: only 1 day', availableHoldDays(['2026-10-22'], now), [1])
-  // Multi-market: the latest start decides; earlier markets just stop sooner.
-  eq('multi-market: the latest start decides', availableHoldDays(['2026-10-25', '2026-12-01'], now), all)
-  eq('the order of start dates does not matter', availableHoldDays(['2026-12-01', '2026-10-25'], now), all)
+  // Multi-market: one quote, one expiry, capped by the EARLIEST start.
+  eq('multi-market: starts in 5 and 30+ days are limited by the 5-day one', availableHoldDays(['2026-10-25', '2026-11-20'], now), [1, 2])
+  eq('the order of start dates does not matter', availableHoldDays(['2026-11-20', '2026-10-25'], now), [1, 2])
+}
+
+section('holdExpiry: a booking has one expiry, capped by its earliest start')
+{
+  const now = new Date('2026-10-20T12:00:00Z')
+  const one = bookingHoldExpiry(['2026-11-20', '2026-10-25'], 7, now)
+  eq('the earliest start decides', [one.startDate, one.expiresAt.toISOString(), one.cappedByStart], ['2026-10-25', '2026-10-22T00:00:00.000Z', true])
+  eq('far-off starts: the seller\'s length', bookingHoldExpiry(['2026-12-01', '2026-12-15'], 7, now).expiresAt.toISOString(), '2026-10-27T12:00:00.000Z')
+  eq('a revision keeps a later expiry it already had', bookingHoldExpiry(['2026-12-01'], 3, now, new Date('2026-11-01T23:59:59Z')).expiresAt.toISOString(), '2026-11-01T23:59:59.000Z')
+  eq('but never past the earliest start\'s cap', bookingHoldExpiry(['2026-11-01'], 3, now, new Date('2026-11-01T23:59:59Z')).expiresAt.toISOString(), '2026-10-29T00:00:00.000Z')
+  eq('the last date to set by hand: the day before the cap', lastExpiryDate('2026-11-20', now), '2026-11-16')
+  eq('cap already past: the 24-hour floor\'s date', lastExpiryDate('2026-10-22', now), '2026-10-21')
 }

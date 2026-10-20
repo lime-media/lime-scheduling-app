@@ -69,20 +69,61 @@ export function holdExpiry(startDate: string, holdDays: number = DEFAULT_HOLD_DA
 }
 
 /**
- * The hold lengths worth offering for these start dates: 1 day, and each
- * longer length that still holds the trucks longer than one day less would.
- * A length past the point where the start date (or the 24-hour floor) decides
- * the expiry buys nothing, so the quote tools disable it rather than accept
- * it and quietly cut it short. In a multi-market booking the LATEST start
- * decides: a length that still adds time there is worth choosing even though
- * earlier markets stop sooner. Pure (pass `now`).
+ * A booking's one expiry. A multi-market booking is one quote, so every hold
+ * in it lapses at the same moment: the seller's length, capped by the
+ * EARLIEST start among `startDates` (3 days before it, with the 24-hour
+ * floor), as holdExpiry decides for that start. `keepUntil` is an expiry the
+ * booking already has (a revision never cuts back what ops extended): it is
+ * kept when later, but never past that cap. Pure (pass `now`).
+ */
+export function bookingHoldExpiry(
+  startDates: string[], holdDays: number = DEFAULT_HOLD_DAYS, now: Date = new Date(), keepUntil: Date | null = null,
+): { expiresAt: Date; cappedByStart: boolean; atMinimum: boolean; startDate: string } {
+  const startDate = startDates.filter(Boolean).sort()[0]
+  const base = holdExpiry(startDate, holdDays, now)
+  if (keepUntil && keepUntil > base.expiresAt) {
+    const cap = latestHoldMoment(startDate)
+    const kept = keepUntil < cap ? keepUntil : cap
+    if (kept > base.expiresAt) return { expiresAt: kept, cappedByStart: kept.getTime() === cap.getTime(), atMinimum: false, startDate }
+  }
+  return { ...base, startDate }
+}
+
+/** The latest a hold may run for a campaign starting `startDate`: 3 full days before it. */
+function latestHoldMoment(startDate: string): Date {
+  const d = new Date(startDate + 'T00:00:00Z')
+  d.setUTCDate(d.getUTCDate() - MIN_PROCESSING_DAYS_BEFORE_START)
+  return d
+}
+
+/**
+ * The last date (YYYY-MM-DD) an expiry may be set to by hand (Reservations →
+ * Edit), for a booking whose earliest start is `earliestStart`. A date's
+ * expiry is that day's end, so it must close before the 3-days-before cap;
+ * when the cap has already passed, the 24-hour floor's date. Pure.
+ */
+export function lastExpiryDate(earliestStart: string, now: Date = new Date()): string {
+  const d = latestHoldMoment(earliestStart)
+  d.setUTCDate(d.getUTCDate() - 1)
+  const byStart = d.toISOString().slice(0, 10)
+  const floor = addHours(now, MIN_HOLD_WINDOW_HOURS).toISOString().slice(0, 10)
+  return byStart > floor ? byStart : floor
+}
+
+/**
+ * The hold lengths worth offering for a booking with these start dates: 1
+ * day, and each longer length that still holds the trucks longer than one day
+ * less would. The booking's one expiry is capped by its EARLIEST start
+ * (bookingHoldExpiry), so past the point where that start (or the 24-hour
+ * floor) decides, a longer length buys nothing and the quote tools disable
+ * it rather than accept it and quietly cut it short. Pure (pass `now`).
  */
 export function availableHoldDays(startDates: string[], now: Date = new Date()): number[] {
-  const latest = startDates.filter(Boolean).sort().at(-1)
+  const earliest = startDates.filter(Boolean).sort()[0]
   const all = Array.from({ length: MAX_HOLD_DAYS }, (_, i) => i + 1)
-  if (!latest) return all
+  if (!earliest) return all
   return all.filter(n => n === 1
-    || holdExpiry(latest, n, now).expiresAt.getTime() > holdExpiry(latest, n - 1, now).expiresAt.getTime())
+    || holdExpiry(earliest, n, now).expiresAt.getTime() > holdExpiry(earliest, n - 1, now).expiresAt.getTime())
 }
 
 /**

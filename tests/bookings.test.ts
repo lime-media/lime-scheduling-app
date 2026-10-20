@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { bookingCardKey, bookingKey, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
+import { bookingCapStarts, bookingCardKey, bookingKey, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
 
 const h = (campaign_group_id: string | null, truck_number: string, market: string, quoted_total: number | null, extra: Partial<{ sfdc: string; start: string; end: string; exp: string }> = {}) => ({
   campaign_group_id, sfdc_opportunity_id: extra.sfdc ?? null, truck_number, market, quoted_total,
@@ -52,35 +52,27 @@ const partlyPriced = summarizeBooking([h('mm_e_1', 'a', 'A', 5000), h('mm_e_2', 
 eq('an unpriced market is counted, not taken as $0', [partlyPriced.total, partlyPriced.unpricedMarkets], [5000, 1])
 
 
-section('bookings: one expiry change across a booking keeps each market inside its start limit')
+section('bookings: a multi-market booking is one quote with one expiry')
 {
-  const r = (id: string, market: string, start_date: string, expires_at: string | null, truck_number = id, end_date = '2026-12-31') =>
-    ({ id, market, start_date, expires_at, truck_number, end_date })
-  // Markets start Oct 25 and Nov 20: the Oct 25 hold can run to Oct 21 at the latest.
+  const r = (id: string, market: string, start_date: string, expires_at: string | null, status = 'HOLD') =>
+    ({ id, market, start_date, expires_at, status })
+  // Markets start Oct 25 and Nov 20; their holds drifted apart under the old per-market rule.
   const booking = [r('a', 'Dallas, TX', '2026-10-25', '2026-10-21T23:59:59Z'), r('b', 'Houston, TX', '2026-11-20', '2026-10-28T23:59:59Z')]
-  const edits = expiryEdits(booking, '2026-11-01')
-  eq('extending stops the earlier market at its limit', edits.map(e => [e.id, e.expiresOn, e.heldAtStartLimit, e.changed]),
-    [['a', '2026-10-21', true, false], ['b', '2026-11-01', false, true]])
-  eq('shortening applies to every market', expiryEdits(booking, '2026-10-20').map(e => e.expiresOn), ['2026-10-20', '2026-10-20'])
-  eq('a later expiry already set is kept, not pulled back to the limit',
-    expiryEdits([r('a', 'Dallas, TX', '2026-10-25', '2026-10-23T23:59:59Z'), booking[1]], '2026-11-01')[0].expiresOn, '2026-10-23')
-  eq('one market (one start date): the chosen date applies as before',
-    expiryEdits([r('a', 'Dallas, TX', '2026-10-25', null), r('c', 'Dallas, TX', '2026-10-25', null)], '2026-11-01').map(e => [e.expiresOn, e.heldAtStartLimit]),
-    [['2026-11-01', false], ['2026-11-01', false]])
-  // Houston already runs to Nov 5; extending the booking to Nov 1 must not pull it back.
-  const later = [booking[0], r('b', 'Houston, TX', '2026-11-20', '2026-11-05T23:59:59Z')]
-  eq('extending never shortens a market that already lapses later', expiryEdits(later, '2026-11-01').map(e => [e.id, e.expiresOn, e.changed]),
-    [['a', '2026-10-21', false], ['b', '2026-11-05', false]])
-  // Truck T alternates Dallas (from Oct 25) and Fort Worth weekly: one job, capped by Oct 25 for every stretch.
-  const shared = [
-    r('s1', 'Dallas, TX', '2026-10-25', '2026-10-21T23:59:59Z', 'T', '2026-10-28'),
-    r('s2', 'Fort Worth, TX', '2026-10-29', '2026-10-21T23:59:59Z', 'T', '2026-11-04'),
-    r('s3', 'Dallas, TX', '2026-11-05', '2026-10-21T23:59:59Z', 'T', '2026-11-11'),
-    r('h', 'Houston, TX', '2026-11-20', '2026-10-21T23:59:59Z', 'H', '2026-12-04'),
-  ]
-  eq('a shared truck\'s stretches share their job\'s start limit', expiryEdits(shared, '2026-11-01').map(e => [e.id, e.expiresOn]),
-    [['s1', '2026-10-21'], ['s2', '2026-10-21'], ['s3', '2026-10-21'], ['h', '2026-11-01']])
+  eq('every hold of the card gets the one date', expiryEdits(booking, '2026-10-20').map(e => [e.id, e.expiresOn, e.changed]),
+    [['a', '2026-10-20', true], ['b', '2026-10-20', true]])
+  eq('holds that drifted apart come back together on the next edit', expiryEdits(booking, '2026-10-21').map(e => [e.id, e.expiresOn, e.changed]),
+    [['a', '2026-10-21', false], ['b', '2026-10-21', true]])
+  eq('a hold with no expiry gets the date too', expiryEdits([r('c', 'Dallas, TX', '2026-10-25', null)], '2026-10-20')[0].changed, true)
   eq('the dialog opens on the earliest expiry, as the card badge shows', earliestExpiryDate([booking[1], booking[0], r('x', 'Waco, TX', '2026-12-01', null)]), '2026-10-21')
+
+  // Which starts cap the booking: still-holdable markets only.
+  const today = '2026-10-20'
+  eq('the earliest still-holdable start caps it', [...bookingCapStarts(booking, today)].sort()[0], '2026-10-25')
+  eq('a committed market does not cap it (it has no expiry)',
+    bookingCapStarts([r('a', 'Dallas, TX', '2026-10-25', null, 'COMMITTED'), booking[1]], today), ['2026-11-20'])
+  eq('a market already running does not cap it', bookingCapStarts([r('a', 'Dallas, TX', '2026-10-15', null), booking[1]], today), ['2026-11-20'])
+  eq('nothing left to hold: every start, so there is still a limit',
+    bookingCapStarts([r('a', 'Dallas, TX', '2026-10-15', null, 'COMMITTED')], today), ['2026-10-15'])
 }
 
 section('bookings: a market split across two cards is not counted as whole on either')

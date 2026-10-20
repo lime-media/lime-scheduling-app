@@ -44,7 +44,7 @@ import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { canonicalMarketName } from '@/lib/marketBounds'
-import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
+import { bookingHoldExpiry, parseHoldDays, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
 import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
@@ -280,19 +280,20 @@ async function handlePost(req: NextRequest) {
         latest: h.expires_at && (!was.latest || h.expires_at > was.latest) ? h.expires_at : was.latest,
       })
     }
-    const keptExpiry = (lineId: string, computed: Date) => {
-      const latest = replaced.get(sameMarket(place.get(lineId)!.market))?.latest
-      return latest && latest > computed ? latest : computed
-    }
     const committedMarket = (lineId: string) => replaced.get(sameMarket(place.get(lineId)!.market))?.committed === true
-    const stretches = plan.trucks.flatMap(t => t.jobs.flatMap(job => rotationStints(job).map(st => ({
+    const stints = plan.trucks.flatMap(t => t.jobs.flatMap(job => rotationStints(job).map(st => ({
       truckNumber: t.truckNumber,
       stint: st,
       partner: job.lines.length > 1 ? job.lines.find(l => l.id !== st.lineId)!.market : null,
-      // Each market's hold runs the seller's length, cut by its own start date,
-      // or the later expiry its replaced holds already had.
-      expiresAt: keptExpiry(st.lineId, holdExpiry(job.start, holdDays, holdClock).expiresAt),
     }))))
+    // A multi-market booking is one quote with ONE expiry on every hold: the
+    // seller's length, capped by the earliest start among the markets that
+    // will be held (committed ones aren't), or the later expiry the revised
+    // booking already had, never past that cap (lib/holdExpiry.ts).
+    const heldStarts = stints.filter(x => !committedMarket(x.stint.lineId)).map(x => x.stint.start)
+    const keepUntil = [...replaced.values()].map(v => v.latest).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0] ?? null
+    const bookingExpiry = heldStarts.length ? bookingHoldExpiry(heldStarts, holdDays, holdClock, keepUntil) : null
+    const stretches = stints.map(x => ({ ...x, expiresAt: bookingExpiry?.expiresAt ?? holdClock }))
 
     // All or nothing: any stretch that now clashes stops the whole booking.
     // (A quote-only log blocks no truck, so there is nothing to clash with.)
@@ -557,8 +558,11 @@ async function handlePost(req: NextRequest) {
     const booked = quoteOnly
       ? `Quote logged for ${accountName} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} (${money(quote.summary.grandTotal)}); no trucks reserved.`
       : `${lead}Placed ${rows.length} hold${rows.length === 1 ? '' : 's'} on ${truckNumbers.length} truck${truckNumbers.length === 1 ? '' : 's'} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} for ${accountName} (${money(quote.summary.grandTotal)})`
-        + (target?.IsWon ? ', committed (the opportunity is won)' : stretches.length ? `, held until ${HELD_UNTIL.format(new Date(Math.min(...stretches.map(x => x.expiresAt.getTime()))))}` : '')
-        + (!target?.IsWon && stretches.some(x => x.expiresAt.getTime() !== stretches[0].expiresAt.getTime()) ? ' (some markets lapse later: see each on Reservations)' : '') + '.'
+        // One lapse date for the whole booking, and why when the start cut it short.
+        + (target?.IsWon ? ', committed (the opportunity is won)' : bookingExpiry ? `, held until ${HELD_UNTIL.format(bookingExpiry.expiresAt)}`
+          + (bookingExpiry.cappedByStart ? ` (3 days before the first market starts, ${bookingExpiry.startDate}: the latest a booking can be held)`
+            : bookingExpiry.atMinimum ? ' (the 24-hour minimum: the first market starts too soon for a longer hold)' : '') : '')
+        + '.'
     const sfdcDone = !sfdcOpportunityId ? ''
       : quoteOnly ? ` ${oppDone}.` + checkIt
       : ` ${oppDone}` + (leftOut ? ', with the markets not booked listed in its Description.' : '.') + checkIt

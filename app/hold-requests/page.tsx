@@ -15,7 +15,8 @@ import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
-import { bookingCardKey, bookingKey, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
+import { bookingCapStarts, bookingCardKey, bookingKey, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
+import { lastExpiryDate } from '@/lib/holdExpiry'
 
 type HoldRequest = {
   id: string
@@ -362,9 +363,13 @@ export default function HoldRequestsPage() {
   const handleSaveEdits = async () => {
     if (!editingGroup) return
     const truckChanges = editingGroup.filter(r => selectedTrucks.get(r.id) !== r.truck_number)
-    // Only when the date was edited: the field opens on the soonest expiry, and
-    // saving it untouched must not pull later markets back to that date. Then
-    // per hold, each market stays inside its own 3-days-before-start limit (lib/bookings.ts).
+    // A date past the booking's limit is blocked here, not saved and cut back.
+    if (expiryEdited && newExpiresAt && editLastDate && newExpiresAt > editLastDate) {
+      toast.error(`The latest this booking can be held is ${format(parseDateOnly(editLastDate), 'MMM d')}: 3 days before its first market starts.`)
+      return
+    }
+    // Only when the date was edited (saving untouched changes nothing). Every
+    // hold of the card gets the one date: a booking has one expiry (lib/bookings.ts).
     const expiryChanges = expiryEdited && newExpiresAt
       ? expiryEdits(editingGroup, newExpiresAt).filter(e => e.changed)
       : []
@@ -424,7 +429,7 @@ export default function HoldRequestsPage() {
         }
       }
 
-      // Expiration update — each hold to its own date (see expiryChanges)
+      // Expiration update — every hold of the card to the one date (see expiryChanges)
       if (expirationChanged) {
         const results = await Promise.all(
           expiryChanges.map(async (e) => {
@@ -515,6 +520,16 @@ export default function HoldRequestsPage() {
     }
     return out
   }, [requests])
+
+  // The last date the card being edited can be held to: a booking has one
+  // expiry, capped 3 days before its earliest start (lib/holdExpiry.ts). The
+  // date field won't go past it and the server refuses it.
+  const editLastDate = useMemo(() => {
+    if (!editingGroup?.length) return ''
+    const key = bookingKey(editingGroup[0])
+    const starts = bookingCapStarts((key ? rowsByBooking.get(key) : undefined) ?? editingGroup, new Date().toISOString().slice(0, 10))
+    return lastExpiryDate([...starts].sort()[0])
+  }, [editingGroup, rowsByBooking])
 
   // Group by booking (lib/bookings.ts) so multi-truck and multi-market
   // reservations are reviewed and managed as one unit: every market of a
@@ -1046,20 +1061,17 @@ export default function HoldRequestsPage() {
                         <input
                           type="date"
                           value={newExpiresAt}
+                          max={editLastDate || undefined}
                           onChange={(e) => { setNewExpiresAt(e.target.value); setExpiryEdited(true) }}
                           className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                         />
                       ) : null}
-                      {first.expires_at && expiryEdited && newExpiresAt && (() => {
-                        // Markets that can't run to the date chosen (3 days before their start), once each.
-                        const held = new Map<string, string>()
-                        for (const e of expiryEdits(editingGroup, newExpiresAt)) if (e.heldAtStartLimit && !held.has(e.market)) held.set(e.market, e.expiresOn)
-                        return held.size > 0 && (
-                          <p className="mt-1.5 text-xs text-amber-700">
-                            {[...held].map(([market, on]) => `${market} stays at ${format(parseDateOnly(on), 'MMM d')}`).join('; ')}: a hold ends 3 days before its campaign starts.
-                          </p>
-                        )
-                      })()}
+                      {first.expires_at && editLastDate && (
+                        <p className={`mt-1.5 text-xs ${expiryEdited && newExpiresAt > editLastDate ? 'text-red-700 font-medium' : 'text-gray-500'}`}>
+                          {expiryEdited && newExpiresAt > editLastDate ? 'Too late: ' : ''}
+                          Held until {format(parseDateOnly(editLastDate), 'MMM d')} at the latest (3 days before the first market starts). Every truck on this card gets the same date.
+                        </p>
+                      )}
                       {!first.expires_at && (
                         <div className="flex items-center gap-2">
                           <p className="text-sm text-gray-500">No expiration set</p>

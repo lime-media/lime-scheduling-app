@@ -11,7 +11,7 @@
  */
 
 import { useEffect } from 'react'
-import { DEFAULT_HOLD_DAYS, MAX_HOLD_DAYS, availableHoldDays, bookingHoldExpiry } from '@/lib/holdExpiry'
+import { DEFAULT_HOLD_DAYS, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, availableHoldDays, bookingHoldExpiry } from '@/lib/holdExpiry'
 
 export { DEFAULT_HOLD_DAYS }
 
@@ -27,8 +27,9 @@ export function HoldLength({ days, onChange, startDates }: {
   const starts = startDates.filter(Boolean)
   // One clock for the expiry and the options, so they agree.
   const now = new Date()
-  const lapse = starts.length ? bookingHoldExpiry(starts, days, now) : null
-  const available = new Set(availableHoldDays(starts, now))
+  // Staff tools: a booking may be held until 2 days before its first start.
+  const lapse = starts.length ? bookingHoldExpiry(starts, days, now, null, STAFF_MIN_DAYS_BEFORE_START) : null
+  const available = new Set(availableHoldDays(starts, now, STAFF_MIN_DAYS_BEFORE_START))
   const longest = Math.max(...available)
   // Dates moved so the chosen length no longer fits: fall back to the longest that does.
   useEffect(() => {
@@ -49,7 +50,7 @@ export function HoldLength({ days, onChange, startDates }: {
         <span className="text-xs text-gray-500">
           lapses {fmt.format(lapse.expiresAt)}
           {lapse.cappedByStart && (
-            <span className="text-amber-700"> · cut short: a booking is held until 3 days before its first market starts</span>
+            <span className="text-amber-700"> · cut short: a booking is held until {STAFF_MIN_DAYS_BEFORE_START} days before its first market starts</span>
           )}
           {lapse.atMinimum && (
             <span className="text-amber-700"> · the 24-hour minimum: the first market starts too soon for a longer hold</span>

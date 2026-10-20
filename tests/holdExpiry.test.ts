@@ -12,7 +12,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { availableHoldDays, bookingHoldExpiry, lastExpiryDate, computeHoldExpiresAt, DEFAULT_HOLD_DAYS, HOLD_EXPIRATION_HOURS, MIN_HOLD_WINDOW_HOURS, holdExpiry, parseHoldDays } from '@/lib/holdExpiry'
+import { availableHoldDays, bookingHoldExpiry, lastExpiryDate, computeHoldExpiresAt, DEFAULT_HOLD_DAYS, HOLD_EXPIRATION_HOURS, MIN_HOLD_WINDOW_HOURS, STAFF_MIN_DAYS_BEFORE_START, holdExpiry, parseHoldDays } from '@/lib/holdExpiry'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -101,4 +101,17 @@ section('holdExpiry: a booking has one expiry, capped by its earliest start')
   eq('but never past the earliest start\'s cap', bookingHoldExpiry(['2026-11-01'], 3, now, new Date('2026-11-01T23:59:59Z')).expiresAt.toISOString(), '2026-10-29T00:00:00.000Z')
   eq('the last date to set by hand: the day before the cap', lastExpiryDate('2026-11-20', now), '2026-11-16')
   eq('cap already past: the 24-hour floor\'s date', lastExpiryDate('2026-10-22', now), '2026-10-21')
+}
+
+section('holdExpiry: staff may hold until 2 days before the start; everyone else 3')
+{
+  const now = new Date('2026-10-20T12:00:00Z')
+  eq('the staff runway is 2 days', STAFF_MIN_DAYS_BEFORE_START, 2)
+  // Start Oct 25: the default cap is Oct 22 00:00, the staff cap Oct 23 00:00.
+  eq('default (client portal, MCP, Salesforce): capped 3 days before', holdExpiry('2026-10-25', 7, now).expiresAt.toISOString(), '2026-10-22T00:00:00.000Z')
+  eq('staff: capped 2 days before', holdExpiry('2026-10-25', 7, now, STAFF_MIN_DAYS_BEFORE_START).expiresAt.toISOString(), '2026-10-23T00:00:00.000Z')
+  eq('staff: one more length worth offering', availableHoldDays(['2026-10-25'], now, STAFF_MIN_DAYS_BEFORE_START), [1, 2, 3])
+  eq('staff, multi-market: the earliest start still decides', bookingHoldExpiry(['2026-11-20', '2026-10-25'], 7, now, null, STAFF_MIN_DAYS_BEFORE_START).expiresAt.toISOString(), '2026-10-23T00:00:00.000Z')
+  eq('staff: the last date to set by hand', lastExpiryDate('2026-11-20', now, STAFF_MIN_DAYS_BEFORE_START), '2026-11-17')
+  eq('staff: a kept expiry is capped at 2 days before', bookingHoldExpiry(['2026-11-01'], 3, now, new Date('2026-11-01T23:59:59Z'), STAFF_MIN_DAYS_BEFORE_START).expiresAt.toISOString(), '2026-10-30T00:00:00.000Z')
 }

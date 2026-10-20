@@ -16,7 +16,7 @@ import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttR
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
 import { bookingCapStarts, bookingCardKey, bookingKey, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
-import { lastExpiryDate } from '@/lib/holdExpiry'
+import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
 
 type HoldRequest = {
   id: string
@@ -365,7 +365,7 @@ export default function HoldRequestsPage() {
     const truckChanges = editingGroup.filter(r => selectedTrucks.get(r.id) !== r.truck_number)
     // A date past the booking's limit is blocked here, not saved and cut back.
     if (expiryEdited && newExpiresAt && editLastDate && newExpiresAt > editLastDate) {
-      toast.error(`The latest this booking can be held is ${format(parseDateOnly(editLastDate), 'MMM d')}: 3 days before its first market starts.`)
+      toast.error(`The latest this booking can be held is ${format(parseDateOnly(editLastDate), 'MMM d')}: ${STAFF_MIN_DAYS_BEFORE_START} days before its first market starts.`)
       return
     }
     // Only when the date was edited (saving untouched changes nothing). Every
@@ -522,13 +522,13 @@ export default function HoldRequestsPage() {
   }, [requests])
 
   // The last date the card being edited can be held to: a booking has one
-  // expiry, capped 3 days before its earliest start (lib/holdExpiry.ts). The
+  // expiry, capped 2 days before its earliest start (lib/holdExpiry.ts). The
   // date field won't go past it and the server refuses it.
   const editLastDate = useMemo(() => {
     if (!editingGroup?.length) return ''
     const key = bookingKey(editingGroup[0])
     const starts = bookingCapStarts((key ? rowsByBooking.get(key) : undefined) ?? editingGroup, new Date().toISOString().slice(0, 10))
-    return lastExpiryDate([...starts].sort()[0])
+    return lastExpiryDate([...starts].sort()[0], new Date(), STAFF_MIN_DAYS_BEFORE_START)
   }, [editingGroup, rowsByBooking])
 
   // Group by booking (lib/bookings.ts) so multi-truck and multi-market
@@ -1069,7 +1069,7 @@ export default function HoldRequestsPage() {
                       {first.expires_at && editLastDate && (
                         <p className={`mt-1.5 text-xs ${expiryEdited && newExpiresAt > editLastDate ? 'text-red-700 font-medium' : 'text-gray-500'}`}>
                           {expiryEdited && newExpiresAt > editLastDate ? 'Too late: ' : ''}
-                          Held until {format(parseDateOnly(editLastDate), 'MMM d')} at the latest (3 days before the first market starts). Every truck on this card gets the same date.
+                          Held until {format(parseDateOnly(editLastDate), 'MMM d')} at the latest ({STAFF_MIN_DAYS_BEFORE_START} days before the first market starts). Every truck on this card gets the same date.
                         </p>
                       )}
                       {!first.expires_at && (

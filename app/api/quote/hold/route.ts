@@ -15,7 +15,7 @@ import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
-import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
+import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
 import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
@@ -118,7 +118,7 @@ async function handlePost(req: NextRequest) {
 
   const campaignGroupId = `cg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const resolvedState = state || market.split(',')[1]?.trim() || null
-  const { expiresAt, cappedByStart, atMinimum } = holdExpiry(start_date, holdDays)
+  const { expiresAt, cappedByStart, atMinimum } = holdExpiry(start_date, holdDays, new Date(), STAFF_MIN_DAYS_BEFORE_START)
 
   // ── Server-side price recomputation ──────────────────────────────────────
   const calendarDays = countCalendarDays(start_date, end_date)
@@ -365,7 +365,7 @@ async function handlePost(req: NextRequest) {
   const booked = quoteOnly
     ? `Quote logged for ${sfdc_account_name || 'client'}; no trucks reserved.${selectedTrucks.length ? '' : ' No truck was free, so transport is not priced.'}`
     : `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}, held until ${HELD_UNTIL.format(expiresAt)}`
-      + (cappedByStart ? ' (3 days before the campaign starts, the latest a hold can run)'
+      + (cappedByStart ? ` (${STAFF_MIN_DAYS_BEFORE_START} days before the campaign starts, the latest a hold can run)`
         : atMinimum ? ' (the 24-hour minimum: the campaign starts too soon for a longer hold)' : '') + '.'
   return NextResponse.json({
     ok: true,

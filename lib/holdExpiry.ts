@@ -13,7 +13,11 @@ export const HOLD_EXPIRATION_HOURS = 72
 // The team needs this many full days of runway before a campaign starts to actually process an
 // approved hold (route the truck, confirm logistics, etc.) — the same 3-day figure as the
 // standard SLA above, but anchored to the campaign's start date instead of the submission time.
+// The default for every caller: the client portal, MCP and the Salesforce fallback.
 const MIN_PROCESSING_DAYS_BEFORE_START = 3
+// Staff (the quote tools and Reservations) may pinch that runway to 2 days when a seller needs
+// the longer hold. Staff callers pass it explicitly; nothing else does.
+export const STAFF_MIN_DAYS_BEFORE_START = 2
 // No hold may be created with less than this much review time, whatever the cap below works out
 // to. Without it a short-lead request produced an expiry already in the past: the row was born
 // expired, the next hourly sweep flipped it to EXPIRED, it fell off the Reservations page's
@@ -50,15 +54,16 @@ export function parseHoldDays(value: unknown): number | null {
  * than a reason to discard the request.
  *
  * At most one reason is true, and only when it decided `expiresAt`:
- * `cappedByStart` — it ends 3 days before the campaign starts;
+ * `cappedByStart` — it ends `minDaysBeforeStart` days (3, or 2 for staff) before the campaign starts;
  * `atMinimum` — the campaign starts so soon that the 24h floor applied.
  * Pure (pass `now`).
  */
-export function holdExpiry(startDate: string, holdDays: number = DEFAULT_HOLD_DAYS, now: Date = new Date()): { expiresAt: Date; cappedByStart: boolean; atMinimum: boolean } {
+export function holdExpiry(
+  startDate: string, holdDays: number = DEFAULT_HOLD_DAYS, now: Date = new Date(), minDaysBeforeStart: number = MIN_PROCESSING_DAYS_BEFORE_START,
+): { expiresAt: Date; cappedByStart: boolean; atMinimum: boolean } {
   const requested = addHours(now, holdDays * 24)
 
-  const latestByStart = new Date(startDate + 'T00:00:00Z')
-  latestByStart.setUTCDate(latestByStart.getUTCDate() - MIN_PROCESSING_DAYS_BEFORE_START)
+  const latestByStart = latestHoldMoment(startDate, minDaysBeforeStart)
 
   const startDecides = latestByStart < requested
   const capped = startDecides ? latestByStart : requested
@@ -71,39 +76,40 @@ export function holdExpiry(startDate: string, holdDays: number = DEFAULT_HOLD_DA
 /**
  * A booking's one expiry. A multi-market booking is one quote, so every hold
  * in it lapses at the same moment: the seller's length, capped by the
- * EARLIEST start among `startDates` (3 days before it, with the 24-hour
+ * EARLIEST start among `startDates` (`minDaysBeforeStart` days before it, with the 24-hour
  * floor), as holdExpiry decides for that start. `keepUntil` is an expiry the
  * booking already has (a revision never cuts back what ops extended): it is
  * kept when later, but never past that cap. Pure (pass `now`).
  */
 export function bookingHoldExpiry(
   startDates: string[], holdDays: number = DEFAULT_HOLD_DAYS, now: Date = new Date(), keepUntil: Date | null = null,
+  minDaysBeforeStart: number = MIN_PROCESSING_DAYS_BEFORE_START,
 ): { expiresAt: Date; cappedByStart: boolean; atMinimum: boolean; startDate: string } {
   const startDate = startDates.filter(Boolean).sort()[0]
-  const base = holdExpiry(startDate, holdDays, now)
+  const base = holdExpiry(startDate, holdDays, now, minDaysBeforeStart)
   if (keepUntil && keepUntil > base.expiresAt) {
-    const cap = latestHoldMoment(startDate)
+    const cap = latestHoldMoment(startDate, minDaysBeforeStart)
     const kept = keepUntil < cap ? keepUntil : cap
     if (kept > base.expiresAt) return { expiresAt: kept, cappedByStart: kept.getTime() === cap.getTime(), atMinimum: false, startDate }
   }
   return { ...base, startDate }
 }
 
-/** The latest a hold may run for a campaign starting `startDate`: 3 full days before it. */
-function latestHoldMoment(startDate: string): Date {
+/** The latest a hold may run for a campaign starting `startDate`: `minDaysBeforeStart` full days before it. */
+function latestHoldMoment(startDate: string, minDaysBeforeStart: number = MIN_PROCESSING_DAYS_BEFORE_START): Date {
   const d = new Date(startDate + 'T00:00:00Z')
-  d.setUTCDate(d.getUTCDate() - MIN_PROCESSING_DAYS_BEFORE_START)
+  d.setUTCDate(d.getUTCDate() - minDaysBeforeStart)
   return d
 }
 
 /**
  * The last date (YYYY-MM-DD) an expiry may be set to by hand (Reservations →
  * Edit), for a booking whose earliest start is `earliestStart`. A date's
- * expiry is that day's end, so it must close before the 3-days-before cap;
+ * expiry is that day's end, so it must close before the days-before-start cap;
  * when the cap has already passed, the 24-hour floor's date. Pure.
  */
-export function lastExpiryDate(earliestStart: string, now: Date = new Date()): string {
-  const d = latestHoldMoment(earliestStart)
+export function lastExpiryDate(earliestStart: string, now: Date = new Date(), minDaysBeforeStart: number = MIN_PROCESSING_DAYS_BEFORE_START): string {
+  const d = latestHoldMoment(earliestStart, minDaysBeforeStart)
   d.setUTCDate(d.getUTCDate() - 1)
   const byStart = d.toISOString().slice(0, 10)
   const floor = addHours(now, MIN_HOLD_WINDOW_HOURS).toISOString().slice(0, 10)
@@ -118,12 +124,12 @@ export function lastExpiryDate(earliestStart: string, now: Date = new Date()): s
  * floor) decides, a longer length buys nothing and the quote tools disable
  * it rather than accept it and quietly cut it short. Pure (pass `now`).
  */
-export function availableHoldDays(startDates: string[], now: Date = new Date()): number[] {
+export function availableHoldDays(startDates: string[], now: Date = new Date(), minDaysBeforeStart: number = MIN_PROCESSING_DAYS_BEFORE_START): number[] {
   const earliest = startDates.filter(Boolean).sort()[0]
   const all = Array.from({ length: MAX_HOLD_DAYS }, (_, i) => i + 1)
   if (!earliest) return all
-  return all.filter(n => n === 1
-    || holdExpiry(earliest, n, now).expiresAt.getTime() > holdExpiry(earliest, n - 1, now).expiresAt.getTime())
+  const lapse = (n: number) => holdExpiry(earliest, n, now, minDaysBeforeStart).expiresAt.getTime()
+  return all.filter(n => n === 1 || lapse(n) > lapse(n - 1))
 }
 
 /**

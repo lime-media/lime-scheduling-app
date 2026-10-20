@@ -5,7 +5,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
-import { DEFAULT_HOLD_DAYS, bookingHoldExpiry, lastExpiryDate } from '@/lib/holdExpiry'
+import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry, lastExpiryDate } from '@/lib/holdExpiry'
 import { bookingCapStarts, bookingKey } from '@/lib/bookings'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { closeOpportunityAsLost, getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
@@ -225,7 +225,7 @@ export async function PATCH(
     }
 
     // The booking's one expiry: every hold of a reinstated card lands on the same moment.
-    const newExpiresAt = bookingHoldExpiry(await bookingStarts(hold), DEFAULT_HOLD_DAYS).expiresAt
+    const newExpiresAt = bookingHoldExpiry(await bookingStarts(hold), DEFAULT_HOLD_DAYS, new Date(), null, STAFF_MIN_DAYS_BEFORE_START).expiresAt
 
     // The reinstate and its audit rows (and the reopen's, if any) land together.
     await prisma.$transaction([
@@ -265,13 +265,13 @@ export async function PATCH(
   // ── approve_extension ───────────────────────────────────────────────────
   if (action === 'approve_extension') {
     // The booking's one expiry: the date the client asked for, but never past
-    // the booking's limit (3 days before its earliest start), or the standard
+    // the booking's limit (2 days before its earliest start), or the standard
     // length when none was asked.
     const starts = await bookingStarts(hold)
-    const limit = endOfDay(lastExpiryDate([...starts].sort()[0]))
+    const limit = endOfDay(lastExpiryDate([...starts].sort()[0], new Date(), STAFF_MIN_DAYS_BEFORE_START))
     const newExpiresAt = hold.extension_until
       ? (hold.extension_until > limit ? limit : hold.extension_until)
-      : bookingHoldExpiry(starts, DEFAULT_HOLD_DAYS).expiresAt
+      : bookingHoldExpiry(starts, DEFAULT_HOLD_DAYS, new Date(), null, STAFF_MIN_DAYS_BEFORE_START).expiresAt
 
     await prisma.hold.update({
       where: { id: hold.id },
@@ -301,12 +301,12 @@ export async function PATCH(
       return NextResponse.json({ error: 'Invalid date' }, { status: 400 })
     }
     // Refused, not quietly cut back: the booking's one expiry can't run past
-    // 3 days before its earliest start (the Edit dialog blocks the same date).
+    // 2 days before its earliest start (the Edit dialog blocks the same date).
     const earliest = [...await bookingStarts(hold)].sort()[0]
-    const lastDate = lastExpiryDate(earliest)
+    const lastDate = lastExpiryDate(earliest, new Date(), STAFF_MIN_DAYS_BEFORE_START)
     if (newExpiresAtStr > lastDate) {
       return NextResponse.json({
-        error: `The latest this booking can be held is ${lastDate}: 3 days before its first market starts (${earliest}).`,
+        error: `The latest this booking can be held is ${lastDate}: ${STAFF_MIN_DAYS_BEFORE_START} days before its first market starts (${earliest}).`,
         lastDate,
       }, { status: 400 })
     }

@@ -44,7 +44,7 @@ import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { canonicalMarketName } from '@/lib/marketBounds'
-import { bookingHoldExpiry, parseHoldDays, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
+import { bookingHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
 import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
@@ -292,7 +292,7 @@ async function handlePost(req: NextRequest) {
     // booking already had, never past that cap (lib/holdExpiry.ts).
     const heldStarts = stints.filter(x => !committedMarket(x.stint.lineId)).map(x => x.stint.start)
     const keepUntil = [...replaced.values()].map(v => v.latest).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0] ?? null
-    const bookingExpiry = heldStarts.length ? bookingHoldExpiry(heldStarts, holdDays, holdClock, keepUntil) : null
+    const bookingExpiry = heldStarts.length ? bookingHoldExpiry(heldStarts, holdDays, holdClock, keepUntil, STAFF_MIN_DAYS_BEFORE_START) : null
     const stretches = stints.map(x => ({ ...x, expiresAt: bookingExpiry?.expiresAt ?? holdClock }))
 
     // All or nothing: any stretch that now clashes stops the whole booking.
@@ -560,7 +560,7 @@ async function handlePost(req: NextRequest) {
       : `${lead}Placed ${rows.length} hold${rows.length === 1 ? '' : 's'} on ${truckNumbers.length} truck${truckNumbers.length === 1 ? '' : 's'} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} for ${accountName} (${money(quote.summary.grandTotal)})`
         // One lapse date for the whole booking, and why when the start cut it short.
         + (target?.IsWon ? ', committed (the opportunity is won)' : bookingExpiry ? `, held until ${HELD_UNTIL.format(bookingExpiry.expiresAt)}`
-          + (bookingExpiry.cappedByStart ? ` (3 days before the first market starts, ${bookingExpiry.startDate}: the latest a booking can be held)`
+          + (bookingExpiry.cappedByStart ? ` (${STAFF_MIN_DAYS_BEFORE_START} days before the first market starts, ${bookingExpiry.startDate}: the latest a booking can be held)`
             : bookingExpiry.atMinimum ? ' (the 24-hour minimum: the first market starts too soon for a longer hold)' : '') : '')
         + '.'
     const sfdcDone = !sfdcOpportunityId ? ''

@@ -69,7 +69,7 @@ export async function GET(req: NextRequest) {
       // What a revision keeps (app/api/plan/hold): the latest expiry of the
       // live holds, and the markets ops marked committed.
       heldUntil: holds.filter(h => h.live && h.expires_at).map(h => h.expires_at!.toISOString()).sort().reverse()[0] ?? null,
-      committedMarkets: new Set(holds.filter(h => h.live && h.status === 'COMMITTED').map(h => h.market.trim().toLowerCase())).size,
+      committedMarkets: [...new Set(holds.filter(h => h.live && h.status === 'COMMITTED').map(h => h.market.trim().toLowerCase()))],
     },
   })
 }

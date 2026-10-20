@@ -8,9 +8,10 @@ description: Open a pull request the team's way — size check, type check/lint/
 The paid Claude Code Review is a multi-agent review billed per run, and its
 cost grows with the size of the diff. So every PR is cleaned up locally first
 (the reviewer's own Claude Code plan), kept small, and gets exactly one paid
-review. A hook (`.claude/hooks/review-gate.sh`) blocks `gh pr create` until
-step 4 has recorded a passing local review on the exact commit, and blocks a
-second `@claude review` on the same PR.
+review, which Claude Code Review runs on its own when the PR opens. A hook
+(`.claude/hooks/review-gate.sh`) blocks `gh pr create` until step 4 has
+recorded a passing local review on the exact commit, and blocks any
+`@claude review` request once Claude has reviewed the PR.
 
 Work through the steps in order. Stop and tell the person if a step can't pass.
 
@@ -43,16 +44,18 @@ Run and fix until clean: `npx tsc --noEmit`, `npx eslint <changed .ts/.tsx files
 ## 5. Open the PR
 Run `git push -u origin <branch>` first, then `gh pr create --base uat` as a
 **separate** command (ready for review, not a draft). The gate checks before a
-command runs, so `git push && gh pr create` in one call is always refused. The description follows the repo's existing PRs (why, what changed,
+command runs, so `git push && gh pr create` in one call is always refused.
+The description follows the repo's existing PRs (why, what changed,
 verification, how to check it in UAT) and includes this line, filled in:
 
 `Local review: passed at <short sha> — <what it found and fixed, or "clean">`
 
 ## 6. The one paid review
-Request it once: `gh pr comment <number> --body "@claude review"`.
+Claude Code Review runs on its own when the PR opens. **Don't comment
+`@claude review`**: that would buy a second run.
 
 When it reports:
 - Fix each real finding, verify with step 3 and a local `code-review`, push, and
   answer on the PR (finding, cause, resolution, verification, remaining risk).
 - **Never request a second paid review.** Fixes after it are verified locally;
-  the hook refuses a second `@claude review` on the same PR.
+  the hook refuses `@claude review` once Claude has reviewed the PR.

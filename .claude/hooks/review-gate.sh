@@ -4,8 +4,8 @@
 # 1. `gh pr create` (or its alias `gh pr new`) is blocked until /ship's local
 #    review has passed on the exact commit being proposed (a marker written by
 #    mark-reviewed.sh), and that commit is what's pushed.
-# 2. A second `@claude review` request on the same PR is blocked: the paid
-#    Claude Code Review runs once per PR, after the local review.
+# 2. An `@claude review` request is blocked once Claude has reviewed the PR:
+#    the paid Claude Code Review runs once per PR, on its own when it opens.
 #
 # A guardrail for the /ship path, not a security boundary. Shell is matched
 # with patterns, so someone determined to skip it can: `gh api`, a PR opened
@@ -84,15 +84,15 @@ if printf '%s' "$cmd" | grep -qi '@claude review' && is_gh_pr 'comment|review'; 
   fi
   [ -z "$pr" ] && pr=$(gh pr view --json number --jq .number 2>/dev/null || true)
   [ -z "$pr" ] && exit 0
-  # A request someone made: a comment or review body that starts with the
-  # trigger. The bot's own messages mention "@claude review" and don't count.
-  filter='[(.comments + .reviews)[] | select((.author.login | test("^claude"; "i") | not) and (.body | test("^\\s*@claude review"; "i")))] | length'
+  # Already reviewed: Claude posted a review or comment (its automatic run),
+  # or someone already asked (a body that starts with the trigger).
+  filter='[(.comments + .reviews)[] | select((.author.login | test("^claude"; "i")) or (.body | test("^\\s*@claude review"; "i")))] | length'
   if ! asked=$(gh pr view "$pr" --json comments,reviews --jq "$filter" 2>/dev/null); then
     echo "Review gate: couldn't check PR #$pr for an earlier review request (gh failed). Retry once gh works; a PR gets one paid review." >&2
     exit 2
   fi
   if [ "${asked:-0}" -gt 0 ] 2>/dev/null; then
-    echo "Review gate: PR #$pr has already had its one paid Claude Code Review. Verify fixes with a local review (/code-review) instead of requesting another." >&2
+    echo "Review gate: PR #$pr has already had its one paid Claude Code Review (it runs on its own when a PR opens). Verify fixes with a local review (/code-review) instead of requesting another." >&2
     exit 2
   fi
   exit 0

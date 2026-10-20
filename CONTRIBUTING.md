@@ -89,12 +89,13 @@ exactly **one** paid review.
    Bash commands. It blocks `gh pr create` until a local review has passed on that
    exact commit, and blocks a second `@claude review` on the same PR. A PR opened
    by hand on GitHub gets a warning from the `local-review-check` workflow.
-3. **The one paid review:** `/ship` comments `@claude review` once. Findings are
-   fixed, verified with a local `/code-review`, and answered on the PR (finding,
-   cause, resolution, verification, remaining risk). Nobody requests a second one.
+3. **The one paid review:** Claude Code Review runs on its own when the PR
+   opens. Findings are fixed, verified with a local `/code-review`, and answered
+   on the PR (finding, cause, resolution, verification, remaining risk). Nobody
+   comments `@claude review`; the gate refuses it once Claude has reviewed.
 4. **Don't stack PRs.** A PR branched from another open PR gets reviewed again
    every time its base moves. Wait for the base to merge, or split differently.
 
-Claude Code Review itself is set to run only when asked (`@claude review`), not
-on every PR. That setting lives in the org's Claude Code Review settings, not in
-this repo.
+What sets the cost of a paid run is mostly how much it has to read, so the
+savings come from exactly one run per PR, small diffs, no stacking, and code
+that's already clean when it gets there.

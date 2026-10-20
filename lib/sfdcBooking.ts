@@ -7,7 +7,7 @@
 import { isSfdcConfigured, sfdcQuery, updateOpportunity, updateOpportunityWithError } from '@/lib/salesforceClient'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
-import { closedOpportunityBlocksReactivation } from '@/lib/sfdcIntegration'
+import { closedOpportunityBlocksReactivation, withAppHoldExp } from '@/lib/sfdcIntegration'
 import { ledWindowFields, mergedOpportunityFields, type BookingLed, type OpportunityLed } from '@/lib/opportunityMerge'
 import { loadOpportunityReservingHolds } from '@/lib/bookingLoad'
 import { CLOSED_WON_READ_ONLY } from '@/lib/bookings'
@@ -123,20 +123,24 @@ export async function applyBookingToOpportunity(opts: {
 }
 
 /**
- * After an expiry change or release (reinstate, approve or deny extension,
- * Edit expiry, cancel), the
+ * After any expiry change or release (reinstate, approve or deny extension,
+ * Edit expiry, cancel, delete, chat or conflict release, a client's extension
+ * request, the expiry sweep), the
  * opportunity's LED Trucks and LED Hold Exp are set from the app's holds that
  * reserve trucks on it now (lib/opportunityMerge.ts ledWindowFields): the app
  * owns them, so Salesforce shows the date the app holds to, and its push can
  * neither keep a lapsed truck nor carry a lapsed date back.
  *
- * The Hold Exp is recorded as sfdc_hold_exp on the opportunity's
- * Salesforce-made holds BEFORE the write (the push can arrive before the call
- * returns), so the push that follows is taken as the echo of this write and
- * changes no expiry (lib/sfdcIntegration.ts pushedHoldExpiry). If the write
- * fails, each hold's previous sfdc_hold_exp is put back: Salesforce still
- * holds that date, so its next push stays an echo instead of re-dating (or
- * expiring) what the app just changed.
+ * The Hold Exp is recorded in the features of the opportunity's
+ * Salesforce-made holds (APP_HOLD_EXP_KEY) BEFORE the write (the push can
+ * arrive before the call returns), so the push that follows is taken as the
+ * echo of this write and changes no expiry (lib/sfdcIntegration.ts
+ * pushedHoldExpiry). It is never written to sfdc_hold_exp: that keeps meaning
+ * "Salesforce sent a Hold Exp" and decides whether a lapse closes the deal
+ * (expiryClosesOpportunity), so a booking pushed with Hold Exp blank still
+ * never closes as lost. If the write fails, each hold's previous features are
+ * put back: Salesforce still holds its old date, so its next push stays an
+ * echo instead of re-dating (or expiring) what the app just changed.
  *
  * Best-effort, after the app's own change has committed: never throws.
  * Returns what to tell the rep when Salesforce wasn't updated, else null.
@@ -145,34 +149,36 @@ export async function applyBookingToOpportunity(opts: {
 export async function syncOpportunityLedWindow(opportunityId: string | null): Promise<string | null> {
   if (!opportunityId || !isSfdcConfigured() || !OPP_ID.test(opportunityId)) return null
   let fields: Record<string, string | null> = {}
-  let recorded: { id: string; sfdc_hold_exp: Date | null }[] = []
+  let recorded: { id: string; features: string | null }[] = []
   try {
     fields = ledWindowFields(await loadOpportunityReservingHolds(opportunityId), new Date().toISOString().slice(0, 10))
     if (fields.LED_Hold_Exp__c) {
-      const where = { sfdc_opportunity_id: opportunityId, source: 'SALESFORCE' }
-      recorded = await prisma.hold.findMany({ where, select: { id: true, sfdc_hold_exp: true } })
-      await prisma.hold.updateMany({ where: { id: { in: recorded.map(h => h.id) } }, data: { sfdc_hold_exp: new Date(fields.LED_Hold_Exp__c) } })
+      recorded = await prisma.hold.findMany({
+        where:  { sfdc_opportunity_id: opportunityId, source: 'SALESFORCE' },
+        select: { id: true, features: true },
+      })
+      await setFeatures(recorded.map(h => ({ id: h.id, features: withAppHoldExp(h.features, fields.LED_Hold_Exp__c ?? null) })))
     }
     const r = await updateOpportunityWithError(opportunityId, fields)
     if (r.ok) return null
-    await restoreRecordedHoldExp(recorded)
+    await setFeatures(recorded)
     return ledWindowWarning(fields, r.error)
   } catch (err) {
     console.error(`[sfdc] LED window sync failed for ${opportunityId}:`, err)
-    await restoreRecordedHoldExp(recorded).catch(e => console.error(`[sfdc] restoring sfdc_hold_exp failed for ${opportunityId}:`, e))
+    await setFeatures(recorded).catch(e => console.error(`[sfdc] restoring the Hold Exp marker failed for ${opportunityId}:`, e))
     return ledWindowWarning(fields, err instanceof Error ? err.message : String(err))
   }
 }
 
-/** Put each Salesforce-made hold's sfdc_hold_exp back to what it was before a failed write, one update per distinct value. */
-async function restoreRecordedHoldExp(rows: { id: string; sfdc_hold_exp: Date | null }[]): Promise<void> {
+/** Write each hold's features (the Hold Exp marker, or what it was before a failed write), one update per distinct value. */
+async function setFeatures(rows: { id: string; features: string | null }[]): Promise<void> {
   const byValue = new Map<string, string[]>()
   for (const r of rows) {
-    const k = r.sfdc_hold_exp?.toISOString() ?? ''
+    const k = r.features ?? '\u0000'
     byValue.set(k, [...(byValue.get(k) ?? []), r.id])
   }
   for (const [k, ids] of byValue) {
-    await prisma.hold.updateMany({ where: { id: { in: ids } }, data: { sfdc_hold_exp: k ? new Date(k) : null } })
+    await prisma.hold.updateMany({ where: { id: { in: ids } }, data: { features: k === '\u0000' ? null : k } })
   }
 }
 

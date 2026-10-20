@@ -64,6 +64,20 @@ export function closedWonRefusal(holds: { status: string; sfdc_opportunity_id: s
 }
 
 /**
+ * The holds of a lapsed booking that Reinstate brings back: the lapsed ones
+ * whose dates haven't all passed. A market that already ended stays expired —
+ * there's nothing left to hold, and its past dates mustn't be clash-checked
+ * or listed in Salesforce. Pure.
+ */
+export function reinstatableHolds<H extends { status: string; end_date: Date | string }>(holds: H[], today: string): H[] {
+  const day = (d: Date | string) => (typeof d === 'string' ? d : d.toISOString()).slice(0, 10)
+  return holds.filter(h => h.status === 'EXPIRED' && day(h.end_date) >= today)
+}
+
+/** What a rep is told when every lapsed market of a booking has already ended. */
+export const NOTHING_TO_REINSTATE = "Can't reinstate: every market of this booking has already ended. To book these trucks again, get a fresh quote."
+
+/**
  * Why a booking can't be reinstated, or null: reinstating is all or nothing
  * (a booking is one quote), so any truck booked by someone else since it
  * lapsed refuses the whole booking, naming each one. Only then is anything

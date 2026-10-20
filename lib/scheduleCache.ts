@@ -11,6 +11,7 @@ import { getPool, query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { reconcileSfdcOpportunities, closeOpportunityAsLost } from '@/lib/sfdcOpportunityReconcile'
+import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { warnExpiringHolds } from '@/lib/holdExpiryWarnings'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
@@ -257,6 +258,17 @@ export async function expireHolds(): Promise<{
     const outcome = await closeOpportunityAsLost(opportunityId)
     if (outcome === 'closed') opportunities_closed++
     else if (outcome === 'would_close') opportunities_would_close++
+  }
+
+  // Then every opportunity a lapse touched (closed or not) gets LED Trucks and
+  // Hold Exp from what the app still holds on it: blank when nothing, so a
+  // later push can't re-create a lapsed truck (lib/sfdcBooking.ts
+  // syncOpportunityLedWindow). After the close, so the stage never waits on
+  // this write; the two touch different fields.
+  const lapsedOn = new Set(stale.map(h => h.sfdc_opportunity_id).filter((id): id is string => Boolean(id)))
+  for (const opportunityId of lapsedOn) {
+    const warning = await syncOpportunityLedWindow(opportunityId)
+    if (warning) console.warn(`[hold-expiry] ${opportunityId}: ${warning}`)
   }
 
   return { expired: stale.length, opportunities_closed, opportunities_would_close }

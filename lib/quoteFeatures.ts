@@ -52,10 +52,17 @@ export type QuoteFeatures = {
   }[]
 }
 
+/**
+ * A hold's quote breakdown, or null when its features hold no quote: a
+ * Salesforce-made hold's features may carry only the app's bookkeeping (the
+ * LED Hold Exp it last wrote, lib/sfdcIntegration.ts APP_HOLD_EXP_KEY), which
+ * must not render as an empty breakdown.
+ */
 export function parseQuoteFeatures(features: string | null | undefined): QuoteFeatures | null {
   if (!features) return null
   try {
-    return JSON.parse(features) as QuoteFeatures
+    const f = JSON.parse(features) as QuoteFeatures
+    return f && typeof f === 'object' && Object.keys(f).some(k => k !== 'appHoldExp') ? f : null
   } catch {
     return null
   }

@@ -6,6 +6,7 @@ import { bookingCapStarts, bookingKey, clientExtendRefusal } from '@/lib/booking
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { lastExpiryDate } from '@/lib/holdExpiry'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
+import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 
 /**
  * POST /api/client/hold-requests/[id]/extend
@@ -119,6 +120,12 @@ export async function POST(
     endDate:     held.map(h => h.end_date.toISOString().slice(0, 10)).sort().reverse()[0],
     details:     `Hold extension requested for the whole booking: ${trucks.length} truck${trucks.length === 1 ? '' : 's'} (${trucks.join(', ')}) across ${markets.length} market${markets.length === 1 ? '' : 's'}. Extend until: ${extend_until}.${reason ? ` Reason: ${reason}` : ''} Approve or deny it on Reservations.`,
   }).catch((e) => console.error('[hold-extend] email failed:', e))
+
+  // The request holds the booking to the date asked, so Salesforce's Hold Exp
+  // follows (lib/sfdcBooking.ts syncOpportunityLedWindow). Logged for staff,
+  // not shown to the client.
+  const sfdcWarning = await syncOpportunityLedWindow(held.find(h => h.sfdc_opportunity_id)?.sfdc_opportunity_id ?? null)
+  if (sfdcWarning) console.warn(`[hold-extend] ${sfdcWarning}`)
 
   return NextResponse.json({ ok: true, holds: held.length, extend_until })
 }

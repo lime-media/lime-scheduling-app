@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
-import { SFDC_SERVICE_USER_EMAIL, opportunityMarketCandidates, pushedHoldExpiry, trucksToMirror } from '@/lib/sfdcIntegration'
+import { SFDC_SERVICE_USER_EMAIL, appHoldExpOf, opportunityMarketCandidates, pushedHoldExpiry, trucksToMirror } from '@/lib/sfdcIntegration'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
 import { soqlString } from '@/lib/soql'
 import { endOfDayUtc } from '@/lib/dateOnly'
@@ -107,14 +107,15 @@ export async function POST(req: NextRequest) {
     results.push({ truck_number: hold.truck_number, hold_id: hold.id, action: 'removed' })
   }
 
-  // Trucks the app itself holds for this Opportunity right now (it created the
-  // Opportunity from a quote) are an echo, not a second reservation. Stale
-  // SALESFORCE holds above are still reconciled against the full list.
+  // Trucks the app itself booked for this Opportunity, in any status, are the
+  // app's: an echo, never a second reservation (a lapsed one comes back
+  // through Reinstate, which checks for clashes). Stale SALESFORCE holds above
+  // are still reconciled against the full list.
   const linkedHolds = await prisma.hold.findMany({
     where: { sfdc_opportunity_id: opportunityId },
-    select: { truck_number: true, source: true, status: true, expires_at: true },
+    select: { truck_number: true, source: true, origination: true },
   })
-  const toMirror = trucksToMirror(truckNumbers, linkedHolds, now)
+  const toMirror = trucksToMirror(truckNumbers, linkedHolds)
   const skippedAppHeld = truckNumbers.filter(t => !toMirror.includes(t))
 
   // The Opportunity's stage, asked at most once per push and only when a hold
@@ -151,14 +152,14 @@ export async function POST(req: NextRequest) {
       // not something this webhook should revert.
       //
       // Expiry resolution, in order (lib/sfdcIntegration.ts pushedHoldExpiry):
-      // the echo of the app's own Hold Exp write (the date recorded as this
-      // row's sfdc_hold_exp) keeps the row's expiry, so the app's sync never
+      // the echo of the app's own Hold Exp write (the date recorded in this
+      // row's features, appHoldExpOf) keeps the row's expiry, so the app's sync never
       // re-dates, shortens or revives a hold; otherwise an explicit Hold Exp
       // wins; failing that the row keeps the expiry it already has, so repeated
       // pushes can't renew a 72h fallback forever; only a row with nothing at
       // all (a legacy null) gets a fresh default.
       const { expiresAt: effectiveExpiry, echo } = pushedHoldExpiry({
-        pushedHoldExp: holdExp ?? null, recordedHoldExp: existing.sfdc_hold_exp, current: existing.expires_at, fallback: defaultExpiry,
+        pushedHoldExp: holdExp ?? null, appHoldExp: appHoldExpOf(existing.features), current: existing.expires_at, fallback: defaultExpiry,
       })
       const expiryDefaulted = explicitExpiry === null && existing.expires_at === null
       const expiryIsPast    = effectiveExpiry <= now

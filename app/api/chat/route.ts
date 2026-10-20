@@ -13,6 +13,7 @@ import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { formatMarketState } from '@/lib/format'
 import { checkTruckFeasibility } from '@/lib/availabilityEngine'
 import { CLOSED_WON_READ_ONLY, closedWonRefusal } from '@/lib/bookings'
+import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -241,10 +242,13 @@ async function executeReleaseHold(
     },
   })
   await prisma.hold.delete({ where: { id: hold.id } })
+  // Salesforce's LED Trucks and Hold Exp follow the release (lib/sfdcBooking.ts syncOpportunityLedWindow).
+  const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
 
   return {
     success: true,
-    message: `Released ${hold.status} hold on truck ${hold.truck_number} for "${hold.client_name}" (${hold.start_date.toISOString().split('T')[0]} – ${hold.end_date.toISOString().split('T')[0]}).`,
+    message: `Released ${hold.status} hold on truck ${hold.truck_number} for "${hold.client_name}" (${hold.start_date.toISOString().split('T')[0]} – ${hold.end_date.toISOString().split('T')[0]}).`
+      + (sfdcWarning ? ` ${sfdcWarning}` : ''),
   }
 }
 

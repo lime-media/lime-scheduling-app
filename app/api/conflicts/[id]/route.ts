@@ -4,6 +4,7 @@ import { authOptions } from '@/lib/auth'
 import { getPool } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { CLOSED_WON_READ_ONLY, closedWonRefusal } from '@/lib/bookings'
+import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 
 export async function PATCH(
   req: NextRequest,
@@ -114,7 +115,9 @@ export async function PATCH(
 
     // Delete hold — ON DELETE CASCADE removes the conflict row automatically
     await prisma.hold.delete({ where: { id: conflict.hold_id } })
-    return NextResponse.json({ success: true })
+    // Salesforce's LED Trucks and Hold Exp follow the release (lib/sfdcBooking.ts syncOpportunityLedWindow).
+    const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
+    return NextResponse.json({ success: true, sfdcWarning })
   }
 
   return NextResponse.json({ error: 'Invalid action' }, { status: 400 })

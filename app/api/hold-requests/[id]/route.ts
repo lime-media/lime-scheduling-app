@@ -7,7 +7,7 @@ import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry, lastExpiryDate } from '@/lib/holdExpiry'
-import { bookingCapStarts, bookingKey, closedWonRefusal, reinstateRefusal } from '@/lib/bookings'
+import { NOTHING_TO_REINSTATE, bookingCapStarts, bookingKey, closedWonRefusal, reinstatableHolds, reinstateRefusal } from '@/lib/bookings'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { closeOpportunityAsLost, getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
@@ -192,9 +192,13 @@ export async function PATCH(
       }, { status: 409 })
     }
 
-    // The whole booking comes back, or none of it: every lapsed hold of it.
+    // The whole booking comes back, or none of it: every lapsed hold of it
+    // whose market hasn't ended (lib/bookings.ts reinstatableHolds).
     const booking = await loadBooking(hold)
-    const lapsed = booking.filter(h => h.status === 'EXPIRED' && h.origination !== QUOTE_ONLY_ORIGINATION && !reinstateBlockedByRelease(h.origination))
+    const today = new Date().toISOString().slice(0, 10)
+    const lapsed = reinstatableHolds(booking, today)
+      .filter(h => h.origination !== QUOTE_ONLY_ORIGINATION && !reinstateBlockedByRelease(h.origination))
+    if (lapsed.length === 0) return NextResponse.json({ error: NOTHING_TO_REINSTATE }, { status: 400 })
     const ids = lapsed.map(h => h.id)
     // While the booking sat expired its trucks read as free to every availability
     // path, so any of them may have been taken: check them all before blocking
@@ -226,8 +230,13 @@ export async function PATCH(
     }
 
     const won = stage?.isClosed === true && stage.isWon
-    // The booking's one expiry: every hold of it lands on the same moment.
-    const newExpiresAt = won ? null : bookingHoldExpiry(capStarts(booking), DEFAULT_HOLD_DAYS, new Date(), null, STAFF_MIN_DAYS_BEFORE_START).expiresAt
+    // The booking's one expiry, on every hold of it: the reinstated ones and
+    // any still live (an older booking whose markets lapsed apart). A later
+    // expiry a live hold already has (an extension waiting, say) is kept, never
+    // past the booking's cap.
+    const live = booking.filter(h => h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED')
+    const keepUntil = live.map(h => h.expires_at).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0] ?? null
+    const newExpiresAt = won ? null : bookingHoldExpiry(capStarts(booking), DEFAULT_HOLD_DAYS, new Date(), keepUntil, STAFF_MIN_DAYS_BEFORE_START).expiresAt
     const newStatus = won ? 'COMMITTED' : 'HOLD'
 
     // The reinstate and its audit rows (and the reopen's, if any) land together.
@@ -236,6 +245,10 @@ export async function PATCH(
         where: { id: { in: ids }, status: 'EXPIRED' },
         data:  { status: newStatus, expires_at: newExpiresAt, extension_until: null, extension_reason: null },
       }),
+      ...(!won && live.length ? [prisma.hold.updateMany({
+        where: { id: { in: live.map(h => h.id) }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
+        data:  { expires_at: newExpiresAt },
+      })] : []),
       ...(reopened ? [prisma.auditLog.create({
         data: {
           action:       'REOPEN_OPPORTUNITY',

@@ -14,7 +14,7 @@ import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
-import { bookingCardKey, bookingKey, earliestExpiryDate, expiryEdits, isMultiMarket, summarizeBooking } from '@/lib/bookings'
+import { bookingCardKey, bookingKey, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
 
 type HoldRequest = {
   id: string
@@ -765,14 +765,41 @@ export default function HoldRequestsPage() {
                       </div>
                     ) : null
                   })()}
-                  <div className="divide-y divide-gray-100">
-                    {groupItems.map((r) => (
-                      <div key={r.id} className="px-4 py-2.5 flex items-center justify-between text-sm">
-                        <span className="font-medium text-gray-900">Truck {r.truck_number}</span>
-                        <span className="text-gray-500">{formatMarketState(r.market, r.state)}</span>
-                      </div>
-                    ))}
-                  </div>
+                  {multi ? (
+                    // Each market as its own subgroup, in flight order: its dates and length, then its trucks.
+                    // The same rows as the card's totals and actions (groupItems), only arranged.
+                    <div className="divide-y divide-gray-100">
+                      {marketGroups(groupItems).map((m) => (
+                        <div key={m.key}>
+                          <div className="px-4 py-2 bg-gray-50 flex items-center justify-between text-sm">
+                            <span className="font-semibold text-gray-900">{formatMarketState(m.market, m.rows[0].state)}</span>
+                            <span className="text-xs text-gray-600">
+                              {format(parseDateOnly(m.start), 'MMM d')} &ndash; {format(parseDateOnly(m.end), 'MMM d, yyyy')}
+                              {' · '}{m.days} {m.daysKind === 'activation' ? 'activation' : 'calendar'} day{m.days === 1 ? '' : 's'}
+                            </span>
+                          </div>
+                          {m.rows.map((r) => (
+                            <div key={r.id} className="pl-8 pr-4 py-2 flex items-center justify-between text-sm">
+                              <span className="font-medium text-gray-900">Truck {r.truck_number}</span>
+                              {/* A truck's own dates, when it covers only part of the market's (alternating trucks). */}
+                              {(r.start_date.slice(0, 10) !== m.start || r.end_date.slice(0, 10) !== m.end) && (
+                                <span className="text-xs text-gray-500">{format(parseDateOnly(r.start_date), 'MMM d')} &ndash; {format(parseDateOnly(r.end_date), 'MMM d')}</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-gray-100">
+                      {groupItems.map((r) => (
+                        <div key={r.id} className="px-4 py-2.5 flex items-center justify-between text-sm">
+                          <span className="font-medium text-gray-900">Truck {r.truck_number}</span>
+                          <span className="text-gray-500">{formatMarketState(r.market, r.state)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {first.status === 'EXTENSION_REQUESTED' && first.extension_reason && (
                     <div className="px-4 py-2 text-xs text-amber-800 bg-amber-50 border-t border-amber-100">
                       Reason: {first.extension_reason}

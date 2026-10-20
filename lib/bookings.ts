@@ -87,6 +87,45 @@ export function summarizeBooking(rows: (BookingRow & {
   }
 }
 
+/**
+ * A multi-market card's markets, for showing each as its own subgroup: one per
+ * market line (campaign group), with its dates and length, its trucks under it.
+ * Ordered by start date, then market, so the card reads as the flight runs.
+ * `days` is the quoted activation days when the hold carries them (features),
+ * else the calendar days of the market's dates; `daysKind` says which.
+ */
+export function marketGroups<R extends BookingRow & { truck_number: string; market: string; start_date: string; end_date: string; features?: string | null }>(rows: R[]): {
+  key: string; market: string; start: string; end: string; days: number; daysKind: 'activation' | 'calendar'; rows: R[]
+}[] {
+  const groups = new Map<string, R[]>()
+  for (const r of rows) {
+    const g = r.campaign_group_id ?? r.market
+    groups.set(g, [...(groups.get(g) ?? []), r])
+  }
+  return [...groups].map(([key, rs]) => {
+    const start = rs.map(r => r.start_date.slice(0, 10)).sort()[0]
+    const end = rs.map(r => r.end_date.slice(0, 10)).sort().reverse()[0]
+    const activation = rs.map(r => activationDaysOf(r.features)).find((d): d is number => d !== null)
+    const calendar = Math.round((Date.parse(end) - Date.parse(start)) / 86400000) + 1
+    return {
+      key, market: rs[0].market, start, end,
+      days: activation ?? calendar, daysKind: activation !== undefined ? 'activation' as const : 'calendar' as const,
+      rows: [...rs].sort((a, b) => a.start_date.localeCompare(b.start_date) || a.truck_number.localeCompare(b.truck_number, 'en', { numeric: true })),
+    }
+  }).sort((a, b) => a.start.localeCompare(b.start) || a.market.localeCompare(b.market) || a.key.localeCompare(b.key))
+}
+
+/** The quoted activation days stored on a hold's features, if any. */
+function activationDaysOf(features: string | null | undefined): number | null {
+  if (!features) return null
+  try {
+    const d = (JSON.parse(features) as { activationDays?: unknown }).activationDays
+    return typeof d === 'number' && Number.isFinite(d) && d > 0 ? d : null
+  } catch {
+    return null
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Revising a booking (Reservations → Revise → the multi-market planner)
 // ---------------------------------------------------------------------------

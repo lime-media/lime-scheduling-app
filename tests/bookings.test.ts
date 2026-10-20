@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { bookingCardKey, bookingKey, earliestExpiryDate, expiryEdits, isMultiMarket, summarizeBooking } from '@/lib/bookings'
+import { bookingCardKey, bookingKey, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
 
 const h = (campaign_group_id: string | null, truck_number: string, market: string, quoted_total: number | null, extra: Partial<{ sfdc: string; start: string; end: string; exp: string }> = {}) => ({
   campaign_group_id, sfdc_opportunity_id: extra.sfdc ?? null, truck_number, market, quoted_total,
@@ -95,4 +95,30 @@ section('bookings: a market split across two cards is not counted as whole on ei
   const expired = summarizeBooking(all.filter(r => r.status === 'EXPIRED'), all)
   eq('the Expired card counts nothing as whole', [expired.total, expired.splitMarkets], [null, 1])
   eq('without the whole booking, as before', summarizeBooking(all.filter(r => r.status === 'HOLD')).total, 63000)
+}
+
+section('bookings: a multi-market card shows each market as a subgroup')
+{
+  const f = (activationDays?: number) => activationDays === undefined ? null : JSON.stringify({ activationDays })
+  const row = (g: string, truck: string, market: string, start: string, end: string, features: string | null = null) =>
+    ({ campaign_group_id: g, sfdc_opportunity_id: '006X', truck_number: truck, market, start_date: start, end_date: end, features })
+  const rows = [
+    row('mm_b_2', '0912', 'New York City, NY', '2026-11-16T00:00:00.000Z', '2026-11-27T00:00:00.000Z', f(10)),
+    row('mm_b_1', '7314', 'Buffalo, NY', '2026-11-09', '2026-11-28', f(20)),
+    row('mm_b_2', '0382', 'New York City, NY', '2026-11-16', '2026-11-27', f(10)),
+    row('mm_b_3', '4840', 'Albany, NY', '2026-11-09', '2026-11-13'),
+    // A truck alternating weekly: two stretches in one market.
+    row('mm_b_4', '1488', 'Ithaca, NY', '2026-11-23', '2026-11-27', f(10)),
+    row('mm_b_4', '1488', 'Ithaca, NY', '2026-11-09', '2026-11-13', f(10)),
+  ]
+  const g = marketGroups(rows)
+  eq('one subgroup per market line', g.length, 4)
+  eq('ordered by start date, then market', g.map(x => x.market), ['Albany, NY', 'Buffalo, NY', 'Ithaca, NY', 'New York City, NY'])
+  eq('a subgroup spans its holds', [g[2].start, g[2].end], ['2026-11-09', '2026-11-27'])
+  eq('activation days from the quote when stored', [g[1].days, g[1].daysKind], [20, 'activation'])
+  eq('calendar days when not', [g[0].days, g[0].daysKind], [5, 'calendar'])
+  eq('trucks under it, by start then number', g[3].rows.map(r => r.truck_number), ['0382', '0912'])
+  eq('a truck\'s stretches in date order', g[2].rows.map(r => r.start_date), ['2026-11-09', '2026-11-23'])
+  eq('every row lands in exactly one subgroup', g.reduce((n, x) => n + x.rows.length, 0), rows.length)
+  eq('unreadable features fall back to calendar days', marketGroups([row('mm_c_1', '1', 'X', '2026-11-01', '2026-11-03', '{bad')])[0].daysKind, 'calendar')
 }

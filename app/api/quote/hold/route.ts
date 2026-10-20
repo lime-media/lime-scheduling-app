@@ -362,6 +362,11 @@ async function handlePost(req: NextRequest) {
       ? `${sfdcError}. Update ${target ? `"${target.Name}"` : 'the opportunity you picked'} in Salesforce by hand with this booking.`
       : `${sfdcError}: no opportunity was created. Create it in Salesforce by hand.`)
     : ''
+  const booked = quoteOnly
+    ? `Quote logged for ${sfdc_account_name || 'client'}; no trucks reserved.${selectedTrucks.length ? '' : ' No truck was free, so transport is not priced.'}`
+    : `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}, held until ${HELD_UNTIL.format(expiresAt)}`
+      + (cappedByStart ? ' (3 days before the campaign starts, the latest a hold can run)'
+        : atMinimum ? ' (the 24-hour minimum: the campaign starts too soon for a longer hold)' : '') + '.'
   return NextResponse.json({
     ok: true,
     sfdcError,
@@ -369,11 +374,11 @@ async function handlePost(req: NextRequest) {
     campaignGroupId,
     sfdcOpportunityId,
     quoteOnly,
-    message: quoteOnly
-      ? `Quote logged for ${sfdc_account_name || 'client'}; no trucks reserved.${selectedTrucks.length ? '' : ' No truck was free, so transport is not priced.'} ${sfdcNote}`
-      : `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}, held until ${HELD_UNTIL.format(expiresAt)}`
-        + (cappedByStart ? ' (3 days before the campaign starts, the latest a hold can run)'
-          : atMinimum ? ' (the 24-hour minimum: the campaign starts too soon for a longer hold)' : '') + `. ${sfdcNote}`,
+    message: `${booked} ${sfdcNote}`,
+    // The UI shows the booking and a Salesforce failure apart, so a failure
+    // can't read as part of a success.
+    confirmation: sfdcOpportunityId ? `${booked} ${sfdcNote}` : booked,
+    sfdcFailure: sfdcOpportunityId ? null : sfdcNote || null,
     _internal: {
       chainFlags: successorImpact,
       _warning: 'INTERNAL ONLY — downstream deadhead, recorded not billed',

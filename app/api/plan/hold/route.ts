@@ -517,6 +517,16 @@ async function handlePost(req: NextRequest) {
     const fixByHand = existingOpp
       ? ` Update ${target ? `"${target.Name}"` : existingOpp.Name} in Salesforce by hand with this booking (holds grouped under ${groupPrefix}*).`
       : ` Create the opportunity by hand (holds grouped under ${groupPrefix}*).`
+    const booked = quoteOnly
+      ? `Quote logged for ${accountName} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} (${money(quote.summary.grandTotal)}); no trucks reserved.`
+      : `${lead}Placed ${rows.length} hold${rows.length === 1 ? '' : 's'} on ${truckNumbers.length} truck${truckNumbers.length === 1 ? '' : 's'} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} for ${accountName} (${money(quote.summary.grandTotal)})`
+        + (target?.IsWon ? ', committed (the opportunity is won)' : stretches.length ? `, held until ${HELD_UNTIL.format(new Date(Math.min(...stretches.map(x => x.expiresAt.getTime()))))}` : '')
+        + (!target?.IsWon && stretches.some(x => x.expiresAt.getTime() !== stretches[0].expiresAt.getTime()) ? ' (some markets lapse later: see each on Reservations)' : '') + '.'
+    const sfdcDone = !sfdcOpportunityId ? ''
+      : quoteOnly ? ` ${oppDone}.` + checkIt
+      : ` ${oppDone}` + (leftOut ? ', with the markets not booked listed in its Description.' : '.') + checkIt
+    const sfdcFailure = sfdcOpportunityId || !sfdcError ? null
+      : quoteOnly ? `${sfdcError}.${fixByHand}` : `${sfdcError}; the holds are placed.${fixByHand}`
     return NextResponse.json({
       ok: true,
       created: stretches.map(x => ({ truckNumber: x.truckNumber, market: x.stint.market, start: x.stint.start, end: x.stint.end })),
@@ -524,14 +534,11 @@ async function handlePost(req: NextRequest) {
       sfdcOpportunityId,
       bookedTotal: quote.summary.grandTotal,
       quoteOnly,
-      message: quoteOnly
-        ? `Quote logged for ${accountName} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} (${money(quote.summary.grandTotal)}); no trucks reserved.`
-          + (sfdcOpportunityId ? ` ${oppDone}.` + checkIt : sfdcError ? ` ${sfdcError}.${fixByHand}` : '')
-        : `${lead}Placed ${rows.length} hold${rows.length === 1 ? '' : 's'} on ${truckNumbers.length} truck${truckNumbers.length === 1 ? '' : 's'} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} for ${accountName} (${money(quote.summary.grandTotal)})`
-        + (target?.IsWon ? ', committed (the opportunity is won)' : stretches.length ? `, held until ${HELD_UNTIL.format(new Date(Math.min(...stretches.map(x => x.expiresAt.getTime()))))}` : '')
-        + (!target?.IsWon && stretches.some(x => x.expiresAt.getTime() !== stretches[0].expiresAt.getTime()) ? ' (some markets lapse later: see each on Reservations)' : '') + '.'
-        + (sfdcOpportunityId ? ` ${oppDone}` + (leftOut ? ', with the markets not booked listed in its Description.' : '.') + checkIt
-          : sfdcError ? ` ${sfdcError}; the holds are placed.${fixByHand}` : ''),
+      message: booked + (sfdcFailure ? ` ${sfdcFailure}` : sfdcDone),
+      // The UI shows the booking and a Salesforce failure apart, so a failure
+      // can't read as part of a success.
+      confirmation: booked + sfdcDone,
+      sfdcFailure,
     })
   } catch (err) {
     console.error('[plan/hold] failed:', err)

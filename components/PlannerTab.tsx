@@ -23,6 +23,7 @@ import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
 import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
 import { OpportunityPicker, type OpenOpportunity } from '@/components/OpportunityPicker'
 import { BrandInput } from '@/components/BrandInput'
+import { SalesforceFailureModal } from '@/components/SalesforceFailureModal'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { ReviewFinding } from '@/lib/planning/claude'
 import type { Arrival, LineQuote, MultiMarketQuote, QuoteRow, RowError } from '@/lib/planning/quote'
@@ -185,7 +186,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
   const [quoteError, setQuoteError] = useState<string | null>(null)
   const [quote, setQuote] = useState<MultiMarketQuote | null>(null)
   const [holding, setHolding] = useState(false)
-  const [holdResult, setHoldResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [holdResult, setHoldResult] = useState<HoldResult | null>(null)
+  // Salesforce failed after the booking saved: a red pop-up until dismissed.
+  const [sfdcFailureOpen, setSfdcFailureOpen] = useState(false)
   // Markets to book. Every market with a truck is selected when a quote arrives.
   const [selected, setSelected] = useState<Set<string>>(new Set())
   // One id per quote shown. Every booking attempt for this quote reuses it, so
@@ -330,7 +333,8 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         return
       }
       if (!res.ok) throw new Error(data.error || 'Holds could not be placed')
-      setHoldResult({ ok: true, message: data.message })
+      setHoldResult({ ok: true, message: data.confirmation ?? data.message, sfdcFailure: data.sfdcFailure ?? null })
+      setSfdcFailureOpen(Boolean(data.sfdcFailure))
       // A finished revision: the booking now stands as booked; leave revise mode.
       if (revision) { setRevision(null); onReviseDone?.() }
     } catch (e) {
@@ -423,7 +427,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           <table className="w-full">
             <thead>
               <tr>
-                <th className={th}>Market</th><th className={th}>Start</th><th className={th}>End</th>
+                <th className={th}>Market</th><th className={th} colSpan={2}>Start / End</th>
                 <th className={th}>Trucks</th><th className={th}>Schedule</th><th className={th}>Hours</th><th className={th}></th>
               </tr>
             </thead>
@@ -450,8 +454,22 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
                         </div>
                       )}
                     </td>
-                    <td className={td}><input type="date" className={input} min={todayStr()} value={r.startDate} onChange={e => updateRow(r.id, { startDate: e.target.value })} /></td>
-                    <td className={td}><input type="date" className={input} min={r.startDate || todayStr()} value={r.endDate} onChange={e => updateRow(r.id, { endDate: e.target.value })} /></td>
+                    <td className={td} colSpan={2}>
+                      <div className="flex gap-2">
+                        <input type="date" className={input} aria-label="Start" min={todayStr()} value={r.startDate} onChange={e => updateRow(r.id, { startDate: e.target.value })} />
+                        <input type="date" className={input} aria-label="End" min={r.startDate || todayStr()} value={r.endDate} onChange={e => updateRow(r.id, { endDate: e.target.value })} />
+                      </div>
+                      {/* Same flight for the markets below: copy this row's dates down. Sits under the
+                          dates (not off to the right) so it's in view; only rows below change. */}
+                      {i < rows.length - 1 && (
+                        <button onClick={() => setRows(rs => copyDatesDown(rs, r.id))}
+                          disabled={!r.startDate || !r.endDate}
+                          className="mt-1 text-xs font-medium text-green-700 hover:text-green-800 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          title={r.startDate && r.endDate ? `Set every market below to ${r.startDate} – ${r.endDate}` : "Set this row's start and end first"}>
+                          ↓ Copy dates to markets below
+                        </button>
+                      )}
+                    </td>
                     <td className={td}><input type="number" min={1} max={50} className={input + ' min-w-[4.5rem]'} value={r.trucks} onChange={e => updateRow(r.id, { trucks: Math.max(1, parseInt(e.target.value) || 1) })} /></td>
                     <td className={td}>
                       <ScheduleSelect start={r.startDate} end={r.endDate} value={r.daysPerWeek} onChange={v => updateRow(r.id, { daysPerWeek: v })} />
@@ -463,14 +481,6 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
                     </td>
                     <td className={td + ' whitespace-nowrap'}>
                       <div className="flex items-center gap-3">
-                        {/* Same flight for the markets below: copy this row's dates down. */}
-                        {i < rows.length - 1 && r.startDate && r.endDate && (
-                          <button onClick={() => setRows(rs => copyDatesDown(rs, r.id))}
-                            className="text-xs text-green-700 hover:text-green-800"
-                            title={`Set every market below to ${r.startDate} – ${r.endDate}`}>
-                            Copy dates down
-                          </button>
-                        )}
                         <button onClick={() => setRows(rs => (rs.length > 1 ? rs.filter(x => x.id !== r.id) : rs))} className="text-gray-400 hover:text-red-600 text-sm" title="Remove">✕</button>
                       </div>
                     </td>
@@ -552,6 +562,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           quoteOnly={quoteOnly}
           unplaced={built?.unplaced.map(u => u.label) ?? []}
         />
+      )}
+      {holdResult?.sfdcFailure && sfdcFailureOpen && (
+        <SalesforceFailureModal detail={holdResult.sfdcFailure} onClose={() => setSfdcFailureOpen(false)} />
       )}
     </div>
   )
@@ -651,6 +664,9 @@ function ImportPanel(p: {
 
 // ---------------------------------------------------------------------------
 
+/** A booking's outcome; sfdcFailure is set when the holds saved but Salesforce didn't. */
+type HoldResult = { ok: boolean; message: string; sfdcFailure?: string | null }
+
 function QuoteResult({ quote, account, contact, revising, attachName, holdDays, onHoldDays, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
   quote: MultiMarketQuote
   account: SfdcAccount | null
@@ -662,7 +678,7 @@ function QuoteResult({ quote, account, contact, revising, attachName, holdDays, 
   holdDays: number
   onHoldDays: (days: number) => void
   holding: boolean
-  holdResult: { ok: boolean; message: string } | null
+  holdResult: HoldResult | null
   selected: Set<string>
   onToggle: (id: string) => void
   onPlaceHolds: () => void
@@ -759,7 +775,14 @@ function QuoteResult({ quote, account, contact, revising, attachName, holdDays, 
         )}
 
         {holdResult?.ok ? (
-          <div className="mt-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-800 font-medium">✓ {holdResult.message}</div>
+          <>
+            <div className="mt-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-800 font-medium">✓ {holdResult.message}</div>
+            {holdResult.sfdcFailure && (
+              <div className="mt-2 bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-800">
+                <span className="font-semibold">Salesforce was not updated.</span> {holdResult.sfdcFailure}
+              </div>
+            )}
+          </>
         ) : (
           <>
             {/* Hold length: a reservation only (a quote-only log holds nothing). */}

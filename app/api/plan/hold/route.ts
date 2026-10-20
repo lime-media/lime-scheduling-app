@@ -380,27 +380,27 @@ async function handlePost(req: NextRequest) {
       }
     })
     const CHUNK = 200
-    // A revision replaces the booking's holds in the same transaction: the
-    // old ones go and the new ones land together, or neither does.
+    // The revision's audit row is the only record of the booking it replaces
+    // (the old holds are deleted), so it carries every column of every old
+    // hold and is written in the same transaction as the delete: the record,
+    // the delete and the new holds land together, or none of them do.
+    const was = reviseIds.length ? await prisma.hold.findMany({ where: { id: { in: reviseIds } } }) : []
     await prisma.$transaction([
-      ...(reviseIds.length ? [prisma.hold.deleteMany({ where: { id: { in: reviseIds } } })] : []),
-      ...Array.from({ length: Math.ceil(rows.length / CHUNK) }, (_, i) =>
-        prisma.hold.createMany({ data: rows.slice(i * CHUNK, (i + 1) * CHUNK) })),
-    ])
-    if (reviseKey) {
-      await prisma.auditLog.create({
+      ...(reviseKey ? [prisma.auditLog.create({
         data: {
           action: 'REVISE_BOOKING',
           truck_number: truckNumbers[0] ?? reviseHolds[0]?.truck_number ?? '',
           user_id: createdBy,
           details: JSON.stringify({
             booking: reviseKey, now: groupPrefix.replace(/_$/, ''), opportunity: target?.Id ?? null,
-            was: reviseHolds.map(h => ({ truck: h.truck_number, market: h.market, start: h.start_date, end: h.end_date, status: h.status })),
-            trucks: truckNumbers, total: quote.summary.grandTotal,
+            was, trucks: truckNumbers, total: quote.summary.grandTotal,
           }),
         },
-      }).catch(err => console.error('[plan/hold] revise audit failed:', err))
-    }
+      })] : []),
+      ...(reviseIds.length ? [prisma.hold.deleteMany({ where: { id: { in: reviseIds } } })] : []),
+      ...Array.from({ length: Math.ceil(rows.length / CHUNK) }, (_, i) =>
+        prisma.hold.createMany({ data: rows.slice(i * CHUNK, (i + 1) * CHUNK) })),
+    ])
 
     // What was quoted and is not being booked, for the opportunity's notes.
     const bookedTrucks = new Map(quote.lines.map(l => [l.id, l.trucks]))

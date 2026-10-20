@@ -1,5 +1,6 @@
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { endOfDayUtc } from '@/lib/dateOnly'
+import { APP_HOLD_EXP_KEY } from '@/lib/quoteFeatures'
 
 // Holds pushed in from Salesforce are attributed to this service user, and
 // automated actions on those holds (e.g. auto-release once a real LED shift
@@ -29,8 +30,8 @@ export function trucksToMirror(
   return pushedTrucks.filter(t => !booked.has(t))
 }
 
-/** The key in a hold's features JSON recording the LED Hold Exp the app last wrote to its opportunity. */
-export const APP_HOLD_EXP_KEY = 'appHoldExp'
+// The key in a hold's features JSON recording the LED Hold Exp the app last wrote to its opportunity.
+export { APP_HOLD_EXP_KEY }
 
 const featureObject = (features: string | null | undefined): Record<string, unknown> | null => {
   if (!features) return {}

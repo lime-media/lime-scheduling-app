@@ -157,11 +157,15 @@ export async function syncOpportunityLedWindow(opportunityId: string | null): Pr
     // taken for an echo. Left out (all committed): Salesforce keeps its date, and
     // so does the record.
     if (fields.LED_Hold_Exp__c !== undefined) {
-      recorded = await prisma.hold.findMany({
+      const rows = await prisma.hold.findMany({
         where:  { sfdc_opportunity_id: opportunityId, source: 'SALESFORCE' },
         select: { id: true, features: true },
       })
-      await setFeatures(recorded.map(h => ({ id: h.id, features: withAppHoldExp(h.features, fields.LED_Hold_Exp__c ?? null) })))
+      // Only rows whose marker actually changes are written (and restored on failure).
+      const marked = rows.map(h => ({ id: h.id, before: h.features, after: withAppHoldExp(h.features, fields.LED_Hold_Exp__c ?? null) }))
+        .filter(h => h.after !== h.before)
+      recorded = marked.map(h => ({ id: h.id, features: h.before }))
+      await setFeatures(marked.map(h => ({ id: h.id, features: h.after })))
     }
     const r = await updateOpportunityWithError(opportunityId, fields)
     if (r.ok) return null

@@ -5,7 +5,7 @@ import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { activeHoldWhere } from '@/lib/holdFilters'
+import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry, lastExpiryDate } from '@/lib/holdExpiry'
 import { NOTHING_TO_REINSTATE, bookingCapStarts, bookingKey, closedWonRefusal, reinstatableHolds, reinstateRefusal } from '@/lib/bookings'
 import { loadBookingHolds } from '@/lib/bookingLoad'
@@ -203,6 +203,13 @@ export async function PATCH(
       .filter(h => h.origination !== QUOTE_ONLY_ORIGINATION && !reinstateBlockedByRelease(h.origination))
     if (lapsed.length === 0) return NextResponse.json({ error: NOTHING_TO_REINSTATE }, { status: 400 })
     const ids = lapsed.map(h => h.id)
+    // Holds still marked live whose expiry has passed but the sweep hasn't
+    // reached yet reserve nothing either: re-dating them below brings them
+    // back, so they're clash-checked like the lapsed ones.
+    const now = new Date()
+    const live = booking.filter(h => h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED')
+    const unswept = live.filter(h => !holdReservesNow(h, now) && day(h.end_date) >= today)
+    const revived = [...lapsed, ...unswept]
     // While the booking sat expired its trucks read as free to every availability
     // path, so any of them may have been taken: check them all before blocking
     // any again (lib/bookings.ts reinstateRefusal).
@@ -213,11 +220,11 @@ export async function PATCH(
         id:  { notIn: booking.map(h => h.id) },
         AND: [
           activeHoldWhere(),
-          { OR: lapsed.map(h => ({ truck_number: h.truck_number, start_date: { lte: h.end_date }, end_date: { gte: h.start_date } })) },
+          { OR: revived.map(h => ({ truck_number: h.truck_number, start_date: { lte: h.end_date }, end_date: { gte: h.start_date } })) },
         ],
       },
     })
-    const clashes = lapsed.flatMap(h => {
+    const clashes = revived.flatMap(h => {
       const c = taken.find(t => t.truck_number === h.truck_number && t.start_date <= h.end_date && t.end_date >= h.start_date)
       return c ? [{ truck: h.truck_number, client: c.client_name, start: day(c.start_date), end: day(c.end_date) }] : []
     })
@@ -238,7 +245,6 @@ export async function PATCH(
     // any still live (an older booking whose markets lapsed apart). A later
     // expiry a live hold already has (an extension waiting, say) is kept, never
     // past the booking's cap.
-    const live = booking.filter(h => h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED')
     const keepUntil = live.map(h => h.expires_at).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0] ?? null
     const newExpiresAt = won ? null : bookingHoldExpiry(capStarts(booking), DEFAULT_HOLD_DAYS, new Date(), keepUntil, STAFF_MIN_DAYS_BEFORE_START).expiresAt
     const newStatus = won ? 'COMMITTED' : 'HOLD'

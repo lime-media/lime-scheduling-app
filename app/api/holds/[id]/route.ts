@@ -104,7 +104,10 @@ export async function PUT(
 
   // A truck, date or status change moves what the opportunity reserves:
   // Salesforce's LED Trucks and Hold Exp follow (lib/sfdcBooking.ts syncOpportunityLedWindow).
-  const moved = Object.keys(body).some(k => body[k] !== undefined && k !== 'notes')
+  const moved = updated.truck_number !== hold.truck_number
+    || updated.status !== hold.status
+    || updated.start_date.getTime() !== hold.start_date.getTime()
+    || updated.end_date.getTime() !== hold.end_date.getTime()
   const sfdcWarning = moved ? await syncOpportunityLedWindow(hold.sfdc_opportunity_id) : null
 
   return NextResponse.json({ ...updated, sfdcWarning })

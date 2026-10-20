@@ -70,3 +70,11 @@ section('Salesforce push: the hold goes where the Opportunity says, never where 
   eq("nor an app multi-market name", c(null, 'Nike / Clear Trust Media - Multi-market (3 markets) - 2026-10-15 to 2026-11-19'), [])
   eq('dates in the field are dropped', c('Dallas, 2026-10-10', null), ['Dallas'])
 }
+
+section('Salesforce: a hold added to an existing opportunity never closes it')
+{
+  const base = { source: 'INTERNAL', sfdc_hold_exp: null, origination: 'frontend', sfdc_opportunity_id: '006VP00000gRDLxYAO' }
+  eq('an app booking on its own opportunity closes it', expiryClosesOpportunity({ ...base, features: JSON.stringify({ dailyRate: 1 }) }), true)
+  eq('one added to a rep\'s existing deal does not', expiryClosesOpportunity({ ...base, features: JSON.stringify({ attachedToOpportunity: true }) }), false)
+  eq('unreadable features: as before', expiryClosesOpportunity({ ...base, features: '{oops' }), true)
+}

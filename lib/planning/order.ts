@@ -48,6 +48,12 @@ export type OrderLine = {
    * the hold resolves to a location later.
    */
   standardMarket?: string
+  /**
+   * Revising a live booking: the trucks this market holds now. One of them is
+   * preferred over any other truck that fits, so a revision keeps the trucks
+   * operations already lined up — but only where it still passes every check.
+   */
+  keepTrucks?: string[]
 }
 
 export type EngineSettings = {
@@ -264,8 +270,11 @@ export function fitTruck(truck: PlanTruck, chain: Job[], s: EngineSettings): Fit
 
   const miles = inbound.inbound.distanceMiles
   const days = inbound.inbound.transportDays
+  // A truck this booking already holds for one of these markets wins over any
+  // other that fits (costs are otherwise >= 0).
+  const kept = chain.some(j => j.lines.some(l => l.keepTrucks?.includes(truck.truckNumber)))
   return {
-    cost: (days > 0 ? absorbedLegCost(days) : 0) + miles * MILE_TIEBREAK,
+    cost: kept ? -1 : (days > 0 ? absorbedLegCost(days) : 0) + miles * MILE_TIEBREAK,
     inboundMiles: Math.round(miles),
     inboundDays: days,
     originLabel: inbound.inbound.originIsPriorJob ? inbound.inbound.originLabel : truck.gpsLabel || 'current position',

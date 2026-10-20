@@ -17,6 +17,7 @@ import { canonicalMarketName } from '@/lib/marketBounds'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
 import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
+import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
@@ -42,6 +43,7 @@ async function handlePost(req: NextRequest) {
     sfdc_account_id, sfdc_account_name, brand: rawBrand, primary_contact_id,
     shadow_fencing, smart_directional, device_id, studies: rawStudies,
     days_per_week, operating_hours, brand_markup_pct, stage, quote_only, expected_total, hold_days,
+    attach_opportunity_id,
   } = body
   // How long the seller is holding the trucks (default 3 days; lib/holdExpiry.ts).
   const holdDays = parseHoldDays(hold_days)
@@ -65,6 +67,24 @@ async function handlePost(req: NextRequest) {
   const contact = await checkPrimaryContact(primary_contact_id, sfdc_account_id)
   if (contact.refusal) return NextResponse.json({ error: contact.refusal }, { status: 400 })
   const sfdcWarnings: string[] = contact.warning ? [contact.warning] : []
+
+  // Adding this to an existing open opportunity of the account instead of
+  // starting a new one (lib/sfdcBooking.ts): it must be the account's and not lost.
+  let target: BookingOpportunity | null = null
+  // Salesforce couldn't be reached to check it: the hold is still placed
+  // (unlinked) and the rep is told to add it to the opportunity by hand.
+  let attachUnreachable = false
+  if (attach_opportunity_id) {
+    if (!isSfdcConfigured()) return NextResponse.json({ error: 'Salesforce is not configured, so the opportunity cannot be updated.' }, { status: 503 })
+    try {
+      target = await getBookingOpportunity(String(attach_opportunity_id))
+    } catch (err) {
+      console.error('[quote/hold] opportunity read failed:', err)
+      attachUnreachable = true
+    }
+    const refusal = attachUnreachable ? null : opportunityRefusal(target, sfdc_account_id)
+    if (refusal) return NextResponse.json({ error: refusal }, { status: 409 })
+  }
 
   // Resolve rate overrides first — service_area_miles affects truck selection
   const defaultOverrides = await resolveDefaultRateOverrides()
@@ -191,6 +211,8 @@ async function handlePost(req: NextRequest) {
     studiesTotal: quote.best.reachOk ? studies.length * quote.best.studyCost : 0,
     transportCharge,
     successorImpact,
+    // Added to an existing opportunity: lapsing never closes it (expiryClosesOpportunity).
+    ...(target ? { attachedToOpportunity: true } : {}),
   })
 
   // Find a ClientUser linked to this SFDC Account if one exists.
@@ -223,7 +245,8 @@ async function handlePost(req: NextRequest) {
           state:             resolvedState ?? '',
           start_date:        new Date(start_date),
           end_date:          new Date(end_date),
-          status:            quoteOnly ? QUOTE_ONLY_STATUS : 'HOLD',
+          // A won opportunity's additions are committed, as its sweep would make them.
+          status:            quoteOnly ? QUOTE_ONLY_STATUS : target?.IsWon ? 'COMMITTED' : 'HOLD',
           source:            'INTERNAL',
           origination:       quoteOnly ? QUOTE_ONLY_ORIGINATION : 'frontend',
           notes:             `${quoteOnly ? `${QUOTE_ONLY_NOTE} ` : ''}Internal quote for ${sfdc_account_name || 'Unknown'}${brand ? ` (brand: ${brand})` : ''}`,
@@ -236,7 +259,8 @@ async function handlePost(req: NextRequest) {
           features:          featuresJson,
           truck_count:       quoteOnly ? truck_count : selectedTrucks.length,
           campaign_group_id: campaignGroupId,
-          expires_at:        quoteOnly ? new Date() : expiresAt,
+          expires_at:        quoteOnly ? new Date() : target?.IsWon ? null : expiresAt,
+          sfdc_opportunity_id: target?.Id ?? null,
         },
       })
       created.push(truck.truckNumber)
@@ -252,13 +276,35 @@ async function handlePost(req: NextRequest) {
   // Create Salesforce Opportunity
   let sfdcOpportunityId: string | null = null
   let sfdcError: string | null = null
-  if (isSfdcConfigured()) {
+  if (attachUnreachable) {
+    sfdcError = 'Salesforce could not be reached to add it to the opportunity'
+  } else if (isSfdcConfigured()) {
     try {
       const parsedFeatures = parseQuoteFeatures(featuresJson)
       const activationNotes = parsedFeatures
         ? buildActivationNotes(parsedFeatures, pricingTier)
         : undefined
 
+      if (target) {
+        // Added to the account's existing opportunity: it grows (lib/opportunityMerge.ts ADD).
+        const applied = await applyBookingToOpportunity({
+          opp: target,
+          mode: 'ADD',
+          booking: {
+            amount: serverTotal,
+            markets: [market],
+            trucks: created,
+            ...(quoteOnly ? {} : { holdStart: start_date, holdStop: end_date, holdExp: expiresAt.toISOString().split('T')[0] }),
+            description: `${market}: ${quoteOnly ? `quote only, ${truck_count} truck${truck_count === 1 ? '' : 's'} quoted` : `${created.length} truck${created.length === 1 ? '' : 's'} (${created.join(', ')})`}, ${start_date} to ${end_date}.`,
+          },
+          by: (token.name as string | undefined) || (token.email as string | undefined) || 'the app',
+          primaryContactId: primary_contact_id,
+        })
+        if (applied.ok) sfdcOpportunityId = target.Id
+        else sfdcError = 'Salesforce rejected the opportunity update'
+        if (applied.ok && applied.amountLeft) sfdcWarnings.push(AMOUNT_LEFT_NOTE)
+        if (applied.ok && applied.windowLeft) sfdcWarnings.push(WINDOW_LEFT_NOTE)
+      } else {
       // Owned by the rep who booked it (matched by email), else the account owner.
       const owner = await resolveOpportunityOwner({ creatorEmail: token.email as string | undefined, accountOwnerId: accountInfo?.ownerId })
       const result = await createOpportunity({
@@ -301,6 +347,7 @@ async function handlePost(req: NextRequest) {
         sfdcError = 'Salesforce rejected the opportunity'
         console.error('[quote/hold] SFDC opportunity creation failed:', result.errors)
       }
+      }
     } catch (err) {
       sfdcError = 'Salesforce could not be reached'
       console.error('[quote/hold] SFDC opportunity creation error:', err)
@@ -309,8 +356,11 @@ async function handlePost(req: NextRequest) {
 
   // Never silent: if the opportunity was not created, the rep is told.
   const sfdcNote = sfdcOpportunityId
-    ? `Salesforce opportunity created.${sfdcWarnings.length ? ` Check it: ${sfdcWarnings.join('; ')}.` : ''}`
-    : sfdcError ? `${sfdcError}: no opportunity was created. Create it in Salesforce by hand.`
+    ? `${target ? `Added to Salesforce opportunity "${target.Name}".` : 'Salesforce opportunity created.'}${sfdcWarnings.length ? ` Check it: ${sfdcWarnings.join('; ')}.` : ''}`
+    // An existing opportunity is updated by hand; creating one would duplicate it.
+    : sfdcError ? (target || attachUnreachable
+      ? `${sfdcError}. Update ${target ? `"${target.Name}"` : 'the opportunity you picked'} in Salesforce by hand with this booking.`
+      : `${sfdcError}: no opportunity was created. Create it in Salesforce by hand.`)
     : ''
   return NextResponse.json({
     ok: true,

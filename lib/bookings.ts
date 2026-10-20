@@ -10,6 +10,8 @@
  * Salesforce opportunity. Pure.
  */
 
+import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
+
 type BookingRow = {
   campaign_group_id: string | null
   sfdc_opportunity_id: string | null
@@ -83,6 +85,165 @@ export function summarizeBooking(rows: (BookingRow & {
     end: rows.map(r => r.end_date).sort().reverse()[0],
     earliestExpiry: expiries[0] ?? null,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Revising a booking (Reservations → Revise → the multi-market planner)
+// ---------------------------------------------------------------------------
+
+/** A hold as revising reads it. Dates YYYY-MM-DD. */
+export type RevisableHold = BookingRow & {
+  id: string
+  truck_number: string
+  market: string
+  start_date: string
+  end_date: string
+  status: string
+  source: string
+  origination: string | null
+  features: string | null
+  truck_count: number | null
+  /** Still reserving its truck now (lib/holdFilters.ts holdReservesNow). */
+  live: boolean
+}
+
+/** One market of a booking, as the planner's rows take it, with the trucks it holds now. */
+export type RevisedRow = {
+  market: string
+  startDate: string
+  endDate: string
+  trucks: number
+  daysPerWeek: number
+  hours: number
+  /** Trucks this market holds now and should keep where they still fit (live bookings only). */
+  keepTrucks: string[]
+  /** The campaign group this market was booked as. */
+  campaignGroup: string
+}
+
+/** Not a real truck: what quote-only logs carry when no truck could be priced. */
+const NO_TRUCK = new Set([QUOTE_ONLY_NO_TRUCK, ''])
+
+const parseFeatures = (json: string | null): Record<string, unknown> => {
+  try { return json ? JSON.parse(json) : {} } catch { return {} }
+}
+
+/**
+ * Why a booking cannot be revised in the planner, or null. Only bookings made
+ * in the quote tools: a Salesforce push is managed in Salesforce, and a client
+ * portal booking belongs to the client. Lift studies are a single-market
+ * option the multi-market quote does not price, so revising would drop them.
+ */
+export function reviseRefusal(holds: RevisableHold[]): string | null {
+  if (holds.length === 0) return 'That booking no longer exists.'
+  if (holds.some(h => h.source !== 'INTERNAL')) {
+    return holds.some(h => h.source === 'SALESFORCE')
+      ? 'This booking came from Salesforce; change it there.'
+      : 'This booking was made in the client portal; it can only be changed with the client.'
+  }
+  if (holds.some(h => {
+    const f = parseFeatures(h.features)
+    return Array.isArray(f.studies) && f.studies.length > 0
+  })) return 'This booking includes lift studies, which the multi-market quote does not price. Change it in the single-market quote instead.'
+  // Revising replaces the holds, which would drop the request unanswered.
+  if (holds.some(h => h.status === 'EXTENSION_REQUESTED')) return 'This booking has an extension request waiting. Approve or decline it on Reservations first, then revise.'
+  return null
+}
+
+/**
+ * A booking's markets as planner rows, and its options. Each market is a
+ * campaign group: its dates span its holds, its truck count is what was
+ * booked, and its schedule and hours come from the stored quote. A booking
+ * that is still live keeps its trucks (`keepTrucks`); an expired one is
+ * re-picked and re-priced, so it keeps none. Pure.
+ */
+export function reviseRows(holds: RevisableHold[]): {
+  rows: RevisedRow[]
+  features: { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean }
+  live: boolean
+  quoteOnly: boolean
+  /** The Brand Direct markup it was sold at, or null when the holds predate recording it. */
+  brandMarkupPct: number | null
+} {
+  const live = holds.some(h => h.live)
+  const byGroup = new Map<string, RevisableHold[]>()
+  for (const h of holds) {
+    const g = h.campaign_group_id ?? h.id
+    byGroup.set(g, [...(byGroup.get(g) ?? []), h])
+  }
+  const rows = [...byGroup.entries()].map(([campaignGroup, group]) => {
+    const f = parseFeatures(group[0].features)
+    const trucks = [...new Set(group.map(h => h.truck_number).filter(t => !NO_TRUCK.has(t)))]
+    // The dates the client asked for, as booked. Older holds don't store
+    // them: their span is the best there is (a shared truck's travel days
+    // can widen or shift it).
+    const asked = (k: string) => (typeof f[k] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(f[k] as string) ? f[k] as string : null)
+    return {
+      market: group[0].market,
+      startDate: asked('requestedStart') ?? group.map(h => h.start_date).sort()[0],
+      endDate: asked('requestedEnd') ?? group.map(h => h.end_date).sort().reverse()[0],
+      trucks: Math.max(1, group[0].truck_count ?? (Number(f.truckCount) || trucks.length || 1)),
+      daysPerWeek: Number(f.daysPerWeek) || 5,
+      hours: Number(f.operatingHours) || 8,
+      keepTrucks: live ? trucks : [],
+      campaignGroup,
+    }
+  }).sort((a, b) => a.startDate.localeCompare(b.startDate) || a.market.localeCompare(b.market))
+  const f = parseFeatures(holds.find(h => h.features)?.features ?? null)
+  return {
+    rows,
+    features: {
+      shadowFencing: Number(f.shadowFencing) > 0,
+      smartDirectional: f.smartDirectionalIncluded === true,
+      deviceId: f.deviceIdIncluded === true,
+    },
+    live,
+    quoteOnly: holds.every(h => h.origination === QUOTE_ONLY_ORIGINATION),
+    brandMarkupPct: typeof f.brandMarkupPct === 'number' ? f.brandMarkupPct : null,
+  }
+}
+
+/** A market whose booked price a revision keeps, for the truck count and Brand Direct markup (null: not recorded) it was booked with. */
+export type KeptPrice = { total: number; features: string | null; trucks: string[]; truckCount: number; markupPct: number | null }
+
+/**
+ * Markets of a LIVE booking that a revision leaves unchanged — same market
+ * (case and spacing aside), dates, trucks, schedule and hours, with the
+ * booking's options unchanged — keep their booked price: a revision never
+ * quietly reprices what the client already has (transport stops being free
+ * as a campaign gets close, for instance). The planner applies it only where
+ * the market also keeps its trucks (lib/planning/quote.ts). An expired
+ * booking keeps no prices. Keyed by the request row's id. Pure.
+ */
+export function keptPrices(
+  holds: (RevisableHold & { quoted_total: number | null })[],
+  rows: { id: string; market: string; startDate: string; endDate: string; trucks: number; daysPerWeek: number; hours: number }[],
+  features: { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean },
+): Map<string, KeptPrice> {
+  const out = new Map<string, KeptPrice>()
+  const booked = reviseRows(holds)
+  if (!booked.live || booked.quoteOnly) return out
+  const sameOptions = booked.features.shadowFencing === features.shadowFencing
+    && booked.features.smartDirectional === features.smartDirectional
+    && booked.features.deviceId === features.deviceId
+  if (!sameOptions) return out
+  const norm = (m: string) => m.trim().toLowerCase().replace(/\s+/g, ' ')
+  const used = new Set<string>()
+  for (const row of rows) {
+    // The same market can be booked twice (two flights): match on its dates too, and each booked market once.
+    const b = booked.rows.find(x => !used.has(x.campaignGroup) && norm(x.market) === norm(row.market)
+      && x.startDate === row.startDate && x.endDate === row.endDate)
+    if (!b || b.trucks !== row.trucks || b.daysPerWeek !== row.daysPerWeek || b.hours !== row.hours) continue
+    used.add(b.campaignGroup)
+    // That market's own holds, not another flight's in the same market.
+    const group = holds.filter(h => (h.campaign_group_id ?? h.id) === b.campaignGroup && h.live)
+    const total = group.find(h => h.quoted_total != null)?.quoted_total
+    if (total == null) continue
+    const features = group.find(h => h.features)?.features ?? null
+    const markup = parseFeatures(features).brandMarkupPct
+    out.set(row.id, { total, features, trucks: b.keepTrucks, truckCount: b.trucks, markupPct: typeof markup === 'number' ? markup : null })
+  }
+  return out
 }
 
 /** The last date (YYYY-MM-DD) a hold may run to and still leave 3 full days before its campaign starts (lib/holdExpiry.ts). */

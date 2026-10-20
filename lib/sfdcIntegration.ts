@@ -31,11 +31,19 @@ export function trucksToMirror(
  * quote, multi-market or the client portal — except:
  *   - a Salesforce push with no Hold Exp (the 72h fallback): a rep leaving an
  *     optional field blank must not lose their deal;
- *   - a quote-only log: it never reserved anything, and stays open by design.
+ *   - a quote-only log: it never reserved anything, and stays open by design;
+ *   - a hold added to an opportunity that already existed (features
+ *     `attachedToOpportunity`): the rep's deal isn't the app's to close.
  */
-export function expiryClosesOpportunity(h: { sfdc_opportunity_id: string | null; source: string; sfdc_hold_exp: Date | null; origination: string | null }): boolean {
+/** Whether a hold's features mark it as added to an existing opportunity. */
+export function attachedToOpportunity(features: string | null | undefined): boolean {
+  try { return !!features && JSON.parse(features).attachedToOpportunity === true } catch { return false }
+}
+
+export function expiryClosesOpportunity(h: { sfdc_opportunity_id: string | null; source: string; sfdc_hold_exp: Date | null; origination: string | null; features?: string | null }): boolean {
   if (!h.sfdc_opportunity_id) return false
   if (h.origination === QUOTE_ONLY_ORIGINATION) return false
+  if (attachedToOpportunity(h.features)) return false
   return h.source !== 'SALESFORCE' || h.sfdc_hold_exp !== null
 }
 

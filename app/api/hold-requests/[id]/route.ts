@@ -99,8 +99,9 @@ export async function PATCH(
   })
   if (!hold) return NextResponse.json({ error: 'Hold not found' }, { status: 404 })
 
-  if (hold.status === 'COMMITTED' && action !== 'swap_truck') {
-    return NextResponse.json({ error: closedWonRefusal([hold]) }, { status: 409 })
+  const wonHold = closedWonRefusal([hold])
+  if (wonHold && action !== 'swap_truck') {
+    return NextResponse.json({ error: wonHold }, { status: 409 })
   }
   if (!VALID_FROM[action].includes(hold.status)) {
     return NextResponse.json(

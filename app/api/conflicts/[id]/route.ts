@@ -3,7 +3,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { getPool } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
-import { CLOSED_WON_READ_ONLY } from '@/lib/bookings'
+import { CLOSED_WON_READ_ONLY, closedWonRefusal } from '@/lib/bookings'
 
 export async function PATCH(
   req: NextRequest,
@@ -71,7 +71,7 @@ export async function PATCH(
     }
 
     // A won deal is never released from here: swap its truck, or change the deal in Salesforce.
-    if (hold.status === 'COMMITTED') {
+    if (closedWonRefusal([hold])) {
       return NextResponse.json({ error: `${CLOSED_WON_READ_ONLY} To clear this conflict, swap the reservation's truck on Reservations.` }, { status: 409 })
     }
 

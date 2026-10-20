@@ -3,7 +3,8 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
-import { CLOSED_WON_READ_ONLY } from '@/lib/bookings'
+import { CLOSED_WON_READ_ONLY, closedWonRefusal } from '@/lib/bookings'
+import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 
 export async function PUT(
   req: NextRequest,
@@ -27,9 +28,25 @@ export async function PUT(
   const body = await req.json()
   const { status, notes, start_date, end_date, client_name, market, state, truck_number } = body
 
+  // Only Salesforce commits a hold. Committed means Closed Won (lib/bookings.ts
+  // closedWonRefusal), and the reconcile un-commits it if the deal leaves Closed
+  // Won; a hold committed here on an open deal, or with no deal, would be locked
+  // with nothing in Salesforce to change (#120 review). So committing checks the
+  // live stage, and an unknown stage refuses rather than guesses.
+  if (status === 'COMMITTED' && hold.status !== 'COMMITTED') {
+    const stage = hold.sfdc_opportunity_id ? await getOpportunityStage(hold.sfdc_opportunity_id) : null
+    if (!stage?.isClosed || !stage.isWon) {
+      return NextResponse.json({
+        error: hold.sfdc_opportunity_id
+          ? 'A reservation is committed when its opportunity is Closed Won in Salesforce. Mark it Closed Won there; the app commits it within 15 minutes.'
+          : 'A reservation is committed when its Salesforce opportunity is Closed Won, and this one has no opportunity.',
+      }, { status: 409 })
+    }
+  }
+
   // A committed hold is a Closed Won deal: read-only here except a truck swap
   // (logistics; the deal is unchanged) and a note (lib/bookings.ts closedWonRefusal).
-  if (hold.status === 'COMMITTED') {
+  if (closedWonRefusal([hold])) {
     const changes = Object.keys(body).filter(k => body[k] !== undefined && !(k === 'status' && body[k] === 'COMMITTED'))
     if (changes.some(k => k !== 'truck_number' && k !== 'notes')) {
       return NextResponse.json({ error: CLOSED_WON_READ_ONLY }, { status: 409 })
@@ -107,7 +124,7 @@ export async function DELETE(
   }
 
   // A won deal is never deleted here (lib/bookings.ts closedWonRefusal).
-  if (hold.status === 'COMMITTED') {
+  if (closedWonRefusal([hold])) {
     return NextResponse.json({ error: CLOSED_WON_READ_ONLY }, { status: 409 })
   }
 

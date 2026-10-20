@@ -15,7 +15,7 @@ import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
-import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingKey, bookingStatus, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
+import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingKey, closedWonRefusal, bookingStatus, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
 
 type HoldRequest = {
@@ -121,7 +121,7 @@ function ReviseLink({ rows, booking }: { rows: HoldRequest[]; booking?: HoldRequ
   const key = rows.length ? bookingKey(rows[0]) : null
   if (!key || rows.some(r => r.source !== 'INTERNAL')) return null
   // A won deal is changed in Salesforce, never revised here (lib/bookings.ts reviseRefusal).
-  if ((booking ?? rows).some(r => r.status === 'COMMITTED')) return null
+  if (closedWonRefusal(booking ?? rows)) return null
   // Any card of a booking with an extension request waiting: answer it first
   // (revising would drop it; lib/bookings.ts reviseRefusal).
   if ((booking ?? rows).some(r => r.status === 'EXTENSION_REQUESTED')) {
@@ -826,7 +826,7 @@ export default function HoldRequestsPage() {
                       {first.extension_reason ? ` Reason: ${first.extension_reason}` : ''}
                     </div>
                   )}
-                  {status === 'COMMITTED' && (
+                  {status === 'COMMITTED' && closedWonRefusal(groupItems) && (
                     <div className="px-4 py-1.5 text-xs text-gray-600 bg-gray-50 border-t border-gray-100">
                       Closed Won: only a truck swap can be made here. Change anything else in Salesforce.
                     </div>
@@ -840,7 +840,7 @@ export default function HoldRequestsPage() {
                           onClick={() => openEdit(first)}
                           className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
                         >
-                          {status === 'COMMITTED' ? 'Swap trucks' : 'Edit'}
+                          {closedWonRefusal(groupItems) ? 'Swap trucks' : 'Edit'}
                         </button>
                       )}
                       {status !== 'EXTENSION_REQUESTED' && <ReviseLink rows={groupItems} booking={(key ? rowsByBooking.get(key) : undefined) ?? groupItems} />}
@@ -923,7 +923,7 @@ export default function HoldRequestsPage() {
       {editingGroup && editingGroup.length > 0 && (() => {
         const first = editingGroup[0]
         // A won deal: truck swaps only (lib/bookings.ts closedWonRefusal).
-        const won = editingGroup.some(r => r.status === 'COMMITTED')
+        const won = !!closedWonRefusal(editingGroup)
         const currentExpDate = first.expires_at ? first.expires_at.split('T')[0] : ''
         const hasChanges = editingGroup.some(r => selectedTrucks.get(r.id) !== r.truck_number) || (!won && newExpiresAt !== currentExpDate)
         return (

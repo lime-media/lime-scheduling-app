@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, opportunityMarketCandidates, reactivationDecision, reopenQuestion, trucksToMirror } from '@/lib/sfdcIntegration'
+import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, opportunityMarketCandidates, reactivationDecision, reconcileTarget, reopenQuestion, trucksToMirror } from '@/lib/sfdcIntegration'
 import { opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 
 const NOW = new Date('2026-10-02T12:00:00Z')
@@ -99,4 +99,17 @@ section('Closed Lost: staff may move the opportunity back to WARM')
   eq('opportunityRefusal: Closed Won takes no added quote or revision', opportunityRefusal(won, '001A'), 'This deal is Closed Won in Salesforce; change it there first.')
   eq('opportunityRefusal: Closed Won refused even on a reopen request', opportunityRefusal(won, '001A', { closedLostReopening: true }), 'This deal is Closed Won in Salesforce; change it there first.')
   eq('opportunityRefusal: an open opportunity is fine', opportunityRefusal(opp({ IsClosed: false, StageName: 'WARM' }), '001A'), null)
+}
+
+section('reconcile: committed means Closed Won, in both directions (#120 review)')
+{
+  const won = { isClosed: true, isWon: true }, lost = { isClosed: true, isWon: false }, open = { isClosed: false, isWon: false }
+  eq('won: a hold commits', reconcileTarget('HOLD', won), 'COMMITTED')
+  eq('won: a waiting extension request commits', reconcileTarget('EXTENSION_REQUESTED', won), 'COMMITTED')
+  eq('won: committed stays', reconcileTarget('COMMITTED', won), null)
+  eq('lost: a hold is released', reconcileTarget('HOLD', lost), 'EXPIRED')
+  eq('lost: a committed hold is released (the deal moved Won → Lost)', reconcileTarget('COMMITTED', lost), 'EXPIRED')
+  eq('reopened: a committed hold goes back to HOLD, so it can be changed again', reconcileTarget('COMMITTED', open), 'HOLD')
+  eq('open: an ordinary hold is left alone', reconcileTarget('HOLD', open), null)
+  eq('open: a waiting extension request is left alone', reconcileTarget('EXTENSION_REQUESTED', open), null)
 }

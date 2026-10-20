@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { sfdcQuery, updateOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
-import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
+import { SFDC_SERVICE_USER_EMAIL, reconcileTarget } from '@/lib/sfdcIntegration'
+import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry } from '@/lib/holdExpiry'
 
 /**
  * Opportunity stage reconcile.
@@ -27,17 +28,17 @@ import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 // SOQL has a query-length limit; 200 ids per IN clause stays well inside it.
 const SOQL_ID_CHUNK = 200
 
-// Statuses worth checking. EXPIRED holds are already released, and COMMITTED is
-// left alone — the same rule expireHolds() and the webhook follow: a committed
-// booking is a human decision that automation does not revert.
+// Statuses worth checking. EXPIRED holds are already released. COMMITTED is
+// checked too: committed means Closed Won in Salesforce (nothing in the app
+// commits a hold by hand any more), so a deal moved off Closed Won takes its
+// holds with it (lib/sfdcIntegration.ts reconcileTarget). Until #120 a
+// committed hold was a human decision automation never reverted; that went
+// with the manual "Mark committed" button.
 //
-// Including it created a loop with the outward close in expireHolds(): once this
-// job set an Opportunity to Closed Lost, any re-activation in the app (a grid
-// status edit, or update_expiration, which sets status back to HOLD) was flipped
-// to EXPIRED again on the next pass. Ops would re-book the truck, watch it
-// look fine, and see it silently release an hour later, with nothing in the UI
-// explaining that the fix had to happen in Salesforce.
-const RECONCILABLE_STATUSES = ['HOLD', 'EXTENSION_REQUESTED']
+// The old loop with the outward close in expireHolds() (the app closing a deal
+// as lost, then flipping any re-activation back to EXPIRED) can't recur from
+// this: committed holds count as active, so their deal is never closed by us.
+const RECONCILABLE_STATUSES = ['HOLD', 'EXTENSION_REQUESTED', 'COMMITTED']
 
 // Salesforce ids are 15- or 18-character alphanumerics. Anything else is not
 // interpolated into SOQL.
@@ -54,6 +55,8 @@ export interface SfdcReconcileSummary {
   checked:   number
   committed: number
   released:  number
+  /** Committed holds whose deal was moved off Closed Won (reopened) and went back to HOLD. */
+  uncommitted: number
 }
 
 /** Salesforce treats 15- and 18-char ids interchangeably; the API always returns 18. */
@@ -68,7 +71,7 @@ function chunk<T>(items: T[], size: number): T[][] {
 }
 
 export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary> {
-  const summary: SfdcReconcileSummary = { checked: 0, committed: 0, released: 0 }
+  const summary: SfdcReconcileSummary = { checked: 0, committed: 0, released: 0, uncommitted: 0 }
 
   if (!isSfdcConfigured()) {
     console.log('[sfdc-reconcile] SFDC credentials not configured — skipping')
@@ -132,21 +135,30 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
 
   for (const [key, group] of byOpportunity) {
     const stage = stages.get(key)
-    if (!stage || !stage.IsClosed) continue
+    if (!stage) continue
 
-    const target = stage.IsWon ? 'COMMITTED' : 'EXPIRED'
+    // A reopened deal's committed holds go back to HOLD with one expiry: the
+    // standard length, capped by the earliest start among them (the staff
+    // runway), as a fresh booking would get.
+    const today = new Date().toISOString().slice(0, 10)
+    const reheldStarts = group.filter(h => h.status === 'COMMITTED').map(h => h.start_date.toISOString().slice(0, 10))
+    const futureStarts = reheldStarts.filter(d => d >= today)
+    const reheldUntil = reheldStarts.length
+      ? bookingHoldExpiry(futureStarts.length ? futureStarts : reheldStarts, DEFAULT_HOLD_DAYS, new Date(), null, STAFF_MIN_DAYS_BEFORE_START).expiresAt
+      : null
 
     for (const hold of group) {
-      if (hold.status === target) continue
+      const target = reconcileTarget(hold.status, { isClosed: stage.IsClosed, isWon: stage.IsWon })
+      if (!target) continue
 
       await prisma.auditLog.create({
         data: {
-          action:       target === 'COMMITTED' ? 'UPDATE_HOLD' : 'EXPIRE_HOLD',
+          action:       target === 'EXPIRED' ? 'EXPIRE_HOLD' : 'UPDATE_HOLD',
           truck_number: hold.truck_number,
           user_id:      serviceUser?.id ?? hold.created_by,
           hold_id:      hold.id,
           details:      JSON.stringify({
-            reason:              'sfdc_opportunity_closed',
+            reason:              stage.IsClosed ? 'sfdc_opportunity_closed' : 'sfdc_opportunity_reopened',
             sfdc_opportunity_id: hold.sfdc_opportunity_id,
             stage_name:          stage.StageName,
             is_won:              stage.IsWon,
@@ -162,10 +174,13 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
         where: { id: hold.id },
         data: target === 'COMMITTED'
           ? { status: target, expires_at: null, extension_until: null, extension_reason: null }
-          : { status: target },
+          : target === 'HOLD'
+            ? { status: target, expires_at: reheldUntil }
+            : { status: target },
       })
 
       if (target === 'COMMITTED') summary.committed++
+      else if (target === 'HOLD') summary.uncommitted++
       else summary.released++
 
       console.log(

@@ -121,10 +121,14 @@ section('bookings: a multi-market card shows each market as a subgroup')
 
 section('bookings: Closed Won is read-only in the app (Andrew, 2026-10-20)')
 {
-  eq('a committed booking is refused', closedWonRefusal([{ status: 'HOLD' }, { status: 'COMMITTED' }]), CLOSED_WON_READ_ONLY)
-  eq('Salesforce already says won (before the reconcile): refused', closedWonRefusal([{ status: 'HOLD' }], { isWon: true }), CLOSED_WON_READ_ONLY)
-  eq('an open deal on hold: allowed', closedWonRefusal([{ status: 'HOLD' }], { isWon: false }), null)
-  eq('no opportunity known: allowed', closedWonRefusal([{ status: 'EXTENSION_REQUESTED' }], null), null)
+  const wh = (status: string, opp: string | null = '006X') => ({ status, sfdc_opportunity_id: opp })
+  eq('a committed booking is refused', closedWonRefusal([wh('HOLD'), wh('COMMITTED')]), CLOSED_WON_READ_ONLY)
+  eq('Salesforce already says won (before the reconcile): refused', closedWonRefusal([wh('HOLD')], { isWon: true }), CLOSED_WON_READ_ONLY)
+  eq('an open deal on hold: allowed', closedWonRefusal([wh('HOLD')], { isWon: false }), null)
+  eq('no opportunity known: allowed', closedWonRefusal([wh('EXTENSION_REQUESTED')], null), null)
+  // #120 review: a hold committed with no deal behind it has nothing in
+  // Salesforce to change, so it must never be locked.
+  eq('committed with no opportunity: not locked', closedWonRefusal([wh('COMMITTED', null)]), null)
   const rh = (status: string) => ({ id: 'h1', campaign_group_id: 'mm_a_1', sfdc_opportunity_id: '006X', truck_number: '0382', market: 'Albany, NY',
     start_date: '2026-11-09', end_date: '2026-12-04', status, source: 'INTERNAL', origination: 'frontend', features: null, truck_count: 1, live: true })
   eq('a committed booking cannot be revised', reviseRefusal([rh('HOLD'), rh('COMMITTED')]), CLOSED_WON_READ_ONLY)

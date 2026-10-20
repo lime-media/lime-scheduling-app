@@ -52,12 +52,15 @@ export const CLOSED_WON_READ_ONLY = 'This deal is Closed Won in Salesforce; chan
 /**
  * Why a change to a booking is refused because the deal is won, or null.
  * Closed Won is read-only in the app: only a truck swap (ops logistics, the
- * deal unchanged) may touch it. A committed hold IS a won deal (the reconcile
- * commits every hold of a Closed Won opportunity); `opportunity.isWon` covers
- * the minutes before the reconcile catches up. Pure.
+ * deal unchanged) may touch it. A committed hold on an opportunity IS a won
+ * deal: only Salesforce commits holds (the reconcile, or a PUT that checks the
+ * stage), and the reconcile un-commits them if the deal leaves Closed Won, so
+ * "change it in Salesforce first" always has a way back. A committed hold with
+ * no opportunity has no Salesforce side to change, so it is never locked.
+ * `opportunity.isWon` covers the minutes before the reconcile catches up. Pure.
  */
-export function closedWonRefusal(holds: { status: string }[], opportunity?: { isWon: boolean } | null): string | null {
-  return opportunity?.isWon || holds.some(h => h.status === 'COMMITTED') ? CLOSED_WON_READ_ONLY : null
+export function closedWonRefusal(holds: { status: string; sfdc_opportunity_id: string | null }[], opportunity?: { isWon: boolean } | null): string | null {
+  return opportunity?.isWon || holds.some(h => h.status === 'COMMITTED' && !!h.sfdc_opportunity_id) ? CLOSED_WON_READ_ONLY : null
 }
 
 /**

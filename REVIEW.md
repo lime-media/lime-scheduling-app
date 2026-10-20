@@ -138,6 +138,14 @@ findings by how close they come to one of those.
   *(Booking-unit cleanup: `update_expiration` turned COMMITTED holds back
   into HOLD, cancel and delete paths ignored Won, and attach accepted a Closed
   Won opportunity id.)*
+- **Only Salesforce commits a hold, and a lock always has a way back.**
+  Committed means Closed Won, in both directions: nothing in the app marks a
+  hold committed unless Salesforce says the deal is Closed Won, and the
+  reconcile moves a committed hold back (HOLD if reopened, EXPIRED if lost)
+  when the deal leaves Closed Won (`reconcileTarget`). A committed hold with no
+  opportunity is never locked. Flag any new way to commit, and any lock whose
+  "change it in Salesforce" message has nothing in Salesforce to change.
+  *(#120: "Mark committed (won)" on the schedule locked holds for good.)*
 - **A multi-market booking is one quote: one expiry for the whole booking,
   capped by the earliest market's start, on every hold.** Booking, Edit,
   reinstate and approve-extension all set the same date on every hold, and a

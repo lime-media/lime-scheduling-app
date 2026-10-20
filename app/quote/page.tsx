@@ -14,6 +14,7 @@ import { Navbar } from '@/components/Navbar'
 import { PlannerTab } from '@/components/PlannerTab'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
+import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
 
 // ---------------------------------------------------------------------------
 // Types (mirrors client-side QuoteResponse)
@@ -89,6 +90,8 @@ export default function InternalQuotePage() {
   const [account, setAccount] = useState<SfdcAccount | null>(null)
   // The opportunity's primary contact: required by sales ops on every opportunity.
   const [contact, setContact] = useState<SfdcContact | null>(null)
+  // How long the reservation holds the trucks (default 3 days).
+  const [holdDays, setHoldDays] = useState(DEFAULT_HOLD_DAYS)
   // Brand Direct accounts carry a premium on media; the seller can change it.
   const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
   // Opportunity stage the seller wants the reservation's opportunity to start at.
@@ -256,6 +259,7 @@ export default function InternalQuotePage() {
           sfdc_account_id: account.id,
           sfdc_account_name: account.name,
           primary_contact_id: contact.id,
+          hold_days: holdDays,
           brand,
           shadow_fencing: toggles.shadowFencing,
           smart_directional: toggles.smartDirectional,
@@ -284,7 +288,7 @@ export default function InternalQuotePage() {
     } finally {
       setHoldLoading(false)
     }
-  }, [holdLoading, quoteResult, account, contact, form, toggles, isBrandDirect, markupPct, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [holdLoading, quoteResult, account, contact, holdDays, form, toggles, isBrandDirect, markupPct, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (status === 'loading' || !session) return null
 
@@ -684,6 +688,11 @@ export default function InternalQuotePage() {
                         {quoteResult.pricing.quoteOnlyRequired && <span className="block text-amber-800">Not enough trucks are free for these dates, so this can only be logged as a quote.</span>}
                       </span>
                     </label>
+                  )}
+
+                  {/* Hold length: a reservation only (a quote-only log holds nothing). */}
+                  {!quoteOnly && !holdResult?.ok && (
+                    <HoldLength days={holdDays} onChange={setHoldDays} startDates={[form.start_date]} />
                   )}
 
                   {/* Hold button */}

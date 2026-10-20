@@ -15,7 +15,7 @@ import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
-import { computeHoldExpiresAt } from '@/lib/holdExpiry'
+import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
 import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
@@ -41,8 +41,10 @@ async function handlePost(req: NextRequest) {
     market, state, start_date, end_date, truck_count,
     sfdc_account_id, sfdc_account_name, brand: rawBrand, primary_contact_id,
     shadow_fencing, smart_directional, device_id, studies: rawStudies,
-    days_per_week, operating_hours, brand_markup_pct, stage, quote_only, expected_total,
+    days_per_week, operating_hours, brand_markup_pct, stage, quote_only, expected_total, hold_days,
   } = body
+  // How long the seller is holding the trucks (default 3 days; lib/holdExpiry.ts).
+  const holdDays = parseHoldDays(hold_days)
   // Low conviction: log a priced opportunity, reserve nothing (lib/quoteOnly.ts).
   const quoteOnly = quote_only === true
   // The brand, as Salesforce gets it (Brand / Job Name, and first in the name).
@@ -54,6 +56,9 @@ async function handlePost(req: NextRequest) {
 
   if (!sfdc_account_id) {
     return NextResponse.json({ error: 'A Salesforce Account must be selected' }, { status: 400 })
+  }
+  if (holdDays === null) {
+    return NextResponse.json({ error: `Hold for 1 to ${MAX_HOLD_DAYS} days.` }, { status: 400 })
   }
   // Every opportunity needs its primary contact, on this account. A definite
   // no refuses; Salesforce being unreachable only warns (see checkPrimaryContact).
@@ -93,7 +98,7 @@ async function handlePost(req: NextRequest) {
 
   const campaignGroupId = `cg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const resolvedState = state || market.split(',')[1]?.trim() || null
-  const expiresAt = computeHoldExpiresAt(start_date)
+  const { expiresAt, cappedByStart, atMinimum } = holdExpiry(start_date, holdDays)
 
   // ── Server-side price recomputation ──────────────────────────────────────
   const calendarDays = countCalendarDays(start_date, end_date)
@@ -316,7 +321,9 @@ async function handlePost(req: NextRequest) {
     quoteOnly,
     message: quoteOnly
       ? `Quote logged for ${sfdc_account_name || 'client'}; no trucks reserved.${selectedTrucks.length ? '' : ' No truck was free, so transport is not priced.'} ${sfdcNote}`
-      : `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}. ${sfdcNote}`,
+      : `Reserved ${created.length} truck${created.length > 1 ? 's' : ''} for ${sfdc_account_name || 'client'}, held until ${HELD_UNTIL.format(expiresAt)}`
+        + (cappedByStart ? ' (3 days before the campaign starts, the latest a hold can run)'
+          : atMinimum ? ' (the 24-hour minimum: the campaign starts too soon for a longer hold)' : '') + `. ${sfdcNote}`,
     _internal: {
       chainFlags: successorImpact,
       _warning: 'INTERNAL ONLY — downstream deadhead, recorded not billed',
@@ -326,3 +333,6 @@ async function handlePost(req: NextRequest) {
 
 // Every run is logged for the Usage page (lib/usageLog.ts).
 export const POST = withUsageLog('hold_classic', 'staff', handlePost)
+
+/** When a hold lapses, as the rep reads it (Central time). */
+const HELD_UNTIL = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Chicago', timeZoneName: 'short' })

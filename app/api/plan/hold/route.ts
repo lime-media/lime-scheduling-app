@@ -44,7 +44,7 @@ import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { canonicalMarketName } from '@/lib/marketBounds'
-import { computeHoldExpiresAt } from '@/lib/holdExpiry'
+import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
 import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { rotationStints, type OrderLine } from '@/lib/planning/order'
@@ -71,6 +71,8 @@ type HoldBody = QuoteRequest & {
   quoteOnly?: boolean
   /** The opportunity's primary contact: a Contact on the account. Required. */
   primaryContactId?: string
+  /** How long to hold the trucks, in days (default 3, at most MAX_HOLD_DAYS). */
+  holdDays?: number
 }
 
 const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
@@ -102,6 +104,8 @@ async function handlePost(req: NextRequest) {
   }
   if (!body.sfdcAccountId) return NextResponse.json({ error: 'Select a Salesforce account first.' }, { status: 400 })
   if (!body.requestId || !/^[A-Za-z0-9_-]{8,64}$/.test(body.requestId)) return NextResponse.json({ error: 'Missing booking request id.' }, { status: 400 })
+  const holdDays = parseHoldDays(body.holdDays)
+  if (holdDays === null) return NextResponse.json({ error: `Hold for 1 to ${MAX_HOLD_DAYS} days.` }, { status: 400 })
   // Every opportunity needs its primary contact, on this account — checked
   // after the cheap local guards. A definite no refuses; Salesforce being
   // unreachable only warns (see checkPrimaryContact).
@@ -190,11 +194,15 @@ async function handlePost(req: NextRequest) {
       const state = name.split(',')[1]?.trim() ?? ''
       place.set(l.id, { market: (await canonicalMarketName(name, state || undefined)) ?? name, state })
     }
+    // One clock for every hold, so equal lengths give equal expiries (the
+    // confirmation compares them to say whether markets lapse at different times).
+    const holdClock = new Date()
     const stretches = plan.trucks.flatMap(t => t.jobs.flatMap(job => rotationStints(job).map(st => ({
       truckNumber: t.truckNumber,
       stint: st,
       partner: job.lines.length > 1 ? job.lines.find(l => l.id !== st.lineId)!.market : null,
-      expiresAt: computeHoldExpiresAt(job.start),
+      // Each market's hold runs the seller's length, cut by its own start date.
+      expiresAt: holdExpiry(job.start, holdDays, holdClock).expiresAt,
     }))))
 
     // All or nothing: any stretch that now clashes stops the whole booking.
@@ -375,7 +383,9 @@ async function handlePost(req: NextRequest) {
       message: quoteOnly
         ? `Quote logged for ${accountName} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} (${money(quote.summary.grandTotal)}); no trucks reserved.`
           + (sfdcOpportunityId ? ' Salesforce opportunity created.' + checkIt : sfdcError ? ` ${sfdcError}.` : '')
-        : `Placed ${rows.length} hold${rows.length === 1 ? '' : 's'} on ${truckNumbers.length} truck${truckNumbers.length === 1 ? '' : 's'} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} for ${accountName} (${money(quote.summary.grandTotal)}).`
+        : `Placed ${rows.length} hold${rows.length === 1 ? '' : 's'} on ${truckNumbers.length} truck${truckNumbers.length === 1 ? '' : 's'} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} for ${accountName} (${money(quote.summary.grandTotal)})`
+        + (stretches.length ? `, held until ${HELD_UNTIL.format(new Date(Math.min(...stretches.map(x => x.expiresAt.getTime()))))}` : '')
+        + (stretches.some(x => x.expiresAt.getTime() !== stretches[0].expiresAt.getTime()) ? ' (markets starting sooner lapse sooner: a hold ends 3 days before its campaign)' : '') + '.'
         + (sfdcOpportunityId ? ' Salesforce opportunity created' + (leftOut ? ', with the markets not booked listed in its Description.' : '.') + checkIt
           : sfdcError ? ` ${sfdcError}; the holds are placed. Create the opportunity by hand (holds grouped under ${groupPrefix}*).` : ''),
     })
@@ -389,3 +399,6 @@ async function handlePost(req: NextRequest) {
 
 // Every run is logged for the Usage page (lib/usageLog.ts).
 export const POST = withUsageLog('hold_multi', 'staff', handlePost)
+
+/** When a hold lapses, as the rep reads it (Central time). */
+const HELD_UNTIL = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Chicago', timeZoneName: 'short' })

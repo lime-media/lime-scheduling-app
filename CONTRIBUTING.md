@@ -72,3 +72,29 @@ Looking at PRs #1–#10 (all of which predate the `uat` branch — they went str
 5. Merge via "Merge pull request" (merge commit) — that's the convention used so far, though squash/rebase are technically permitted.
 6. The topic branch is left in place after merge (not auto-deleted).
 7. Separately, `uat` is PR'd into `main` when a batch is ready to ship. That PR *is* covered by the ruleset above.
+
+## Reviews: local first, one paid review per PR
+
+The paid Claude Code Review (the GitHub app, billed per run to the org) is a
+multi-agent review whose cost grows with the size of the diff; a large PR can
+cost ~$50 a run. So every PR is cleaned up locally first, kept small, and gets
+exactly **one** paid review.
+
+1. **Open PRs with `/ship`** in Claude Code. It checks the size (over ~600 lines
+   or ~15 files it proposes a split), runs the type check, lint, tests and build,
+   runs the local Claude review (`/code-review`, on your own Claude Code plan)
+   and fixes what it finds until a pass is clean, then opens the PR with a
+   `Local review: passed at <sha>` line.
+2. **Enforced:** `.claude/settings.json` runs `.claude/hooks/review-gate.sh` before
+   Bash commands. It blocks `gh pr create` until a local review has passed on that
+   exact commit, and blocks a second `@claude review` on the same PR. A PR opened
+   by hand on GitHub gets a warning from the `local-review-check` workflow.
+3. **The one paid review:** `/ship` comments `@claude review` once. Findings are
+   fixed, verified with a local `/code-review`, and answered on the PR (finding,
+   cause, resolution, verification, remaining risk). Nobody requests a second one.
+4. **Don't stack PRs.** A PR branched from another open PR gets reviewed again
+   every time its base moves. Wait for the base to merge, or split differently.
+
+Claude Code Review itself is set to run only when asked (`@claude review`), not
+on every PR. That setting lives in the org's Claude Code Review settings, not in
+this repo.

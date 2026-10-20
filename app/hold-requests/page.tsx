@@ -398,28 +398,28 @@ export default function HoldRequestsPage() {
         }
       }
 
-      // Truck swaps
+      // Truck swaps, one at a time: each syncs Salesforce's LED Trucks from
+      // what the app holds, so the next swap's sync sees the one before it.
       if (truckChanges.length > 0) {
-        const results = await Promise.all(
-          truckChanges.map(async (r) => {
-            const newTruck = selectedTrucks.get(r.id)
-            if (!newTruck) return { ok: true }
-            const res = await fetch(`/api/hold-requests/${r.id}`, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'swap_truck', truck_number: newTruck }),
-            })
-            if (!res.ok) {
-              const err = await res.json()
-              return { ok: false, error: err.error }
-            }
-            return { ok: true }
+        const results: { ok: boolean; error?: string; sfdcWarning?: string | null }[] = []
+        for (const r of truckChanges) {
+          const newTruck = selectedTrucks.get(r.id)
+          if (!newTruck) { results.push({ ok: true }); continue }
+          const res = await fetch(`/api/hold-requests/${r.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'swap_truck', truck_number: newTruck }),
           })
-        )
+          const body = await res.json().catch(() => ({}))
+          results.push(res.ok ? { ok: true, sfdcWarning: body.sfdcWarning ?? null } : { ok: false, error: body.error })
+        }
         const failed = results.filter(r => !r.ok)
         if (failed.length > 0) {
           toast.error(failed[0].error || 'Some swaps failed')
         }
+        // The swap saved, but Salesforce's LED Trucks didn't follow: say so.
+        const sfdcWarning = results.map(r => r.sfdcWarning).filter(Boolean).at(-1)
+        if (sfdcWarning) toast.error(sfdcWarning, { duration: 15000 })
       }
 
       // Expiration update — ONE request: the server sets the one date on every

@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
-import { SFDC_SERVICE_USER_EMAIL, appHoldExpOf, opportunityMarketCandidates, pushedHoldExpiry, trucksToMirror } from '@/lib/sfdcIntegration'
+import { SFDC_SERVICE_USER_EMAIL, appHoldExpOf, opportunityMarketCandidates, pushedHoldExpiry, trucksToMirror, withAppHoldExp } from '@/lib/sfdcIntegration'
+import { holdReservesNow } from '@/lib/holdFilters'
+import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
 import { soqlString } from '@/lib/soql'
 import { endOfDayUtc } from '@/lib/dateOnly'
@@ -113,10 +115,26 @@ export async function POST(req: NextRequest) {
   // are still reconciled against the full list.
   const linkedHolds = await prisma.hold.findMany({
     where: { sfdc_opportunity_id: opportunityId },
-    select: { truck_number: true, source: true, origination: true },
+    select: { truck_number: true, source: true, origination: true, status: true, expires_at: true, features: true, sfdc_hold_exp: true },
   })
   const toMirror = trucksToMirror(truckNumbers, linkedHolds)
   const skippedAppHeld = truckNumbers.filter(t => !toMirror.includes(t))
+  // Of those, the ones the app booked but no longer holds (it lapsed or was
+  // released): Salesforce lists a reservation the app doesn't have. For
+  // app-made bookings trucks change only in the app, so the app re-syncs LED
+  // Trucks from what it holds (below) and Salesforce stops showing it,
+  // instead of silently listing a truck anyone could book.
+  const appHeldNow = new Set(linkedHolds.filter(h => h.source !== 'SALESFORCE' && holdReservesNow(h, now)).map(h => h.truck_number))
+  const notHeldByApp = skippedAppHeld.filter(t => !appHeldNow.has(t))
+
+  // The LED Hold Exp the app last wrote here, as recorded on this
+  // opportunity's Salesforce-made rows. A push carrying it is the app's echo:
+  // a truck first seen in such a push takes its siblings' Salesforce date
+  // (blank stays blank, so the deal still never closes as lost), not the
+  // app's date as if Salesforce had sent it.
+  const salesforceRows = linkedHolds.filter(h => h.source === 'SALESFORCE')
+  const appMarker = salesforceRows.map(h => appHoldExpOf(h.features)).find((d): d is string => !!d) ?? null
+  const pushIsEcho = !!holdExp && !!appMarker && holdExp.slice(0, 10) === appMarker
 
   // The Opportunity's stage, asked at most once per push and only when a hold
   // would be revived, expired or created: a Closed Won deal's holds are
@@ -202,6 +220,9 @@ export async function POST(req: NextRequest) {
           // what the row had, so a booking pushed with Hold Exp blank still
           // never closes as lost (expiryClosesOpportunity).
           sfdc_hold_exp: echo ? existing.sfdc_hold_exp : sfdc_hold_exp,
+          // A date Salesforce set (not the echo) replaces the app's: drop the
+          // marker, so only the app's latest write ever counts as an echo.
+          ...(!echo && holdExp && appHoldExpOf(existing.features) ? { features: withAppHoldExp(existing.features, null) } : {}),
           ...(isCommitted || committedNow || (reactivated && revivedAsCommitted) ? {} : { expires_at: effectiveExpiry }),
           ...(reactivated && { status: revivedAsCommitted ? 'COMMITTED' : 'HOLD' }),
           ...(reactivated && revivedAsCommitted && { expires_at: null }),
@@ -273,7 +294,8 @@ export async function POST(req: NextRequest) {
                                  + (explicitExpiry === null ? ' — no Hold Exp on the Opportunity, defaulted to 72h' : ''),
           created_by:          serviceUser.id,
           sfdc_opportunity_id: opportunityId,
-          sfdc_hold_exp,
+          sfdc_hold_exp:       pushIsEcho ? (salesforceRows[0]?.sfdc_hold_exp ?? null) : sfdc_hold_exp,
+          ...(pushIsEcho && { features: withAppHoldExp(null, appMarker) }),
           expires_at:          won ? null : newExpiry,
         },
       })
@@ -286,7 +308,9 @@ export async function POST(req: NextRequest) {
           hold_id:      created.id,
           details:      JSON.stringify({
             source: 'salesforce', opportunityId, accountName, start_date, end_date,
-            sfdc_hold_exp, expires_at: won ? null : newExpiry,
+            sfdc_hold_exp: pushIsEcho ? (salesforceRows[0]?.sfdc_hold_exp ?? null) : sfdc_hold_exp,
+            expires_at: won ? null : newExpiry,
+            ...(pushIsEcho && { sfdc_hold_exp_from_siblings: 'echo_of_app_hold_exp' }),
             ...(won && { created_committed: 'opportunity_closed_won' }),
             ...(!won && explicitExpiry === null && { expires_at_defaulted: 'no_hold_exp_on_push_72h' }),
             ...(!won && newExpiry <= now && { created_expired: 'expiry_already_passed' }),
@@ -296,7 +320,30 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ results, ...(skippedAppHeld.length ? { skipped_app_held: skippedAppHeld } : {}) })
+  // Trucks Salesforce lists that the app booked but no longer holds: record
+  // it, and put Salesforce back in line with the app (it owns trucks on
+  // app-made bookings). The push that follows no longer lists them.
+  let sfdcResynced: string | null = null
+  if (notHeldByApp.length > 0) {
+    await prisma.auditLog.create({
+      data: {
+        action:       'SFDC_TRUCKS_NOT_MIRRORED',
+        truck_number: notHeldByApp[0],
+        user_id:      serviceUser.id,
+        details:      JSON.stringify({
+          opportunityId, trucks: notHeldByApp,
+          reason: 'app_booked_truck_not_held_now: changed only in the app; LED Trucks re-synced from the app',
+        }),
+      },
+    })
+    sfdcResynced = (await syncOpportunityLedWindow(opportunityId)) ?? 'ok'
+  }
+
+  return NextResponse.json({
+    results,
+    ...(skippedAppHeld.length ? { skipped_app_held: skippedAppHeld } : {}),
+    ...(notHeldByApp.length ? { not_held_by_app: notHeldByApp, led_resync: sfdcResynced } : {}),
+  })
 }
 
 /**

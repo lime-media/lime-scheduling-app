@@ -154,6 +154,17 @@ findings by how close they come to one of those.
   all or nothing for the same reason. Flag a new release or re-date path that
   doesn't sync. *(Reinstate write-back review: a partial reinstate's push
   revived a refused truck; delete, chat, conflict and sweep releases didn't sync.)*
+- **An opportunity the app booked on is the app's.** For app-made bookings,
+  trucks and Hold Exp change only in the app: the hold webhook never creates,
+  changes or deletes holds from a push's LED fields on such an opportunity.
+  When the push differs from what the app would write (`ledFieldsDiffer`), the
+  app writes its own values back and records `SFDC_LED_FIELDS_OVERRIDDEN`; the
+  follow-up push matches, so it can't loop (compare Hold Exp only when the app
+  writes one). Only opportunities made purely in Salesforce are mirrored.
+  Flag a webhook change that lets a push edit an app-booked opportunity's
+  holds, or a re-sync that can disagree with itself. *(#123 review: trucks
+  re-entered in Salesforce on app bookings were silently dropped, then
+  patched with per-truck echo rules that missed app-only opportunities.)*
 - **Only Salesforce commits a hold, and a lock always has a way back.**
   Committed means Closed Won, in both directions: nothing in the app marks a
   hold committed unless Salesforce says the deal is Closed Won, and the

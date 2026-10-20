@@ -5,7 +5,7 @@
 import { eq, section } from './harness'
 import { appHoldExpOf, closedOpportunityBlocksReactivation, expiryClosesOpportunity, opportunityMarketCandidates, pushedHoldExpiry, reactivationDecision, reconcileTarget, reopenQuestion, trucksToMirror, withAppHoldExp } from '@/lib/sfdcIntegration'
 import { parseQuoteFeatures } from '@/lib/quoteFeatures'
-import { ledWindowFields, type LinkedHold } from '@/lib/opportunityMerge'
+import { ledFieldsDiffer, ledWindowFields, type LinkedHold } from '@/lib/opportunityMerge'
 import { reinstatableHolds, reinstateRefusal } from '@/lib/bookings'
 import { opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 
@@ -169,4 +169,16 @@ section('reinstate: a market that already ended stays expired')
   const booking = [h('ended', 'EXPIRED', '2026-10-15'), h('today', 'EXPIRED', '2026-10-20'), h('ahead', 'EXPIRED', '2026-11-04'), h('live', 'HOLD', '2026-11-04')]
   eq('only lapsed markets still running come back', reinstatableHolds(booking, today).map(x => x.id), ['today', 'ahead'])
   eq('every lapsed market ended: nothing to reinstate', reinstatableHolds([h('ended', 'EXPIRED', '2026-10-15')], today), [])
+}
+
+section('webhook: an app-booked opportunity is the app\'s (#123 review)')
+{
+  const want = { LED_Trucks__c: 'LED-0382;LED-0912', LED_Hold_Exp__c: '2026-10-25' }
+  eq('same trucks (any order, with or without LED-) and date: no difference', ledFieldsDiffer(want, ['0912', 'LED-0382'], '2026-10-25'), false)
+  eq('a truck added in Salesforce: differs, so the app writes its own back', ledFieldsDiffer(want, ['0382', '0912', '0044'], '2026-10-25'), true)
+  eq('a lapsed truck still listed in Salesforce: differs', ledFieldsDiffer({ LED_Trucks__c: 'LED-0382', LED_Hold_Exp__c: '2026-10-25' }, ['0382', '0912'], '2026-10-25'), true)
+  eq('a different Hold Exp typed in Salesforce: differs', ledFieldsDiffer(want, ['0382', '0912'], '2026-11-30'), true)
+  // Everything committed: the app writes no Hold Exp, so Salesforce's date is
+  // never a difference (otherwise every push would re-sync, forever).
+  eq('all committed: Salesforce\'s old date is not a difference', ledFieldsDiffer({ LED_Trucks__c: 'LED-0382' }, ['0382'], '2026-09-01'), false)
 }

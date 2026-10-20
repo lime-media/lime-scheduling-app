@@ -418,8 +418,7 @@ export default function HoldRequestsPage() {
           toast.error(failed[0].error || 'Some swaps failed')
         }
         // The swap saved, but Salesforce's LED Trucks didn't follow: say so.
-        const sfdcWarning = results.map(r => r.sfdcWarning).filter(Boolean).at(-1)
-        if (sfdcWarning) toast.error(sfdcWarning, { duration: 15000 })
+        for (const w of new Set(results.map(r => r.sfdcWarning).filter(Boolean))) toast.error(w!, { duration: 15000 })
       }
 
       // Expiration update — ONE request: the server sets the one date on every

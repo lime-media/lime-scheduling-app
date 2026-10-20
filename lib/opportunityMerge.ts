@@ -83,6 +83,19 @@ export function ledWindowFields(linked: LinkedHold[], today: string): Record<str
   return { LED_Trucks__c: ledTruckList(linked), ...(exp ? { LED_Hold_Exp__c: exp } : {}) }
 }
 
+/**
+ * Do the LED fields a Salesforce push carries differ from what the app would
+ * write for its bookings on that opportunity (ledWindowFields)? Trucks compare
+ * as a set, ignoring the LED- prefix and order. Hold Exp compares only when the
+ * app would write one: with every hold committed the app leaves Salesforce's
+ * date alone, so it is never a difference (or the two would never agree). Pure.
+ */
+export function ledFieldsDiffer(want: Record<string, string | null>, pushedTrucks: string[], pushedHoldExp: string | null): boolean {
+  const norm = (ts: string[]) => [...new Set(ts.map(t => t.trim().replace(/^LED[\s-]*/i, '')).filter(Boolean))].sort().join(';')
+  if (norm((want.LED_Trucks__c ?? '').split(';')) !== norm(pushedTrucks)) return true
+  return 'LED_Hold_Exp__c' in want && (want.LED_Hold_Exp__c ?? null) !== (pushedHoldExp?.slice(0, 10) ?? null)
+}
+
 export function mergedOpportunityFields(
   mode: 'ADD' | 'REPLACE',
   existing: OpportunityLed,

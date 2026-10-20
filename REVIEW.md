@@ -66,12 +66,15 @@ findings by how close they come to one of those.
 
 ### Who can do it
 
-- **Signed in is not the same as allowed.** A route that changes many holds at
-  once, releases AT&T soft holds in bulk, edits settings or reads usage checks
-  the role (`session.user.role === 'OPERATIONS'`), not just `!session`. If a
-  PR deliberately leaves an action open to every signed-in user, it says so.
-  *(#110: any user could approve a 41-truck release; #51: the SALES access
-  change was intended and stated.)*
+- **Staff and clients are the boundary that matters.** Internally there are no
+  special roles: every signed-in staff user may hold, edit, cancel or delete
+  any booking (Andrew, Oct 2026). Don't flag a staff route for lacking a role
+  check. What must hold is that a client session, client portal route or MCP
+  call acting as a client only ever sees or changes that client's own
+  bookings, and never reaches a staff route. The Operations checks that
+  already exist (settings, usage, the AT&T mass-release approval) stay; don't
+  remove them without saying so. *(#110: the mass-release approval; this PR:
+  role gaps on staff routes were reviewed and left open on purpose.)*
 - **The server enforces what the UI assumes.** If the UI only ever sends "all
   or nothing," the API rejects a partial request instead of quietly widening
   it. Responses report what actually happened. *(#110: approving 35 of 41

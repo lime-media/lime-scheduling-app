@@ -95,23 +95,27 @@ export function bookingHoldExpiry(
   return { ...base, startDate }
 }
 
-/** The latest a hold may run for a campaign starting `startDate`: `minDaysBeforeStart` full days before it. */
+/**
+ * The latest a hold may run for a campaign starting `startDate`: the END of
+ * the day `minDaysBeforeStart` + 1 days before it (23:59:59Z), leaving
+ * `minDaysBeforeStart` full days. It is the end of a day, not midnight
+ * starting the next one, so an automatic cap and a date set by hand
+ * (Reservations → Edit stores a date's end) name the same last day.
+ */
 function latestHoldMoment(startDate: string, minDaysBeforeStart: number = MIN_PROCESSING_DAYS_BEFORE_START): Date {
   const d = new Date(startDate + 'T00:00:00Z')
   d.setUTCDate(d.getUTCDate() - minDaysBeforeStart)
-  return d
+  return new Date(d.getTime() - 1000)
 }
 
 /**
  * The last date (YYYY-MM-DD) an expiry may be set to by hand (Reservations →
- * Edit), for a booking whose earliest start is `earliestStart`. A date's
- * expiry is that day's end, so it must close before the days-before-start cap;
- * when the cap has already passed, the 24-hour floor's date. Pure.
+ * Edit), for a booking whose earliest start is `earliestStart`: the day the
+ * automatic cap falls on (a hand-set date expires at that day's end, the same
+ * moment), or the 24-hour floor's date when the cap has already passed. Pure.
  */
 export function lastExpiryDate(earliestStart: string, now: Date = new Date(), minDaysBeforeStart: number = MIN_PROCESSING_DAYS_BEFORE_START): string {
-  const d = latestHoldMoment(earliestStart, minDaysBeforeStart)
-  d.setUTCDate(d.getUTCDate() - 1)
-  const byStart = d.toISOString().slice(0, 10)
+  const byStart = latestHoldMoment(earliestStart, minDaysBeforeStart).toISOString().slice(0, 10)
   const floor = addHours(now, MIN_HOLD_WINDOW_HOURS).toISOString().slice(0, 10)
   return byStart > floor ? byStart : floor
 }

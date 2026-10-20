@@ -41,8 +41,9 @@ Run and fix until clean: `npx tsc --noEmit`, `npx eslint <changed .ts/.tsx files
   `.claude/hooks/mark-reviewed.sh "<N findings fixed: short list, or 'clean'>"`
 
 ## 5. Open the PR
-`git push -u origin <branch>`, then `gh pr create --base uat` (ready for review,
-not a draft). The description follows the repo's existing PRs (why, what changed,
+Run `git push -u origin <branch>` first, then `gh pr create --base uat` as a
+**separate** command (ready for review, not a draft). The gate checks before a
+command runs, so `git push && gh pr create` in one call is always refused. The description follows the repo's existing PRs (why, what changed,
 verification, how to check it in UAT) and includes this line, filled in:
 
 `Local review: passed at <short sha> — <what it found and fixed, or "clean">`

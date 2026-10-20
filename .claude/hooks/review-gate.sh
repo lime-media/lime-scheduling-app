@@ -7,9 +7,10 @@
 # 2. A second `@claude review` request on the same PR is blocked: the paid
 #    Claude Code Review runs once per PR, after the local review.
 #
-# A guardrail for the normal path, not a security boundary: `gh api`, a PR
-# opened from another branch with --head, or a command that cd's into another
-# checkout first are not checked.
+# A guardrail for the /ship path, not a security boundary. Shell is matched
+# with patterns, so someone determined to skip it can: `gh api`, a PR opened
+# from another branch with --head, a command that cd's into another checkout,
+# or another repo's PR (-R) are not checked.
 #
 # Exit 2 blocks the command and shows stderr to Claude; exit 0 allows it.
 set -uo pipefail
@@ -18,7 +19,7 @@ set -uo pipefail
 # leaves at once, before jq or git. The pattern stays inside one JSON string
 # ([^"]*), so a path or field elsewhere in the hook input can't match it.
 input=$(cat)
-if ! printf '%s' "$input" | grep -Eqi 'gh[^"]*pr[^"]*(create|new|comment|review)|@claude review'; then
+if ! printf '%s' "$input" | grep -Eqi 'gh([^"\\]|\\.)*pr([^"\\]|\\.)*(create|new|comment|review)|@claude review'; then
   exit 0
 fi
 
@@ -29,15 +30,21 @@ fi
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
 [ -z "$cmd" ] && exit 0
 
-# The command with quoted strings emptied: text in a commit message, a grep
-# pattern or a comment body never decides what the command is.
-bare=$(printf '%s' "$cmd" | sed -E "s/\"([^\"\\\\]|\\\\.)*\"/\"\"/g; s/'[^']*'/''/g")
+# The command on one line with heredoc bodies dropped and quoted strings
+# emptied: text in a commit message, a grep pattern or a comment body never
+# decides what the command is, even when it spans lines.
+if command -v perl >/dev/null 2>&1; then
+  bare=$(printf '%s' "$cmd" | perl -0777 -pe 's/(<<-?\s*([\x27"]?)(\w+)\2)([^\n]*)\n.*?\n\s*\3\s*(?=\n|$)/$1$4/gs; s/\n/ /g; s/"(?:[^"\\]|\\.)*"/""/gs; s/\x27[^\x27]*\x27/\x27\x27/gs')
+else
+  bare=$(printf '%s' "$cmd" | tr '\n' ' ' | sed -E "s/\"([^\"\\\\]|\\\\.)*\"/\"\"/g; s/'[^']*'/''/g")
+fi
 
-# `gh … pr … <verb>` inside one simple command (nothing like ; & | between),
-# with gh after a keyword, a brace, env/sudo/xargs, a path, or flags such as
-# -R on either side of `pr`.
+# `gh [flags] pr [flags] <verb>`, with gh after a keyword, a brace,
+# env/sudo/xargs or a path. Only flags (and their values) may sit around `pr`,
+# so `gh pr list --label new` isn't `gh pr new`.
+FLAGS='([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:];&|][^[:space:];&|]*)?)*'
 is_gh_pr() {
-  printf '%s' "$bare" | grep -Eq "(^|[^[:alnum:]_.-])gh([[:space:]][^;&|]*)?[[:space:]]pr[[:space:]]([^;&|]*[[:space:]])?($1)([[:space:];&|)\`]|\$)"
+  printf '%s' "$bare" | grep -Eq "(^|[^[:alnum:]_.-])gh${FLAGS}[[:space:]]+pr${FLAGS}[[:space:]]+($1)([[:space:];&|)\`]|\$)"
 }
 
 marker_dir="$(git rev-parse --git-common-dir 2>/dev/null)/claude-local-review"
@@ -73,7 +80,7 @@ if printf '%s' "$cmd" | grep -qi '@claude review' && is_gh_pr 'comment|review'; 
   pr=$(printf '%s' "$bare" | sed -nE 's#.*/pull/([0-9]+).*#\1#p' | head -n1)
   if [ -z "$pr" ]; then
     rest=$(printf '%s' "$bare" | sed -E 's/.*[[:space:]](comment|review)([[:space:]]|$)//')
-    pr=$(printf '%s\n' $rest | grep -E '^#?[0-9]+$' | head -n1 | tr -d '#')
+    pr=$(printf '%s' "$rest" | tr -s '[:space:]' '\n' | grep -E '^#?[0-9]+$' | head -n1 | tr -d '#')
   fi
   [ -z "$pr" ] && pr=$(gh pr view --json number --jq .number 2>/dev/null || true)
   [ -z "$pr" ] && exit 0

@@ -59,6 +59,28 @@ export function closedOpportunityBlocksReactivation(stage: { isClosed: boolean; 
 }
 
 /**
+ * Reinstating or revising onto a Closed Lost opportunity: staff may move the
+ * deal back to WARM instead of being sent to Salesforce. `allowed` — nothing
+ * stands in the way (open, won, or the stage is unknown); `reopenable` — Closed
+ * Lost, so ask the person first; `reopen` — Closed Lost and they said yes.
+ * Closed Won is never reopened. Only staff paths pass `reopenOpportunity`
+ * (Reservations reinstate, the planner's revise); the client portal and MCP
+ * never do, so for them a lost deal still refuses.
+ */
+export function reactivationDecision(
+  stage: { isClosed: boolean; isWon: boolean; stageName: string } | null,
+  reopenOpportunity: boolean,
+): { kind: 'allowed' } | { kind: 'reopenable' | 'reopen'; stageName: string } {
+  if (!stage || !stage.isClosed || stage.isWon) return { kind: 'allowed' }
+  return { kind: reopenOpportunity ? 'reopen' : 'reopenable', stageName: stage.stageName }
+}
+
+/** What the person is asked before a Closed Lost opportunity is moved back to WARM. */
+export function reopenQuestion(stageName: string): string {
+  return `This opportunity is "${stageName}" in Salesforce. Move it back to Warm and continue?`
+}
+
+/**
  * The markets a Salesforce Opportunity says its trucks are going to, as
  * candidate strings to resolve. Markets__c is free text ("Bakersfield",
  * "San Francisco, CA", "New York, San Francisco", "Detroit; Austin"). When it

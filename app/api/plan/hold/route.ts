@@ -48,8 +48,8 @@ import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
 import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
-import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
-import { SFDC_SERVICE_USER_EMAIL, attachedToOpportunity } from '@/lib/sfdcIntegration'
+import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, reopenClosedLostOpportunity, type BookingOpportunity } from '@/lib/sfdcBooking'
+import { SFDC_SERVICE_USER_EMAIL, attachedToOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { rotationStints, type OrderLine } from '@/lib/planning/order'
 import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuote, type QuoteRequest } from '@/lib/planning/quote'
 import { fitNames, lineFeatures } from '@/lib/planning/booking'
@@ -82,6 +82,12 @@ type HoldBody = QuoteRequest & {
    * onto that booking's own opportunity.)
    */
   attachOpportunityId?: string
+  /**
+   * A revision only: the person agreed to move the booking's Closed Lost
+   * opportunity back to WARM (asked after a 409 `reopenable`). Ignored on an
+   * attach, which only offers open opportunities.
+   */
+  reopenOpportunity?: boolean
 }
 
 const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
@@ -192,7 +198,16 @@ async function handlePost(req: NextRequest) {
       // revised as one without an opportunity, as the planner said when it
       // opened it (app/api/bookings/revise): a new opportunity is created.
       // An opportunity picked to add to must exist.
-      const refusal = attachUnreachable || (reviseKey && !target) ? null : opportunityRefusal(target, body.sfdcAccountId)
+      const lost = reviseKey && target
+        ? reactivationDecision({ isClosed: target.IsClosed, isWon: target.IsWon, stageName: target.StageName }, body.reopenOpportunity === true)
+        : { kind: 'allowed' as const }
+      if (lost.kind === 'reopenable') {
+        return NextResponse.json({
+          error: opportunityRefusal(target, body.sfdcAccountId),
+          reopenable: { opportunityId: target!.Id, stageName: lost.stageName, question: reopenQuestion(lost.stageName) },
+        }, { status: 409 })
+      }
+      const refusal = attachUnreachable || (reviseKey && !target) ? null : opportunityRefusal(target, body.sfdcAccountId, { closedLostReopening: lost.kind === 'reopen' })
       if (refusal) return NextResponse.json({ error: refusal }, { status: 409 })
     }
 
@@ -385,7 +400,29 @@ async function handlePost(req: NextRequest) {
     // hold and is written in the same transaction as the delete: the record,
     // the delete and the new holds land together, or none of them do.
     const was = reviseIds.length ? await prisma.hold.findMany({ where: { id: { in: reviseIds } } }) : []
+    // A Closed Lost opportunity the person agreed to reopen: moved back to
+    // WARM last, after every check that could still refuse, so a revision that
+    // stops above never reopens the deal. If Salesforce refuses, nothing here
+    // changes.
+    let reopened: { fromStage: string; toStage: string } | null = null
+    if (reviseKey && target && body.reopenOpportunity === true && target.IsClosed && !target.IsWon) {
+      const r = await reopenClosedLostOpportunity(target.Id)
+      if (!r.ok) return NextResponse.json({ error: r.error }, { status: 409 })
+      reopened = r
+      target = { ...target, StageName: r.toStage, IsClosed: false }
+    }
     await prisma.$transaction([
+      ...(reopened ? [prisma.auditLog.create({
+        data: {
+          action: 'REOPEN_OPPORTUNITY',
+          truck_number: truckNumbers[0] ?? reviseHolds[0]?.truck_number ?? '',
+          user_id: createdBy,
+          details: JSON.stringify({
+            opportunity_id: target!.Id, from_stage: reopened.fromStage, to_stage: reopened.toStage,
+            by: (token.email as string | undefined) ?? createdBy, for: 'REVISE_BOOKING', booking: reviseKey,
+          }),
+        },
+      })] : []),
       ...(reviseKey ? [prisma.auditLog.create({
         data: {
           action: 'REVISE_BOOKING',

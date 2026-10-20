@@ -9,6 +9,7 @@ import toast from 'react-hot-toast'
 import { Navbar } from '@/components/Navbar'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
 import { parseDateOnly } from '@/lib/dateOnly'
+import { useReopenConfirm, type Reopenable } from '@/components/ReopenOpportunityDialog'
 import { formatMarketState } from '@/lib/format'
 import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
@@ -200,6 +201,8 @@ export default function HoldRequestsPage() {
   const { sort, sortBy, chooseSort } = useTableSort<SortKey>(`reservations.sort.${filterStatus || 'all'}`, SORT_KEYS)
   const [search,       setSearch]       = useState('')
   const [acting,       setActing]       = useState<string | null>(null) // group/row id currently mid-action
+  // Reinstating onto a Closed Lost opportunity: asked before it is moved back to WARM.
+  const reopen = useReopenConfirm()
 
   // Edit modal state — supports multi-truck reservations
   const [editingGroup, setEditingGroup] = useState<HoldRequest[] | null>(null)
@@ -277,18 +280,27 @@ export default function HoldRequestsPage() {
   const runAction = useCallback(async (ids: string[], action: 'approve' | 'reject' | 'approve_extension' | 'deny_extension' | 'reinstate', groupKey: string) => {
     setActing(groupKey)
     try {
-      const results = await Promise.all(ids.map(async (id) => {
+      const send = async (id: string, reopenOpportunity = false): Promise<{ id: string; ok: boolean; error?: string; reopenable?: Reopenable }> => {
         const res = await fetch(`/api/hold-requests/${id}`, {
           method:  'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ action }),
+          body:    JSON.stringify({ action, ...(reopenOpportunity ? { reopenOpportunity: true } : {}) }),
         })
         if (!res.ok) {
           const err = await res.json().catch(() => ({}))
-          return { id, ok: false, error: err.error || 'Failed' }
+          return { id, ok: false, error: err.error || 'Failed', reopenable: err.reopenable }
         }
         return { id, ok: true }
-      }))
+      }
+      let results = await Promise.all(ids.map(id => send(id)))
+      // Reinstating onto a Closed Lost opportunity: ask once, then retry those
+      // holds one at a time (the first reopens it; the rest find it open).
+      const lost = results.filter(r => r.reopenable)
+      if (lost.length > 0 && await reopen.ask(lost[0].reopenable!.question)) {
+        const retried: typeof results = []
+        for (const r of lost) retried.push(await send(r.id, true))
+        results = results.map(r => retried.find(x => x.id === r.id) ?? r)
+      }
 
       const failed = results.filter((r) => !r.ok)
       const succeeded = results.length - failed.length
@@ -307,7 +319,7 @@ export default function HoldRequestsPage() {
       setActing(null)
       fetchRequests()
     }
-  }, [fetchRequests])
+  }, [fetchRequests]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const openEdit = async (request: HoldRequest) => {
     // Everything in the same booking: all markets of a multi-market quote,
@@ -618,6 +630,7 @@ export default function HoldRequestsPage() {
   return (
     <div className="flex flex-col min-h-dvh bg-gray-50">
       <Navbar />
+      {reopen.dialog}
 
       <div className="flex-1 p-4 sm:p-6 max-w-7xl mx-auto w-full">
         {/* Header */}

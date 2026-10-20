@@ -24,6 +24,7 @@ import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
 import { OpportunityPicker, type OpenOpportunity } from '@/components/OpportunityPicker'
 import { BrandInput } from '@/components/BrandInput'
 import { SalesforceFailureModal } from '@/components/SalesforceFailureModal'
+import { useReopenConfirm } from '@/components/ReopenOpportunityDialog'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { ReviewFinding } from '@/lib/planning/claude'
 import type { Arrival, LineQuote, MultiMarketQuote, QuoteRow, RowError } from '@/lib/planning/quote'
@@ -111,12 +112,16 @@ type Revision = {
   key: string; opportunityName: string | null; clientName: string; live: boolean
   /** The latest expiry of its live holds (ISO), which a revision won't cut back; how many markets are committed. */
   heldUntil: string | null; committedMarkets: number
+  /** Its opportunity is Closed Lost and the person agreed to move it back to WARM when the revision is saved. */
+  reopenOpportunity: boolean
 }
 
 export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: string | null; onReviseDone?: () => void } = {}) {
   const [account, setAccount] = useState<SfdcAccount | null>(null)
   const [revision, setRevision] = useState<Revision | null>(null)
   const [reviseError, setReviseError] = useState<string | null>(null)
+  // A Closed Lost opportunity: asked before it is moved back to WARM.
+  const reopen = useReopenConfirm()
   // An existing opportunity to add this order to; null = a new one. (A
   // revision always goes onto its own booking's opportunity.)
   const [attachTo, setAttachTo] = useState<OpenOpportunity | null>(null)
@@ -148,8 +153,19 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     if (!reviseKey) return
     let alive = true
     setReviseError(null)
-    fetch(`/api/bookings/revise?key=${encodeURIComponent(reviseKey)}`)
-      .then(async r => { const d = await r.json(); if (!r.ok) throw new Error(d.error || 'That booking could not be opened.'); return d.booking })
+    let reopenAgreed = false
+    const load = async (agreed: boolean): Promise<{ [k: string]: any }> => { // eslint-disable-line @typescript-eslint/no-explicit-any
+      const r = await fetch(`/api/bookings/revise?key=${encodeURIComponent(reviseKey)}${agreed ? '&reopen=1' : ''}`)
+      const d = await r.json()
+      // A Closed Lost opportunity: ask, then load it to be reopened on save.
+      if (r.status === 409 && d.reopenable && !agreed && alive && await reopen.ask(d.reopenable.question)) {
+        reopenAgreed = true
+        return load(true)
+      }
+      if (!r.ok) throw new Error(d.error || 'That booking could not be opened.')
+      return d.booking
+    }
+    load(false)
       .then(b => {
         if (!alive) return
         if (b.account) setAccount(b.account)
@@ -163,11 +179,11 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         setQuoteOnly(b.quoteOnly === true)
         if (typeof b.brandMarkupPct === 'number') { revisedMarkup.current = b.brandMarkupPct; setBrandMarkupPct(b.brandMarkupPct) }
         setAttachTo(null)
-        setRevision({ key: b.key, opportunityName: b.opportunityName, clientName: b.clientName, live: b.live, heldUntil: b.heldUntil ?? null, committedMarkets: b.committedMarkets ?? 0 })
+        setRevision({ key: b.key, opportunityName: b.opportunityName, clientName: b.clientName, live: b.live, heldUntil: b.heldUntil ?? null, committedMarkets: b.committedMarkets ?? 0, reopenOpportunity: reopenAgreed })
       })
       .catch(e => { if (alive) setReviseError(e instanceof Error ? e.message : 'That booking could not be opened.') })
     return () => { alive = false }
-  }, [reviseKey])
+  }, [reviseKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const stopRevising = () => { setRevision(null); onReviseDone?.() }
 
@@ -310,25 +326,32 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     }
   }
 
-  const placeHolds = async (allowPartial = false, expectedTotal?: number): Promise<void> => {
+  const placeHolds = async (allowPartial = false, expectedTotal?: number, reopenAgreed = revision?.reopenOpportunity === true): Promise<void> => {
     if (!account || !contact || !quote) return
     const shown = expectedTotal ?? quote.lines.filter(l => selected.has(l.id)).reduce((n, l) => n + l.total, 0)
     setHolding(true); setHoldResult(null)
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, quoteOnly, brand, primaryContactId: contact.id, holdDays, attachOpportunityId: revision ? undefined : attachTo?.id }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, quoteOnly, brand, primaryContactId: contact.id, holdDays, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
       })
       const data = await readJson(res)
+      // The opportunity went Closed Lost after the booking was opened: ask now.
+      if (res.status === 409 && data.reopenable && revision && !reopenAgreed) {
+        setHolding(false)
+        if (await reopen.ask(data.reopenable.question)) return placeHolds(allowPartial, expectedTotal, true)
+        setHoldResult({ ok: false, message: data.error || 'No holds placed.' })
+        return
+      }
       if (res.status === 409 && data.shortfalls) {
         const ok = window.confirm(`${data.error}\n\n${data.shortfalls.map((s: { market: string; missing: number }) => `${s.market}: ${s.missing} truck(s) short`).join('\n')}\n\nBook what can be covered? The rest will be noted on the Salesforce opportunity as quoted but not available, and left out of its amount.`)
-        if (ok) { setHolding(false); return placeHolds(true) }
+        if (ok) { setHolding(false); return placeHolds(true, undefined, reopenAgreed) }
         setHoldResult({ ok: false, message: 'No holds placed.' })
         return
       }
       if (res.status === 409 && data.priceChanged) {
         const ok = window.confirm(`Booking ${allowPartial ? 'what can be covered' : 'the selected markets'} on fresh truck data comes to ${fmtMoney(data.priceChanged.now)}, not ${fmtMoney(data.priceChanged.was)}.\n\nBook at ${fmtMoney(data.priceChanged.now)}?`)
-        if (ok) { setHolding(false); return placeHolds(allowPartial, data.priceChanged.now) }
+        if (ok) { setHolding(false); return placeHolds(allowPartial, data.priceChanged.now, reopenAgreed) }
         setHoldResult({ ok: false, message: 'No holds placed.' })
         return
       }
@@ -563,6 +586,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           unplaced={built?.unplaced.map(u => u.label) ?? []}
         />
       )}
+      {reopen.dialog}
       {holdResult?.sfdcFailure && sfdcFailureOpen && (
         <SalesforceFailureModal detail={holdResult.sfdcFailure} onClose={() => setSfdcFailureOpen(false)} />
       )}

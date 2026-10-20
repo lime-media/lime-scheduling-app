@@ -3,7 +3,8 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, opportunityMarketCandidates, trucksToMirror } from '@/lib/sfdcIntegration'
+import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, opportunityMarketCandidates, reactivationDecision, reopenQuestion, trucksToMirror } from '@/lib/sfdcIntegration'
+import { opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 
 const NOW = new Date('2026-10-02T12:00:00Z')
 const later = new Date('2026-10-05T23:59:59Z'), earlier = new Date('2026-09-28T00:00:00Z')
@@ -77,4 +78,20 @@ section('Salesforce: a hold added to an existing opportunity never closes it')
   eq('an app booking on its own opportunity closes it', expiryClosesOpportunity({ ...base, features: JSON.stringify({ dailyRate: 1 }) }), true)
   eq('one added to a rep\'s existing deal does not', expiryClosesOpportunity({ ...base, features: JSON.stringify({ attachedToOpportunity: true }) }), false)
   eq('unreadable features: as before', expiryClosesOpportunity({ ...base, features: '{oops' }), true)
+}
+
+section('Closed Lost: staff may move the opportunity back to WARM')
+{
+  const lost = { isClosed: true, isWon: false, stageName: 'Closed Lost - Budget' }
+  eq('Closed Lost, not yet asked: ask first', reactivationDecision(lost, false), { kind: 'reopenable', stageName: 'Closed Lost - Budget' })
+  eq('Closed Lost, the person agreed: reopen', reactivationDecision(lost, true), { kind: 'reopen', stageName: 'Closed Lost - Budget' })
+  eq('open: allowed, nothing to reopen', reactivationDecision({ isClosed: false, isWon: false, stageName: 'WARM' }, true), { kind: 'allowed' })
+  eq('Closed Won is never reopened', reactivationDecision({ isClosed: true, isWon: true, stageName: 'Closed Won' }, true), { kind: 'allowed' })
+  eq('an unknown stage never blocks', reactivationDecision(null, false), { kind: 'allowed' })
+  eq('the question names the stage', reopenQuestion('Closed Lost - Budget'), 'This opportunity is "Closed Lost - Budget" in Salesforce. Move it back to Warm and continue?')
+
+  const opp = (o: Partial<BookingOpportunity>) => ({ Id: '006X', AccountId: '001A', IsClosed: true, IsWon: false, StageName: 'Closed Lost - Declined', ...o }) as BookingOpportunity
+  eq('opportunityRefusal: Closed Lost still refuses by default (quote tool, attach, client paths)', opportunityRefusal(opp({}), '001A')?.includes('Closed Lost - Declined'), true)
+  eq('opportunityRefusal: a revision the person agreed to reopen passes', opportunityRefusal(opp({}), '001A', { closedLostReopening: true }), null)
+  eq('opportunityRefusal: reopening never skips the account check', opportunityRefusal(opp({}), '001B', { closedLostReopening: true }), 'That opportunity belongs to a different Salesforce account.')
 }

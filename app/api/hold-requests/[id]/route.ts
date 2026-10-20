@@ -7,7 +7,8 @@ import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { computeHoldExpiresAt } from '@/lib/holdExpiry'
 import { closeOpportunityAsLost, getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
-import { closedOpportunityBlocksReactivation, expiryClosesOpportunity } from '@/lib/sfdcIntegration'
+import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
+import { reopenClosedLostOpportunity } from '@/lib/sfdcBooking'
 import { sendCancellationEmail } from '@/lib/email'
 
 type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration' | 'reinstate'
@@ -35,8 +36,10 @@ export async function PATCH(
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { action, truck_number, reason, expires_at: newExpiresAtStr } = (await req.json().catch(() => ({}))) as {
+  const { action, truck_number, reason, expires_at: newExpiresAtStr, reopenOpportunity } = (await req.json().catch(() => ({}))) as {
     action?: Action; truck_number?: string; reason?: string; expires_at?: string
+    /** Reinstate only: the person agreed to move a Closed Lost opportunity back to WARM. */
+    reopenOpportunity?: boolean
   }
   if (!action || !(action in VALID_FROM)) {
     return NextResponse.json({ error: 'Invalid action' }, { status: 400 })
@@ -147,9 +150,10 @@ export async function PATCH(
   // restored: the old value is what lapsed, and for the short-lead holds this exists to rescue it
   // was already in the past at creation.
   //
-  // Refused while the hold's Opportunity is Closed Lost (closed by expireHolds() or by a
-  // rep): the reconcile (every 15 minutes) would release it again. Reopening a deal is a CRM decision,
-  // not a side effect of blocking a truck, so the person is sent to Salesforce.
+  // While the hold's Opportunity is Closed Lost (closed by expireHolds() or by a rep) the
+  // reconcile (every 15 minutes) would release it again, so the person is asked first whether to
+  // move the deal back to WARM (409 `reopenable`); the request comes back with reopenOpportunity.
+  // Staff only: this route takes staff sessions; the client portal reinstates nothing.
   if (action === 'reinstate') {
     // A quote-only log was never a reservation: it may have no truck
     // ("UNASSIGNED") and was priced without a feasibility check. Reinstating
@@ -164,9 +168,13 @@ export async function PATCH(
         { status: 400 },
       )
     }
-    if (hold.sfdc_opportunity_id) {
-      const closed = closedOpportunityBlocksReactivation(await getOpportunityStage(hold.sfdc_opportunity_id))
-      if (closed) return NextResponse.json({ error: `Can't reinstate: ${closed}` }, { status: 409 })
+    const stage = hold.sfdc_opportunity_id ? await getOpportunityStage(hold.sfdc_opportunity_id) : null
+    const decision = reactivationDecision(stage, reopenOpportunity === true)
+    if (decision.kind === 'reopenable') {
+      return NextResponse.json({
+        error: `Can't reinstate: ${closedOpportunityBlocksReactivation(stage)}`,
+        reopenable: { opportunityId: hold.sfdc_opportunity_id, stageName: decision.stageName, question: reopenQuestion(decision.stageName) },
+      }, { status: 409 })
     }
     // While the hold sat expired its truck read as free to every availability path, so the
     // window may have been taken in the meantime — check before blocking it again.
@@ -187,27 +195,50 @@ export async function PATCH(
       }, { status: 409 })
     }
 
+    // Salesforce last, after every check that could still refuse: a reinstate
+    // that fails here never reopens the deal.
+    let reopened: { fromStage: string; toStage: string } | null = null
+    if (decision.kind === 'reopen') {
+      const r = await reopenClosedLostOpportunity(hold.sfdc_opportunity_id!)
+      if (!r.ok) return NextResponse.json({ error: `Can't reinstate: ${r.error}` }, { status: 409 })
+      reopened = r
+    }
+
     const newExpiresAt = computeHoldExpiresAt(hold.start_date.toISOString().split('T')[0])
 
-    await prisma.hold.update({
-      where: { id: hold.id },
-      data:  { status: 'HOLD', expires_at: newExpiresAt, extension_until: null, extension_reason: null },
-    })
+    // The reinstate and its audit rows (and the reopen's, if any) land together.
+    await prisma.$transaction([
+      prisma.hold.update({
+        where: { id: hold.id },
+        data:  { status: 'HOLD', expires_at: newExpiresAt, extension_until: null, extension_reason: null },
+      }),
+      ...(reopened ? [prisma.auditLog.create({
+        data: {
+          action:       'REOPEN_OPPORTUNITY',
+          truck_number: hold.truck_number,
+          user_id:      session.user.id,
+          hold_id:      hold.id,
+          details:      JSON.stringify({
+            opportunity_id: hold.sfdc_opportunity_id, from_stage: reopened.fromStage, to_stage: reopened.toStage,
+            by: session.user.email ?? session.user.id, for: 'REINSTATE_HOLD',
+          }),
+        },
+      })] : []),
+      prisma.auditLog.create({
+        data: {
+          action:       'REINSTATE_HOLD',
+          truck_number: hold.truck_number,
+          user_id:      session.user.id,
+          hold_id:      hold.id,
+          details:      JSON.stringify({
+            lapsed_expires_at: hold.expires_at,
+            new_expires_at:    newExpiresAt.toISOString(),
+          }),
+        },
+      }),
+    ])
 
-    await prisma.auditLog.create({
-      data: {
-        action:       'REINSTATE_HOLD',
-        truck_number: hold.truck_number,
-        user_id:      session.user.id,
-        hold_id:      hold.id,
-        details:      JSON.stringify({
-          lapsed_expires_at: hold.expires_at,
-          new_expires_at:    newExpiresAt.toISOString(),
-        }),
-      },
-    })
-
-    return NextResponse.json({ ok: true, status: 'HOLD', expires_at: newExpiresAt.toISOString() })
+    return NextResponse.json({ ok: true, status: 'HOLD', expires_at: newExpiresAt.toISOString(), reopened })
   }
 
   // ── approve_extension ───────────────────────────────────────────────────

@@ -4,7 +4,9 @@
  * says what the fields become).
  */
 
-import { isSfdcConfigured, sfdcQuery, updateOpportunity } from '@/lib/salesforceClient'
+import { isSfdcConfigured, sfdcQuery, updateOpportunity, updateOpportunityWithError } from '@/lib/salesforceClient'
+import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
+import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { closedOpportunityBlocksReactivation } from '@/lib/sfdcIntegration'
 import { mergedOpportunityFields, type BookingLed, type OpportunityLed } from '@/lib/opportunityMerge'
 import { loadOpportunityReservingHolds } from '@/lib/bookingLoad'
@@ -44,10 +46,34 @@ export async function getBookingOpportunity(id: string): Promise<BookingOpportun
  * chosen account's, and not lost: a Closed Lost opportunity would release
  * the new holds again at the next sweep (closedOpportunityBlocksReactivation).
  */
-export function opportunityRefusal(opp: BookingOpportunity | null, accountId: string): string | null {
+export function opportunityRefusal(opp: BookingOpportunity | null, accountId: string, opts: { closedLostReopening?: boolean } = {}): string | null {
   if (!opp) return 'That Salesforce opportunity could not be found.'
   if (opp.AccountId !== accountId) return 'That opportunity belongs to a different Salesforce account.'
+  // Off by default. Only a staff revision the person agreed to reopen passes
+  // it (app/api/plan/hold); attach, the quote tool and the revise loader don't.
+  if (opts.closedLostReopening && opp.IsClosed && !opp.IsWon) return null
   return closedOpportunityBlocksReactivation({ isClosed: opp.IsClosed, isWon: opp.IsWon, stageName: opp.StageName })
+}
+
+/**
+ * Move a Closed Lost opportunity back to WARM (a staff choice on reinstate or
+ * revise: lib/sfdcIntegration.ts reactivationDecision), then read the stage
+ * back: Salesforce automation can refuse or re-close it. Only StageName is
+ * written, never CloseDate or the org's auto-close fields. On any failure the
+ * caller changes nothing in the app and shows `error` (Salesforce's own words
+ * where it gave them).
+ */
+export async function reopenClosedLostOpportunity(opportunityId: string): Promise<{ ok: true; fromStage: string; toStage: string } | { ok: false; error: string }> {
+  const before = await getOpportunityStage(opportunityId)
+  if (!before) return { ok: false, error: 'Salesforce could not be reached to read the opportunity. Nothing was changed.' }
+  if (!before.isClosed) return { ok: true, fromStage: before.stageName, toStage: before.stageName }
+  if (before.isWon) return { ok: false, error: 'The opportunity is Closed Won; it is not reopened from here.' }
+  const write = await updateOpportunityWithError(opportunityId, { StageName: DEFAULT_STAGE }).catch(err => ({ ok: false as const, error: err instanceof Error ? err.message : 'Salesforce could not be reached' }))
+  if (!write.ok) return { ok: false, error: `Salesforce refused to move the opportunity to Warm: ${write.error}. Nothing was changed.` }
+  const after = await getOpportunityStage(opportunityId)
+  if (!after) return { ok: false, error: 'The opportunity was moved to Warm, but Salesforce could not be read back to confirm it. Nothing else was changed; check it in Salesforce and try again.' }
+  if (after.isClosed) return { ok: false, error: `Salesforce put the opportunity back to "${after.stageName}" (an automation or rule there). Nothing was changed here; reopen it in Salesforce.` }
+  return { ok: true, fromStage: before.stageName, toStage: after.stageName }
 }
 
 export type OpenOpportunity = { id: string; name: string; stage: string; amount: number | null; holdStart: string | null; holdStop: string | null; createdDate: string; hasProducts: boolean }

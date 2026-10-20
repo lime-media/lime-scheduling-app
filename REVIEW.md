@@ -112,6 +112,11 @@ findings by how close they come to one of those.
   bulk actions all use the same set of rows, filtered the same way. Mixed
   statuses (some markets committed, some on hold, some expired) are the normal
   case, not an edge case. *(#115.)*
+- **A multi-market booking is one quote: one expiry for the whole booking,
+  capped by the earliest market's start, on every hold.** Booking, Edit,
+  reinstate and approve-extension all set the same date on every hold, and a
+  date past the limit is refused, not quietly cut back. *(#115 capped each
+  market by its own start.)*
 - **Don't present a partial total as complete.** A sum with a missing (null)
   market says so, and a summed total isn't paired with one market's pricing
   tier. *(#115.)*

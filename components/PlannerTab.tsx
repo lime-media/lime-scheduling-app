@@ -23,6 +23,8 @@ import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
 import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
 import { OpportunityPicker, type OpenOpportunity } from '@/components/OpportunityPicker'
 import { BrandInput } from '@/components/BrandInput'
+import { SalesforceFailureModal } from '@/components/SalesforceFailureModal'
+import { useReopenConfirm } from '@/components/ReopenOpportunityDialog'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { ReviewFinding } from '@/lib/planning/claude'
 import type { Arrival, LineQuote, MultiMarketQuote, QuoteRow, RowError } from '@/lib/planning/quote'
@@ -109,13 +111,17 @@ const tdNum = td + ' text-right tabular-nums'
 type Revision = {
   key: string; opportunityName: string | null; clientName: string; live: boolean
   /** The latest expiry of its live holds (ISO), which a revision won't cut back; how many markets are committed. */
-  heldUntil: string | null; committedMarkets: number
+  heldUntil: string | null; committedMarkets: string[]
+  /** Its opportunity is Closed Lost and the person agreed to move it back to WARM when the revision is saved. */
+  reopenOpportunity: boolean
 }
 
 export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: string | null; onReviseDone?: () => void } = {}) {
   const [account, setAccount] = useState<SfdcAccount | null>(null)
   const [revision, setRevision] = useState<Revision | null>(null)
   const [reviseError, setReviseError] = useState<string | null>(null)
+  // A Closed Lost opportunity: asked before it is moved back to WARM.
+  const reopen = useReopenConfirm()
   // An existing opportunity to add this order to; null = a new one. (A
   // revision always goes onto its own booking's opportunity.)
   const [attachTo, setAttachTo] = useState<OpenOpportunity | null>(null)
@@ -147,8 +153,19 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     if (!reviseKey) return
     let alive = true
     setReviseError(null)
-    fetch(`/api/bookings/revise?key=${encodeURIComponent(reviseKey)}`)
-      .then(async r => { const d = await r.json(); if (!r.ok) throw new Error(d.error || 'That booking could not be opened.'); return d.booking })
+    let reopenAgreed = false
+    const load = async (agreed: boolean): Promise<{ [k: string]: any }> => { // eslint-disable-line @typescript-eslint/no-explicit-any
+      const r = await fetch(`/api/bookings/revise?key=${encodeURIComponent(reviseKey)}${agreed ? '&reopen=1' : ''}`)
+      const d = await r.json()
+      // A Closed Lost opportunity: ask, then load it to be reopened on save.
+      if (r.status === 409 && d.reopenable && !agreed && alive && await reopen.ask(d.reopenable.question)) {
+        reopenAgreed = true
+        return load(true)
+      }
+      if (!r.ok) throw new Error(d.error || 'That booking could not be opened.')
+      return d.booking
+    }
+    load(false)
       .then(b => {
         if (!alive) return
         if (b.account) setAccount(b.account)
@@ -162,11 +179,11 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         setQuoteOnly(b.quoteOnly === true)
         if (typeof b.brandMarkupPct === 'number') { revisedMarkup.current = b.brandMarkupPct; setBrandMarkupPct(b.brandMarkupPct) }
         setAttachTo(null)
-        setRevision({ key: b.key, opportunityName: b.opportunityName, clientName: b.clientName, live: b.live, heldUntil: b.heldUntil ?? null, committedMarkets: b.committedMarkets ?? 0 })
+        setRevision({ key: b.key, opportunityName: b.opportunityName, clientName: b.clientName, live: b.live, heldUntil: b.heldUntil ?? null, committedMarkets: Array.isArray(b.committedMarkets) ? b.committedMarkets : [], reopenOpportunity: reopenAgreed })
       })
       .catch(e => { if (alive) setReviseError(e instanceof Error ? e.message : 'That booking could not be opened.') })
     return () => { alive = false }
-  }, [reviseKey])
+  }, [reviseKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const stopRevising = () => { setRevision(null); onReviseDone?.() }
 
@@ -185,7 +202,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
   const [quoteError, setQuoteError] = useState<string | null>(null)
   const [quote, setQuote] = useState<MultiMarketQuote | null>(null)
   const [holding, setHolding] = useState(false)
-  const [holdResult, setHoldResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [holdResult, setHoldResult] = useState<HoldResult | null>(null)
+  // Salesforce failed after the booking saved: a red pop-up until dismissed.
+  const [sfdcFailureOpen, setSfdcFailureOpen] = useState(false)
   // Markets to book. Every market with a truck is selected when a quote arrives.
   const [selected, setSelected] = useState<Set<string>>(new Set())
   // One id per quote shown. Every booking attempt for this quote reuses it, so
@@ -307,30 +326,38 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     }
   }
 
-  const placeHolds = async (allowPartial = false, expectedTotal?: number): Promise<void> => {
+  const placeHolds = async (allowPartial = false, expectedTotal?: number, reopenAgreed = revision?.reopenOpportunity === true): Promise<void> => {
     if (!account || !contact || !quote) return
     const shown = expectedTotal ?? quote.lines.filter(l => selected.has(l.id)).reduce((n, l) => n + l.total, 0)
     setHolding(true); setHoldResult(null)
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, quoteOnly, brand, primaryContactId: contact.id, holdDays, attachOpportunityId: revision ? undefined : attachTo?.id }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, quoteOnly, brand, primaryContactId: contact.id, holdDays, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
       })
       const data = await readJson(res)
+      // The opportunity went Closed Lost after the booking was opened: ask now.
+      if (res.status === 409 && data.reopenable && revision && !reopenAgreed) {
+        setHolding(false)
+        if (await reopen.ask(data.reopenable.question)) return placeHolds(allowPartial, expectedTotal, true)
+        setHoldResult({ ok: false, message: data.error || 'No holds placed.' })
+        return
+      }
       if (res.status === 409 && data.shortfalls) {
         const ok = window.confirm(`${data.error}\n\n${data.shortfalls.map((s: { market: string; missing: number }) => `${s.market}: ${s.missing} truck(s) short`).join('\n')}\n\nBook what can be covered? The rest will be noted on the Salesforce opportunity as quoted but not available, and left out of its amount.`)
-        if (ok) { setHolding(false); return placeHolds(true) }
+        if (ok) { setHolding(false); return placeHolds(true, undefined, reopenAgreed) }
         setHoldResult({ ok: false, message: 'No holds placed.' })
         return
       }
       if (res.status === 409 && data.priceChanged) {
         const ok = window.confirm(`Booking ${allowPartial ? 'what can be covered' : 'the selected markets'} on fresh truck data comes to ${fmtMoney(data.priceChanged.now)}, not ${fmtMoney(data.priceChanged.was)}.\n\nBook at ${fmtMoney(data.priceChanged.now)}?`)
-        if (ok) { setHolding(false); return placeHolds(allowPartial, data.priceChanged.now) }
+        if (ok) { setHolding(false); return placeHolds(allowPartial, data.priceChanged.now, reopenAgreed) }
         setHoldResult({ ok: false, message: 'No holds placed.' })
         return
       }
       if (!res.ok) throw new Error(data.error || 'Holds could not be placed')
-      setHoldResult({ ok: true, message: data.message })
+      setHoldResult({ ok: true, message: data.confirmation ?? data.message, sfdcFailure: data.sfdcFailure ?? null })
+      setSfdcFailureOpen(Boolean(data.sfdcFailure))
       // A finished revision: the booking now stands as booked; leave revise mode.
       if (revision) { setRevision(null); onReviseDone?.() }
     } catch (e) {
@@ -367,7 +394,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
               ? 'Markets that stay keep their current trucks where those can still do the dates.'
               : 'It has expired, so trucks are picked and priced fresh.'}
             {revision.live && revision.heldUntil && ` Its holds run to ${new Date(revision.heldUntil).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Chicago' })} at the latest; a market that stays keeps an expiry later than the hold length below.`}
-            {revision.committedMarkets > 0 && ` ${revision.committedMarkets} market${revision.committedMarkets === 1 ? ' is' : 's are'} committed and stay${revision.committedMarkets === 1 ? 's' : ''} committed.`}
+            {revision.committedMarkets.length > 0 && ` ${revision.committedMarkets.length} market${revision.committedMarkets.length === 1 ? ' is' : 's are'} committed and stay${revision.committedMarkets.length === 1 ? 's' : ''} committed.`}
           </p>
         </div>
       )}
@@ -423,7 +450,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           <table className="w-full">
             <thead>
               <tr>
-                <th className={th}>Market</th><th className={th}>Start</th><th className={th}>End</th>
+                <th className={th}>Market</th><th className={th} colSpan={2}>Start / End</th>
                 <th className={th}>Trucks</th><th className={th}>Schedule</th><th className={th}>Hours</th><th className={th}></th>
               </tr>
             </thead>
@@ -450,8 +477,22 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
                         </div>
                       )}
                     </td>
-                    <td className={td}><input type="date" className={input} min={todayStr()} value={r.startDate} onChange={e => updateRow(r.id, { startDate: e.target.value })} /></td>
-                    <td className={td}><input type="date" className={input} min={r.startDate || todayStr()} value={r.endDate} onChange={e => updateRow(r.id, { endDate: e.target.value })} /></td>
+                    <td className={td} colSpan={2}>
+                      <div className="flex gap-2">
+                        <input type="date" className={input} aria-label="Start" min={todayStr()} value={r.startDate} onChange={e => updateRow(r.id, { startDate: e.target.value })} />
+                        <input type="date" className={input} aria-label="End" min={r.startDate || todayStr()} value={r.endDate} onChange={e => updateRow(r.id, { endDate: e.target.value })} />
+                      </div>
+                      {/* Same flight for the markets below: copy this row's dates down. Sits under the
+                          dates (not off to the right) so it's in view; only rows below change. */}
+                      {i < rows.length - 1 && (
+                        <button onClick={() => setRows(rs => copyDatesDown(rs, r.id))}
+                          disabled={!r.startDate || !r.endDate}
+                          className="mt-1 text-xs font-medium text-green-700 hover:text-green-800 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          title={r.startDate && r.endDate ? `Set every market below to ${r.startDate} – ${r.endDate}` : "Set this row's start and end first"}>
+                          ↓ Copy dates to markets below
+                        </button>
+                      )}
+                    </td>
                     <td className={td}><input type="number" min={1} max={50} className={input + ' min-w-[4.5rem]'} value={r.trucks} onChange={e => updateRow(r.id, { trucks: Math.max(1, parseInt(e.target.value) || 1) })} /></td>
                     <td className={td}>
                       <ScheduleSelect start={r.startDate} end={r.endDate} value={r.daysPerWeek} onChange={v => updateRow(r.id, { daysPerWeek: v })} />
@@ -463,14 +504,6 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
                     </td>
                     <td className={td + ' whitespace-nowrap'}>
                       <div className="flex items-center gap-3">
-                        {/* Same flight for the markets below: copy this row's dates down. */}
-                        {i < rows.length - 1 && r.startDate && r.endDate && (
-                          <button onClick={() => setRows(rs => copyDatesDown(rs, r.id))}
-                            className="text-xs text-green-700 hover:text-green-800"
-                            title={`Set every market below to ${r.startDate} – ${r.endDate}`}>
-                            Copy dates down
-                          </button>
-                        )}
                         <button onClick={() => setRows(rs => (rs.length > 1 ? rs.filter(x => x.id !== r.id) : rs))} className="text-gray-400 hover:text-red-600 text-sm" title="Remove">✕</button>
                       </div>
                     </td>
@@ -541,6 +574,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           account={account}
           contact={contact}
           revising={revision !== null}
+          committedMarkets={revision?.committedMarkets ?? []}
           attachName={revision ? null : attachTo?.name ?? null}
           holdDays={holdDays}
           onHoldDays={setHoldDays}
@@ -552,6 +586,10 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           quoteOnly={quoteOnly}
           unplaced={built?.unplaced.map(u => u.label) ?? []}
         />
+      )}
+      {reopen.dialog}
+      {holdResult?.sfdcFailure && sfdcFailureOpen && (
+        <SalesforceFailureModal detail={holdResult.sfdcFailure} onClose={() => setSfdcFailureOpen(false)} />
       )}
     </div>
   )
@@ -651,18 +689,23 @@ function ImportPanel(p: {
 
 // ---------------------------------------------------------------------------
 
-function QuoteResult({ quote, account, contact, revising, attachName, holdDays, onHoldDays, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
+/** A booking's outcome; sfdcFailure is set when the holds saved but Salesforce didn't. */
+type HoldResult = { ok: boolean; message: string; sfdcFailure?: string | null }
+
+function QuoteResult({ quote, account, contact, revising, committedMarkets, attachName, holdDays, onHoldDays, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
   quote: MultiMarketQuote
   account: SfdcAccount | null
   contact: SfdcContact | null
   /** Booking replaces an existing booking (Reservations → Revise). */
   revising: boolean
+  /** On a revision, the markets (lower-cased) that stay committed: they hold nothing, so they don't cap the expiry. */
+  committedMarkets: string[]
   /** Booking is added to this existing opportunity. */
   attachName: string | null
   holdDays: number
   onHoldDays: (days: number) => void
   holding: boolean
-  holdResult: { ok: boolean; message: string } | null
+  holdResult: HoldResult | null
   selected: Set<string>
   onToggle: (id: string) => void
   onPlaceHolds: () => void
@@ -759,13 +802,20 @@ function QuoteResult({ quote, account, contact, revising, attachName, holdDays, 
         )}
 
         {holdResult?.ok ? (
-          <div className="mt-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-800 font-medium">✓ {holdResult.message}</div>
+          <>
+            <div className="mt-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-800 font-medium">✓ {holdResult.message}</div>
+            {holdResult.sfdcFailure && (
+              <div className="mt-2 bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-800">
+                <span className="font-semibold">Salesforce was not updated.</span> {holdResult.sfdcFailure}
+              </div>
+            )}
+          </>
         ) : (
           <>
             {/* Hold length: a reservation only (a quote-only log holds nothing). */}
             {!quoteOnly && (
               <HoldLength days={holdDays} onChange={onHoldDays}
-                startDates={holdStartDates(chosen)} />
+                startDates={holdStartDates(chosen.filter(l => !committedMarkets.includes(l.market.trim().toLowerCase())))} />
             )}
             <button onClick={onPlaceHolds} disabled={holding || !account || !contact || chosen.length === 0}
               className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium">

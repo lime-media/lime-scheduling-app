@@ -20,11 +20,12 @@ export function copyDatesDown<T extends Dated>(rows: T[], fromId: string): T[] {
 }
 
 /**
- * The start date each hold of a multi-market booking is capped by, as
- * app/api/plan/hold computes it: a truck's job starts on its line's start
- * date, or on the earlier of the two starts when it is shared week to week
- * with another booked market (lib/planning/order.ts buildJobs). The planner's
- * hold-length preview uses this so it shows the expiry the server will store.
+ * The start dates of a multi-market booking's holds: a truck's job starts on
+ * its line's start date, or on the earlier of the two starts when it is
+ * shared week to week with another booked market (lib/planning/order.ts
+ * buildJobs). The booking has ONE expiry, capped by the earliest of these
+ * (lib/holdExpiry.ts bookingHoldExpiry, as app/api/plan/hold applies it);
+ * the planner's hold-length preview uses them to show that expiry.
  */
 export function holdStartDates(
   lines: { market: string; startDate: string; assigned: { sharedWith: string | null }[] }[],

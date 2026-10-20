@@ -44,12 +44,12 @@ import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { canonicalMarketName } from '@/lib/marketBounds'
-import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
+import { bookingHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
 import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
-import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
-import { SFDC_SERVICE_USER_EMAIL, attachedToOpportunity } from '@/lib/sfdcIntegration'
+import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, reopenClosedLostOpportunity, type BookingOpportunity } from '@/lib/sfdcBooking'
+import { SFDC_SERVICE_USER_EMAIL, attachedToOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { rotationStints, type OrderLine } from '@/lib/planning/order'
 import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuote, type QuoteRequest } from '@/lib/planning/quote'
 import { fitNames, lineFeatures } from '@/lib/planning/booking'
@@ -82,6 +82,12 @@ type HoldBody = QuoteRequest & {
    * onto that booking's own opportunity.)
    */
   attachOpportunityId?: string
+  /**
+   * A revision only: the person agreed to move the booking's Closed Lost
+   * opportunity back to WARM (asked after a 409 `reopenable`). Ignored on an
+   * attach, which only offers open opportunities.
+   */
+  reopenOpportunity?: boolean
 }
 
 const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
@@ -192,7 +198,16 @@ async function handlePost(req: NextRequest) {
       // revised as one without an opportunity, as the planner said when it
       // opened it (app/api/bookings/revise): a new opportunity is created.
       // An opportunity picked to add to must exist.
-      const refusal = attachUnreachable || (reviseKey && !target) ? null : opportunityRefusal(target, body.sfdcAccountId)
+      const lost = reviseKey && target
+        ? reactivationDecision({ isClosed: target.IsClosed, isWon: target.IsWon, stageName: target.StageName }, body.reopenOpportunity === true)
+        : { kind: 'allowed' as const }
+      if (lost.kind === 'reopenable') {
+        return NextResponse.json({
+          error: opportunityRefusal(target, body.sfdcAccountId),
+          reopenable: { opportunityId: target!.Id, stageName: lost.stageName, question: reopenQuestion(lost.stageName) },
+        }, { status: 409 })
+      }
+      const refusal = attachUnreachable || (reviseKey && !target) ? null : opportunityRefusal(target, body.sfdcAccountId, { closedLostReopening: lost.kind === 'reopen' })
       if (refusal) return NextResponse.json({ error: refusal }, { status: 409 })
     }
 
@@ -265,19 +280,20 @@ async function handlePost(req: NextRequest) {
         latest: h.expires_at && (!was.latest || h.expires_at > was.latest) ? h.expires_at : was.latest,
       })
     }
-    const keptExpiry = (lineId: string, computed: Date) => {
-      const latest = replaced.get(sameMarket(place.get(lineId)!.market))?.latest
-      return latest && latest > computed ? latest : computed
-    }
     const committedMarket = (lineId: string) => replaced.get(sameMarket(place.get(lineId)!.market))?.committed === true
-    const stretches = plan.trucks.flatMap(t => t.jobs.flatMap(job => rotationStints(job).map(st => ({
+    const stints = plan.trucks.flatMap(t => t.jobs.flatMap(job => rotationStints(job).map(st => ({
       truckNumber: t.truckNumber,
       stint: st,
       partner: job.lines.length > 1 ? job.lines.find(l => l.id !== st.lineId)!.market : null,
-      // Each market's hold runs the seller's length, cut by its own start date,
-      // or the later expiry its replaced holds already had.
-      expiresAt: keptExpiry(st.lineId, holdExpiry(job.start, holdDays, holdClock).expiresAt),
     }))))
+    // A multi-market booking is one quote with ONE expiry on every hold: the
+    // seller's length, capped by the earliest start among the markets that
+    // will be held (committed ones aren't), or the later expiry the revised
+    // booking already had, never past that cap (lib/holdExpiry.ts).
+    const heldStarts = stints.filter(x => !committedMarket(x.stint.lineId)).map(x => x.stint.start)
+    const keepUntil = [...replaced.values()].map(v => v.latest).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0] ?? null
+    const bookingExpiry = heldStarts.length ? bookingHoldExpiry(heldStarts, holdDays, holdClock, keepUntil, STAFF_MIN_DAYS_BEFORE_START) : null
+    const stretches = stints.map(x => ({ ...x, expiresAt: bookingExpiry?.expiresAt ?? holdClock }))
 
     // All or nothing: any stretch that now clashes stops the whole booking.
     // (A quote-only log blocks no truck, so there is nothing to clash with.)
@@ -385,7 +401,29 @@ async function handlePost(req: NextRequest) {
     // hold and is written in the same transaction as the delete: the record,
     // the delete and the new holds land together, or none of them do.
     const was = reviseIds.length ? await prisma.hold.findMany({ where: { id: { in: reviseIds } } }) : []
+    // A Closed Lost opportunity the person agreed to reopen: moved back to
+    // WARM last, after every check that could still refuse, so a revision that
+    // stops above never reopens the deal. If Salesforce refuses, nothing here
+    // changes.
+    let reopened: { fromStage: string; toStage: string } | null = null
+    if (reviseKey && target && body.reopenOpportunity === true && target.IsClosed && !target.IsWon) {
+      const r = await reopenClosedLostOpportunity(target.Id)
+      if (!r.ok) return NextResponse.json({ error: r.error }, { status: 409 })
+      reopened = r
+      target = { ...target, StageName: r.toStage, IsClosed: false }
+    }
     await prisma.$transaction([
+      ...(reopened ? [prisma.auditLog.create({
+        data: {
+          action: 'REOPEN_OPPORTUNITY',
+          truck_number: truckNumbers[0] ?? reviseHolds[0]?.truck_number ?? '',
+          user_id: createdBy,
+          details: JSON.stringify({
+            opportunity_id: target!.Id, from_stage: reopened.fromStage, to_stage: reopened.toStage,
+            by: (token.email as string | undefined) ?? createdBy, for: 'REVISE_BOOKING', booking: reviseKey,
+          }),
+        },
+      })] : []),
       ...(reviseKey ? [prisma.auditLog.create({
         data: {
           action: 'REVISE_BOOKING',
@@ -517,6 +555,19 @@ async function handlePost(req: NextRequest) {
     const fixByHand = existingOpp
       ? ` Update ${target ? `"${target.Name}"` : existingOpp.Name} in Salesforce by hand with this booking (holds grouped under ${groupPrefix}*).`
       : ` Create the opportunity by hand (holds grouped under ${groupPrefix}*).`
+    const booked = quoteOnly
+      ? `Quote logged for ${accountName} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} (${money(quote.summary.grandTotal)}); no trucks reserved.`
+      : `${lead}Placed ${rows.length} hold${rows.length === 1 ? '' : 's'} on ${truckNumbers.length} truck${truckNumbers.length === 1 ? '' : 's'} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} for ${accountName} (${money(quote.summary.grandTotal)})`
+        // One lapse date for the whole booking, and why when the start cut it short.
+        + (target?.IsWon ? ', committed (the opportunity is won)' : bookingExpiry ? `, held until ${HELD_UNTIL.format(bookingExpiry.expiresAt)}`
+          + (bookingExpiry.cappedByStart ? ` (${STAFF_MIN_DAYS_BEFORE_START} days before the first market starts, ${bookingExpiry.startDate}: the latest a booking can be held)`
+            : bookingExpiry.atMinimum ? ' (the 24-hour minimum: the first market starts too soon for a longer hold)' : '') : '')
+        + '.'
+    const sfdcDone = !sfdcOpportunityId ? ''
+      : quoteOnly ? ` ${oppDone}.` + checkIt
+      : ` ${oppDone}` + (leftOut ? ', with the markets not booked listed in its Description.' : '.') + checkIt
+    const sfdcFailure = sfdcOpportunityId || !sfdcError ? null
+      : quoteOnly ? `${sfdcError}.${fixByHand}` : `${sfdcError}; the holds are placed.${fixByHand}`
     return NextResponse.json({
       ok: true,
       created: stretches.map(x => ({ truckNumber: x.truckNumber, market: x.stint.market, start: x.stint.start, end: x.stint.end })),
@@ -524,14 +575,11 @@ async function handlePost(req: NextRequest) {
       sfdcOpportunityId,
       bookedTotal: quote.summary.grandTotal,
       quoteOnly,
-      message: quoteOnly
-        ? `Quote logged for ${accountName} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} (${money(quote.summary.grandTotal)}); no trucks reserved.`
-          + (sfdcOpportunityId ? ` ${oppDone}.` + checkIt : sfdcError ? ` ${sfdcError}.${fixByHand}` : '')
-        : `${lead}Placed ${rows.length} hold${rows.length === 1 ? '' : 's'} on ${truckNumbers.length} truck${truckNumbers.length === 1 ? '' : 's'} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} for ${accountName} (${money(quote.summary.grandTotal)})`
-        + (target?.IsWon ? ', committed (the opportunity is won)' : stretches.length ? `, held until ${HELD_UNTIL.format(new Date(Math.min(...stretches.map(x => x.expiresAt.getTime()))))}` : '')
-        + (!target?.IsWon && stretches.some(x => x.expiresAt.getTime() !== stretches[0].expiresAt.getTime()) ? ' (some markets lapse later: see each on Reservations)' : '') + '.'
-        + (sfdcOpportunityId ? ` ${oppDone}` + (leftOut ? ', with the markets not booked listed in its Description.' : '.') + checkIt
-          : sfdcError ? ` ${sfdcError}; the holds are placed.${fixByHand}` : ''),
+      message: booked + (sfdcFailure ? ` ${sfdcFailure}` : sfdcDone),
+      // The UI shows the booking and a Salesforce failure apart, so a failure
+      // can't read as part of a success.
+      confirmation: booked + sfdcDone,
+      sfdcFailure,
     })
   } catch (err) {
     console.error('[plan/hold] failed:', err)

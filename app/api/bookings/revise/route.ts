@@ -4,6 +4,10 @@
  * brand, markets (as planner rows, with the trucks a live booking keeps) and
  * options. Staff only. Refuses what cannot be revised (lib/bookings.ts
  * reviseRefusal; a lost opportunity: lib/sfdcBooking.ts opportunityRefusal).
+ * A Closed Lost opportunity answers 409 `reopenable` so the planner can ask
+ * whether to move it back to WARM; `&reopen=1` then loads the booking. Nothing
+ * is written here: the reopen happens when the revision is saved
+ * (app/api/plan/hold, reopenOpportunity).
  */
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -11,6 +15,7 @@ import { requireStaff } from '@/lib/planning/http'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { reviseRefusal, reviseRows } from '@/lib/bookings'
 import { getBookingOpportunity, opportunityRefusal } from '@/lib/sfdcBooking'
+import { reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { clientTypeOf } from '@/lib/pricing/brandMarkup'
 import { isSfdcConfigured } from '@/lib/salesforceClient'
 
@@ -34,7 +39,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Salesforce could not be reached to load this booking\'s opportunity. Try again.' }, { status: 503 })
     }
     if (opp) {
-      const lost = opportunityRefusal(opp, opp.AccountId)
+      const decision = reactivationDecision({ isClosed: opp.IsClosed, isWon: opp.IsWon, stageName: opp.StageName }, req.nextUrl.searchParams.get('reopen') === '1')
+      if (decision.kind === 'reopenable') {
+        return NextResponse.json({
+          error: opportunityRefusal(opp, opp.AccountId),
+          reopenable: { opportunityId: opp.Id, stageName: decision.stageName, question: reopenQuestion(decision.stageName) },
+        }, { status: 409 })
+      }
+      const lost = opportunityRefusal(opp, opp.AccountId, { closedLostReopening: decision.kind === 'reopen' })
       if (lost) return NextResponse.json({ error: lost }, { status: 409 })
     }
   }
@@ -57,7 +69,7 @@ export async function GET(req: NextRequest) {
       // What a revision keeps (app/api/plan/hold): the latest expiry of the
       // live holds, and the markets ops marked committed.
       heldUntil: holds.filter(h => h.live && h.expires_at).map(h => h.expires_at!.toISOString()).sort().reverse()[0] ?? null,
-      committedMarkets: new Set(holds.filter(h => h.live && h.status === 'COMMITTED').map(h => h.market.trim().toLowerCase())).size,
+      committedMarkets: [...new Set(holds.filter(h => h.live && h.status === 'COMMITTED').map(h => h.market.trim().toLowerCase()))],
     },
   })
 }

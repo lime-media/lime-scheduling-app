@@ -17,9 +17,10 @@ import { getSetting } from '@/lib/appSettings'
 //   notify.holds   / HOLD_NOTIFY_EMAIL    a client booked
 //   notify.assist  / ASSIST_NOTIFY_EMAIL  a client needs a human
 
+/** One email per booking: every truck it holds, not one email per truck. */
 export interface HoldRequestEmailData {
   companyName:  string
-  truckNumber:  string
+  truckNumbers: string[]
   market:       string
   startDate:    string
   endDate:      string
@@ -42,11 +43,12 @@ export async function sendHoldRequestEmail(data: HoldRequestEmailData): Promise<
     auth:   { user: SMTP_USER, pass: SMTP_PASS },
   })
 
-  const subject = `Hold Request — Truck ${data.truckNumber} · ${data.market}`
+  const trucks = data.truckNumbers.length === 1 ? `Truck ${data.truckNumbers[0]}` : `${data.truckNumbers.length} trucks`
+  const subject = `Hold Request — ${trucks} · ${data.market}`
   const text = [
     `New hold request from ${data.companyName}`,
     ``,
-    `Truck:   ${data.truckNumber}`,
+    `${data.truckNumbers.length === 1 ? 'Truck: ' : 'Trucks:'}  ${data.truckNumbers.join(', ')}`,
     `Market:  ${data.market}`,
     `Dates:   ${data.startDate} → ${data.endDate}`,
     data.notes ? `Notes:   ${data.notes}` : null,
@@ -105,14 +107,15 @@ export async function sendAssistanceRequestEmail(data: AssistanceRequestEmailDat
   })
 }
 
+/** One email per cancelled booking: every truck and market in it. */
 export interface CancellationEmailData {
-  to:          string
-  companyName: string
-  truckNumber: string
-  market:      string
-  startDate:   string
-  endDate:     string
-  reason:      string
+  to:           string
+  companyName:  string
+  truckNumbers: string[]
+  markets:      string[]
+  startDate:    string
+  endDate:      string
+  reason:       string
 }
 
 export async function sendCancellationEmail(data: CancellationEmailData): Promise<void> {
@@ -130,16 +133,68 @@ export async function sendCancellationEmail(data: CancellationEmailData): Promis
     auth:   { user: SMTP_USER, pass: SMTP_PASS },
   })
 
-  const subject = `Reservation Update — ${data.market}`
+  const markets = data.markets.join(', ')
+  const trucks = data.truckNumbers.length === 1 ? `Truck ${data.truckNumbers[0]}` : `${data.truckNumbers.length} trucks (${data.truckNumbers.join(', ')})`
+  const subject = `Reservation Update — ${markets}`
   const text = [
     `Hi ${data.companyName},`,
     ``,
-    `We're reaching out to let you know that your reservation for Truck ${data.truckNumber} in ${data.market} ` +
+    `We're reaching out to let you know that your reservation for ${trucks} in ${markets} ` +
       `(${data.startDate} – ${data.endDate}) has been cancelled.`,
     ``,
     `Reason: ${data.reason}`,
     ``,
     `If you have any questions or would like to explore other options, please don't hesitate to reach out.`,
+    ``,
+    `— The Lime Media Team`,
+  ].join('\n')
+
+  await transporter.sendMail({
+    from:    SMTP_FROM ?? SMTP_USER,
+    to:      data.to,
+    subject,
+    text,
+  })
+}
+
+/** The client's answer to an extension request on a booking: approved (to a date) or denied (released). */
+export interface ExtensionDecisionEmailData {
+  to:          string
+  companyName: string
+  markets:     string[]
+  startDate:   string
+  endDate:     string
+  /** Approved: the date the booking is now held until (YYYY-MM-DD). Absent: denied. */
+  heldUntil?:  string
+}
+
+export async function sendExtensionDecisionEmail(data: ExtensionDecisionEmailData): Promise<void> {
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+    console.log('[email] SMTP not configured — extension decision (not emailed):', data)
+    return
+  }
+
+  const nodemailer = (await import('nodemailer')).default
+  const transporter = nodemailer.createTransport({
+    host:   SMTP_HOST,
+    port:   Number(SMTP_PORT ?? 587),
+    secure: Number(SMTP_PORT ?? 587) === 465,
+    auth:   { user: SMTP_USER, pass: SMTP_PASS },
+  })
+
+  const markets = data.markets.join(', ')
+  const subject = `Hold Extension ${data.heldUntil ? 'Approved' : 'Declined'} — ${markets}`
+  const text = [
+    `Hi ${data.companyName},`,
+    ``,
+    data.heldUntil
+      ? `Your request to extend your reservation in ${markets} (${data.startDate} – ${data.endDate}) has been approved. It is now held until ${data.heldUntil}.`
+      : `We weren't able to extend your reservation in ${markets} (${data.startDate} – ${data.endDate}), so it has been released.`,
+    ``,
+    data.heldUntil
+      ? `Let us know before then if you'd like to confirm it.`
+      : `If you'd still like to run this campaign, please reach out and we'll look at availability with you.`,
     ``,
     `— The Lime Media Team`,
   ].join('\n')

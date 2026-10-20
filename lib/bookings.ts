@@ -26,17 +26,57 @@ export function bookingKey(r: BookingRow): string | null {
 }
 
 /**
- * What one Reservations card shows: a booking's reservations in ONE status.
- * A booking has one expiry, but ops commit markets one by one and a market's
- * holds can be cancelled or reinstated on their own (and bookings made before
- * the one-expiry rule lapsed per market), so a booking is often part on hold,
- * part committed or expired. One card per
- * status keeps the card, its totals, its expiry and its Edit about exactly the
- * same reservations; the card notes the booking's other parts.
+ * A booking's one status, for its card on Reservations and in the client
+ * portal. A booking is one quote: it is booked, committed (Closed Won),
+ * extended and expired as a whole, so its holds share a status. Bookings made
+ * before the one-expiry rule (#118) could lapse market by market; for those
+ * the card still shows the booking whole, under the status that needs action
+ * first, and `odd` lists the markets in any other status. Pure.
  */
-export function bookingCardKey(r: BookingRow & { status: string }): string | null {
-  const key = bookingKey(r)
-  return key ? `${key}|${r.status}` : null
+const STATUS_PRIORITY = ['EXTENSION_REQUESTED', 'HOLD', 'COMMITTED', 'EXPIRED']
+
+export function bookingStatus(rows: { status: string; market: string }[]): { status: string; odd: { status: string; markets: string[] }[] } {
+  const rank = (s: string) => { const i = STATUS_PRIORITY.indexOf(s); return i < 0 ? STATUS_PRIORITY.length : i }
+  const present = [...new Set(rows.map(r => r.status))].sort((a, b) => rank(a) - rank(b))
+  const status = present[0] ?? ''
+  const odd = present.slice(1).map(s => ({
+    status: s,
+    markets: [...new Set(rows.filter(r => r.status === s).map(r => r.market))],
+  }))
+  return { status, odd }
+}
+
+/** What staff are told when a change would touch a won deal. */
+export const CLOSED_WON_READ_ONLY = 'This deal is Closed Won in Salesforce; change it there first.'
+
+/**
+ * Why a change to a booking is refused because the deal is won, or null.
+ * Closed Won is read-only in the app: only a truck swap (ops logistics, the
+ * deal unchanged) may touch it. A committed hold on an opportunity IS a won
+ * deal: only Salesforce commits holds (the reconcile, or a PUT that checks the
+ * stage), and the reconcile un-commits them if the deal leaves Closed Won, so
+ * "change it in Salesforce first" always has a way back. A committed hold with
+ * no opportunity has no Salesforce side to change, so it is never locked.
+ * `opportunity.isWon` covers the minutes before the reconcile catches up. Pure.
+ */
+export function closedWonRefusal(holds: { status: string; sfdc_opportunity_id: string | null }[], opportunity?: { isWon: boolean } | null): string | null {
+  return opportunity?.isWon || holds.some(h => h.status === 'COMMITTED' && !!h.sfdc_opportunity_id) ? CLOSED_WON_READ_ONLY : null
+}
+
+/**
+ * Why a client may not ask to extend this booking, or null. A request covers
+ * the whole booking, so every live hold in it must be an ordinary reservation:
+ * a committed (won) booking has nothing to extend, an expired one has lapsed,
+ * a request may already be waiting, and an AT&T soft hold is never a
+ * client's. Pure.
+ */
+export function clientExtendRefusal(holds: { status: string }[]): string | null {
+  const live = holds.filter(h => h.status !== 'EXPIRED')
+  if (live.some(h => h.status === 'COMMITTED')) return 'This booking is confirmed; there is no hold to extend.'
+  if (live.some(h => h.status === 'EXTENSION_REQUESTED')) return 'An extension has already been requested for this booking.'
+  if (live.length === 0) return 'This booking has expired and can no longer be extended.'
+  if (live.some(h => h.status !== 'HOLD')) return 'This booking cannot be extended.'
+  return null
 }
 
 /** Whether a booking's reservations came from a multi-market quote. */
@@ -172,7 +212,8 @@ const parseFeatures = (json: string | null): Record<string, unknown> => {
 /**
  * Why a booking cannot be revised in the planner, or null. Only bookings made
  * in the quote tools: a Salesforce push is managed in Salesforce, and a client
- * portal booking belongs to the client. Lift studies are a single-market
+ * portal booking belongs to the client. A committed (Closed Won) booking is
+ * changed in Salesforce, never here. Lift studies are a single-market
  * option the multi-market quote does not price, so revising would drop them.
  */
 export function reviseRefusal(holds: RevisableHold[]): string | null {
@@ -182,6 +223,9 @@ export function reviseRefusal(holds: RevisableHold[]): string | null {
       ? 'This booking came from Salesforce; change it there.'
       : 'This booking was made in the client portal; it can only be changed with the client.'
   }
+  // Committed = Closed Won: read-only in the app (closedWonRefusal).
+  const won = closedWonRefusal(holds)
+  if (won) return won
   if (holds.some(h => {
     const f = parseFeatures(h.features)
     return Array.isArray(f.studies) && f.studies.length > 0

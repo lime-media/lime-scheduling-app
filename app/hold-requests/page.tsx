@@ -15,7 +15,7 @@ import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
-import { bookingCapStarts, bookingCardKey, bookingKey, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
+import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingKey, closedWonRefusal, bookingStatus, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
 
 type HoldRequest = {
@@ -40,6 +40,7 @@ type HoldRequest = {
   sfdc_opportunity_id: string | null
   expires_at: string | null
   extension_reason: string | null
+  extension_until: string | null
   created_at: string
 }
 
@@ -119,6 +120,8 @@ function groupSortValue(rows: HoldRequest[], key: SortKey): SortValue {
 function ReviseLink({ rows, booking }: { rows: HoldRequest[]; booking?: HoldRequest[] }) {
   const key = rows.length ? bookingKey(rows[0]) : null
   if (!key || rows.some(r => r.source !== 'INTERNAL')) return null
+  // A won deal is changed in Salesforce, never revised here (lib/bookings.ts reviseRefusal).
+  if (closedWonRefusal(booking ?? rows)) return null
   // Any card of a booking with an extension request waiting: answer it first
   // (revising would drop it; lib/bookings.ts reviseRefusal).
   if ((booking ?? rows).some(r => r.status === 'EXTENSION_REQUESTED')) {
@@ -275,10 +278,14 @@ export default function HoldRequestsPage() {
 
   useEffect(() => { fetchRequests() }, [fetchRequests])
 
-  // Runs `action` against every id (a whole campaign group at once, or a single ungrouped row),
-  // reports partial failures individually since one truck in a group can fail (e.g. a conflict)
-  // while the rest succeed, and refetches once regardless so the list reflects whatever did land.
-  const runAction = useCallback(async (ids: string[], action: 'approve' | 'reject' | 'approve_extension' | 'deny_extension' | 'reinstate', groupKey: string) => {
+  // Approve or deny an extension: ONE request for the whole booking (the
+  // server answers it for every hold in it, in one transaction, with one
+  // email to the client). Reinstate runs against every id (each truck is
+  // re-checked for conflicts on its own), reports partial failures
+  // individually, and refetches once regardless so the list reflects whatever
+  // did land.
+  const runAction = useCallback(async (allIds: string[], action: 'approve' | 'reject' | 'approve_extension' | 'deny_extension' | 'reinstate', groupKey: string) => {
+    const ids = action === 'reinstate' ? allIds : allIds.slice(0, 1)
     setActing(groupKey)
     try {
       const send = async (id: string, reopenOpportunity = false): Promise<{ id: string; ok: boolean; error?: string; reopenable?: Reopenable }> => {
@@ -310,7 +317,8 @@ export default function HoldRequestsPage() {
         // A reinstated hold is no longer EXPIRED, so it leaves whichever expired view the
         // button was clicked from. Follow it to Active rather than letting the row vanish.
         if (action === 'reinstate') setFilterStatus('HOLD')
-        toast.success(`${actionLabel} — ${succeeded} truck${succeeded === 1 ? '' : 's'}`)
+        const trucks = action === 'reinstate' ? succeeded : allIds.length
+        toast.success(`${actionLabel} — ${trucks} truck${trucks === 1 ? '' : 's'}`)
       } else if (succeeded > 0) {
         toast.error(`${actionLabel}: ${succeeded} succeeded, ${failed.length} failed — ${failed[0].error}`)
       } else {
@@ -324,14 +332,12 @@ export default function HoldRequestsPage() {
 
   const openEdit = async (request: HoldRequest) => {
     // Everything in the same booking: all markets of a multi-market quote,
-    // so one Edit (and one expiry change) covers the whole reservation.
-    // The same reservations as the card: this booking, in this status.
-    // Taken from the rows on screen (the filter and search), so Edit and Cancel
-    // never reach a reservation the card doesn't show.
-    const groupKey = bookingCardKey(request)
-    const siblings = groupKey
-      ? filtered.filter(r => bookingCardKey(r) === groupKey)
-      : [request]
+    // so one Edit (and one expiry change, or one cancel) covers the whole
+    // reservation, as its card does. Its live reservations only: an expired
+    // part of an older booking has no truck to swap or date to move.
+    const key = bookingKey(request)
+    const siblings = (key ? rowsByBooking.get(key) ?? [request] : [request])
+      .filter(r => r.status === 'HOLD' || r.status === 'COMMITTED' || r.status === 'EXTENSION_REQUESTED')
     setEditingGroup(siblings)
     setSelectedTrucks(new Map(siblings.map(r => [r.id, r.truck_number])))
     setCancelMode(false)
@@ -429,23 +435,17 @@ export default function HoldRequestsPage() {
         }
       }
 
-      // Expiration update — every hold of the card to the one date (see expiryChanges)
+      // Expiration update — ONE request: the server sets the one date on every
+      // live hold of the booking, in one transaction (see expiryChanges).
       if (expirationChanged) {
-        const results = await Promise.all(
-          expiryChanges.map(async (e) => {
-            const res = await fetch(`/api/hold-requests/${e.id}`, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'update_expiration', expires_at: e.expiresOn }),
-            })
-            if (res.ok) return { ok: true, market: e.market }
-            const err = await res.json().catch(() => ({}))
-            return { ok: false, market: e.market, error: err.error as string | undefined }
-          })
-        )
-        const failed = results.filter(r => !r.ok)
-        if (failed.length > 0) {
-          toast.error(`Expiry not changed for ${failed.map(f => f.market).join(', ')}: ${failed[0].error || 'request failed'}`)
+        const res = await fetch(`/api/hold-requests/${expiryChanges[0].id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'update_expiration', expires_at: expiryChanges[0].expiresOn }),
+        })
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          toast.error(`Expiry not changed: ${err.error || 'request failed'}`)
           fetchRequests()
           return
         }
@@ -465,21 +465,18 @@ export default function HoldRequestsPage() {
     if (!editingGroup || !cancelReason.trim()) return
     setSaving(true)
     try {
-      const results = await Promise.all(
-        editingGroup.map(async (r) => {
-          const res = await fetch(`/api/hold-requests/${r.id}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'cancel_notify', reason: cancelReason }),
-          })
-          return res.ok
-        })
-      )
-      const succeeded = results.filter(Boolean).length
-      if (succeeded === editingGroup.length) {
-        toast.success(editingGroup[0].source === 'CLIENT' ? 'Reservation cancelled — client notified' : 'Reservation cancelled')
+      // ONE request: the server cancels every live hold of the booking in one
+      // transaction and sends the client one email.
+      const res = await fetch(`/api/hold-requests/${editingGroup[0].id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'cancel_notify', reason: cancelReason }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        toast.success(data.emailed ? 'Reservation cancelled — client notified' : 'Reservation cancelled')
       } else {
-        toast.error(`Cancelled ${succeeded} of ${editingGroup.length} trucks`)
+        toast.error(data.error || 'Reservation not cancelled')
       }
       setEditingGroup(null)
       fetchRequests()
@@ -490,28 +487,9 @@ export default function HoldRequestsPage() {
     }
   }
 
-  const filtered = useMemo(
-    () => {
-      let result = filterStatus
-        ? requests.filter((r) => filterStatus === 'HOLD' ? (r.status === 'HOLD' || r.status === 'COMMITTED') : r.status === filterStatus)
-        : requests
-      const q = search.trim().toLowerCase()
-      if (q) {
-        const matches = (r: HoldRequest) => [r.company_name, r.truck_number, r.market, r.notes]
-          .filter(Boolean)
-          .some((field) => field!.toLowerCase().includes(q))
-        // A match shows its whole card (booking and status), so a card, its
-        // total and its Edit always cover the same reservations.
-        const cards = new Set(result.filter(matches).map(r => bookingCardKey(r)).filter(Boolean))
-        result = result.filter((r) => { const k = bookingCardKey(r); return k ? cards.has(k) : matches(r) })
-      }
-      return result
-    },
-    [requests, filterStatus, search]
-  )
-
-  // Every reservation by booking, across all statuses, for each card's "Also
-  // in this booking" note. Built once per fetch, not per card per render.
+  // Every reservation by booking, across all statuses. A booking is the unit
+  // (one card, one status: lib/bookings.ts bookingStatus). Built once per
+  // fetch, not per card per render.
   const rowsByBooking = useMemo(() => {
     const out = new Map<string, HoldRequest[]>()
     for (const r of requests) {
@@ -520,6 +498,33 @@ export default function HoldRequestsPage() {
     }
     return out
   }, [requests])
+
+  // A booking's status (and its markets in any other status, for an older booking).
+  const statusOf = useCallback((r: HoldRequest) => {
+    const key = bookingKey(r)
+    return key ? bookingStatus(rowsByBooking.get(key) ?? [r]) : { status: r.status, odd: [] }
+  }, [rowsByBooking])
+
+  const filtered = useMemo(
+    () => {
+      // A filter picks whole bookings by the booking's status, never part of one.
+      const shown = (status: string) => !filterStatus
+        || (filterStatus === 'HOLD' ? status === 'HOLD' || status === 'COMMITTED' : status === filterStatus)
+      let result = requests.filter(r => shown(statusOf(r).status))
+      const q = search.trim().toLowerCase()
+      if (q) {
+        const matches = (r: HoldRequest) => [r.company_name, r.truck_number, r.market, r.notes]
+          .filter(Boolean)
+          .some((field) => field!.toLowerCase().includes(q))
+        // A match shows its whole booking, so a card, its total and its Edit
+        // always cover the same reservations.
+        const cards = new Set(result.filter(matches).map(r => bookingKey(r)).filter(Boolean))
+        result = result.filter((r) => { const k = bookingKey(r); return k ? cards.has(k) : matches(r) })
+      }
+      return result
+    },
+    [requests, filterStatus, search, statusOf]
+  )
 
   // The last date the card being edited can be held to: a booking has one
   // expiry, capped 2 days before its earliest start (lib/holdExpiry.ts). The
@@ -541,9 +546,9 @@ export default function HoldRequestsPage() {
     const grouped = new Map<string, HoldRequest[]>()
     const ungrouped: HoldRequest[] = []
     for (const r of filtered) {
-      // One card per booking and status (lib/bookings.ts bookingCardKey), so a
-      // card's totals, expiry, status and actions all cover the same holds.
-      const groupKey = bookingCardKey(r)
+      // One card per booking (lib/bookings.ts bookingKey): a booking is one
+      // quote, so its totals, expiry, status and actions cover all of it.
+      const groupKey = bookingKey(r)
       if (groupKey) {
         const group = grouped.get(groupKey) ?? []
         group.push(r)
@@ -716,27 +721,19 @@ export default function HoldRequestsPage() {
           <div className="space-y-4">
             {/* Campaign groups — one card per campaign, actions apply to every truck in it */}
             {sortedGroups.map(([groupId, groupItems]) => {
-              const first = groupItems[0]
-              const ids = groupItems.map((g) => g.id)
+              // The booking's one status; `odd` is only ever set for a booking made
+              // before the one-expiry rule (#118) whose markets lapsed apart.
+              const { status, odd } = bookingStatus(groupItems)
+              // The row the card speaks for: one in the booking's status.
+              const first = groupItems.find(g => g.status === status) ?? groupItems[0]
+              // What the card's actions act on: its holds in the booking's status.
+              const ids = groupItems.filter(g => g.status === status).map((g) => g.id)
               // A multi-market booking: one card, its figures summed across markets.
               const multi = isMultiMarket(first)
-              // Its markets' prices, leaving out any market partly on another card.
-              const booking = summarizeBooking(groupItems, (bookingKey(first) ? rowsByBooking.get(bookingKey(first)!) : undefined) ?? groupItems)
-              // The same booking's reservations in other statuses (markets lapse
-              // on their own schedules). Each status has its own card: on this
-              // list when the filter shows that status (Reservations shows Hold
-              // and Committed together), else under its own filter.
-              const shownHere = (status: string) => !filterStatus
-                || (filterStatus === 'HOLD' ? status === 'HOLD' || status === 'COMMITTED' : status === filterStatus)
-              const otherParts = new Map<string, { markets: Set<string>; here: boolean }>()
+              const booking = summarizeBooking(groupItems)
+              // The expiry to act on: the booking's live holds'.
+              const expiry = summarizeBooking(groupItems.filter(g => g.status === status)).earliestExpiry
               const key = bookingKey(first)
-              for (const r of (key ? rowsByBooking.get(key) : undefined) ?? []) {
-                if (r.status === first.status) continue
-                const label = r.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[r.status] ?? r.status)
-                const part = otherParts.get(label) ?? { markets: new Set<string>(), here: shownHere(r.status) }
-                part.markets.add(r.market)
-                otherParts.set(label, part)
-              }
               return (
                 <div key={groupId} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
                   <div className="px-4 py-3 bg-gray-50/80 border-b border-gray-200 flex items-center justify-between flex-wrap gap-3">
@@ -763,24 +760,19 @@ export default function HoldRequestsPage() {
                           + {booking.unpricedMarkets} unpriced
                         </span>
                       )}
-                      {multi && booking.splitMarkets > 0 && (
-                        <span className="text-xs text-amber-700" title="Some of these markets' holds are on another card (another status); their prices are left out of the total above">
-                          + {booking.splitMarkets} split
-                        </span>
-                      )}
                       {/* The earliest expiry in the booking is the one to act on. */}
-                      <ExpirationBadge expiresAt={booking.earliestExpiry} status={first.status} />
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[first.status] ?? STATUS_BADGE.HOLD}`}>
-                        {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[first.status] ?? first.status)}
+                      <ExpirationBadge expiresAt={expiry} status={status} />
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.HOLD}`}>
+                        {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[status] ?? status)}
                       </span>
                     </div>
                   </div>
-                  {otherParts.size > 0 && (
-                    <div className="px-4 py-1.5 text-xs text-gray-600 bg-blue-50/60 border-b border-blue-100">
-                      Also in this booking:{' '}
-                      {[...otherParts].map(([label, { markets, here }]) =>
-                        `${markets.size} market${markets.size === 1 ? '' : 's'} ${label} (${here ? 'listed separately on this page' : 'under its own filter'})`).join(', ')}.
-                      {' '}This card and its Edit cover the {booking.markets.length} {STATUS_LABEL[first.status] ?? first.status} market{booking.markets.length === 1 ? '' : 's'} only.
+                  {odd.length > 0 && (
+                    // Only an older booking (before #118) can be split; the card stays whole.
+                    <div className="px-4 py-1.5 text-xs text-amber-800 bg-amber-50 border-b border-amber-100">
+                      Older booking with markets out of step:{' '}
+                      {odd.map(o => `${o.markets.join(', ')} ${STATUS_LABEL[o.status] ?? o.status}`).join('; ')}.
+                      {' '}Actions here apply to the {STATUS_LABEL[status] ?? status} markets.
                     </div>
                   )}
                   {(() => {
@@ -828,24 +820,30 @@ export default function HoldRequestsPage() {
                       ))}
                     </div>
                   )}
-                  {first.status === 'EXTENSION_REQUESTED' && first.extension_reason && (
+                  {status === 'EXTENSION_REQUESTED' && (
                     <div className="px-4 py-2 text-xs text-amber-800 bg-amber-50 border-t border-amber-100">
-                      Reason: {first.extension_reason}
+                      Extension requested for the whole booking{first.extension_until ? ` until ${format(parseDateOnly(first.extension_until.slice(0, 10)), 'MMM d')}` : ''}.
+                      {first.extension_reason ? ` Reason: ${first.extension_reason}` : ''}
                     </div>
                   )}
-                  {(first.status === 'HOLD' || first.status === 'COMMITTED' || first.status === 'EXTENSION_REQUESTED' || first.status === 'EXPIRED') && (
+                  {status === 'COMMITTED' && closedWonRefusal(groupItems) && (
+                    <div className="px-4 py-1.5 text-xs text-gray-600 bg-gray-50 border-t border-gray-100">
+                      Closed Won: only a truck swap can be made here. Change anything else in Salesforce.
+                    </div>
+                  )}
+                  {(status === 'HOLD' || status === 'COMMITTED' || status === 'EXTENSION_REQUESTED' || status === 'EXPIRED') && (
                     <div className="px-4 py-3 border-t border-gray-100 bg-gray-50/80 flex items-center gap-2">
-                      {first.status === 'EXTENSION_REQUESTED' || first.status === 'EXPIRED' ? (
-                        <Actions ids={ids} status={first.status} groupKey={groupId} quoteOnly={groupItems.some(g => g.origination === QUOTE_ONLY_ORIGINATION)} />
+                      {status === 'EXTENSION_REQUESTED' || status === 'EXPIRED' ? (
+                        <Actions ids={ids} status={status} groupKey={groupId} quoteOnly={groupItems.some(g => g.origination === QUOTE_ONLY_ORIGINATION)} />
                       ) : (
                         <button
                           onClick={() => openEdit(first)}
                           className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
                         >
-                          Edit
+                          {closedWonRefusal(groupItems) ? 'Swap trucks' : 'Edit'}
                         </button>
                       )}
-                      {first.status !== 'EXTENSION_REQUESTED' && <ReviseLink rows={groupItems} booking={(key ? rowsByBooking.get(key) : undefined) ?? groupItems} />}
+                      {status !== 'EXTENSION_REQUESTED' && <ReviseLink rows={groupItems} booking={(key ? rowsByBooking.get(key) : undefined) ?? groupItems} />}
                     </div>
                   )}
                 </div>
@@ -924,8 +922,10 @@ export default function HoldRequestsPage() {
       {/* Edit / Cancel Modal */}
       {editingGroup && editingGroup.length > 0 && (() => {
         const first = editingGroup[0]
+        // A won deal: truck swaps only (lib/bookings.ts closedWonRefusal).
+        const won = !!closedWonRefusal(editingGroup)
         const currentExpDate = first.expires_at ? first.expires_at.split('T')[0] : ''
-        const hasChanges = editingGroup.some(r => selectedTrucks.get(r.id) !== r.truck_number) || newExpiresAt !== currentExpDate
+        const hasChanges = editingGroup.some(r => selectedTrucks.get(r.id) !== r.truck_number) || (!won && newExpiresAt !== currentExpDate)
         return (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
@@ -1054,7 +1054,10 @@ export default function HoldRequestsPage() {
                       </div>
                     )}
 
-                    {/* Expiration management */}
+                    {/* Expiration management — none on a won deal: it is booked, not held */}
+                    {won ? (
+                      <p className="text-xs text-gray-600 bg-gray-50 rounded-lg px-3 py-2.5">{CLOSED_WON_READ_ONLY} Only a truck swap can be made here.</p>
+                    ) : (
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Expiration Date</label>
                       {first.expires_at ? (
@@ -1096,6 +1099,7 @@ export default function HoldRequestsPage() {
                         </div>
                       )}
                     </div>
+                    )}
                   </>
                 ) : (
                   <div className="space-y-3">
@@ -1135,12 +1139,14 @@ export default function HoldRequestsPage() {
                     >
                       Close
                     </button>
-                    <button
-                      onClick={() => setCancelMode(true)}
-                      className="flex-1 border border-red-200 text-red-600 rounded-lg py-2.5 text-sm font-medium hover:bg-red-50 transition-colors"
-                    >
-                      Cancel & Notify
-                    </button>
+                    {!won && (
+                      <button
+                        onClick={() => setCancelMode(true)}
+                        className="flex-1 border border-red-200 text-red-600 rounded-lg py-2.5 text-sm font-medium hover:bg-red-50 transition-colors"
+                      >
+                        Cancel & Notify
+                      </button>
+                    )}
                     <button
                       onClick={handleSaveEdits}
                       disabled={saving || !hasChanges}

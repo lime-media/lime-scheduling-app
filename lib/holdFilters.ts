@@ -19,8 +19,8 @@ import type { Prisma } from '@prisma/client'
  *
  * COMMITTED is exempt from the expiry half entirely. expireHolds() only ever
  * matches HOLD and EXTENSION_REQUESTED, so a committed booking is immune to the
- * sweep — and committing a hold does not clear `expires_at`
- * (app/api/holds/[id]/route.ts writes `status` alone). Without the exemption a
+ * sweep. Committing now clears `expires_at` (the reconcile and
+ * app/api/holds/[id]/route.ts), but older committed rows still carry one. Without the exemption a
  * client hold committed by ops would silently vanish from the grid, map,
  * inventory, availability and conflict detection 72h later, while the
  * Reservations page still showed it as active with no badge. That is a

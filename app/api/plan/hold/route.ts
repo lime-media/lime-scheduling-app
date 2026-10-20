@@ -268,30 +268,18 @@ async function handlePost(req: NextRequest) {
     // its holds lapsing must not close that deal (expiryClosesOpportunity).
     const attached = !!target && (!!body.attachOpportunityId || reviseHolds.some(h => attachedToOpportunity(h.features)))
     const withAttach = <T extends object>(f: T) => (attached ? { ...f, attachedToOpportunity: true } : f)
-    // A revised market keeps what ops already gave its live holds: committed
-    // stays committed, and an expiry they extended is never cut back.
-    const sameMarket = (m: string) => m.trim().toLowerCase()
-    const replaced = new Map<string, { committed: boolean; latest: Date | null }>()
-    for (const h of reviseHolds.filter(x => x.live)) {
-      const k = sameMarket(h.market)
-      const was = replaced.get(k) ?? { committed: false, latest: null }
-      replaced.set(k, {
-        committed: was.committed || h.status === 'COMMITTED',
-        latest: h.expires_at && (!was.latest || h.expires_at > was.latest) ? h.expires_at : was.latest,
-      })
-    }
-    const committedMarket = (lineId: string) => replaced.get(sameMarket(place.get(lineId)!.market))?.committed === true
+    // A revision never cuts back an expiry ops already extended. (A committed,
+    // Closed Won booking is never revised: reviseRefusal / opportunityRefusal.)
+    const keepUntil = reviseHolds.filter(x => x.live).map(h => h.expires_at).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0] ?? null
     const stints = plan.trucks.flatMap(t => t.jobs.flatMap(job => rotationStints(job).map(st => ({
       truckNumber: t.truckNumber,
       stint: st,
       partner: job.lines.length > 1 ? job.lines.find(l => l.id !== st.lineId)!.market : null,
     }))))
     // A multi-market booking is one quote with ONE expiry on every hold: the
-    // seller's length, capped by the earliest start among the markets that
-    // will be held (committed ones aren't), or the later expiry the revised
-    // booking already had, never past that cap (lib/holdExpiry.ts).
-    const heldStarts = stints.filter(x => !committedMarket(x.stint.lineId)).map(x => x.stint.start)
-    const keepUntil = [...replaced.values()].map(v => v.latest).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0] ?? null
+    // seller's length, capped by the earliest start, or the later expiry the
+    // revised booking already had, never past that cap (lib/holdExpiry.ts).
+    const heldStarts = stints.map(x => x.stint.start)
     const bookingExpiry = heldStarts.length ? bookingHoldExpiry(heldStarts, holdDays, holdClock, keepUntil, STAFF_MIN_DAYS_BEFORE_START) : null
     const stretches = stints.map(x => ({ ...x, expiresAt: bookingExpiry?.expiresAt ?? holdClock }))
 
@@ -376,8 +364,8 @@ async function handlePost(req: NextRequest) {
         state: where.state,
         start_date: new Date(stint.start),
         end_date: new Date(stint.end),
-        // A won opportunity's booking, or a market ops marked committed, stays committed through a revision.
-        status: target?.IsWon || committedMarket(stint.lineId) ? 'COMMITTED' : 'HOLD',
+        // Never committed here: a Closed Won opportunity takes no new or revised booking (opportunityRefusal).
+        status: 'HOLD',
         source: 'INTERNAL',
         origination: 'frontend',
         notes: `${lq.market}, part of a ${quote.summary.markets}-market order for ${accountName}${brand ? ` (brand: ${brand})` : ''}.`
@@ -391,7 +379,7 @@ async function handlePost(req: NextRequest) {
         features: JSON.stringify(withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct))),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(stint.lineId)!,
-        expires_at: target?.IsWon || committedMarket(stint.lineId) ? null : expiresAt,
+        expires_at: expiresAt,
         sfdc_opportunity_id: target?.Id ?? null,
       }
     })
@@ -559,7 +547,7 @@ async function handlePost(req: NextRequest) {
       ? `Quote logged for ${accountName} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} (${money(quote.summary.grandTotal)}); no trucks reserved.`
       : `${lead}Placed ${rows.length} hold${rows.length === 1 ? '' : 's'} on ${truckNumbers.length} truck${truckNumbers.length === 1 ? '' : 's'} across ${quote.summary.markets} market${quote.summary.markets === 1 ? '' : 's'} for ${accountName} (${money(quote.summary.grandTotal)})`
         // One lapse date for the whole booking, and why when the start cut it short.
-        + (target?.IsWon ? ', committed (the opportunity is won)' : bookingExpiry ? `, held until ${HELD_UNTIL.format(bookingExpiry.expiresAt)}`
+        + (bookingExpiry ? `, held until ${HELD_UNTIL.format(bookingExpiry.expiresAt)}`
           + (bookingExpiry.cappedByStart ? ` (${STAFF_MIN_DAYS_BEFORE_START} days before the first market starts, ${bookingExpiry.startDate}: the latest a booking can be held)`
             : bookingExpiry.atMinimum ? ' (the 24-hour minimum: the first market starts too soon for a longer hold)' : '') : '')
         + '.'

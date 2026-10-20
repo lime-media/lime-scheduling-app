@@ -31,6 +31,12 @@ export interface CreateClientHoldParams {
    * supplies the truck number directly.
    */
   skipFeasibilityCheck?: boolean
+  /**
+   * Leave the team's "hold request" email to the caller. A multi-truck
+   * booking sends ONE email for the whole booking once every truck is held
+   * (app/api/client/hold-requests), not one per truck.
+   */
+  skipEmail?: boolean
 }
 
 /**
@@ -163,9 +169,10 @@ export async function createClientHold(
     : ''
 
   // Send email notification (no-op if SMTP not configured)
+  if (params.skipEmail) return hold
   await sendHoldRequestEmail({
-    companyName: session.companyName,
-    truckNumber: truck_number,
+    companyName:  session.companyName,
+    truckNumbers: [truck_number],
     market:      market ?? '',
     startDate:   start_date,
     endDate:     end_date,

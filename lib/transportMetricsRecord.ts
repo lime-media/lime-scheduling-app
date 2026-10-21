@@ -8,7 +8,7 @@
  *   recordSwap             a SWAPPED leg for the truck swapped onto a hold
  *   recordPrestart         PRESTART snapshots: where a truck sits before it moves (the sweep)
  *   recordExecuted         EXECUTED legs on a campaign's first day (the sweep)
- *   recordWon              Salesforce's Amount when an opportunity is Closed Won (once; recordedWins)
+ *   recordWon              Salesforce's Amount when an opportunity is Closed Won (once; winsToRecord)
  *   recordAmountChanges    a won opportunity's Amount, again, when it changes (the sweep)
  */
 
@@ -56,7 +56,7 @@ function legRow(event: LegEvent, hold: HoldForLeg, leg: MeasuredLeg, createdBy: 
     activation_days: activationDaysOf(hold.features),
     lead_business_days: leadBusinessDays(hold.created_at, hold.start_date),
     truck_number: clip(leg.truckNumber, 50) ?? '',
-    origin_label: leg.originLabel.slice(0, 200),
+    origin_label: clip(leg.originLabel, 200),
     origin_kind: leg.originKind,
     miles: leg.miles,
     transport_days: leg.transportDays,
@@ -198,9 +198,10 @@ export async function recordSwap(holdId: string, createdBy: string | null): Prom
 
 /**
  * The holds whose market can be placed on a map. One that can't is never
- * measured and stays a candidate, so it's dropped before the fleet load: a
- * sweep with only such holds loads nothing (it used to reload the fleet and
- * GPS every 15 minutes for days). Each market is looked up once.
+ * measured and stays a candidate, so it's dropped before the batch is cut and
+ * before the fleet load: it can't take a batch slot from a hold that can be
+ * measured, and a sweep with only such holds loads nothing (it used to reload
+ * the fleet and GPS every 15 minutes for days). Each market is looked up once.
  */
 async function locatable<H extends { market: string }>(holds: H[]): Promise<H[]> {
   const markets = [...new Set(holds.map(h => h.market))]
@@ -228,7 +229,7 @@ export async function recordPrestart(measurerOf: () => Promise<OriginMeasurer> =
     const until = new Date(today + 'T23:59:59Z')
     until.setUTCDate(until.getUTCDate() + 3)
     const window = { status: { in: LIVE_HOLD_STATUSES }, origination: { not: QUOTE_ONLY_ORIGINATION }, start_date: { gt: new Date(today + 'T23:59:59Z'), lte: until } }
-    const upcoming = await prisma.hold.findMany({ where: window, select: { id: true, status: true, origination: true, start_date: true, truck_number: true } })
+    const upcoming = await prisma.hold.findMany({ where: window, select: { id: true, status: true, origination: true, start_date: true, truck_number: true, market: true } })
     if (upcoming.length === 0) return 0
     const done = await prisma.transportLeg.findMany({
       where: { event: 'PRESTART', hold_id: { in: upcoming.map(h => h.id) } },
@@ -238,9 +239,9 @@ export async function recordPrestart(measurerOf: () => Promise<OriginMeasurer> =
     // snapshot gets its own (EXECUTED only uses a snapshot of the same truck).
     const truckOf = new Map(upcoming.map(h => [h.id, h.truck_number]))
     const snapped = new Set(done.filter(d => truckOf.get(d.hold_id!) === d.truck_number).map(d => d.hold_id!))
-    const todoIds = prestartCandidates(upcoming, snapped, today).slice(0, PRESTART_BATCH).map(h => h.id)
+    const todoIds = (await locatable(prestartCandidates(upcoming, snapped, today))).slice(0, PRESTART_BATCH).map(h => h.id)
     if (todoIds.length === 0) return 0
-    const todo = await locatable(await prisma.hold.findMany({ where: { id: { in: todoIds } } }))
+    const todo = await prisma.hold.findMany({ where: { id: { in: todoIds } } })
     if (todo.length === 0) return 0
     const [measurer, planned] = await Promise.all([measurerOf(), plannedLegs(todo.map(h => h.id))])
     const rows = []
@@ -271,15 +272,15 @@ export async function recordExecuted(measurerOf: () => Promise<OriginMeasurer> =
     // Every candidate in the window (ids only), so the batch below is taken
     // from the ones not yet recorded, never cut before the done ones drop out.
     const window = { status: { in: LIVE_HOLD_STATUSES }, origination: { not: QUOTE_ONLY_ORIGINATION }, start_date: { gte: from, lte: new Date(today + 'T23:59:59Z') } }
-    const recent = await prisma.hold.findMany({ where: window, select: { id: true, status: true, origination: true, start_date: true } })
+    const recent = await prisma.hold.findMany({ where: window, select: { id: true, status: true, origination: true, start_date: true, market: true } })
     if (recent.length === 0) return 0
     const done = await prisma.transportLeg.findMany({
       where: { event: 'EXECUTED', hold_id: { in: recent.map(h => h.id) } },
       select: { hold_id: true },
     })
-    const todoIds = executedCandidates(recent, new Set(done.map(d => d.hold_id!)), today).slice(0, EXECUTED_BATCH).map(h => h.id)
+    const todoIds = (await locatable(executedCandidates(recent, new Set(done.map(d => d.hold_id!)), today))).slice(0, EXECUTED_BATCH).map(h => h.id)
     if (todoIds.length === 0) return 0
-    const todo = await locatable(await prisma.hold.findMany({ where: { id: { in: todoIds } } }))
+    const todo = await prisma.hold.findMany({ where: { id: { in: todoIds } } })
     if (todo.length === 0) return 0
     const [measurer, planned, snapshots] = await Promise.all([
       measurerOf(),
@@ -318,28 +319,32 @@ export async function recordWon(o: { opportunityId: string; amount: number | nul
 }
 
 /**
- * Which of these opportunities (15-char ids) already have a WON record. If the
- * table can't be read, all of them are treated as recorded: a missed win can
- * be recorded on a later pass, a duplicate can't be taken back.
+ * Which of these won opportunities (15-char ids) still need a WON record: the
+ * app quoted them (a BOOKED or REVISED value) and no WON is recorded yet. A
+ * deal the app never quoted has nothing to compare its Amount with, so it gets
+ * no WON (and no Amount re-checks for 180 days); nor does an old won deal
+ * first seen after these metrics shipped. If the table can't be read, none
+ * are returned: a missed win can be recorded on a later pass, a duplicate
+ * can't be taken back.
  */
-export async function recordedWins(opportunityKeys: string[]): Promise<string[]> {
+export async function winsToRecord(opportunityKeys: string[]): Promise<string[]> {
   try {
     const keys = new Set(opportunityKeys)
-    const found: string[] = []
+    const quoted = new Set<string>(), won = new Set<string>()
     // Ids are matched by their 15-char prefix (stored ids may be 18); one
     // parameter each, so in slices under SQL Server's 2100.
     for (let i = 0; i < opportunityKeys.length; i += 500) {
       const rows = await prisma.dealValue.findMany({
-        where: { event: 'WON', OR: opportunityKeys.slice(i, i + 500).map(k => ({ sfdc_opportunity_id: { startsWith: k } })) },
-        select: { sfdc_opportunity_id: true },
-        distinct: ['sfdc_opportunity_id'],
+        where: { event: { in: ['BOOKED', 'REVISED', 'WON'] }, OR: opportunityKeys.slice(i, i + 500).map(k => ({ sfdc_opportunity_id: { startsWith: k } })) },
+        select: { sfdc_opportunity_id: true, event: true },
+        distinct: ['sfdc_opportunity_id', 'event'],
       })
-      found.push(...rows.map(r => r.sfdc_opportunity_id!.slice(0, 15)).filter(k => keys.has(k)))
+      for (const r of rows) (r.event === 'WON' ? won : quoted).add(r.sfdc_opportunity_id!.slice(0, 15))
     }
-    return found
+    return [...quoted].filter(k => keys.has(k) && !won.has(k))
   } catch (err) {
-    console.error('[transport-metrics] recordedWins failed:', err)
-    return opportunityKeys
+    console.error('[transport-metrics] winsToRecord failed:', err)
+    return []
   }
 }
 

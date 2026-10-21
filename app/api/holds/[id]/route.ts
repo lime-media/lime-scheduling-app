@@ -5,7 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { CLOSED_WON_READ_ONLY, closedWonRefusal } from '@/lib/bookings'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
-import { recordSwap, recordWon } from '@/lib/transportMetricsRecord'
+import { recordSwap, recordWon, winsToRecord } from '@/lib/transportMetricsRecord'
 import { waitUntil } from '@vercel/functions'
 
 export async function PUT(
@@ -104,12 +104,15 @@ export async function PUT(
       details: JSON.stringify(body),
     },
   })
-  // Committed here, the reconcile never sees the transition: record the won
-  // Amount now, unless another hold of the opportunity was already committed.
+  // Committed here: record the won Amount now, once per opportunity (the same
+  // check the reconcile makes, so a deal reopened and won again, or committed
+  // here and seen by the reconcile, isn't recorded twice).
   if (wonStage && hold.sfdc_opportunity_id) {
     const opportunityId = hold.sfdc_opportunity_id
-    const alreadyWon = await prisma.hold.count({ where: { sfdc_opportunity_id: opportunityId, status: 'COMMITTED', id: { not: hold.id } } })
-    if (!alreadyWon) waitUntil(recordWon({ opportunityId, amount: wonStage.amount, stageName: wonStage.stageName, clientName: hold.client_name }))
+    const amount = wonStage.amount, stageName = wonStage.stageName, clientName = hold.client_name
+    waitUntil((async () => {
+      if ((await winsToRecord([opportunityId.slice(0, 15)])).length) await recordWon({ opportunityId, amount, stageName, clientName })
+    })())
   }
   // A truck swapped onto the hold: a SWAPPED transport leg (best-effort, after the response).
   if (truck_number && truck_number !== hold.truck_number) waitUntil(recordSwap(hold.id, session.user.id))

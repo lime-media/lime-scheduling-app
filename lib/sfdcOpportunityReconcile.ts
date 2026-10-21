@@ -2,7 +2,7 @@ import { prisma } from '@/lib/prisma'
 import { sfdcQuery, updateOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { SFDC_SERVICE_USER_EMAIL, reconcileTarget } from '@/lib/sfdcIntegration'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry } from '@/lib/holdExpiry'
-import { recordWon, recordedWins } from '@/lib/transportMetricsRecord'
+import { recordWon, winsToRecord } from '@/lib/transportMetricsRecord'
 
 /**
  * Opportunity stage reconcile.
@@ -136,11 +136,12 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
 
   const serviceUser = await prisma.user.findUnique({ where: { email: SFDC_SERVICE_USER_EMAIL } })
 
-  // Won opportunities whose Amount is already recorded (lib/transportMetricsRecord.ts
-  // recordWon). A win is recorded once, whichever path committed the holds:
-  // this reconcile, the Salesforce hold webhook, reinstate, or by hand.
+  // Won opportunities the app quoted whose Amount isn't recorded yet
+  // (lib/transportMetricsRecord.ts winsToRecord). A win is recorded once,
+  // whichever path committed the holds: this reconcile, the Salesforce hold
+  // webhook, reinstate, or by hand.
   const wonKeys = [...stages.values()].filter(s => s.IsWon).map(s => normalizeId(s.Id))
-  const wonRecorded = new Set(wonKeys.length ? await recordedWins(wonKeys) : [])
+  const toRecord = new Set(wonKeys.length ? await winsToRecord(wonKeys) : [])
 
   for (const [key, group] of byOpportunity) {
     const stage = stages.get(key)
@@ -207,10 +208,10 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
     }
 
     // Once per won opportunity, by whatever path it was committed.
-    if (stage.IsWon && !wonRecorded.has(key)) {
+    if (stage.IsWon && toRecord.has(key)) {
       const hold = wonHold ?? group[0]
       await recordWon({ opportunityId: hold.sfdc_opportunity_id as string, amount: stage.Amount ?? null, stageName: stage.StageName, clientName: hold.client_name })
-      wonRecorded.add(key)
+      toRecord.delete(key)
     }
   }
 

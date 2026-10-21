@@ -533,7 +533,7 @@ async function handlePost(req: NextRequest) {
     }
 
     // Transport and deal-value metrics (best-effort; never fails the booking).
-    if (!quoteOnly) await recordBooking({ event: reviseKey ? 'REVISED' : 'BOOKED', groups: quote.lines.map(l => ({ groupId: groupOf.get(l.id)!, legs: legsFromArrivals(l.arrivals) })), appQuotedTotal: quote.summary.grandTotal, createdBy })
+    if (!quoteOnly) await recordBooking({ event: reviseKey ? 'REVISED' : 'BOOKED', groups: quote.lines.map(l => ({ groupId: groupOf.get(l.id)!, legs: legsFromArrivals(l.arrivals) })), appQuotedTotal: quote.summary.grandTotal, createdBy, ...(reviseKey ? { revised: { holdIds: reviseIds, bookingKey: reviseKey } } : {}) })
 
     const leftOut = notSelected.length + unavailable.length
     // Which opportunity, and what happened to it.

@@ -138,7 +138,7 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
 
   // Opportunities that went Closed Won this pass: their Amount is recorded
   // against what the app quoted (lib/transportMetricsRecord.ts recordWon).
-  const wonNow = new Map<string, { stage: OpportunityStage; client: string }>()
+  const wonNow = new Map<string, { opportunityId: string; stage: OpportunityStage; client: string }>()
 
   for (const [key, group] of byOpportunity) {
     const stage = stages.get(key)
@@ -186,9 +186,10 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
             : { status: target },
       })
 
-      if (target === 'COMMITTED') summary.committed++
-      if (target === 'COMMITTED' && hold.sfdc_opportunity_id) wonNow.set(hold.sfdc_opportunity_id, { stage, client: hold.client_name })
-      else if (target === 'HOLD') summary.uncommitted++
+      if (target === 'COMMITTED') {
+        summary.committed++
+        wonNow.set(key, { opportunityId: hold.sfdc_opportunity_id as string, stage, client: hold.client_name })
+      } else if (target === 'HOLD') summary.uncommitted++
       else summary.released++
 
       console.log(
@@ -198,8 +199,8 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
     }
   }
 
-  for (const [opportunityId, w] of wonNow) {
-    await recordWon({ opportunityId, amount: w.stage.Amount ?? null, stageName: w.stage.StageName, clientName: w.client })
+  for (const w of wonNow.values()) {
+    await recordWon({ opportunityId: w.opportunityId, amount: w.stage.Amount ?? null, stageName: w.stage.StageName, clientName: w.client })
   }
 
   return summary

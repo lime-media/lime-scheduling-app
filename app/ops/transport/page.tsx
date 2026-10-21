@@ -8,7 +8,7 @@
  * lib/transportMetrics.ts). Any signed-in staff user.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Navbar } from '@/components/Navbar'
 
 type Split = { name?: string; trucks: number; local: number; absorbed: number; billed: number; charged: number; cost: number; absorbedCost: number }
@@ -71,20 +71,26 @@ export default function TransportMetricsPage() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  const load = useCallback(async () => {
+  // Each date change refetches; a slower, older response never overwrites a
+  // newer range, and nothing is set after unmount.
+  useEffect(() => {
+    let stale = false
     setLoading(true); setError(null)
-    try {
-      const res = await fetch(`/api/ops/transport?${new URLSearchParams({ from, to })}`)
-      const body = await res.json()
-      if (!res.ok) throw new Error(body.error || 'Transport metrics could not be loaded.')
-      setData(body)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Transport metrics could not be loaded.')
-    } finally {
-      setLoading(false)
-    }
+    ;(async () => {
+      try {
+        const res = await fetch(`/api/ops/transport?${new URLSearchParams({ from, to })}`)
+        const body = await res.json()
+        if (stale) return
+        if (!res.ok) throw new Error(body.error || 'Transport metrics could not be loaded.')
+        setData(body)
+      } catch (e) {
+        if (!stale) setError(e instanceof Error ? e.message : 'Transport metrics could not be loaded.')
+      } finally {
+        if (!stale) setLoading(false)
+      }
+    })()
+    return () => { stale = true }
   }, [from, to])
-  useEffect(() => { load() }, [load])
 
   const input = 'border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500'
   const t = data?.transport, p = data?.plannedVsActual, c = data?.churn, d = data?.deals

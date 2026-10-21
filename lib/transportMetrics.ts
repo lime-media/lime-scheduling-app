@@ -10,7 +10,7 @@
  * Pure (no database), so `npm test` can load it.
  */
 
-import { absorbedLegCost } from '@/lib/pricing/transport'
+import { absorbedLegCost, needsRepositioning } from '@/lib/pricing/transport'
 
 export type LegEvent = 'BOOKED' | 'SWAPPED' | 'REVISED' | 'EXECUTED'
 export type OriginKind = 'PRIOR_JOB' | 'GPS' | 'SAME_ORDER' | 'UNKNOWN'
@@ -86,7 +86,7 @@ export function legFromInbound(
   serviceAreaMiles: number,
   plannedCharge: number,
 ): MeasuredLeg {
-  const repositions = inbound.originResolved && inbound.distanceMiles > serviceAreaMiles
+  const repositions = inbound.originResolved && needsRepositioning(inbound.distanceMiles, serviceAreaMiles)
   return {
     truckNumber,
     originLabel: inbound.originResolved ? inbound.originLabel : '',

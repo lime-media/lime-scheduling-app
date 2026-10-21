@@ -27,13 +27,21 @@ export async function GET(req: NextRequest) {
   const range = { gte: new Date(from + 'T00:00:00Z'), lte: new Date(to + 'T23:59:59Z') }
 
   try {
-    // Bookings made in the range, and every later leg of their holds.
-    const booked = await prisma.transportLeg.findMany({ where: { event: 'BOOKED', created_at: range }, select: { hold_id: true }, take: MAX_ROWS })
-    const holdIds = [...new Set(booked.map(b => b.hold_id).filter((id): id is string => !!id))]
-    const legs = holdIds.length
-      ? await prisma.transportLeg.findMany({ where: { hold_id: { in: holdIds } }, take: MAX_ROWS })
+    // Bookings made in the range, and every later leg of them. By booking, not
+    // hold: a revision replaces the holds (new ids) and keeps the booking key.
+    const booked = await prisma.transportLeg.findMany({ where: { event: 'BOOKED', created_at: range }, select: { booking_key: true }, take: MAX_ROWS })
+    const keys = [...new Set(booked.map(b => b.booking_key).filter((k): k is string => !!k))]
+    const legs = keys.length
+      ? await prisma.transportLeg.findMany({ where: { booking_key: { in: keys } }, take: MAX_ROWS })
       : []
     const legRows: LegRow[] = legs.map(l => ({ ...l, charge: Number(l.charge), est_cost: Number(l.est_cost) }))
+    // The plan as it stands is on holds that still exist: a revision deletes
+    // the holds it replaces, so their legs are history (churn), not the plan.
+    const legHoldIds = [...new Set(legRows.map(l => l.hold_id).filter((id): id is string => !!id))]
+    const live = new Set(legHoldIds.length
+      ? (await prisma.hold.findMany({ where: { id: { in: legHoldIds } }, select: { id: true } })).map(h => h.id)
+      : [])
+    const current = legRows.filter(l => l.hold_id && live.has(l.hold_id))
 
     // Opportunities booked in the range, and every value captured for them.
     const dealsBooked = await prisma.dealValue.findMany({
@@ -50,8 +58,8 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       from, to,
-      transport: transportKpis(legRows),
-      plannedVsActual: plannedVsActual(legRows),
+      transport: transportKpis(current),
+      plannedVsActual: plannedVsActual(current),
       churn: churnKpis(legRows),
       deals: dealDrift(dealRows),
       truncated: booked.length >= MAX_ROWS || legs.length >= MAX_ROWS,

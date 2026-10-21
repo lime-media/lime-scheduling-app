@@ -454,6 +454,7 @@ What bookings quote for transport, how it changes, what actually happens, and ho
 
 - **`app_transport_legs`**, one row per truck per event:
   - `BOOKED` / `REVISED`: written when a booking is placed or revised, from what the quote already worked out (single-market: each selected truck and its priced leg; multi-market: each market's arrivals).
+    A revision replaces the booking's holds under a new campaign group; its rows keep the booking key the replaced holds were recorded under, so a booking stays one booking across revisions. The Transport page reads a booking's legs by that key, and takes the current plan from holds that still exist.
   - `SWAPPED`: a truck swapped onto a hold, its origin measured at the swap.
   - `EXECUTED`: written by the 15-minute sweep on a campaign's first day (or within 3 days, once per hold) for the truck actually on the hold, from its last job before the start, else its GPS that morning.
   - Each row: origin and how it was found, miles, travel days, **outcome** (`LOCAL` inside the service area, `BILLED` when the client pays for the move, `ABSORBED` when we do), **charge** (what the client pays; a swapped or executed truck keeps the slot's quoted charge), and **est_cost** (our estimated cost of the move, `absorbedLegCost`, for any out-of-area truck, billed or not). Quote-only logs record nothing.

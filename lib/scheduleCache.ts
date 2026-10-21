@@ -90,12 +90,6 @@ export async function refreshCache(): Promise<RefreshSummary> {
     return { candidates: 0, warned: 0, recipients: 0, skipped_already_warned: 0, skipped_no_email: 0 }
   })
 
-  // Transport and deal-value metrics: what actually ran each campaign that
-  // started, and won deals' Amount changes. Best-effort; never fails the sweep.
-  const metricsExecuted = await recordExecuted()
-  const metricsAmounts = await recordAmountChanges()
-  if (metricsExecuted || metricsAmounts) console.log(`[scheduleCache] metrics: ${metricsExecuted} executed leg(s), ${metricsAmounts} amount change(s)`)
-
   const [schedulesRaw, holdsRaw] = await Promise.all([
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),
     // ATT_SOFT holds are soft placeholders, and a hold is released once it is
@@ -144,6 +138,13 @@ export async function refreshCache(): Promise<RefreshSummary> {
   })
 
   await detectConflicts(schedules, holds, new Set(reconciled.resolvedIds))
+
+  // Transport and deal-value metrics: what actually ran each campaign that
+  // started, and won deals' Amount changes. Last, so the fleet load and
+  // Salesforce reads never delay conflict detection; independent, so in
+  // parallel. Best-effort; never fails the sweep.
+  const [metricsExecuted, metricsAmounts] = await Promise.all([recordExecuted(), recordAmountChanges()])
+  if (metricsExecuted || metricsAmounts) console.log(`[scheduleCache] metrics: ${metricsExecuted} executed leg(s), ${metricsAmounts} amount change(s)`)
   console.log(
     `[scheduleCache] refresh complete — ${expiry.expired} hold(s) expired ` +
     `(${expiry.opportunities_closed} opportunit${expiry.opportunities_closed === 1 ? 'y' : 'ies'} closed lost, ` +

@@ -14,9 +14,7 @@ import { mcpParty } from '@/lib/mcpActing'
 import { clientAvailability } from '@/lib/clientAvailability'
 import { checkAvailability } from '@/lib/availabilityEngine'
 import { resolveQuoteMarket } from '@/lib/staffQuote'
-import { HIDDEN_TRUCKS as SHARED_HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
-
-const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
+import { HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
 
 function normalizeMarket(m: unknown): string {
   return String(m ?? '').replace(/\s*,\s*/g, ', ').trim()
@@ -364,7 +362,7 @@ async function engineAnswer(request: Request, q: { market: string; start_date: s
     const checked = await clientAvailability(party.session, q)
     if (checked.refused) {
       const b = checked.refused.body
-      return NextResponse.json({ can_book: false, message: b.message ?? b.error, candidates: b.candidates }, { status: checked.refused.status === 200 ? 200 : checked.refused.status })
+      return NextResponse.json({ can_book: false, message: b.message ?? b.error, candidates: b.candidates }, { status: checked.refused.status })
     }
     return NextResponse.json({ can_book: true, market: checked.formalMarket, truck_count: q.truck_count, message: `${q.truck_count} truck${q.truck_count === 1 ? '' : 's'} can be booked in ${checked.formalMarket} for these dates.` })
   }
@@ -384,7 +382,8 @@ async function engineAnswer(request: Request, q: { market: string; start_date: s
     market: resolved.formal,
     requested: q.truck_count,
     counts: a.counts,
-    trucks: a.trucks.filter(t => !SHARED_HIDDEN_TRUCKS.has(t.truckNumber)).slice(0, 25).map(t => ({
+    // The engine already leaves out hidden trucks (lib/hiddenTrucks.ts).
+    trucks: a.trucks.slice(0, 25).map(t => ({
       unit_id: t.truckNumber, released_from: t.currentMarket || 'Unknown', miles: Math.round(t.distanceMiles),
       proximity: t.proximityBucket, needs_att_soft_release: t.requiresOverride, note: t.overrideDetail || t.softHoldWarning || undefined,
     })),

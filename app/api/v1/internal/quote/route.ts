@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server'
 import { validateInternalApiKey } from '@/lib/internalAuth'
-import { mcpParty } from '@/lib/mcpActing'
-import { clientQuote, type ClientQuoteInput } from '@/lib/clientQuote'
-import { staffQuote, type StaffQuoteInput } from '@/lib/staffQuote'
+import { mcpParty, parseMcpCampaign } from '@/lib/mcpActing'
+import { clientQuote } from '@/lib/clientQuote'
+import { staffQuote } from '@/lib/staffQuote'
 
 /**
  * POST /api/v1/internal/quote: the MCP server's quote.
@@ -32,26 +32,19 @@ export async function POST(request: Request) {
   }
   if (!body || typeof body !== 'object') return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
 
+  const common = parseMcpCampaign(body)
+  if ('error' in common) return NextResponse.json({ error: common.error }, { status: 400 })
+
   const party = await mcpParty(request)
   if (party.kind === 'error') return NextResponse.json({ error: party.error }, { status: party.status })
 
-  const common = {
-    market: body.market, start_date: body.start_date, end_date: body.end_date, truck_count: body.truck_count,
-    shadow_fencing: body.shadow_fencing, smart_directional: body.smart_directional, device_id: body.device_id,
-    studies: body.studies, days_per_week: body.days_per_week, operating_hours: body.operating_hours,
-  }
-  if (typeof common.market !== 'string' || typeof common.start_date !== 'string' || typeof common.end_date !== 'string'
-    || typeof common.truck_count !== 'number' || !Number.isInteger(common.truck_count) || common.truck_count < 1) {
-    return NextResponse.json({ error: 'market, start_date, end_date (YYYY-MM-DD) and truck_count (a whole number, at least 1) are required' }, { status: 400 })
-  }
-
   const result = party.kind === 'client'
     // A client can't name another account or set a markup: the session's own apply.
-    ? await clientQuote(party.session, common as ClientQuoteInput)
+    ? await clientQuote(party.session, common)
     : await staffQuote({
         ...common,
         sfdc_account_id: typeof body.sfdc_account_id === 'string' ? body.sfdc_account_id : undefined,
         brand_markup_pct: typeof body.brand_markup_pct === 'number' ? body.brand_markup_pct : undefined,
-      } as StaffQuoteInput)
+      })
   return NextResponse.json(result.body, { status: result.status })
 }

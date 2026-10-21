@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { validateInternalApiKey } from '@/lib/internalAuth'
 import { prisma } from '@/lib/prisma'
-import { mcpParty } from '@/lib/mcpActing'
-import { placeClientBooking, type ClientBookingInput } from '@/lib/clientBooking'
+import { mcpParty, parseMcpCampaign } from '@/lib/mcpActing'
+import { resolveQuoteMarket } from '@/lib/staffQuote'
+import { placeClientBooking } from '@/lib/clientBooking'
 import { placeStaffBooking } from '@/lib/staffBooking'
 import { appendHoldRequestToSheet } from '@/lib/googleSheets'
 
@@ -40,27 +41,27 @@ export async function POST(req: NextRequest) {
   if (body.truck_number !== undefined) {
     return NextResponse.json({ error: 'Booking a named truck is no longer supported. Book a market, dates and truck_count; the trucks are picked for you.' }, { status: 400 })
   }
-  const { market, start_date, end_date, truck_count } = body
-  if (typeof market !== 'string' || !market.trim() || typeof start_date !== 'string' || typeof end_date !== 'string'
-    || typeof truck_count !== 'number' || !Number.isInteger(truck_count) || truck_count < 1) {
-    return NextResponse.json({ error: 'market, start_date, end_date (YYYY-MM-DD) and truck_count (a whole number, at least 1) are required' }, { status: 400 })
-  }
+  const campaign = parseMcpCampaign(body)
+  if ('error' in campaign) return NextResponse.json({ error: campaign.error }, { status: 400 })
 
   const party = await mcpParty(req)
   if (party.kind === 'error') return NextResponse.json({ error: party.error }, { status: party.status })
 
-  const features = {
-    shadow_fencing: body.shadow_fencing, smart_directional: body.smart_directional, device_id: body.device_id,
-    studies: body.studies, days_per_week: body.days_per_week, operating_hours: body.operating_hours,
-  }
+  // The market as the quote resolved it (one formal "City, ST" in the
+  // contiguous 48, or the same refusal): the booking functions take the
+  // portal's and Quote page's already-resolved market, so a raw "Springfield"
+  // or ZIP would otherwise be booked unresolved, at a price the quote didn't give.
+  const resolved = await resolveQuoteMarket(campaign.market)
+  if ('status' in resolved) return NextResponse.json(resolved.body, { status: resolved.status })
+  const booking = { ...campaign, market: resolved.formal }
+  const { start_date, end_date } = booking
 
   if (party.kind === 'client') {
     const result = await placeClientBooking(party.session, {
-      market, start_date, end_date, truck_count, ...features,
-      state: typeof body.state === 'string' ? body.state : undefined,
+      ...booking,
       notes: typeof body.notes === 'string' ? body.notes : undefined,
       brand: typeof body.brand === 'string' ? body.brand : undefined,
-    } as ClientBookingInput, { origination: 'mcp' })
+    }, { origination: 'mcp' })
     // Firefly's bookings also go to their sheet, as MCP holds always have.
     const groupId = result.body.campaignGroupId
     if (result.status === 200 && typeof groupId === 'string' && party.session.companyName === 'Firefly' && party.session.username === 'firefly') {
@@ -78,8 +79,8 @@ export async function POST(req: NextRequest) {
 
   // Staff: the Quote page's booking, with only the fields it takes.
   const result = await placeStaffBooking({
-    market, start_date, end_date, truck_count, ...features,
-    state: body.state, sfdc_account_id: body.sfdc_account_id, sfdc_account_name: body.sfdc_account_name,
+    ...booking,
+    sfdc_account_id: body.sfdc_account_id, sfdc_account_name: body.sfdc_account_name,
     primary_contact_id: body.primary_contact_id, brand: body.brand, hold_days: body.hold_days, stage: body.stage,
     brand_markup_pct: body.brand_markup_pct, expected_total: body.expected_total,
   }, party.actor, { origination: 'mcp' })

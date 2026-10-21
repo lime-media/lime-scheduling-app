@@ -13,6 +13,8 @@ import { closeOpportunityAsLost, getOpportunityStage } from '@/lib/sfdcOpportuni
 import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { reopenClosedLostOpportunity, syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { sendCancellationEmail, sendExtensionDecisionEmail } from '@/lib/email'
+import { recordSwap } from '@/lib/transportMetricsRecord'
+import { waitUntil } from '@vercel/functions'
 
 type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration' | 'reinstate'
 
@@ -154,6 +156,8 @@ export async function PATCH(
         details:      JSON.stringify({ old_truck: oldTruck, new_truck: truck_number }),
       },
     })
+    // Metrics measure the new truck's way in (a fleet and GPS load): after the response.
+    if (truck_number !== oldTruck) waitUntil(recordSwap(hold.id, session.user.id))
 
     // The old truck comes off Salesforce's LED Trucks, or its next push would
     // mirror it as a new reservation (lib/sfdcBooking.ts syncOpportunityLedWindow).

@@ -31,6 +31,8 @@ import {
 } from '@/lib/pricing'
 import { resolveMarketSizeTierId, resolveRateOverridesBySfdcAccount, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
 import type { RateOverrides } from '@/lib/pricing/config'
+import { recordBooking } from '@/lib/transportMetricsRecord'
+import { legsFromSelectedTrucks } from '@/lib/transportMetrics'
 import { reply, type CoreResult } from '@/lib/coreResult'
 
 /** The staff member booking it: who the holds and the opportunity are attributed to. */
@@ -353,6 +355,9 @@ export async function placeStaffBooking(body: any, actor: StaffActor): Promise<C
       console.error('[quote/hold] SFDC opportunity creation error:', err)
     }
   }
+
+  // Transport and deal-value metrics (best-effort; never fails the booking).
+  if (!quoteOnly) await recordBooking({ event: 'BOOKED', groups: [{ groupId: campaignGroupId, legs: legsFromSelectedTrucks(selectedTrucks, transport) }], appQuotedTotal: serverTotal, createdBy })
 
   // Never silent: if the opportunity was not created, the rep is told.
   const sfdcNote = sfdcOpportunityId

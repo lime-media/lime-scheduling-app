@@ -260,12 +260,14 @@ Books a market, dates and a truck count on behalf of an MCP user; the engine pic
 
 Holds are marked origination `mcp` ("Via MCP" on the schedule). A body with `truck_number` is refused (400): booking a named truck is no longer offered.
 
+If the same caller already has a live booking for these dates made in the last day, the booking isn't made: the response is 409 with `duplicate: true`, the existing booking and a message. The caller confirms with the person and calls again with `confirm_duplicate: true` to book a second one.
+
 **Request headers:**
 - `Authorization: Bearer <INTERNAL_API_KEY>`
 - `X-Acting-User-Id: <user_id>` (resolved from validate-token)
 - `X-Acting-User-Type: app_user | client_user` (defaults to `app_user`)
 
-**Body:** `market`, `start_date`, `end_date`, `truck_count`; optional features as for the quote, `state`, `notes`, `brand`; staff: `sfdc_account_id`, `sfdc_account_name`, `primary_contact_id`, `hold_days`, `stage`, `brand_markup_pct`, `expected_total`.
+**Body:** `market`, `start_date`, `end_date`, `truck_count`; optional features as for the quote, `state`, `notes`, `brand`; staff: `sfdc_account_id`, `sfdc_account_name`, `primary_contact_id`, `hold_days`, `stage`, `brand_markup_pct`, `expected_total`; `confirm_duplicate` (see above).
 
 **Response:** the client portal's or Quote page's booking result (200), or its refusal (400 / 409).
 

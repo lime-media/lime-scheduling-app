@@ -16,6 +16,7 @@ section('MCP: one engine')
   eq('booking: clients get the portal\'s booking, staff the Quote page\'s, marked MCP',
     holds.includes("await placeClientBooking(party.session") && holds.includes("await placeStaffBooking(") && (holds.match(/origination: 'mcp'/g) ?? []).length === 2, true)
   eq('booking: a named truck is refused', holds.includes('if (body.truck_number !== undefined)'), true)
+  eq('booking: a repeat of the same caller\'s booking needs confirm_duplicate', holds.includes('if (body.confirm_duplicate !== true)') && holds.includes('duplicate: true'), true)
   eq('booking: no direct hold writes', /prisma\.hold\.create|createHold\(/.test(holds), false)
   eq('availability: market + truck count is the engine\'s answer, client rules for clients', avail.includes('await clientAvailability(party.session, q)') && avail.includes('await checkAvailability({'), true)
 }

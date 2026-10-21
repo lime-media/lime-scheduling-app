@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { validateInternalApiKey } from '@/lib/internalAuth'
 import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
 import { mcpParty, parseMcpCampaign } from '@/lib/mcpActing'
 import { resolveQuoteMarket } from '@/lib/staffQuote'
 import { placeClientBooking } from '@/lib/clientBooking'
@@ -55,6 +56,31 @@ export async function POST(req: NextRequest) {
   if ('status' in resolved) return NextResponse.json(resolved.body, { status: resolved.status })
   const booking = { ...campaign, market: resolved.formal }
   const { start_date, end_date } = booking
+
+  // A second booking of the same campaign (a retry after a timeout, or a
+  // repeat) isn't refused, but the caller must confirm it: the same caller's
+  // live booking for these dates in the last day is named, and booking again
+  // needs confirm_duplicate: true.
+  if (body.confirm_duplicate !== true) {
+    const existing = await prisma.hold.findMany({
+      where: {
+        ...activeHoldWhere(),
+        ...(party.kind === 'client' ? { client_user_id: party.session.id } : { created_by: party.actor.id }),
+        start_date: new Date(start_date), end_date: new Date(end_date),
+        created_at: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+      },
+      select: { truck_number: true, market: true, campaign_group_id: true, created_at: true },
+      orderBy: { created_at: 'desc' },
+    })
+    if (existing.length) {
+      const trucks = existing.map(h => h.truck_number).join(', ')
+      return NextResponse.json({
+        duplicate: true,
+        existing: { market: existing[0].market, start_date, end_date, trucks: existing.map(h => h.truck_number), booked_at: existing[0].created_at.toISOString() },
+        message: `You already booked ${start_date} to ${end_date} in ${existing[0].market} in the last day (truck${existing.length === 1 ? '' : 's'} ${trucks}). Ask the person whether they mean a second booking; to book again, call again with confirm_duplicate: true.`,
+      }, { status: 409 })
+    }
+  }
 
   if (party.kind === 'client') {
     const result = await placeClientBooking(party.session, {

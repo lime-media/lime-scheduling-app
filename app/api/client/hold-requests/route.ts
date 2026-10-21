@@ -62,8 +62,11 @@ async function handlePost(req: NextRequest) {
 
     // Auto-select trucks when truck_number is not provided.
     if (!body.truck_number && body.market && body.start_date && body.end_date && body.truck_count) {
-      const result = await placeClientBooking(session, body)
-      return NextResponse.json(result.body, { status: result.status })
+      // Returned, not awaited, as before the move: a throw from the booking
+      // propagates to withUsageLog (which logs the real error) instead of the
+      // generic catch below.
+      return placeClientBooking(session, body)
+        .then(result => NextResponse.json(result.body, { status: result.status }))
     }
 
     // Legacy flow: client provides a specific truck_number (drag-on-grid)

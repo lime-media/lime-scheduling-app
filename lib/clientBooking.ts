@@ -31,21 +31,21 @@ import { resolveMarketSizeTierId, resolveRateOverrides } from '@/lib/pricing/res
 import { reply, type CoreResult } from '@/lib/coreResult'
 
 export type ClientBookingInput = {
-    market: string
-    state?: string
-    start_date: string
-    end_date: string
-    truck_count: number
-    notes?: string
-    shadow_fencing?: boolean
-    smart_directional?: boolean
-    device_id?: boolean
-    studies?: string[]
-    days_per_week?: number
-    operating_hours?: number
-    /** Optional brand; cleaned before it goes to Salesforce (lib/brand.ts). */
-    brand?: string
-  }
+  market: string
+  state?: string
+  start_date: string
+  end_date: string
+  truck_count: number
+  notes?: string
+  shadow_fencing?: boolean
+  smart_directional?: boolean
+  device_id?: boolean
+  studies?: string[]
+  days_per_week?: number
+  operating_hours?: number
+  /** Optional brand; cleaned before it goes to Salesforce (lib/brand.ts). */
+  brand?: string
+}
 
 /**
  * Auto-select trucks and create holds for a campaign.
@@ -67,8 +67,8 @@ export async function placeClientBooking(
     return reply({ error: 'truck_count must be between 1 and 20' }, { status: 400 })
   }
 
-  // Same policy as the client quote route — enforced here too so the hold
-  // cannot be placed by calling this endpoint directly.
+  // Same policy as the client quote (lib/clientQuote.ts) — enforced here too so
+  // the hold cannot be placed by calling the booking endpoint directly.
   const leadDays = daysUntil(start_date)
   if (leadDays < MIN_CLIENT_LEAD_DAYS) {
     return reply({

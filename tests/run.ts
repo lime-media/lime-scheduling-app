@@ -27,6 +27,7 @@ import './revise.test'
 import './tableSort.test'
 import './quoteAlternatives.test'
 import './clientChat.test'
+import './clientSession.test'
 import { report } from './harness'
 
 process.exit(report())

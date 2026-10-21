@@ -54,6 +54,10 @@ export async function DELETE(_req: NextRequest, { params }: { params: { id: stri
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
+  // Login codes have no foreign key to this row (see prisma/schema.prisma
+  // ClientOtpCode), so they are cleared here rather than by a cascade. Before
+  // the user, so a failure can't leave a deleted account's codes behind.
+  await prisma.clientOtpCode.deleteMany({ where: { client_user_id: params.id } })
   await prisma.clientUser.delete({ where: { id: params.id } })
   return NextResponse.json({ ok: true })
 }

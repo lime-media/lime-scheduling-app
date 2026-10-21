@@ -1,13 +1,25 @@
+/**
+ * Step 2 of client-portal login: password AND the emailed code.
+ *
+ * Step 1 (app/api/client/auth/request-otp) already checked the password once
+ * to decide whether to send a code. It is checked again here, because this is
+ * the call that actually issues a session — step 1 is not a trusted gate.
+ *
+ * There is no password-only path: a request without a code is refused before
+ * anything else is read.
+ */
+
 import { NextRequest, NextResponse } from 'next/server'
 import bcrypt from 'bcryptjs'
 import { prisma } from '@/lib/prisma'
 import { setClientSession } from '@/lib/clientAuth'
+import { verifyClientLoginOtp } from '@/lib/clientOtp'
 
 export async function POST(req: NextRequest) {
   try {
-    const { username, password } = await req.json()
-    if (!username || !password) {
-      return NextResponse.json({ error: 'Username and password required' }, { status: 400 })
+    const { username, password, otp } = await req.json()
+    if (!username || !password || !otp) {
+      return NextResponse.json({ error: 'Username, password and code required' }, { status: 400 })
     }
 
     const user = await prisma.clientUser.findUnique({ where: { username } })
@@ -20,9 +32,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
     }
 
-    // A login is activity (Users page "Last activity"). Never fails the login.
-    await prisma.clientUser.update({ where: { id: user.id }, data: { last_active_at: new Date() } })
-      .catch(err => console.error('[client login] last activity not recorded:', err instanceof Error ? err.message : err))
+    // Throws a user-facing message: expired, wrong, or too many attempts.
+    // It also marks the code consumed and records the login as activity.
+    try {
+      await verifyClientLoginOtp(user.id, String(otp).trim())
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : 'That code did not work.' },
+        { status: 401 },
+      )
+    }
+
     const res = NextResponse.json({
       id:          user.id,
       username:    user.username,

@@ -16,6 +16,8 @@ import { sendHoldRequestEmail } from '@/lib/email'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { createOpportunity, isSfdcConfigured, getSfdcAccountInfo } from '@/lib/salesforceClient'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
+import { recordBooking } from '@/lib/transportMetricsRecord'
+import { legsFromSelectedTrucks } from '@/lib/transportMetrics'
 import {
   computeQuote,
   priceTransport,
@@ -300,6 +302,10 @@ export async function placeClientBooking(
       console.error('[client/hold-requests] SFDC opportunity creation error:', err)
     }
   }
+
+  // Transport and deal-value metrics, as for staff bookings (best-effort; never
+  // fails the booking). After the opportunity, so its id is on the record.
+  await recordBooking({ event: 'BOOKED', groups: [{ groupId: campaignGroupId, legs: legsFromSelectedTrucks(selectedTrucks, transport) }], appQuotedTotal: serverTotal, createdBy: null })
 
   return reply({
     ok: true,

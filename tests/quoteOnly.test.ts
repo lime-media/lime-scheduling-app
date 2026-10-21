@@ -32,7 +32,7 @@ section('Quote only: the opportunity carries no LED truck or hold fields')
 {
   // Salesforce turns those fields into reservations (the hold webhook), so a
   // quote-only opportunity must leave them empty in both booking routes.
-  for (const route of ['app/api/quote/hold/route.ts', 'app/api/plan/hold/route.ts']) {
+  for (const route of ['lib/staffBooking.ts', 'app/api/plan/hold/route.ts']) {
     const src = fs.readFileSync(route, 'utf8')
     eq(`${route}: truck and hold fields are skipped for quote-only`, /\.\.\.\(quoteOnly[^?]*\?\s*\{\}\s*:\s*\{[\s\S]*?truckNumbers[\s\S]*?\}\)/.test(src), true)
   }
@@ -44,7 +44,7 @@ section('Quote only: review fixes')
   eq('a real booking never matches a quote-only log (separate id spaces)', plan.includes("`${quoteOnly ? QUOTE_ONLY_GROUP_PREFIX : 'mm_'}${body.requestId}_`"), true)
   eq('one quote-only record per market, including markets no truck covers', /quoteOnlyRows[^=]*=\s*quote\.lines\.map/.test(plan) && plan.includes('QUOTE_ONLY_NO_TRUCK'), true)
   eq('quote-only records are not linked to the client portal (multi)', /quoteOnlyRows[\s\S]*?client_user_id: null/.test(plan), true)
-  const single = fs.readFileSync('app/api/quote/hold/route.ts', 'utf8')
+  const single = fs.readFileSync('lib/staffBooking.ts', 'utf8')
   eq('single-market: "no trucks available" does not block a quote-only log', single.includes('if (selectedTrucks.length === 0 && !quoteOnly)'), true)
   eq('quote-only records are not linked to the client portal (single)', single.includes('client_user_id:    quoteOnly ? null'), true)
   const client = fs.readFileSync('app/api/client/hold-requests/route.ts', 'utf8')
@@ -62,7 +62,7 @@ section('Quote only: cannot be reinstated into a live hold')
 
 section('Single-market booking: the price shown is the price booked')
 {
-  const route = fs.readFileSync('app/api/quote/hold/route.ts', 'utf8')
+  const route = fs.readFileSync('lib/staffBooking.ts', 'utf8')
   eq('the server refuses a total the rep did not see', /Math\.abs\(serverTotal - expected_total\) >= 1/.test(route), true)
   const page = fs.readFileSync('app/quote/page.tsx', 'utf8')
   eq('the page sends the total it shows', page.includes('expected_total: expectedOverride ?? shownTotal()'), true)

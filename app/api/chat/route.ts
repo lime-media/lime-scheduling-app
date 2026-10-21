@@ -281,8 +281,14 @@ function releaseOutcome(r: ActionResult, shownToRep = true) {
 
 // Several tool rounds on Opus can run past the default limit.
 export const maxDuration = 300
-/** No new model call after this long, so a slow model call can't outlast maxDuration. */
+/** No new model call after this long. */
 const TOOL_LOOP_BUDGET_MS = 180_000
+/**
+ * Every model call must finish by this point, leaving time to show and save
+ * the reply (a booking or release already run included) before maxDuration
+ * (300s) cuts the function off. A call started late gets only what's left.
+ */
+const MODEL_DEADLINE_MS = 285_000
 
 async function handlePost(req: NextRequest) {
   const session = await getServerSession(authOptions)
@@ -369,6 +375,12 @@ async function handlePost(req: NextRequest) {
         system: [{ type: 'text', text: BASE_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
         tools: CHAT_TOOLS,
         messages,
+      }, {
+        // The SDK's own timeout is 10 minutes, and retries add more: each call
+        // gets the time left before MODEL_DEADLINE_MS, with no retry after the
+        // first round (a retry would start too late to finish).
+        timeout: Math.max(1_000, MODEL_DEADLINE_MS - (Date.now() - startedAt)) / (round === 0 ? 2 : 1),
+        maxRetries: round === 0 ? 1 : 0,
       })
     } catch (err) {
       // Nothing done yet: the route's own error. After a tool ran (a booking,

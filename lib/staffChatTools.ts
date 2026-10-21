@@ -218,7 +218,11 @@ async function availability(i: Bag): Promise<ChatToolOutcome> {
       // quote on their own: an AT&T soft hold has to be released for them.
       trucks: a.trucks.slice(0, 25).map(t => ({
         truck: t.truckNumber,
-        releasedFrom: t.currentMarket || 'Unknown',
+        // Where the miles are measured from: its previous job, else where it is now
+        // (as MCP and the Reservations truck picker label it).
+        releasedFrom: t.chain.inbound.originIsPriorJob
+          ? t.chain.inbound.originLabel
+          : `current position${t.currentMarket ? ` (${t.currentMarket})` : ''}`,
         miles: Math.round(t.distanceMiles),
         proximity: t.proximityBucket,
         needsAttSoftRelease: t.requiresOverride,

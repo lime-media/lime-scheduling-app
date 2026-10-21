@@ -6,12 +6,12 @@ import { authOptions } from '@/lib/auth'
 import Anthropic from '@anthropic-ai/sdk'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
-import { canonicalMarketName } from '@/lib/marketBounds'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { CHAT_CONTEXT_QUERY, CHAT_SCHEDULE_WINDOW_QUERY } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { formatMarketState } from '@/lib/format'
-import { checkTruckFeasibility } from '@/lib/availabilityEngine'
+import { HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
+import { CHAT_TOOLS, runChatTool, type ChatToolContext } from '@/lib/staffChatTools'
 import { CLOSED_WON_READ_ONLY, closedWonRefusal } from '@/lib/bookings'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 
@@ -21,7 +21,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 const BASE_SYSTEM_PROMPT = `You are the Lime Media Scheduling Assistant — an intelligent operations assistant for the Lime Media truck scheduling team.
 
-You have access to real-time scheduling data that is provided to you with every message. Use it to give precise, specific answers.
+You have the live schedule (provided with every message) and tools that run the app's own engine: check_availability, get_quote, find_account, find_contacts, place_hold and release_hold. They work exactly like the Quote page, so what you quote and book is what the Quote page would quote and book.
 
 STATUS MEANINGS:
 - AVAILABLE (grey): No scheduled program, no hold
@@ -33,8 +33,9 @@ ANSWER RULES — ALWAYS follow these:
 - Be concise by default. Lead with the direct answer in a sentence or two. Only add supporting detail (client/program name, exact date ranges, GPS movement history) when the user explicitly asks for it, or when it's necessary to justify a recommendation.
 - Always include specific truck numbers in your answers, never just counts
 - When asked "how many trucks in X" → give the count AND list every truck number
-- When asked about availability → state which trucks are free and which aren't, in plain language, with current market and hold status — do not dump a full day-by-day schedule unless asked
-- When asked something like "is there a truck near/available for market X" → answer directly: if a truck is at or near that market, say so and confirm it's available. If not, name the nearest available truck (or the truck requiring the smallest move) as an option — that's the answer, not a rundown of every truck's schedule
+- When asked about availability for a market and dates → call check_availability and answer from it: which trucks can take it, nearest first, and which can't and why. Do not dump a full day-by-day schedule unless asked
+- When asked something like "is there a truck near/available for market X" → call check_availability and name the nearest truck that can take it, with its distance. That's the answer, not a rundown of every truck's schedule
+- Distances, transport, prices and which trucks a booking gets come only from the tools. Never estimate them yourself from GPS or the schedule
 - When asked about a specific truck's current location/status → answer in one or two sentences: current market and status. Don't narrate how it got there or where it's been (e.g. "it's bouncing around the Midwest"), and don't mention which client/program it's booked for unless explicitly asked — just say SCHEDULED/HOLD/etc. and the market
 - When asked about a date range → check every day in that range, but report gaps/conflicts, not a full recap of every day, unless asked
 - When asked about conflicts → identify the exact overlap with truck numbers and dates
@@ -51,7 +52,7 @@ For multi-truck or multi-market requests (e.g. "I want N trucks in City X and Ci
 - One bold header per market/location (e.g. **DALLAS**)
 - Under each header, explain the pick: which trucks are cleanest, which nearby trucks are blocked and why (hold type, program, dates), and how far you had to pull if the in-market options were blocked
 - Use "-" bullet lists for blocked/alternate trucks when useful
-- End the prose with a one-line summary of ATT_SOFT/hold conflicts across all recommended trucks, then ask the user to confirm before placing holds (client name)
+- End the prose with a one-line summary of ATT_SOFT/hold conflicts across all recommended trucks, then say how to book it (see BOOKING)
 
 After the prose, output structured [EVENT] blocks, one per event or location, so the UI can render them as styled cards. Every truck-assignment / event-planning / multi-location availability answer needs both the prose breakdown above AND the [EVENT] blocks below — never one without the other.
 
@@ -69,163 +70,49 @@ note: Both OKC in-market trucks (0786, 1029) blocked by ATT_SOFT May + June — 
 Rules for [EVENT] blocks:
 - "name" line: use the format "Event Name — City, State" (or just "City, State" if no named event)
 - "dates" line: human-readable range, e.g. "May 22 – May 24, 2026"
-- One "truck" line per assigned truck: "truck: NUMBER | City, ST | ~XXX mi" — estimate distance from event city based on truck's current GPS location
+- One "truck" line per assigned truck: "truck: NUMBER | City, ST | ~XXX mi" — the truck, where it's released from and its miles, all from check_availability or get_quote
 - Optional "note" line: use for blocked trucks, warnings, or relevant context — keep it one sentence
 - No markdown inside [EVENT] blocks. Plain text only.
 - Output one [EVENT] block per event, back to back, with no extra text between them
 
 For single-truck lookups and simple yes/no availability questions — answer in 1-3 short sentences: current status, market, and whether it's near/available for whatever was asked. Skip client/program names, exact dates, and GPS movement history unless the user explicitly asks for that detail. [EVENT] blocks aren't needed here unless the user is assigning or holding a truck.
 
-TAKING ACTIONS:
-You can place and release holds when the user explicitly asks and confirms.
+PRICES:
+- Quote only with get_quote, and give its numbers as they are (grandTotal, media, features, transport). Never compute or adjust a price yourself.
+- When you show a quote the rep could book, include its line "Quote ref: Q-XXXXXXXX" (the quote_ref get_quote returned).
 
-Workflow:
-1. When user asks to place/release a hold → describe exactly what you'll do and ask for confirmation
-2. When user confirms (says "yes", "go ahead", "confirm", "do it") → respond normally AND append the action block below
-3. Never emit an action block unless the user has confirmed in this message or the immediately prior message
+BOOKING (one market at a time):
+1. Gather the market, dates, truck count and features. For a booking you also need the Salesforce account (find_account) and the opportunity's primary contact (find_contacts). Ask for whichever are missing; if a search finds several, ask which.
+2. Run get_quote with the account, show the quote (total, trucks, transport) with its quote ref, and ask the rep to confirm. Also confirm the brand and hold length if they gave them (hold default 3 days).
+3. Only when the rep confirms in their next message, call place_hold with the same inputs, the quote_ref and the grandTotal. place_hold refuses a quote the rep hasn't seen or anything that differs from it. If anything changes, quote again and ask again.
+4. Report what place_hold returned, including any Salesforce problem. Never describe a refused or partial booking as done.
+- A campaign across several markets is one booking with one quote and one expiry: check availability per market here, but price and book it on the Multi-market planner. Single-market quotes don't add up to its price.
+- Adding to an existing opportunity, or logging a quote without reserving trucks, is done on the Quote page.
 
-To place a hold, append this block at the very end of your response (after your message):
-[ACTION: PLACE_HOLD]
-truck: <truck_number>
-client: <client_name>
-market: <market>
-state: <2-letter state code>
-start_date: <YYYY-MM-DD>
-end_date: <YYYY-MM-DD>
-status: HOLD
-[/ACTION]
+RELEASING: release_hold releases one hold by its id from the HOLDS list. Name the hold (truck, client, dates) and ask the rep to confirm first; call it only after they confirm. Committed (Closed Won) and AT&T soft holds can't be released here.
 
-To release a hold, append this block at the very end of your response:
-[ACTION: RELEASE_HOLD]
-truck: <truck_number>
-[/ACTION]
-
-Always check for conflicts before placing a hold. If there is a conflict, do not emit the action block — report the conflict instead.
 Today's date is always provided in the schedule context. Truck schedule data covers a fixed window from 30 days before today through 60 days after today — if asked about a date outside that window, say so explicitly rather than guessing.`
 
-// ── Action block parsing & execution ─────────────────────────────────────────
-
-const ACTION_RE = /\[ACTION:\s*(\w+)\]([\s\S]*?)\[\/ACTION\]/
-
-function parseAction(text: string): { type: string; fields: Record<string, string> } | null {
-  const m = text.match(ACTION_RE)
-  if (!m) return null
-  const fields: Record<string, string> = {}
-  for (const line of m[2].trim().split('\n')) {
-    const colon = line.indexOf(':')
-    if (colon === -1) continue
-    const k = line.slice(0, colon).trim()
-    const v = line.slice(colon + 1).trim()
-    if (k && v) fields[k] = v
-  }
-  return { type: m[1].trim(), fields }
-}
-
-/** Strip the [ACTION:...[/ACTION] block from the reply text before showing to user. */
-function stripAction(text: string): string {
-  return text.replace(ACTION_RE, '').trim()
-}
+// ── Release ─────────────────────────────────────────────────────────────────
 
 type ActionResult = { success: boolean; message: string }
 
-async function executePlaceHold(
-  fields: Record<string, string>,
-  userId: string
-): Promise<ActionResult> {
-  const { truck, client, market, state, start_date, end_date } = fields
-  if (!truck || !client || !market || !start_date || !end_date) {
-    return { success: false, message: 'Action failed: missing required fields in action block.' }
-  }
-
-  // Hold conflicts — checked here for the better message (it names the client).
-  // Released holds (status EXPIRED, or expires_at already passed) don't block.
-  // NOTE: this sees the hold table ONLY. Program schedules are caught by
-  // checkTruckFeasibility below; this query alone used to let the assistant
-  // book a truck straight over a scheduled LED program.
-  const conflicts = await prisma.hold.findMany({
-    where: {
-      truck_number: truck,
-      ...activeHoldWhere(),
-      start_date: { lte: new Date(end_date) },
-      end_date:   { gte: new Date(start_date) },
-    },
-  })
-  if (conflicts.length > 0) {
-    const c = conflicts[0]
-    return {
-      success: false,
-      message: `Hold not placed — conflict: truck ${truck} already has a ${c.status} for "${c.client_name}" from ${c.start_date.toISOString().split('T')[0]} to ${c.end_date.toISOString().split('T')[0]}.`,
-    }
-  }
-
-  // Feasibility — the assistant picks trucks from prose, so this is the only
-  // thing standing between a plausible-sounding suggestion and a truck that is
-  // already working, cannot physically make the dates, or would strand a later
-  // commitment. Covers dbo.program_schedule as well as holds.
-  try {
-    const feasibility = await checkTruckFeasibility({
-      truckNumber: truck,
-      market,
-      startDate: start_date,
-      endDate: end_date,
-    })
-    if (!feasibility.ok && !feasibility.overridable) {
-      return {
-        success: false,
-        message: `Hold not placed — ${feasibility.detail ?? `truck ${truck} cannot serve these dates`}`,
-      }
-    }
-  } catch (err) {
-    // Deliberate fail-open — see holdService. Tagged for alerting.
-    console.error('[chat] FEASIBILITY_CHECK_FAILED (allowing hold):', err)
-  }
-
-  const canonicalMarket = (await canonicalMarketName(market, state)) ?? market
-
-  const hold = await prisma.hold.create({
-    data: {
-      truck_number: truck,
-      client_name: client,
-      market: canonicalMarket,
-      state: state || '',
-      start_date: new Date(start_date),
-      end_date: new Date(end_date),
-      status: 'HOLD',
-      created_by: userId,
-    },
-  })
-
-  await prisma.auditLog.create({
-    data: {
-      action: 'CREATE_HOLD',
-      truck_number: truck,
-      user_id: userId,
-      hold_id: hold.id,
-      details: JSON.stringify(fields),
-    },
-  })
-
-  return {
-    success: true,
-    message: `Hold placed on truck ${truck} for "${client}" in ${market}${state ? ', ' + state : ''} from ${start_date} to ${end_date}.`,
-  }
-}
-
 async function executeReleaseHold(
-  fields: Record<string, string>,
+  holdId: unknown,
   userId: string
 ): Promise<ActionResult> {
-  const { truck, hold_id } = fields
-
-  const hold = hold_id
-    ? await prisma.hold.findUnique({ where: { id: hold_id } })
-    : await prisma.hold.findFirst({
-        where: { truck_number: truck, end_date: { gte: new Date() } },
-        orderBy: { start_date: 'asc' },
-      })
+  // By id only: picking "the truck's next hold" could release the wrong one
+  // (an AT&T soft hold, or another client's).
+  const hold = typeof holdId === 'string' && holdId
+    ? await prisma.hold.findFirst({ where: { id: holdId, ...activeHoldWhere() } })
+    : null
 
   if (!hold) {
-    return { success: false, message: `No active hold found for truck ${truck ?? hold_id}.` }
+    return { success: false, message: 'No active hold with that id.' }
+  }
+  // AT&T soft holds give way through their own release flow (lib/attSoftRelease.ts), not a delete.
+  if (hold.status === 'ATT_SOFT') {
+    return { success: false, message: `Truck ${hold.truck_number}'s hold is an AT&T soft hold; release it from the AT&T soft-hold controls.` }
   }
   // A won deal is never released from here (lib/bookings.ts closedWonRefusal).
   if (closedWonRefusal([hold])) {
@@ -253,8 +140,6 @@ async function executeReleaseHold(
 }
 
 // ── Context builder ───────────────────────────────────────────────────────────
-
-const HIDDEN_TRUCKS = new Set(['0001', '1257', '00001257'])
 
 async function buildScheduleContext(): Promise<string> {
   const today = new Date().toISOString().split('T')[0]
@@ -357,17 +242,27 @@ async function buildScheduleContext(): Promise<string> {
     .map((h) => {
       const start = h.start_date.toISOString().split('T')[0]
       const end   = h.end_date.toISOString().split('T')[0]
-      return `  Truck ${h.truck_number}: ${h.status} for "${h.client_name}" in ${h.market}${h.state ? ', ' + h.state : ''} (${start} → ${end})${h.notes ? ' — ' + h.notes : ''}`
+      return `  [${h.id}] Truck ${h.truck_number}: ${h.status} for "${h.client_name}" in ${h.market}${h.state ? ', ' + h.state : ''} (${start} → ${end})${h.notes ? ' — ' + h.notes : ''}`
     })
 
   return `TRUCK STATUS (today: ${today}; schedule window covers 30 days before through 60 days after today):
 ${truckLines.join('\n')}
 
-ALL HOLDS & COMMITMENTS (${holds.length} total):
+HOLDS (id in brackets; ${holds.length} total, including committed and AT&T soft holds):
 ${holdLines.join('\n') || '  None'}`
 }
 
 // ── Route handler ─────────────────────────────────────────────────────────────
+
+/** Tool rounds per message: enough to find an account, its contact, check and quote. */
+const MAX_TOOL_ROUNDS = 8
+
+function releaseOutcome(r: ActionResult) {
+  return { content: JSON.stringify(r), isError: !r.success, action: r }
+}
+
+// Several tool rounds on Opus can run past the default limit.
+export const maxDuration = 300
 
 async function handlePost(req: NextRequest) {
   const session = await getServerSession(authOptions)
@@ -404,32 +299,74 @@ async function handlePost(req: NextRequest) {
     },
   ]
 
-  const response = await anthropic.messages.create({
-    model: 'claude-opus-4-6',
-    max_tokens: 2048,
-    system: BASE_SYSTEM_PROMPT,
-    messages,
-  })
-
-  const rawReply = response.content[0].type === 'text' ? response.content[0].text : ''
-
-  // ── Parse & execute any action block ───────────────────────────────────────
-  const action = parseAction(rawReply)
-  const reply  = action ? stripAction(rawReply) : rawReply
-
-  let actionResult: ActionResult | null = null
-  if (action) {
-    try {
-      if (action.type === 'PLACE_HOLD') {
-        actionResult = await executePlaceHold(action.fields, session.user.id)
-      } else if (action.type === 'RELEASE_HOLD') {
-        actionResult = await executeReleaseHold(action.fields, session.user.id)
-      }
-    } catch (err) {
-      console.error('Action execution error:', err)
-      actionResult = { success: false, message: 'Action failed due to a server error.' }
-    }
+  // ── Run the tools until the model answers (lib/staffChatTools.ts) ─────────
+  const ctx: ChatToolContext = {
+    actor: { type: 'app_user', id: session.user.id, name: session.user.name ?? session.user.email ?? '', email: session.user.email },
+    shownText: history
+      .filter((m: { role: string; content: unknown }) => m.role === 'assistant' && typeof m.content === 'string')
+      .map((m: { content: string }) => m.content)
+      .join('\n'),
+    booked: false,
   }
+  const actions: ActionResult[] = []
+  const quotes: { ref: string; summary: string }[] = []
+  let reply = ''
+  for (let round = 0; ; round++) {
+    const response = await anthropic.messages.create({
+      model: 'claude-opus-5-5',
+      max_tokens: 16000,
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'medium' },
+      // Same prompt and tools every request, so they're cached.
+      system: [{ type: 'text', text: BASE_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+      tools: CHAT_TOOLS,
+      messages,
+    })
+    const text = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map(b => b.text)
+      .join('\n\n')
+      .trim()
+    if (response.stop_reason === 'refusal') {
+      reply = text || "I can't help with that request."
+      break
+    }
+    const toolUses = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+    // A cut-off tool call (max_tokens) is never run.
+    if (response.stop_reason !== 'tool_use' || toolUses.length === 0) {
+      reply = text
+      break
+    }
+    if (round >= MAX_TOOL_ROUNDS) {
+      reply = `${text ? `${text}\n\n` : ''}I stopped before finishing: that took more steps than I'm allowed in one message. Ask again more narrowly.`
+      break
+    }
+    messages.push({ role: 'assistant', content: response.content })
+    // One at a time, in order: a booking must never run beside another.
+    const results: Anthropic.ToolResultBlockParam[] = []
+    for (const use of toolUses) {
+      let out
+      try {
+        out = use.name === 'release_hold'
+          ? releaseOutcome(await executeReleaseHold((use.input as { hold_id?: unknown }).hold_id, session.user.id))
+          : await runChatTool(use.name, use.input, ctx)
+      } catch (err) {
+        console.error(`[chat] ${use.name} failed:`, err)
+        out = { content: JSON.stringify({ error: 'Server error' }), isError: true, action: ['place_hold', 'release_hold'].includes(use.name) ? { success: false, message: 'Action failed due to a server error.' } : undefined }
+      }
+      if (out.action) actions.push(out.action)
+      if ('quote' in out && out.quote) quotes.push(out.quote)
+      results.push({ type: 'tool_result', tool_use_id: use.id, content: out.content, is_error: out.isError })
+    }
+    messages.push({ role: 'user', content: results })
+  }
+
+  // A bookable quote is always shown with its ref, so the rep's "yes" can book it.
+  const missing = quotes.filter(q => !reply.includes(q.ref))
+  if (missing.length) reply += `\n\n${missing.map(q => `Quote ref: ${q.ref} (${q.summary})`).join('\n')}`
+  const actionResult: ActionResult | null = actions.length
+    ? { success: actions.every(a => a.success), message: actions.map(a => a.message).join(' ') }
+    : null
 
   // ── Persist the reply ────────────────────────────────────────────────────
   await addMessages(convId, [

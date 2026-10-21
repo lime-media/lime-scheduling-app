@@ -52,34 +52,9 @@ export async function staffQuote(body: StaffQuoteInput): Promise<CoreResult> {
     return reply({ error: 'market, start_date, end_date, and truck_count (>= 1) are required' }, { status: 400 })
   }
 
-  // Market resolution
-  // Resolve against the hardcoded map AND the 356-market list the team
-  // maintains — /api/markets autocompletes from the latter, so gating on the
-  // former would reject markets the rep just picked from the dropdown.
-  const marketMatches = await resolveMarketInputAll(market)
-  if (marketMatches.length === 0) {
-    return reply({
-      error: `We couldn't find "${market}". Use a US city with its state (e.g. "Ames, IA") or a ZIP code.`,
-    }, { status: 400 })
-  }
-  if (marketMatches.length > 1) {
-    return reply({
-      error: 'DISAMBIGUATION_REQUIRED',
-      message: `Multiple markets match "${market}". Please select one:`,
-      candidates: marketMatches.map(m => m.formal),
-    }, { status: 400 })
-  }
-
-  const formalMarket = marketMatches[0].formal
-
-  // Contiguous 48 states
-  const EXCLUDED_STATES = new Set(['AK', 'HI'])
-  const stateAbbr = formalMarket.split(',').pop()?.trim().toUpperCase()
-  if (stateAbbr && EXCLUDED_STATES.has(stateAbbr)) {
-    return reply({
-      error: `We currently only serve markets within the contiguous 48 states. ${formalMarket} is outside our service area.`,
-    }, { status: 400 })
-  }
+  const resolved = await resolveQuoteMarket(market)
+  if ('status' in resolved) return resolved
+  const formalMarket = resolved.formal
 
   const startDate = new Date(start_date + 'T00:00:00Z')
   const endDate = new Date(end_date + 'T00:00:00Z')
@@ -322,6 +297,42 @@ export async function staffQuote(body: StaffQuoteInput): Promise<CoreResult> {
     // Pass through for hold placement
     selectedTrucks: selectedTrucks.map(t => t.truckNumber),
   })
+}
+
+/**
+ * The market as the quote prices it: one formal "City, ST" in the contiguous
+ * 48, or the refusal the quote page shows (not found, ambiguous, AK/HI).
+ */
+export async function resolveQuoteMarket(market: string): Promise<{ formal: string } | CoreResult> {
+  // Market resolution
+  // Resolve against the hardcoded map AND the 356-market list the team
+  // maintains — /api/markets autocompletes from the latter, so gating on the
+  // former would reject markets the rep just picked from the dropdown.
+  const marketMatches = await resolveMarketInputAll(market)
+  if (marketMatches.length === 0) {
+    return reply({
+      error: `We couldn't find "${market}". Use a US city with its state (e.g. "Ames, IA") or a ZIP code.`,
+    }, { status: 400 })
+  }
+  if (marketMatches.length > 1) {
+    return reply({
+      error: 'DISAMBIGUATION_REQUIRED',
+      message: `Multiple markets match "${market}". Please select one:`,
+      candidates: marketMatches.map(m => m.formal),
+    }, { status: 400 })
+  }
+
+  const formalMarket = marketMatches[0].formal
+
+  // Contiguous 48 states
+  const EXCLUDED_STATES = new Set(['AK', 'HI'])
+  const stateAbbr = formalMarket.split(',').pop()?.trim().toUpperCase()
+  if (stateAbbr && EXCLUDED_STATES.has(stateAbbr)) {
+    return reply({
+      error: `We currently only serve markets within the contiguous 48 states. ${formalMarket} is outside our service area.`,
+    }, { status: 400 })
+  }
+  return { formal: formalMarket }
 }
 
 /** Trucks that cannot take the campaign, with why and the dates they could do. */

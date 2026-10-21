@@ -60,6 +60,7 @@ export async function GET() {
       source:            h.source,
       origination:       h.origination,
       company_name:      h.client_user?.company_name ?? h.client_name,
+      created_by:        h.created_by,
       created_by_name:   h.user?.name ?? null,
       pricing_tier:      h.pricing_tier ?? null,
       quoted_total:      h.quoted_total ?? null,

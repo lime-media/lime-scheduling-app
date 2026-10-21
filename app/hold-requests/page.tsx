@@ -17,6 +17,8 @@ import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
 import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingKey, closedWonRefusal, bookingStatus, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
+import { ownedBy, ownerOptions, runsBetween, wholeBookings, type OwnerFilter } from '@/lib/reservationFilters'
+import { useSession } from 'next-auth/react'
 
 type HoldRequest = {
   id: string
@@ -31,6 +33,9 @@ type HoldRequest = {
   origination: string
   company_name: string
   created_by_name: string | null
+  /** The booking's owner: its opportunity's owner, else whoever made it (lib/reservationOwners.ts). */
+  owner_id: string
+  owner_name: string
   pricing_tier: string | null
   quoted_total: number | null
   daily_rate: number | null
@@ -204,6 +209,32 @@ export default function HoldRequestsPage() {
   // reorder the reservations tab.
   const { sort, sortBy, chooseSort } = useTableSort<SortKey>(`reservations.sort.${filterStatus || 'all'}`, SORT_KEYS)
   const [search,       setSearch]       = useState('')
+  // Whose reservations, and which dates they run (lib/reservationFilters.ts).
+  // The owner choice is remembered per browser; the dates are not.
+  const { data: session } = useSession()
+  const meId = session?.user?.id ?? null
+  const [owner, setOwnerState] = useState<OwnerFilter>('all')
+  // Remembered per login, so a shared browser doesn't hand one person's choice to the next.
+  const ownerKey = meId ? `reservations.owner.${meId}` : null
+  useEffect(() => {
+    if (!ownerKey) return
+    try { setOwnerState(localStorage.getItem(ownerKey) ?? 'all') } catch { /* storage unavailable */ }
+  }, [ownerKey])
+  const setOwner = (value: OwnerFilter) => {
+    setOwnerState(value)
+    if (ownerKey) try { localStorage.setItem(ownerKey, value) } catch { /* storage unavailable */ }
+  }
+  // The choices, and the owner actually applied: a remembered owner that is no
+  // longer a choice (their reservations have all dropped off, another user on
+  // this browser, or the session still loading for "Me") falls back to
+  // Everyone, so the dropdown and the list always agree.
+  const owners = useMemo(() => ownerOptions(requests, meId), [requests, meId])
+  const ownerShown: OwnerFilter = owners.some(o => o.value === owner) ? owner : 'all'
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo,   setDateTo]   = useState('')
+  // Keep From <= To: moving one end past the other moves both.
+  const chooseFrom = (v: string) => { setDateFrom(v); if (v && dateTo && v > dateTo) setDateTo(v) }
+  const chooseTo   = (v: string) => { setDateTo(v); if (v && dateFrom && v < dateFrom) setDateFrom(v) }
   const [acting,       setActing]       = useState<string | null>(null) // group/row id currently mid-action
   // Reinstating onto a Closed Lost opportunity: asked before it is moved back to WARM.
   const reopen = useReopenConfirm()
@@ -500,19 +531,21 @@ export default function HoldRequestsPage() {
       const shown = (status: string) => !filterStatus
         || (filterStatus === 'HOLD' ? status === 'HOLD' || status === 'COMMITTED' : status === filterStatus)
       let result = requests.filter(r => shown(statusOf(r).status))
+      // Owner, dates and search pick whole bookings: a booking shows if any of
+      // it matches, so a card, its total and its Edit always cover the same
+      // reservations and a multi-market card never loses a market.
+      if (ownerShown !== 'all' || dateFrom || dateTo) {
+        result = wholeBookings(result, r => ownedBy(r, ownerShown, meId) && runsBetween(r, dateFrom, dateTo))
+      }
       const q = search.trim().toLowerCase()
       if (q) {
-        const matches = (r: HoldRequest) => [r.company_name, r.truck_number, r.market, r.notes]
+        result = wholeBookings(result, r => [r.company_name, r.truck_number, r.market, r.notes]
           .filter(Boolean)
-          .some((field) => field!.toLowerCase().includes(q))
-        // A match shows its whole booking, so a card, its total and its Edit
-        // always cover the same reservations.
-        const cards = new Set(result.filter(matches).map(r => bookingKey(r)).filter(Boolean))
-        result = result.filter((r) => { const k = bookingKey(r); return k ? cards.has(k) : matches(r) })
+          .some((field) => field!.toLowerCase().includes(q)))
       }
       return result
     },
-    [requests, filterStatus, search, statusOf]
+    [requests, filterStatus, search, statusOf, ownerShown, meId, dateFrom, dateTo]
   )
 
   // The last date the card being edited can be held to: a booking has one
@@ -694,6 +727,25 @@ export default function HoldRequestsPage() {
             </button>
           )}
         </div>
+        <select
+          value={ownerShown}
+          onChange={(e) => setOwner(e.target.value)}
+          aria-label="Owner"
+          className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+        >
+          {owners.map(o => <option key={o.value} value={o.value}>{o.value === 'all' ? 'Owner: Everyone' : o.label}</option>)}
+        </select>
+        <div className="flex items-center gap-1.5 text-sm text-gray-600">
+          <span>Running</span>
+          <input type="date" value={dateFrom} onChange={(e) => chooseFrom(e.target.value)} aria-label="Running from"
+            className="border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+          <span>to</span>
+          <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => chooseTo(e.target.value)} aria-label="Running to"
+            className="border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+          {(dateFrom || dateTo) && (
+            <button onClick={() => { setDateFrom(''); setDateTo('') }} aria-label="Clear dates" className="text-gray-400 hover:text-gray-600 px-1">✕</button>
+          )}
+        </div>
         <SortSelect columns={SORT_COLUMNS} sort={sort} onChange={chooseSort} defaultLabel="Newest first" />
         </div>
 
@@ -703,7 +755,7 @@ export default function HoldRequestsPage() {
           <div className="text-center py-20 text-gray-400">
             <p className="font-medium text-gray-500">No hold requests found</p>
             <p className="text-sm mt-1">
-              {search || filterStatus ? 'Try a different search term or filter' : 'Requests submitted by clients will show up here'}
+              {search || filterStatus || ownerShown !== 'all' || dateFrom || dateTo ? 'Try a different search term or filter' : 'Requests submitted by clients will show up here'}
             </p>
           </div>
         ) : (

@@ -3,6 +3,7 @@ import { sfdcQuery, updateOpportunity, isSfdcConfigured } from '@/lib/salesforce
 import { SFDC_SERVICE_USER_EMAIL, reconcileTarget } from '@/lib/sfdcIntegration'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry } from '@/lib/holdExpiry'
 import { centralDate } from '@/lib/dateOnly'
+import { recordWon, winsToRecord } from '@/lib/transportMetricsRecord'
 
 /**
  * Opportunity stage reconcile.
@@ -50,6 +51,8 @@ interface OpportunityStage {
   StageName: string
   IsClosed:  boolean
   IsWon:     boolean
+  /** Deal-value metrics (lib/transportMetricsRecord.ts recordWon). */
+  Amount?:   number | null
 }
 
 export interface SfdcReconcileSummary {
@@ -125,7 +128,7 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
   for (const batch of chunk(uniqueIds, SOQL_ID_CHUNK)) {
     const list = batch.map((id) => `'${id}'`).join(',')
     const rows = await sfdcQuery<OpportunityStage>(
-      `SELECT Id, StageName, IsClosed, IsWon FROM Opportunity WHERE Id IN (${list})`
+      `SELECT Id, StageName, IsClosed, IsWon, Amount FROM Opportunity WHERE Id IN (${list})`
     )
     for (const row of rows) stages.set(normalizeId(row.Id), row)
   }
@@ -142,6 +145,13 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
 
   const serviceUser = await prisma.user.findUnique({ where: { email: SFDC_SERVICE_USER_EMAIL } })
 
+  // Won opportunities the app quoted whose Amount isn't recorded yet
+  // (lib/transportMetricsRecord.ts winsToRecord). A win is recorded once,
+  // whichever path committed the holds: this reconcile, the Salesforce hold
+  // webhook, reinstate, or by hand.
+  const wonKeys = [...stages.values()].filter(s => s.IsWon).map(s => normalizeId(s.Id))
+  const toRecord = new Set(wonKeys.length ? await winsToRecord(wonKeys) : [])
+
   for (const [key, group] of byOpportunity) {
     const stage = stages.get(key)
     if (!stage) continue
@@ -155,6 +165,12 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
     const reheldUntil = reheldStarts.length
       ? bookingHoldExpiry(futureStarts.length ? futureStarts : reheldStarts, DEFAULT_HOLD_DAYS, new Date(), null, STAFF_MIN_DAYS_BEFORE_START).expiresAt
       : null
+
+    // A hold committed this pass: the opportunity went Closed Won, and its
+    // Amount is recorded against what the app quoted (lib/transportMetricsRecord.ts
+    // recordWon) as soon as its holds are committed, so a failure on a later
+    // opportunity can't lose it (the next pass sees them committed already).
+    let wonHold: (typeof group)[number] | null = null
 
     for (const hold of group) {
       const target = reconcileTarget(hold.status, { isClosed: stage.IsClosed, isWon: stage.IsWon })
@@ -188,8 +204,10 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
             : { status: target },
       })
 
-      if (target === 'COMMITTED') summary.committed++
-      else if (target === 'HOLD') summary.uncommitted++
+      if (target === 'COMMITTED') {
+        summary.committed++
+        wonHold = hold
+      } else if (target === 'HOLD') summary.uncommitted++
       else summary.released++
       if (target !== 'COMMITTED' && hold.sfdc_opportunity_id && !summary.changedOpportunities.includes(hold.sfdc_opportunity_id)) {
         summary.changedOpportunities.push(hold.sfdc_opportunity_id)
@@ -199,6 +217,13 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
         `[sfdc-reconcile] truck ${hold.truck_number} | "${hold.client_name}" — ` +
         `Opportunity ${stage.StageName} → ${target}`
       )
+    }
+
+    // Once per won opportunity, by whatever path it was committed.
+    if (stage.IsWon && toRecord.has(key)) {
+      const hold = wonHold ?? group[0]
+      await recordWon({ opportunityId: hold.sfdc_opportunity_id as string, amount: stage.Amount ?? null, stageName: stage.StageName, clientName: hold.client_name })
+      toRecord.delete(key)
     }
   }
 
@@ -214,16 +239,16 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
  */
 export async function getOpportunityStage(
   opportunityId: string
-): Promise<{ isClosed: boolean; isWon: boolean; stageName: string } | null> {
+): Promise<{ isClosed: boolean; isWon: boolean; stageName: string; amount: number | null } | null> {
   if (!isSfdcConfigured() || !SFDC_ID.test(opportunityId)) return null
 
   try {
     const rows = await sfdcQuery<OpportunityStage>(
-      `SELECT Id, StageName, IsClosed, IsWon FROM Opportunity WHERE Id = '${opportunityId}' LIMIT 1`
+      `SELECT Id, StageName, IsClosed, IsWon, Amount FROM Opportunity WHERE Id = '${opportunityId}' LIMIT 1`
     )
     const row = rows[0]
     if (!row) return null
-    return { isClosed: row.IsClosed, isWon: row.IsWon, stageName: row.StageName }
+    return { isClosed: row.IsClosed, isWon: row.IsWon, stageName: row.StageName, amount: row.Amount ?? null }
   } catch (err) {
     console.error(`[sfdc-reconcile] stage lookup failed for ${opportunityId}:`, err)
     return null

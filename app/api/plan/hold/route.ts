@@ -54,6 +54,8 @@ import { rotationStints, type OrderLine } from '@/lib/planning/order'
 import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuote, type QuoteRequest } from '@/lib/planning/quote'
 import { fitNames, lineFeatures } from '@/lib/planning/booking'
 import { holdExpDate } from '@/lib/dateOnly'
+import { recordBooking } from '@/lib/transportMetricsRecord'
+import { legsFromArrivals } from '@/lib/transportMetrics'
 
 export const maxDuration = 300
 
@@ -545,6 +547,9 @@ async function handlePost(req: NextRequest) {
         console.error('[plan/hold] SFDC opportunity creation error:', err)
       }
     }
+
+    // Transport and deal-value metrics (best-effort; never fails the booking).
+    if (!quoteOnly) await recordBooking({ event: reviseKey ? 'REVISED' : 'BOOKED', groups: quote.lines.map(l => ({ groupId: groupOf.get(l.id)!, legs: legsFromArrivals(l.arrivals) })), appQuotedTotal: quote.summary.grandTotal, createdBy, ...(reviseKey ? { revised: { holdIds: reviseIds, bookingKey: reviseKey } } : {}) })
 
     const leftOut = notSelected.length + unavailable.length
     // Which opportunity, and what happened to it.

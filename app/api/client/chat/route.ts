@@ -6,7 +6,7 @@ import { prisma } from '@/lib/prisma'
 import { getClientSession, type ClientSession } from '@/lib/clientAuth'
 import { buildClientChatContext } from '@/lib/clientChatContext'
 import { sendAssistanceRequestEmail } from '@/lib/email'
-import { clientAvailability } from '@/lib/clientAvailability'
+import { clientAvailability, parseClientAvailabilityRequest } from '@/lib/clientAvailability'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -90,16 +90,16 @@ const MAX_TOOL_ROUNDS = 5
 /** Availability checks per message: each one loads the whole fleet's timelines and live GPS. */
 const MAX_AVAILABILITY_CHECKS = 6
 
-const isDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
 const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined)
 
 /** The quote form's availability answer, client-safe: no counts, trucks or reasons. */
 async function checkClientAvailability(input: Record<string, unknown>, session: ClientSession): Promise<string> {
-  const { market, start_date, end_date, truck_count } = input
-  if (!text(market) || !isDate(start_date) || !isDate(end_date) || typeof truck_count !== 'number' || !Number.isInteger(truck_count) || truck_count < 1) {
+  const request = parseClientAvailabilityRequest(input)
+  if (!request) {
     return JSON.stringify({ error: 'market, start_date and end_date (YYYY-MM-DD) and truck_count (a whole number, at least 1) are required' })
   }
-  const checked = await clientAvailability(session, { market: String(market).trim(), start_date, end_date, truck_count })
+  const { truck_count } = request
+  const checked = await clientAvailability(session, request)
   if (checked.refused) {
     const b = checked.refused.body
     // The refusals the quote form shows the client, and nothing else from the body.
@@ -172,7 +172,7 @@ async function handlePost(req: NextRequest) {
   if (session.username !== 'testclient') return NextResponse.json({ error: 'Not available yet' }, { status: 403 })
 
   const { message, history = [], conversation_id: requestedConversation } = await req.json()
-  if (!message) return NextResponse.json({ error: 'Message required' }, { status: 400 })
+  if (typeof message !== 'string' || !message.trim()) return NextResponse.json({ error: 'Message required' }, { status: 400 })
 
   // The conversation this message belongs to (lib/conversations.ts).
   const conversationId = await openConversation({ actorType: 'client_user', userId: session.id }, requestedConversation, message)
@@ -195,8 +195,12 @@ async function handlePost(req: NextRequest) {
   const last = prior[prior.length - 1]
   const earlier = last && last.role !== 'assistant' && last.content === message ? prior.slice(0, -1) : prior
 
+  // The conversation sent to the model starts with a user turn.
+  const recent = earlier.slice(-10).filter(m => m && typeof m.content === 'string' && m.content.trim())
+  while (recent.length && recent[0].role === 'assistant') recent.shift()
+
   const messages: Anthropic.MessageParam[] = [
-    ...earlier.slice(-10).filter(m => m && typeof m.content === 'string' && m.content.trim()).map(m => ({
+    ...recent.map(m => ({
       role:    m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
       content: m.content,
     })),

@@ -35,6 +35,18 @@ export type ClientAvailability =
       marketSizeTierId: Awaited<ReturnType<typeof resolveMarketSizeTierId>>
     }
 
+/**
+ * The request from untrusted input (a request body, a model's tool call):
+ * types checked, market trimmed, or null. Dates are checked by
+ * clientAvailability itself.
+ */
+export function parseClientAvailabilityRequest(input: Record<string, unknown>): ClientAvailabilityRequest | null {
+  const { market, start_date, end_date, truck_count } = input
+  if (typeof market !== 'string' || !market.trim() || typeof start_date !== 'string' || typeof end_date !== 'string'
+    || typeof truck_count !== 'number' || !Number.isInteger(truck_count) || truck_count < 1) return null
+  return { market: market.trim(), start_date, end_date, truck_count }
+}
+
 /** A YYYY-MM-DD string naming a day that exists. */
 function isCalendarDate(s: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false

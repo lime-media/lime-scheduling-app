@@ -13,7 +13,7 @@ import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
 import { brandMarkupFor, withMarkup } from '@/lib/pricing/brandMarkup'
 import { NextRequest, NextResponse } from 'next/server'
 import { getClientSession } from '@/lib/clientAuth'
-import { clientAvailability } from '@/lib/clientAvailability'
+import { clientAvailability, parseClientAvailabilityRequest } from '@/lib/clientAvailability'
 import { legsFromTrucks, type AvailabilityResult } from '@/lib/availabilityEngine'
 
 import {
@@ -51,15 +51,15 @@ async function handlePost(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
 
-  const { market, start_date, end_date, truck_count } = body
-  if (typeof market !== 'string' || !market.trim() || typeof start_date !== 'string' || typeof end_date !== 'string'
-    || typeof truck_count !== 'number' || !Number.isInteger(truck_count) || truck_count < 1) {
+  const request = body && typeof body === 'object' ? parseClientAvailabilityRequest(body) : null
+  if (!request) {
     return NextResponse.json({ error: 'market, start_date, end_date, and truck_count (>= 1) are required' }, { status: 400 })
   }
+  const { start_date, end_date, truck_count } = request
 
 
   // Lead time, market, service area and trucks, by the client rules (lib/clientAvailability.ts).
-  const checked = await clientAvailability(session, { market, start_date, end_date, truck_count })
+  const checked = await clientAvailability(session, request)
   if (checked.refused) return NextResponse.json(checked.refused.body, { status: checked.refused.status })
   const { formalMarket, calendarDays, availability, rateOverrides, marketSizeTierId } = checked
 

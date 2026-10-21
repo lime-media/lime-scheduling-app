@@ -289,8 +289,17 @@ const TOOL_LOOP_BUDGET_MS = 180_000
  * (300s) cuts the function off. A call started late gets only what's left.
  */
 const MODEL_DEADLINE_MS = 285_000
+/**
+ * No booking or release starts after this long: its writes and Salesforce sync
+ * must finish, and the reply be saved, before maxDuration. The rep confirms
+ * again on their next message.
+ */
+const ACTION_CUTOFF_MS = 240_000
 
 async function handlePost(req: NextRequest) {
+  // From the request's start, not the loop's: the session, conversation and
+  // schedule-context work before the loop counts toward maxDuration too.
+  const startedAt = Date.now()
   const session = await getServerSession(authOptions)
   if (!session) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -354,14 +363,17 @@ async function handlePost(req: NextRequest) {
     return releaseOutcome(await executeReleaseHold(holdId, session.user.id))
   }
   const actions: ActionResult[] = []
+  // A booking or release refused for time (ACTION_CUTOFF_MS): the reply says so.
+  let lateAction = false
   const quotes: { ref: string; summary: string }[] = []
   let reply = ''
-  const startedAt = Date.now()
   for (let round = 0; ; round++) {
     // Leave room to answer and save before maxDuration cuts the function off:
     // a booking or release already run this message must still reach the rep.
     if (round > 0 && Date.now() - startedAt > TOOL_LOOP_BUDGET_MS) {
-      reply = "I stopped before finishing: that took longer than I'm allowed in one message. Ask again more narrowly."
+      reply = lateAction
+        ? "I ran out of time before booking or releasing anything, so nothing was changed. Ask again and I'll show it to you to confirm."
+        : "I stopped before finishing: that took longer than I'm allowed in one message. Ask again more narrowly."
       break
     }
     let response: Anthropic.Message
@@ -376,11 +388,12 @@ async function handlePost(req: NextRequest) {
         tools: CHAT_TOOLS,
         messages,
       }, {
-        // The SDK's own timeout is 10 minutes, and retries add more: each call
-        // gets the time left before MODEL_DEADLINE_MS, with no retry after the
-        // first round (a retry would start too late to finish).
-        timeout: Math.max(1_000, MODEL_DEADLINE_MS - (Date.now() - startedAt)) / (round === 0 ? 2 : 1),
-        maxRetries: round === 0 ? 1 : 0,
+        // The SDK's own timeout is 10 minutes, and its retries (with their
+        // waits) add more: each call gets the time left before
+        // MODEL_DEADLINE_MS, and no retry. A failed call is the route's error
+        // (round 0) or ends the loop with what was done (later rounds).
+        timeout: MODEL_DEADLINE_MS - (Date.now() - startedAt),
+        maxRetries: 0,
       })
     } catch (err) {
       // Nothing done yet: the route's own error. After a tool ran (a booking,
@@ -418,7 +431,10 @@ async function handlePost(req: NextRequest) {
     for (const use of toolUses) {
       let out
       try {
-        out = use.name === 'release_hold'
+        if ((use.name === 'place_hold' || use.name === 'release_hold') && Date.now() - startedAt > ACTION_CUTOFF_MS) {
+          lateAction = true
+          out = { content: JSON.stringify({ error: 'Out of time in this message: nothing was booked or released. Tell the rep and ask them to confirm again.' }), isError: true }
+        } else out = use.name === 'release_hold'
           ? await release((use.input as { hold_id?: unknown }).hold_id)
           : await runChatTool(use.name, use.input, ctx)
       } catch (err) {

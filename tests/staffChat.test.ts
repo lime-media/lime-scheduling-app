@@ -47,8 +47,9 @@ section('Staff chat: one engine')
   eq('the rep only "saw" the reply just before this message, not this turn or older ones',
     route.includes("const shown = history.slice(lastUser + 1)") && route.includes('shownText: shown,'), true)
   eq('release is by hold id among live holds', route.includes('findFirst({ where: { id: holdId, ...activeHoldWhere() } })'), true)
-  eq('paid review: each model call has the time left before the deadline, no retry after round 0',
-    route.includes('timeout: Math.max(1_000, MODEL_DEADLINE_MS - (Date.now() - startedAt))') && route.includes('maxRetries: round === 0 ? 1 : 0'), true)
+  eq('paid review: each model call has the time left before the deadline, no retry',
+    route.includes('timeout: MODEL_DEADLINE_MS - (Date.now() - startedAt)') && route.includes('maxRetries: 0,'), true)
+  eq('local review: no booking or release starts after the action cutoff', route.includes('Date.now() - startedAt > ACTION_CUTOFF_MS'), true)
   eq('paid review: a truck is labelled from where its miles are measured',
     tools.includes('releasedFrom: t.chain.inbound.originIsPriorJob') && !tools.includes("releasedFrom: t.currentMarket || 'Unknown'"), true)
   eq('AT&T soft holds are not released by the chat', route.includes("hold.status === 'ATT_SOFT'"), true)

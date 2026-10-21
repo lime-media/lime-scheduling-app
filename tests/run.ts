@@ -26,6 +26,7 @@ import './bookings.test'
 import './revise.test'
 import './tableSort.test'
 import './quoteAlternatives.test'
+import './reservationFilters.test'
 import './clientChat.test'
 import { report } from './harness'
 

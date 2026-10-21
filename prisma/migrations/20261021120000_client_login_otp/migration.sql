@@ -40,14 +40,22 @@ BEGIN
 END;
 
 -- ── Verify ───────────────────────────────────────────────────────────────────
--- Expect: table_exists 1, column_count 7, index_exists 1.
+-- Expect: table_exists 1, column_count 7, index_exists 1, without_email 0.
+--
+-- without_email is the one to stop on. A client with no email cannot be sent
+-- a code, and there is no password-only path, so any count above zero is that
+-- many clients who will not be able to log in once this deploys. Set their
+-- addresses on the Users page (Client Users) and run this again before
+-- deploying. The query below names them.
 SELECT
     (SELECT COUNT(*) FROM sys.tables  WHERE name = 'app_client_login_otps')                      AS table_exists,
     (SELECT COUNT(*) FROM sys.columns WHERE object_id = OBJECT_ID('dbo.app_client_login_otps'))  AS column_count,
-    (SELECT COUNT(*) FROM sys.indexes WHERE name = 'IX_app_client_login_otps_owner')             AS index_exists;
+    (SELECT COUNT(*) FROM sys.indexes WHERE name = 'IX_app_client_login_otps_owner')             AS index_exists,
+    (SELECT COUNT(*) FROM dbo.app_client_users
+      WHERE email IS NULL OR LTRIM(RTRIM(email)) = '')                                           AS without_email;
 
--- ── Before deploying, every client user needs an email ───────────────────────
--- A client with no email cannot receive a code and cannot log in. Expect
--- without_email 0 before the deploy; backfill on the Users page if not.
--- SELECT COUNT(*) AS without_email FROM dbo.app_client_users
---  WHERE email IS NULL OR LTRIM(RTRIM(email)) = '';
+-- Who still needs an address — empty when the deploy is safe.
+SELECT username, company_name
+FROM dbo.app_client_users
+WHERE email IS NULL OR LTRIM(RTRIM(email)) = ''
+ORDER BY username;

@@ -32,6 +32,7 @@ export class NoClientEmailError extends Error {
   }
 }
 
+
 /**
  * Issues and emails a login code. Throws NoClientEmailError when there is no
  * address to send to, and OtpRateLimitError when asked again too soon.
@@ -46,16 +47,3 @@ export async function requestClientLoginOtp(clientUserId: string, email: string 
 export const verifyClientLoginOtp = (clientUserId: string, submittedCode: string): Promise<void> =>
   checkOtp(clientStore, clientUserId, submittedCode)
 
-/**
- * Where a code was sent, shown on the login screen so the person knows which
- * inbox to check without the address being readable to anyone who guesses a
- * username: "jo***@example.com".
- */
-export function maskEmail(email: string): string {
-  const at = email.lastIndexOf('@')
-  if (at <= 0) return '***'
-  const name = email.slice(0, at)
-  // A fixed mask, not one per hidden character: the number of stars must not
-  // give away how long the address is.
-  return `${name.slice(0, 2)}***${email.slice(at)}`
-}

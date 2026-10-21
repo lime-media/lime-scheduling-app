@@ -13,12 +13,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import bcrypt from 'bcryptjs'
 import { prisma } from '@/lib/prisma'
 import { OtpRateLimitError } from '@/lib/otp'
-import { maskEmail, NoClientEmailError, requestClientLoginOtp } from '@/lib/clientOtp'
+import { NoClientEmailError, requestClientLoginOtp } from '@/lib/clientOtp'
+import { maskEmail } from '@/lib/clientEmail'
 
 export async function POST(req: NextRequest) {
   try {
     const { username, password } = await req.json()
-    if (!username || !password) {
+    // Typed, not just truthy: anything else reaches Prisma and bcrypt and
+    // comes back a 500 when it is really a bad request.
+    if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
       return NextResponse.json({ error: 'Username and password required' }, { status: 400 })
     }
 

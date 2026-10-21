@@ -9,7 +9,7 @@
  */
 import { eq, section } from './harness'
 import { readSession, signSession } from '@/lib/clientSessionToken'
-import { maskEmail } from '@/lib/clientOtp'
+import { clientEmailRefusal, maskEmail } from '@/lib/clientEmail'
 
 const SECRET = 'test-secret'
 const DAY    = 86_400_000
@@ -73,4 +73,28 @@ section('login code: which inbox to check')
   eq('only the last @ counts', maskEmail('a@b@example.com'), 'a@***@example.com')
   eq('no @ gives nothing away', maskEmail('not-an-email'), '***')
   eq('empty', maskEmail(''), '***')
+}
+
+section('client users: an account with no email could not sign in, so it is refused')
+{
+  const ok = (e: unknown) => clientEmailRefusal(e) === null
+  eq('a plain address', ok('ops@example.com'), true)
+  eq('a plus tag', ok('ops+led@example.com'), true)
+  eq('surrounding spaces are trimmed', ok('  ops@example.com  '), true)
+
+  eq('blank is refused', ok(''), false)
+  eq('spaces only', ok('   '), false)
+  eq('missing entirely', ok(undefined), false)
+  eq('null', ok(null), false)
+  eq('not a string', ok(42), false)
+  eq('no @', ok('ops.example.com'), false)
+  eq('nothing before the @', ok('@example.com'), false)
+  eq('nothing after the @', ok('ops@'), false)
+  eq('two @', ok('a@b@example.com'), false)
+  eq('a space inside', ok('two words@example.com'), false)
+
+  eq('the reason says why it is needed',
+    clientEmailRefusal(''), 'An email address is required: client sign-in sends a code to it.')
+  eq('and quotes what was typed',
+    clientEmailRefusal('nope'), '"nope" is not an email address. Client sign-in sends a code to it.')
 }

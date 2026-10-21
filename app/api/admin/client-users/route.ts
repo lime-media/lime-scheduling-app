@@ -4,6 +4,7 @@ import type { Session } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import bcrypt from 'bcryptjs'
+import { clientEmailRefusal } from '@/lib/clientEmail'
 
 function isOps(session: Session | null) {
   return session?.user?.role === 'OPERATIONS'
@@ -34,6 +35,12 @@ export async function POST(req: NextRequest) {
   if (!username?.trim() || !company_name?.trim() || !password) {
     return NextResponse.json({ error: 'Username, company name, and password are required' }, { status: 400 })
   }
+  // A client signs in with a code sent here; without it the account cannot
+  // log in at all (lib/clientOtp.ts).
+  const emailRefusal = clientEmailRefusal(email)
+  if (emailRefusal) {
+    return NextResponse.json({ error: emailRefusal }, { status: 400 })
+  }
 
   const existing = await prisma.clientUser.findUnique({ where: { username: username.trim() } })
   if (existing) {
@@ -46,7 +53,7 @@ export async function POST(req: NextRequest) {
       username:        username.trim(),
       company_name:    company_name.trim(),
       password_hash,
-      email:           email?.trim() || null,
+      email:           email.trim(),
       partner_id:      partner_id?.trim() || null,
       sfdc_account_id: sfdc_account_id?.trim() || null,
     },

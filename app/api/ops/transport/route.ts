@@ -32,7 +32,8 @@ export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams
   const to = isDate(sp.get('to')) ? sp.get('to')! : new Date().toISOString().slice(0, 10)
   const from = isDate(sp.get('from')) ? sp.get('from')! : new Date(Date.parse(to) - 30 * 86_400_000).toISOString().slice(0, 10)
-  const range = { gte: new Date(from + 'T00:00:00Z'), lte: new Date(to + 'T23:59:59Z') }
+  // Through the end of `to` (before the next day begins, fractions of a second included).
+  const range = { gte: new Date(from + 'T00:00:00Z'), lt: new Date(Date.parse(to + 'T00:00:00Z') + 86_400_000) }
 
   try {
     // Bookings made in the range, and every later leg of them. By booking, not

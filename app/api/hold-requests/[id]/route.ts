@@ -154,7 +154,7 @@ export async function PATCH(
       },
     })
     // Metrics measure the new truck's way in (a fleet and GPS load): after the response.
-    waitUntil(recordSwap(hold.id, session.user.id))
+    if (truck_number !== oldTruck) waitUntil(recordSwap(hold.id, session.user.id))
 
     return NextResponse.json({ ok: true, old_truck: oldTruck, new_truck: truck_number })
   }

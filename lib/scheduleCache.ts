@@ -16,7 +16,7 @@ import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 import { syncAttSoftHolds } from '@/lib/attSoftHolds'
 import { freeRanges } from '@/lib/ranges'
-import { recordAmountChanges, recordExecuted, recordPrestart } from '@/lib/transportMetricsRecord'
+import { recordAmountChanges, recordExecuted, recordPrestart, sharedOriginMeasurer } from '@/lib/transportMetricsRecord'
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────
 
@@ -144,7 +144,9 @@ export async function refreshCache(): Promise<RefreshSummary> {
   // Amount changes. Last, so the fleet load and Salesforce reads never delay
   // conflict detection; independent (different holds), so in parallel.
   // Best-effort; never fails the sweep.
-  const [metricsPrestart, metricsExecuted, metricsAmounts] = await Promise.all([recordPrestart(), recordExecuted(), recordAmountChanges()])
+  // The two recorders that measure trucks share one fleet and GPS load.
+  const measurer = sharedOriginMeasurer()
+  const [metricsPrestart, metricsExecuted, metricsAmounts] = await Promise.all([recordPrestart(measurer), recordExecuted(measurer), recordAmountChanges()])
   if (metricsPrestart || metricsExecuted || metricsAmounts) {
     console.log(`[scheduleCache] metrics: ${metricsPrestart} pre-start snapshot(s), ${metricsExecuted} executed leg(s), ${metricsAmounts} amount change(s)`)
   }

@@ -200,7 +200,9 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
       )
     }
 
-    if (wonHold) {
+    // Only on the transition: a hold already committed (by an earlier pass,
+    // or by hand on the hold, which records it there) means the win was recorded.
+    if (wonHold && !group.some(h => h.status === 'COMMITTED')) {
       await recordWon({ opportunityId: wonHold.sfdc_opportunity_id as string, amount: stage.Amount ?? null, stageName: stage.StageName, clientName: wonHold.client_name })
     }
   }

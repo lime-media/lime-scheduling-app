@@ -113,10 +113,16 @@ export async function recordBooking(o: {
   }
 }
 
-/** Measures where trucks come from for given holds, loading the fleet once. */
-async function originMeasurer(excludeHoldIds: Set<string>) {
+/**
+ * Measures where trucks come from, loading the fleet once. Nothing is excluded
+ * from the timelines: the measured hold itself straddles its own window, which
+ * the chain check treats as neither predecessor nor successor, while every
+ * other hold (another hold of the same batch, an earlier market of the same
+ * booking) is a real prior job the truck drives in from.
+ */
+async function originMeasurer() {
   const [{ timelines, gpsMap }, overrides] = await Promise.all([
-    loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS, excludeHoldIds }),
+    loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS }),
     resolveDefaultRateOverrides(),
   ])
   const serviceAreaMiles = overrides?.service_area_miles ?? SERVICE_AREA_RADIUS_MILES
@@ -141,6 +147,16 @@ async function originMeasurer(excludeHoldIds: Set<string>) {
     },
   }
 }
+type OriginMeasurer = Awaited<ReturnType<typeof originMeasurer>>
+
+/**
+ * One fleet load shared by the sweep's recorders (a fleet and GPS load each
+ * otherwise), made only when one of them has holds to measure.
+ */
+export function sharedOriginMeasurer(): () => Promise<OriginMeasurer> {
+  let loading: Promise<OriginMeasurer> | null = null
+  return () => (loading ??= originMeasurer())
+}
 
 /**
  * Each hold's latest planned leg: what the client pays for its transport (0 if
@@ -162,7 +178,7 @@ export async function recordSwap(holdId: string, createdBy: string | null): Prom
   try {
     const hold = await prisma.hold.findUnique({ where: { id: holdId } })
     if (!hold || hold.origination === QUOTE_ONLY_ORIGINATION) return
-    const [measurer, planned] = await Promise.all([originMeasurer(new Set([hold.id])), plannedLegs([hold.id])])
+    const [measurer, planned] = await Promise.all([originMeasurer(), plannedLegs([hold.id])])
     const was = planned.get(hold.id)
     const leg = await measurer.measure(hold, was?.charge ?? 0)
     if (leg) await prisma.transportLeg.create({ data: legRow('SWAPPED', hold, leg, createdBy, was?.bookingKey) })
@@ -180,25 +196,30 @@ const PRESTART_BATCH = 200
  * get one: where their truck sits now (its last job before the start, else its
  * live GPS), before it drives in. On the first day the EXECUTED record takes
  * its origin from this when the truck had no prior job (lib/transportMetrics.ts
- * executedOrigin). Once per hold. Returns how many were recorded.
+ * executedOrigin). Once per hold and truck (a truck swapped on gets its own).
+ * Returns how many were recorded.
  */
-export async function recordPrestart(): Promise<number> {
+export async function recordPrestart(measurerOf: () => Promise<OriginMeasurer> = sharedOriginMeasurer()): Promise<number> {
   try {
     const today = day(new Date())
     const until = new Date(today + 'T23:59:59Z')
     until.setUTCDate(until.getUTCDate() + 3)
     const window = { status: { in: LIVE_HOLD_STATUSES }, origination: { not: QUOTE_ONLY_ORIGINATION }, start_date: { gt: new Date(today + 'T23:59:59Z'), lte: until } }
-    const upcoming = await prisma.hold.findMany({ where: window, select: { id: true, status: true, origination: true, start_date: true } })
+    const upcoming = await prisma.hold.findMany({ where: window, select: { id: true, status: true, origination: true, start_date: true, truck_number: true } })
     if (upcoming.length === 0) return 0
     const done = await prisma.transportLeg.findMany({
       where: { event: 'PRESTART', hold_id: { in: upcoming.map(h => h.id) } },
-      select: { hold_id: true },
+      select: { hold_id: true, truck_number: true },
     })
-    const todoIds = prestartCandidates(upcoming, new Set(done.map(d => d.hold_id!)), today).slice(0, PRESTART_BATCH).map(h => h.id)
+    // Snapped for the truck now on the hold: a truck swapped on after the
+    // snapshot gets its own (EXECUTED only uses a snapshot of the same truck).
+    const truckOf = new Map(upcoming.map(h => [h.id, h.truck_number]))
+    const snapped = new Set(done.filter(d => truckOf.get(d.hold_id!) === d.truck_number).map(d => d.hold_id!))
+    const todoIds = prestartCandidates(upcoming, snapped, today).slice(0, PRESTART_BATCH).map(h => h.id)
     if (todoIds.length === 0) return 0
     const todo = await prisma.hold.findMany({ where: { id: { in: todoIds } } })
     if (todo.length === 0) return 0
-    const [measurer, planned] = await Promise.all([originMeasurer(new Set(todo.map(h => h.id))), plannedLegs(todo.map(h => h.id))])
+    const [measurer, planned] = await Promise.all([measurerOf(), plannedLegs(todo.map(h => h.id))])
     const rows = []
     for (const hold of todo) {
       const was = planned.get(hold.id)
@@ -219,7 +240,7 @@ export async function recordPrestart(): Promise<number> {
  * start, else its PRESTART snapshot (taken before it moved, same truck), else
  * its live GPS (executedOrigin). Once per hold. Returns how many were recorded.
  */
-export async function recordExecuted(): Promise<number> {
+export async function recordExecuted(measurerOf: () => Promise<OriginMeasurer> = sharedOriginMeasurer()): Promise<number> {
   try {
     const today = day(new Date())
     const from = new Date(today + 'T00:00:00Z')
@@ -238,7 +259,7 @@ export async function recordExecuted(): Promise<number> {
     const todo = await prisma.hold.findMany({ where: { id: { in: todoIds } } })
     if (todo.length === 0) return 0
     const [measurer, planned, snapshots] = await Promise.all([
-      originMeasurer(new Set(todo.map(h => h.id))),
+      measurerOf(),
       plannedLegs(todo.map(h => h.id)),
       prisma.transportLeg.findMany({
         where: { event: 'PRESTART', hold_id: { in: todo.map(h => h.id) } },
@@ -246,12 +267,13 @@ export async function recordExecuted(): Promise<number> {
         select: { hold_id: true, truck_number: true, origin_label: true, origin_kind: true, miles: true, transport_days: true },
       }),
     ])
-    const prestartOf = new Map(snapshots.map(s => [s.hold_id!, s]))
+    // The latest snapshot of each hold's current truck (a swap leaves the old truck's behind).
+    const prestartOf = new Map(snapshots.map(s => [`${s.hold_id}|${s.truck_number}`, s]))
     const rows = []
     for (const hold of todo) {
       const was = planned.get(hold.id)
       const measured = await measurer.measure(hold, was?.charge ?? 0)
-      if (measured) rows.push(legRow('EXECUTED', hold, executedOrigin(measured, prestartOf.get(hold.id) ?? null, measurer.serviceAreaMiles), null, was?.bookingKey))
+      if (measured) rows.push(legRow('EXECUTED', hold, executedOrigin(measured, prestartOf.get(`${hold.id}|${hold.truck_number}`) ?? null, measurer.serviceAreaMiles), null, was?.bookingKey))
     }
     if (rows.length) await prisma.transportLeg.createMany({ data: rows })
     return rows.length
@@ -317,7 +339,10 @@ export async function recordAmountChanges(): Promise<number> {
     const changed = rows.flatMap(r => {
       const id = byKey.get(key(r.Id))
       const was = id ? last.get(id) : undefined
-      if (!id || !was || was.amount === (r.Amount ?? null)) return []
+      // Compared in cents, as stored (DECIMAL(14,2)): a Salesforce Amount with
+      // more decimals would otherwise read as changed on every sweep.
+      const cents = (n: number | null) => (n == null ? null : Math.round(n * 100))
+      if (!id || !was || cents(was.amount) === cents(r.Amount ?? null)) return []
       return [{ event: 'AMOUNT_CHANGED', sfdc_opportunity_id: id, client_name: was.client, sf_amount: r.Amount ?? null, sf_stage: r.StageName }]
     })
     if (changed.length) await prisma.dealValue.createMany({ data: changed })

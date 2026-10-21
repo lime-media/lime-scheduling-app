@@ -9,7 +9,12 @@ import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { loadFleetTimelines } from '@/lib/fleetTimelines'
 import { checkChainFeasibility } from '@/lib/chainFeasibility'
 import { findWindowClash } from '@/lib/truckTimeline'
-import { resolveCampaignCoords } from '@/lib/pricing/resolvers'
+import { resolveCampaignCoords, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
+import { mcpParty } from '@/lib/mcpActing'
+import { clientAvailability } from '@/lib/clientAvailability'
+import { checkAvailability } from '@/lib/availabilityEngine'
+import { resolveQuoteMarket } from '@/lib/staffQuote'
+import { HIDDEN_TRUCKS as SHARED_HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
 
 const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
 
@@ -70,6 +75,20 @@ export async function GET(request: Request) {
       { error: 'start_date must be before or equal to end_date' },
       { status: 400 }
     )
+  }
+
+  // With a market AND a truck count, the answer is the engine's, for whoever
+  // the call acts for: what the client portal's quote form or the Quote page
+  // would say about booking it (engineAnswer below). Without a truck count,
+  // the calendar view follows.
+  const truckCountParam = searchParams.get('truck_count')
+  const engineMarket = searchParams.get('market')
+  if (truckCountParam !== null && engineMarket) {
+    const truckCount = Number(truckCountParam)
+    if (!/^\d+$/.test(truckCountParam) || truckCount < 1) {
+      return NextResponse.json({ error: 'truck_count must be a whole number of at least 1' }, { status: 400 })
+    }
+    return engineAnswer(request, { market: engineMarket, start_date: startDate, end_date: endDate, truck_count: truckCount })
   }
 
   // Optional. Without it this endpoint answers "when is each truck booked?",
@@ -326,4 +345,50 @@ function nextDay(dateStr: string): string {
   const d = new Date(dateStr + 'T00:00:00Z')
   d.setUTCDate(d.getUTCDate() + 1)
   return d.toISOString().split('T')[0]
+}
+
+/**
+ * The engine's answer for one market, dates and truck count.
+ * - A client gets the client portal's rules (lib/clientAvailability.ts: lead
+ *   time, their rate card's service area, no displacing an AT&T soft hold) and,
+ *   as on the quote form, only yes or the refusal message: no truck numbers or
+ *   fleet counts.
+ * - Staff get the Quote page's rules and the trucks, nearest first, with
+ *   distance from where each is released, and the ones that can't take it.
+ */
+async function engineAnswer(request: Request, q: { market: string; start_date: string; end_date: string; truck_count: number }) {
+  const party = await mcpParty(request)
+  if (party.kind === 'error') return NextResponse.json({ error: party.error }, { status: party.status })
+
+  if (party.kind === 'client') {
+    const checked = await clientAvailability(party.session, q)
+    if (checked.refused) {
+      const b = checked.refused.body
+      return NextResponse.json({ can_book: false, message: b.message ?? b.error, candidates: b.candidates }, { status: checked.refused.status === 200 ? 200 : checked.refused.status })
+    }
+    return NextResponse.json({ can_book: true, market: checked.formalMarket, truck_count: q.truck_count, message: `${q.truck_count} truck${q.truck_count === 1 ? '' : 's'} can be booked in ${checked.formalMarket} for these dates.` })
+  }
+
+  const resolved = await resolveQuoteMarket(q.market)
+  if ('status' in resolved) return NextResponse.json(resolved.body, { status: resolved.status })
+  const defaults = await resolveDefaultRateOverrides()
+  const a = await checkAvailability({
+    market: resolved.formal, startDate: q.start_date, endDate: q.end_date, truckCount: q.truck_count,
+    serviceAreaMiles: defaults?.service_area_miles,
+    // The staff rule, as on the Quote page: leaving a later AT&T soft hold short is a warning.
+    softHoldStrandIsWarning: true,
+  })
+  if (!a.marketResolved) return NextResponse.json({ can_book: false, message: `Could not locate "${resolved.formal}" on the map.` })
+  return NextResponse.json({
+    can_book: a.sufficient,
+    market: resolved.formal,
+    requested: q.truck_count,
+    counts: a.counts,
+    trucks: a.trucks.filter(t => !SHARED_HIDDEN_TRUCKS.has(t.truckNumber)).slice(0, 25).map(t => ({
+      unit_id: t.truckNumber, released_from: t.currentMarket || 'Unknown', miles: Math.round(t.distanceMiles),
+      proximity: t.proximityBucket, needs_att_soft_release: t.requiresOverride, note: t.overrideDetail || t.softHoldWarning || undefined,
+    })),
+    cannot_take: a.infeasible.slice(0, 25).map(t => ({ unit_id: t.truckNumber, from: t.currentMarket || 'Unknown', reason: t.reason, detail: t.detail, earliest_start: t.earliestStart, latest_end: t.latestEnd })),
+    date_options: a.dateOptions,
+  })
 }

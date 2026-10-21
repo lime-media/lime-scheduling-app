@@ -42,7 +42,7 @@ import { holdExpDate } from '@/lib/dateOnly'
 export type StaffActor = { id?: string; name?: string | null; email?: string | null }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the request body, read field by field as the route always has
-export async function placeStaffBooking(body: any, actor: StaffActor): Promise<CoreResult> {
+export async function placeStaffBooking(body: any, actor: StaffActor, opts: { origination?: 'frontend' | 'mcp' } = {}): Promise<CoreResult> {
   const {
     market, state, start_date, end_date, truck_count,
     sfdc_account_id, sfdc_account_name, brand: rawBrand, primary_contact_id,
@@ -249,7 +249,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor): Promise<C
     // Never committed here: a Closed Won opportunity takes no additions (opportunityRefusal).
     status:            quoteOnly ? QUOTE_ONLY_STATUS : 'HOLD',
     source:            'INTERNAL',
-    origination:       quoteOnly ? QUOTE_ONLY_ORIGINATION : 'frontend',
+    origination:       quoteOnly ? QUOTE_ONLY_ORIGINATION : opts.origination ?? 'frontend',
     notes:             `${quoteOnly ? `${QUOTE_ONLY_NOTE} ` : ''}Internal quote for ${sfdc_account_name || 'Unknown'}${brand ? ` (brand: ${brand})` : ''}`,
     created_by:        createdBy,
     // Quote-only logs are internal: never shown in the client portal.

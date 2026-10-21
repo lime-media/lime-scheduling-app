@@ -33,6 +33,7 @@ import './clientChat.test'
 import './staffChat.test'
 import './clientSession.test'
 import './emailTemplates.test'
+import './mcpEngine.test'
 import { report, settle } from './harness'
 
 // settle() lets a suite make assertions after a promise resolves; it is a

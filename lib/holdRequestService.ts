@@ -32,6 +32,8 @@ export interface CreateClientHoldParams {
    * supplies the truck number directly.
    */
   skipFeasibilityCheck?: boolean
+  /** Where the request came from: the client portal (default) or MCP. Shown as "Via MCP" on the schedule. */
+  origination?: 'client-view' | 'mcp'
   /**
    * Leave the team's "hold request" email to the caller. A multi-truck
    * booking sends ONE email for the whole booking once every truck is held
@@ -137,7 +139,7 @@ export async function createClientHold(
       end_date:          new Date(end_date),
       status:            'HOLD',
       source:            'CLIENT',
-      origination:       'client-view',
+      origination:       params.origination ?? 'client-view',
       notes:             notes ?? null,
       created_by:        serviceUser.id,
       client_user_id:    session.id,

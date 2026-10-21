@@ -61,6 +61,7 @@ export type ClientBookingInput = {
 export async function placeClientBooking(
   session: ClientSession,
   body: ClientBookingInput,
+  opts: { origination?: 'client-view' | 'mcp' } = {},
 ): Promise<CoreResult> {
   const {
     market, state, start_date, end_date, truck_count, notes,
@@ -229,6 +230,7 @@ export async function placeClientBooking(
         skipFeasibilityCheck: true,
         // One email for the booking, below, not one per truck.
         skipEmail: true,
+        origination: opts.origination,
         truck_number: truck.truckNumber,
         market,
         state: resolvedState,

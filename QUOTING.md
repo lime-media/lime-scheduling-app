@@ -215,11 +215,9 @@ The rules never change, but *where the distance comes from* depends on whether t
 | Surface | Distance measured from |
 |---|---|
 | Quote Builder, rep quote, hold requests | Each truck's **live GPS position** |
-| AI / MCP endpoint | The **nearest accepted market**, for every truck |
+| AI chat, MCP | The same: they quote through the Quote page's and client portal's code |
 
-The MCP endpoint runs before truck selection, so it can't know where individual trucks are. It assumes every truck starts at the nearest accepted market, which is deliberately **conservative** — an MCP quote can come in *higher* than the final quote, never lower, because real trucks are often closer than the market centroid.
-
-**This is an estimate, not a disagreement.** Same rules, same formula, same thresholds. If an MCP quote and a rep quote differ, it is because the real trucks were closer than assumed — not because two different rule sets were applied. MCP responses mark billed transport with `estimated: true` and report the distance used.
+MCP used to quote before picking trucks, assuming every truck started at the nearest accepted market. It now quotes the way the app does, for whoever the call acts for (`app/api/v1/internal/quote`, `lib/mcpActing.ts`): a client gets the client portal's quote and a staff member the Quote page's, from real trucks.
 
 ### Cancellation
 
@@ -313,9 +311,11 @@ A campaign that leaves a truck far out with nothing after it carries **no return
 | Path | Behavior |
 |---|---|
 | Quote Builder, rep quote, hold requests | gated at truck selection |
-| Grid hold, MCP hold (`createHold`) | **hard blocked** — `feasibility_conflict` |
+| Grid hold (`createHold`) | **hard blocked** — `feasibility_conflict` |
+| MCP hold | gated at truck selection: a market and truck count, booked through the client portal's or the Quote page's booking (`lib/clientBooking.ts`, `lib/staffBooking.ts`) |
 | AI chat hold | gated at truck selection: the chat books through the Quote page's booking (`lib/staffBooking.ts`) |
-| MCP availability (`?market=`) | reports `feasibility` per truck |
+| MCP availability (`?market=&truck_count=`) | the engine's answer, by the caller's rules |
+| MCP availability (`?market=` only) | reports `feasibility` per truck |
 | Salesforce push | writes, never blocked |
 | ATT sync | writes, never blocked |
 
@@ -334,6 +334,8 @@ If the feasibility lookup itself errors, the hold is allowed through and the err
 `GET /api/v1/internal/availability` answers "when is each truck booked?" — a calendar view that says nothing about whether a truck could serve a given market. Pass an optional **`market`** parameter and every truck is additionally run through the chain rules, returning a `feasibility` block per truck plus a top-level `feasibility_checked` flag.
 
 **A free calendar slot is not the same as a servable truck.** Callers that omit `market` get the old behavior, unchanged — and no feasibility guarantee.
+
+Pass **`market` and `truck_count`** for the question a booking asks, answered by the engine for whoever the call acts for: a client gets the client portal's rules (lead time, their rate card, no displacing an AT&T soft hold) and only yes or the refusal message; staff get the Quote page's rules and the trucks, nearest first.
 
 ### Where market coordinates come from
 
@@ -545,4 +547,4 @@ The two-transport-engine split and the calendar-vs-activation-day mismatch descr
 
 ---
 
-*Generated from `lib/pricing/{config,engine,transport,resolvers}.ts`, `lib/availabilityEngine.ts`, and the quote API routes. If pricing logic changes, it changes in `lib/pricing/` first — the MCP server is a pass-through.*
+*Generated from `lib/pricing/{config,engine,transport,resolvers}.ts`, `lib/availabilityEngine.ts`, `lib/staffQuote.ts`, `lib/clientQuote.ts` and the quote API routes. If pricing logic changes, it changes in `lib/pricing/` first — the MCP server is a pass-through.*

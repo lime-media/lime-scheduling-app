@@ -31,7 +31,7 @@ import {
 } from '@/lib/pricing'
 import { resolveMarketSizeTierId, resolveRateOverridesBySfdcAccount, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
 import type { RateOverrides } from '@/lib/pricing/config'
-import { HoldClashError, writeHoldsExclusive } from '@/lib/holdWriteLock'
+import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { legsFromSelectedTrucks } from '@/lib/transportMetrics'
 import { reply, type CoreResult } from '@/lib/coreResult'
@@ -271,7 +271,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor): Promise<C
       // since the trucks were picked (lib/holdWriteLock.ts): the booking is one
       // quote, priced for every truck in it.
       await writeHoldsExclusive(
-        rows.map(r => ({ truck: r.truck_number, start: start_date, end: end_date })),
+        rows.map(r => ({ truck: r.truck_number, start: String(start_date).slice(0, 10), end: String(end_date).slice(0, 10) })),
         tx => tx.hold.createMany({ data: rows }),
       )
     }
@@ -283,6 +283,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor): Promise<C
         clashes: err.clashes,
       }, { status: 409 })
     }
+    if (err instanceof HoldLockTimeoutError) return reply({ error: err.message }, { status: 409 })
     console.error('[quote/hold] failed to create holds:', err)
   }
 

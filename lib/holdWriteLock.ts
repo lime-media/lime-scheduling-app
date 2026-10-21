@@ -29,13 +29,28 @@ export type HoldClashRow = { truck: string; start: string; end: string; client: 
 /** Thrown when a truck was booked by someone else since it was chosen. Nothing was written. */
 export class HoldClashError extends Error {
   constructor(public readonly clashes: HoldClashRow[]) {
-    super(`${[...new Set(clashes.map(c => c.truck))].map(t => `Truck ${t}`).join(', ')} ${clashes.length === 1 ? 'was' : 'were'} just booked by someone else for these dates.`)
+    const trucks = [...new Set(clashes.map(c => c.truck))]
+    super(`${trucks.map(t => `Truck ${t}`).join(', ')} ${trucks.length === 1 ? 'is' : 'are'} already booked for these dates.`)
     this.name = 'HoldClashError'
   }
 }
 
-/** How long a booking waits for another booking of the same truck to finish. */
+/** Thrown when another booking of the same truck held its lock too long. Nothing was written; trying again works. */
+export class HoldLockTimeoutError extends Error {
+  constructor(truck: string) {
+    super(`Another booking of truck ${truck} is being saved right now. Try again in a moment.`)
+    this.name = 'HoldLockTimeoutError'
+  }
+}
+
+/**
+ * How long a booking waits, in all, for other bookings of its trucks to
+ * finish. One budget across every truck's lock, so a many-truck booking can't
+ * outwait the transaction's own timeout below.
+ */
 const LOCK_TIMEOUT_MS = 15_000
+/** Time left for the re-check and the write once the locks are held. */
+const WRITE_TIMEOUT_MS = 30_000
 
 const day = (d: Date) => d.toISOString().slice(0, 10)
 
@@ -54,24 +69,28 @@ export function clashesWith(spans: HoldSpan[], holds: { id: string; truck_number
  * dates; throws HoldClashError (and writes nothing) if one is. `ignoreHoldIds`
  * are holds this write replaces or moves (a revision's old holds, the hold
  * being edited, swapped or reinstated), which mustn't count against it.
+ * `excludeAttSoft` matches a caller whose own conflict check ignores AT&T
+ * soft holds (the planner), so the re-check refuses only what it would.
  * Spans with no truck to reserve (quote-only logs) should not be passed.
  */
 export async function writeHoldsExclusive<T>(
   spans: HoldSpan[],
   write: (tx: Prisma.TransactionClient) => Promise<T>,
-  opts: { ignoreHoldIds?: string[] } = {},
+  opts: { ignoreHoldIds?: string[]; excludeAttSoft?: boolean } = {},
 ): Promise<T> {
   const trucks = [...new Set(spans.map(s => s.truck))].sort()
   const ignore = new Set(opts.ignoreHoldIds ?? [])
   return prisma.$transaction(async tx => {
     // Sorted, so two bookings sharing trucks take the locks in the same order
     // and can't deadlock.
+    const deadline = Date.now() + LOCK_TIMEOUT_MS
     for (const truck of trucks) {
+      const wait = Math.max(0, deadline - Date.now())
       const [lock] = await tx.$queryRaw<{ r: number }[]>`
         DECLARE @r int;
-        EXEC @r = sp_getapplock @Resource = ${`hold-truck:${truck}`}, @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = ${LOCK_TIMEOUT_MS};
+        EXEC @r = sp_getapplock @Resource = ${`hold-truck:${truck}`}, @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = ${wait};
         SELECT @r AS r;`
-      if (!lock || lock.r < 0) throw new Error(`Timed out waiting for another booking of truck ${truck}. Try again.`)
+      if (!lock || lock.r < 0) throw new HoldLockTimeoutError(truck)
     }
     if (spans.length) {
       const from = spans.map(s => s.start).sort()[0]
@@ -79,7 +98,9 @@ export async function writeHoldsExclusive<T>(
       const live = await tx.hold.findMany({
         where: {
           truck_number: { in: trucks },
-          ...activeHoldWhere(),
+          // The caller's own conflict rule: the planner books over AT&T soft
+          // holds' trucks by its reservation rules, so it doesn't count them.
+          ...activeHoldWhere({ excludeAttSoft: opts.excludeAttSoft }),
           start_date: { lte: new Date(to) },
           end_date: { gte: new Date(from) },
         },
@@ -89,5 +110,5 @@ export async function writeHoldsExclusive<T>(
       if (clashes.length) throw new HoldClashError(clashes)
     }
     return write(tx)
-  }, { maxWait: 10_000, timeout: LOCK_TIMEOUT_MS * 2 + 15_000 })
+  }, { maxWait: 10_000, timeout: LOCK_TIMEOUT_MS + WRITE_TIMEOUT_MS })
 }

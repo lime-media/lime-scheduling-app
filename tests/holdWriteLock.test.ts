@@ -23,7 +23,7 @@ section('Hold write lock: what clashes')
 
 section('Hold write lock: every path that chooses a truck writes under it')
 {
-  for (const f of ['lib/staffBooking.ts', 'lib/holdRequestService.ts', 'lib/holdService.ts', 'app/api/plan/hold/route.ts', 'app/api/hold-requests/[id]/route.ts', 'app/api/holds/[id]/route.ts']) {
+  for (const f of ['lib/staffBooking.ts', 'lib/holdRequestService.ts', 'lib/holdService.ts', 'app/api/plan/hold/route.ts', 'app/api/hold-requests/[id]/route.ts', 'app/api/holds/[id]/route.ts', 'app/api/chat/route.ts', 'app/api/v1/internal/holds/route.ts']) {
     eq(`${f} writes through writeHoldsExclusive`, fs.readFileSync(f, 'utf8').includes('writeHoldsExclusive('), true)
   }
   const lock = fs.readFileSync('lib/holdWriteLock.ts', 'utf8')
@@ -33,4 +33,7 @@ section('Hold write lock: every path that chooses a truck writes under it')
   eq('a staff booking is all or nothing', staff.includes('tx => tx.hold.createMany({ data: rows })'), true)
   const edit = fs.readFileSync('app/api/holds/[id]/route.ts', 'utf8')
   eq('a hold edit that changes dates (not only the truck) is checked', edit.includes('effStart !== hold.start_date'), true)
+  const actions = fs.readFileSync('app/api/hold-requests/[id]/route.ts', 'utf8')
+  eq('an expiry edit or approval that revives lapsed-but-unswept holds is re-checked', (actions.match(/await reviveExpiry\(/g) ?? []).length, 2)
+  eq('a lock timeout is a 409 to retry, not a 500', fs.readFileSync('lib/staffBooking.ts', 'utf8').includes('err instanceof HoldLockTimeoutError'), true)
 }

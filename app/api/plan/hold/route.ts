@@ -54,7 +54,7 @@ import { rotationStints, type OrderLine } from '@/lib/planning/order'
 import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuote, type QuoteRequest } from '@/lib/planning/quote'
 import { fitNames, lineFeatures } from '@/lib/planning/booking'
 import { recordBooking } from '@/lib/transportMetricsRecord'
-import { HoldClashError, writeHoldsExclusive } from '@/lib/holdWriteLock'
+import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { legsFromArrivals } from '@/lib/transportMetrics'
 
 export const maxDuration = 300
@@ -412,7 +412,7 @@ async function handlePost(req: NextRequest) {
     }
     try {
       if (quoteOnly) await prisma.$transaction(writeAll)
-      else await writeHoldsExclusive(stretches.map(x => ({ truck: x.truckNumber, start: x.stint.start, end: x.stint.end })), writeAll, { ignoreHoldIds: reviseIds })
+      else await writeHoldsExclusive(stretches.map(x => ({ truck: x.truckNumber, start: x.stint.start, end: x.stint.end })), writeAll, { ignoreHoldIds: reviseIds, excludeAttSoft: true })
     } catch (err) {
       if (err instanceof HoldClashError) {
         return NextResponse.json({
@@ -420,6 +420,7 @@ async function handlePost(req: NextRequest) {
           clashes: err.clashes.map(c => ({ truckNumber: c.truck, start: c.start, end: c.end })),
         }, { status: 409 })
       }
+      if (err instanceof HoldLockTimeoutError) return NextResponse.json({ error: err.message }, { status: 409 })
       throw err
     }
 

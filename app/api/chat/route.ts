@@ -14,6 +14,7 @@ import { formatMarketState } from '@/lib/format'
 import { checkTruckFeasibility } from '@/lib/availabilityEngine'
 import { CLOSED_WON_READ_ONLY, closedWonRefusal } from '@/lib/bookings'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
+import { HoldClashError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -182,18 +183,29 @@ async function executePlaceHold(
 
   const canonicalMarket = (await canonicalMarketName(market, state)) ?? market
 
-  const hold = await prisma.hold.create({
-    data: {
-      truck_number: truck,
-      client_name: client,
-      market: canonicalMarket,
-      state: state || '',
-      start_date: new Date(start_date),
-      end_date: new Date(end_date),
-      status: 'HOLD',
-      created_by: userId,
-    },
-  })
+  // Written under the truck's lock, re-checked for a hold placed since the
+  // check above (lib/holdWriteLock.ts): the model turn sits between the two.
+  let hold: Awaited<ReturnType<typeof prisma.hold.create>>
+  try {
+    hold = await writeHoldsExclusive([{ truck, start: start_date.slice(0, 10), end: end_date.slice(0, 10) }], tx => tx.hold.create({
+      data: {
+        truck_number: truck,
+        client_name: client,
+        market: canonicalMarket,
+        state: state || '',
+        start_date: new Date(start_date),
+        end_date: new Date(end_date),
+        status: 'HOLD',
+        created_by: userId,
+      },
+    }))
+  } catch (err) {
+    if (err instanceof HoldClashError) {
+      const c = err.clashes[0]
+      return { success: false, message: `Hold not placed — conflict: truck ${truck} already has a ${c.status} for "${c.client}" from ${c.start} to ${c.end}.` }
+    }
+    throw err
+  }
 
   await prisma.auditLog.create({
     data: {

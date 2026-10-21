@@ -7,7 +7,7 @@ import { CLOSED_WON_READ_ONLY, closedWonRefusal } from '@/lib/bookings'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { recordSwap, recordWon, winsToRecord } from '@/lib/transportMetricsRecord'
 import { waitUntil } from '@vercel/functions'
-import { HoldClashError, writeHoldsExclusive } from '@/lib/holdWriteLock'
+import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 
 export async function PUT(
@@ -110,6 +110,7 @@ export async function PUT(
       : await prisma.hold.update({ where: { id: params.id }, data })
   } catch (err) {
     if (err instanceof HoldClashError) return NextResponse.json({ error: err.message, clashes: err.clashes }, { status: 409 })
+    if (err instanceof HoldLockTimeoutError) return NextResponse.json({ error: err.message }, { status: 409 })
     throw err
   }
 

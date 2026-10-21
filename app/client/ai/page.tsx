@@ -788,9 +788,8 @@ export default function ClientAiPage() {
 
       if (res.ok) {
         if (data.conversation_id) conversationId.current = data.conversation_id
-        const replyContent = data.actionResult
-          ? `${data.reply}\n\n${data.actionResult.message}`
-          : data.reply
+        // The reply can be empty when only the team request went through.
+        const replyContent = [data.reply, data.actionResult?.message].filter(Boolean).join('\n\n')
         setMessages([...nextMessages, { role: 'assistant', content: replyContent }])
       } else {
         setMessages([...nextMessages, { role: 'assistant', content: 'Sorry, I encountered an error. Please try again.' }])

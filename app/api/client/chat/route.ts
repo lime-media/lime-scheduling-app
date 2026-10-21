@@ -87,6 +87,8 @@ const CLIENT_TOOLS: Anthropic.Tool[] = [
 
 /** Tool rounds per message. */
 const MAX_TOOL_ROUNDS = 5
+/** Availability checks per message: each one loads the whole fleet's timelines and live GPS. */
+const MAX_AVAILABILITY_CHECKS = 6
 
 const isDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
 const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined)
@@ -194,7 +196,7 @@ async function handlePost(req: NextRequest) {
   const earlier = last && last.role !== 'assistant' && last.content === message ? prior.slice(0, -1) : prior
 
   const messages: Anthropic.MessageParam[] = [
-    ...earlier.slice(-10).filter(m => typeof m.content === 'string' && m.content.trim()).map(m => ({
+    ...earlier.slice(-10).filter(m => m && typeof m.content === 'string' && m.content.trim()).map(m => ({
       role:    m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
       content: m.content,
     })),
@@ -204,6 +206,7 @@ async function handlePost(req: NextRequest) {
   let reply = ''
   // Set inside the tool callbacks; the cast keeps TS from narrowing it to null.
   let actionResult = null as { success: boolean; message: string } | null
+  let availabilityChecks = 0
   try {
     for (let round = 0; ; round++) {
       const response = await anthropic.messages.create({
@@ -237,6 +240,10 @@ async function handlePost(req: NextRequest) {
       const results: Anthropic.ToolResultBlockParam[] = await Promise.all(toolUses.map(async (use): Promise<Anthropic.ToolResultBlockParam> => {
         const input = (use.input && typeof use.input === 'object' ? use.input : {}) as Record<string, unknown>
         if (use.name === 'check_availability') {
+          // Counted before anything runs, like the assistance claim below.
+          if (++availabilityChecks > MAX_AVAILABILITY_CHECKS) {
+            return { type: 'tool_result', tool_use_id: use.id, is_error: true, content: `At most ${MAX_AVAILABILITY_CHECKS} availability checks per message. Answer with what you have, and ask the client to narrow the rest down.` }
+          }
           try {
             return { type: 'tool_result', tool_use_id: use.id, content: await checkClientAvailability(input, session) }
           } catch (err) {

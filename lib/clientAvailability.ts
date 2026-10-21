@@ -35,10 +35,28 @@ export type ClientAvailability =
       marketSizeTierId: Awaited<ReturnType<typeof resolveMarketSizeTierId>>
     }
 
+/** A YYYY-MM-DD string naming a day that exists. */
+function isCalendarDate(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false
+  const t = Date.parse(s + 'T00:00:00Z')
+  return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === s
+}
+
 const refuse = (body: Record<string, unknown>, init?: { status: number }): ClientAvailability => ({ refused: { status: init?.status ?? 200, body } })
 
 export async function clientAvailability(session: ClientSession, request: ClientAvailabilityRequest): Promise<ClientAvailability> {
   const { market, start_date, end_date, truck_count } = request
+
+  // Real calendar dates only, checked before anything is looked up: JS rolls
+  // "2026-02-31" over to March 3, and an unparseable start would slip past
+  // the lead-time check below as NaN.
+  if (!isCalendarDate(start_date) || !isCalendarDate(end_date)) {
+    return refuse({ error: 'Invalid date range' }, { status: 400 })
+  }
+  const calendarDays = Math.round((Date.parse(end_date + 'T00:00:00Z') - Date.parse(start_date + 'T00:00:00Z')) / 86400000) + 1
+  if (calendarDays < 1) {
+    return refuse({ error: 'Invalid date range' }, { status: 400 })
+  }
 
   // Near-term campaigns are not self-serviceable. Internal staff are NOT subject
   // to this (see /api/quote) — they may have approval or context the engine
@@ -86,13 +104,6 @@ export async function clientAvailability(session: ClientSession, request: Client
     return refuse({
       error: `We currently only serve markets within the contiguous 48 states. ${formalMarket} is outside our service area.`,
     }, { status: 400 })
-  }
-
-  const startDate = new Date(start_date + 'T00:00:00Z')
-  const endDate = new Date(end_date + 'T00:00:00Z')
-  const calendarDays = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1
-  if (!Number.isFinite(calendarDays) || calendarDays < 1) {
-    return refuse({ error: 'Invalid date range' }, { status: 400 })
   }
 
   // Resolve rate overrides first — service_area_miles affects availability classification

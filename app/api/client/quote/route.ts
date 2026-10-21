@@ -14,7 +14,7 @@ import { brandMarkupFor, withMarkup } from '@/lib/pricing/brandMarkup'
 import { NextRequest, NextResponse } from 'next/server'
 import { getClientSession } from '@/lib/clientAuth'
 import { clientAvailability } from '@/lib/clientAvailability'
-import { checkAvailability, legsFromTrucks } from '@/lib/availabilityEngine'
+import { legsFromTrucks, type AvailabilityResult } from '@/lib/availabilityEngine'
 
 import {
   computeQuote,
@@ -195,7 +195,7 @@ async function handlePost(req: NextRequest) {
 // Response builders (keep the route handler readable)
 // ---------------------------------------------------------------------------
 
-function buildAvailabilityResponse(a: Awaited<ReturnType<typeof checkAvailability>>) {
+function buildAvailabilityResponse(a: AvailabilityResult) {
   return {
     requested: a.trucks.length >= 0 ? a.counts.total : 0, // will be overridden below
     available: a.counts.total,

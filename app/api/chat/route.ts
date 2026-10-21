@@ -121,7 +121,11 @@ async function executeReleaseHold(
   // from Reservations, which also emails the client.
   const key = bookingKey(hold)
   const booking = key ? await loadBookingHolds(key) : []
-  const others = booking.filter(h => h.id !== hold.id && h.status !== 'EXPIRED')
+  // Live the way activeHoldWhere counts it: a lapsed hold not yet swept to
+  // EXPIRED doesn't keep this one from being released.
+  const now = new Date()
+  const others = booking.filter(h => h.id !== hold.id && h.status !== 'EXPIRED'
+    && (h.status === 'COMMITTED' || !h.expires_at || h.expires_at >= now))
   if (others.length) {
     return { success: false, message: `Truck ${hold.truck_number}'s hold is one of ${others.length + 1} in a booking for "${hold.client_name}"; a booking is released whole, from Reservations (Cancel).` }
   }
@@ -277,6 +281,8 @@ function releaseOutcome(r: ActionResult, shownToRep = true) {
 
 // Several tool rounds on Opus can run past the default limit.
 export const maxDuration = 300
+/** No new model call after this long, so a slow model call can't outlast maxDuration. */
+const TOOL_LOOP_BUDGET_MS = 180_000
 
 async function handlePost(req: NextRequest) {
   const session = await getServerSession(authOptions)
@@ -344,17 +350,36 @@ async function handlePost(req: NextRequest) {
   const actions: ActionResult[] = []
   const quotes: { ref: string; summary: string }[] = []
   let reply = ''
+  const startedAt = Date.now()
   for (let round = 0; ; round++) {
-    const response = await anthropic.messages.create({
-      model: 'claude-opus-5-5',
-      max_tokens: 16000,
-      thinking: { type: 'adaptive' },
-      output_config: { effort: 'medium' },
-      // Same prompt and tools every request, so they're cached.
-      system: [{ type: 'text', text: BASE_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-      tools: CHAT_TOOLS,
-      messages,
-    })
+    // Leave room to answer and save before maxDuration cuts the function off:
+    // a booking or release already run this message must still reach the rep.
+    if (round > 0 && Date.now() - startedAt > TOOL_LOOP_BUDGET_MS) {
+      reply = "I stopped before finishing: that took longer than I'm allowed in one message. Ask again more narrowly."
+      break
+    }
+    let response: Anthropic.Message
+    try {
+      response = await anthropic.messages.create({
+        model: 'claude-opus-5-5',
+        max_tokens: 16000,
+        thinking: { type: 'adaptive' },
+        output_config: { effort: 'medium' },
+        // Same prompt and tools every request, so they're cached.
+        system: [{ type: 'text', text: BASE_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+        tools: CHAT_TOOLS,
+        messages,
+      })
+    } catch (err) {
+      // Nothing done yet: the route's own error. After a tool ran (a booking,
+      // a release), its result is still shown and saved below.
+      if (round === 0) throw err
+      console.error('[chat] model call failed mid-loop:', err)
+      reply = actions.length
+        ? 'I hit an error before finishing. Check the result below before trying again.'
+        : 'I hit an error before finishing. Please try again.'
+      break
+    }
     const text = response.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
       .map(b => b.text)

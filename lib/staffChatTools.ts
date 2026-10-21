@@ -22,7 +22,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { checkAvailability } from '@/lib/availabilityEngine'
 import { resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
 import { VALID_STUDIES } from '@/lib/pricing'
-import { MAX_HOLD_DAYS } from '@/lib/holdExpiry'
+import { DEFAULT_HOLD_DAYS, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
 import { OPEN_STAGES } from '@/lib/sfdcStages'
 import { isSfdcConfigured } from '@/lib/salesforceClient'
 import { isAccountId, searchAccounts, searchContacts } from '@/lib/sfdcSearch'
@@ -165,7 +165,7 @@ function bookingTerms(i: Bag): BookingTerms | string {
   for (const k of ['sfdc_account_name', 'primary_contact_id', 'brand', 'stage'] as const) {
     if (i[k] !== undefined && typeof i[k] !== 'string') return `${k} is text`
   }
-  if (i.hold_days !== undefined && (typeof i.hold_days !== 'number' || !Number.isInteger(i.hold_days))) return 'hold_days is a whole number of days'
+  if (i.hold_days !== undefined && (typeof i.hold_days !== 'number' || !Number.isInteger(i.hold_days) || i.hold_days < 1 || i.hold_days > MAX_HOLD_DAYS)) return `hold_days is a whole number of days from 1 to ${MAX_HOLD_DAYS}`
   return {
     sfdc_account_name: i.sfdc_account_name as string | undefined, primary_contact_id: i.primary_contact_id as string | undefined,
     brand: i.brand as string | undefined, hold_days: i.hold_days as number | undefined, stage: i.stage as string | undefined,
@@ -254,9 +254,12 @@ async function quote(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
   // The ref covers the market as the quote resolved it: that is what place_hold books.
   const ref = quoteRef({ ...q, market: String(body.market) }, body.grandTotal, terms)
   const trucks = Array.isArray(body.selectedTrucks) ? body.selectedTrucks.join(', ') : ''
+  // Only a quote place_hold could book (account, its name and the contact) is
+  // offered as bookable; without them its ref can never match a booking.
+  const bookable = !!q.sfdc_account_id && isStr(terms.sfdc_account_name) && isStr(terms.primary_contact_id)
   return {
     content: json({ ...body, quote_ref: ref }),
-    quote: { ref, summary: `${body.market}, ${q.start_date} to ${q.end_date}, ${q.truck_count} truck${q.truck_count === 1 ? '' : 's'}${trucks ? ` (${trucks})` : ''}, ${money(body.grandTotal)}${terms.sfdc_account_name ? ` for ${terms.sfdc_account_name.trim()}` : ''}, held ${terms.hold_days ?? 3} days` },
+    quote: bookable ? { ref, summary: `${body.market}, ${q.start_date} to ${q.end_date}, ${q.truck_count} truck${q.truck_count === 1 ? '' : 's'}${trucks ? ` (${trucks})` : ''}, ${money(body.grandTotal)}${terms.sfdc_account_name ? ` for ${terms.sfdc_account_name.trim()}` : ''}, held ${terms.hold_days ?? DEFAULT_HOLD_DAYS} days` } : undefined,
   }
 }
 
@@ -324,7 +327,7 @@ async function book(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
   const body = {
     ...q,
     sfdc_account_name: i.sfdc_account_name.trim(),
-    primary_contact_id: i.primary_contact_id,
+    primary_contact_id: i.primary_contact_id.trim(),
     brand: i.brand,
     hold_days: i.hold_days,
     stage: i.stage,

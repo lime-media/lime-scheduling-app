@@ -44,7 +44,7 @@ QUOTING AND HOLDS:
 
 REQUESTING TEAM ASSISTANCE:
 - request_assistance is your "get a human involved" tool — use it when the client wants to reach the Lime Media team, or has a question you can't answer, once you know what they need.
-- Tell the client they'll hear back from the Lime Media team by email within 12-24 hours.
+- The portal shows the client the request's confirmation (or its failure) on its own line, so don't repeat it; just say what you passed on.
 
 Keep every answer short and scannable. Be concise and direct.`
 }
@@ -187,8 +187,14 @@ async function handlePost(req: NextRequest) {
 
   const userTurn = `${message}\n\n[ACCOUNT DATA]\n${context}`
 
+  // The portal sends its history with this message already on the end; drop
+  // that copy so the model sees it once, with the account data.
+  const prior: { role: string; content: string }[] = Array.isArray(history) ? history : []
+  const last = prior[prior.length - 1]
+  const earlier = last && last.role !== 'assistant' && last.content === message ? prior.slice(0, -1) : prior
+
   const messages: Anthropic.MessageParam[] = [
-    ...history.slice(-10).map((m: { role: string; content: string }) => ({
+    ...earlier.slice(-10).filter(m => typeof m.content === 'string' && m.content.trim()).map(m => ({
       role:    m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
       content: m.content,
     })),
@@ -196,7 +202,8 @@ async function handlePost(req: NextRequest) {
   ]
 
   let reply = ''
-  let actionResult: { success: boolean; message: string } | null = null
+  // Set inside the tool callbacks; the cast keeps TS from narrowing it to null.
+  let actionResult = null as { success: boolean; message: string } | null
   try {
     for (let round = 0; ; round++) {
       const response = await anthropic.messages.create({
@@ -220,30 +227,37 @@ async function handlePost(req: NextRequest) {
         break
       }
       if (round >= MAX_TOOL_ROUNDS) {
-        reply = said || 'Sorry, I could not finish that. Please ask again more narrowly.'
+        // Text beside a tool call is narration ("Let me check…"), not an answer.
+        reply = 'Sorry, I could not finish that. Please ask again more narrowly.'
         break
       }
       messages.push({ role: 'assistant', content: response.content })
-      const results: Anthropic.ToolResultBlockParam[] = []
-      for (const use of toolUses) {
+      // One request to the team per message: claimed before anything runs.
+      let assistanceClaimed = actionResult !== null
+      const results: Anthropic.ToolResultBlockParam[] = await Promise.all(toolUses.map(async (use): Promise<Anthropic.ToolResultBlockParam> => {
         const input = (use.input && typeof use.input === 'object' ? use.input : {}) as Record<string, unknown>
-        let content: string
         if (use.name === 'check_availability') {
-          content = await checkClientAvailability(input, session)
-        } else if (use.name === 'request_assistance' && !actionResult) {
-          // One request to the team per message.
           try {
-            actionResult = await executeRequestAssistance(input, session)
+            return { type: 'tool_result', tool_use_id: use.id, content: await checkClientAvailability(input, session) }
+          } catch (err) {
+            console.error('[client/chat] availability check failed:', err)
+            return { type: 'tool_result', tool_use_id: use.id, is_error: true, content: 'Availability could not be checked right now. Suggest the quote form, or a request to the team.' }
+          }
+        }
+        if (use.name === 'request_assistance' && !assistanceClaimed) {
+          assistanceClaimed = true
+          let result: { success: boolean; message: string }
+          try {
+            result = await executeRequestAssistance(input, session)
           } catch (err) {
             console.error('[client/chat] action execution failed:', err)
-            actionResult = { success: false, message: 'Failed to submit your request due to a server error.' }
+            result = { success: false, message: 'Failed to submit your request due to a server error.' }
           }
-          content = JSON.stringify(actionResult)
-        } else {
-          content = JSON.stringify({ error: use.name === 'request_assistance' ? 'Already sent one request this message.' : `Unknown tool ${use.name}` })
+          actionResult = result
+          return { type: 'tool_result', tool_use_id: use.id, content: JSON.stringify(result) }
         }
-        results.push({ type: 'tool_result', tool_use_id: use.id, content })
-      }
+        return { type: 'tool_result', tool_use_id: use.id, is_error: true, content: use.name === 'request_assistance' ? 'Already sent one request this message.' : `Unknown tool ${use.name}` }
+      }))
       messages.push({ role: 'user', content: results })
     }
   } catch (err) {
@@ -252,12 +266,14 @@ async function handlePost(req: NextRequest) {
     if (!actionResult) return NextResponse.json({ error: 'Assistant is temporarily unavailable.' }, { status: 502 })
   }
 
+  // An empty reply would go back as an empty history turn, which the API rejects.
+  if (!reply && !actionResult) reply = 'Sorry, I could not answer that. Please try asking again.'
   reply = await scrubOtherClientNames(reply, session.id)
 
   // The conversation keeps the text; the usage log (withUsageLog, below)
   // records that the chat ran and links here by conversation id.
   await addMessages(conversationId, [
-    { role: 'assistant', content: reply },
+    ...(reply ? [{ role: 'assistant' as const, content: reply }] : []),
     ...(actionResult ? [{ role: 'assistant' as const, content: actionResult.message }] : []),
   ])
   return NextResponse.json({ reply, actionResult, conversation_id: conversationId })

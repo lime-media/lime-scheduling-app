@@ -4,8 +4,10 @@
  * contiguous 48, the client's own rate card (its service area), and no
  * displacing an AT&T soft hold. Shared by POST /api/client/quote and the
  * client portal AI chat, so the chat never says yes to a booking the quote
- * form would refuse. A refusal is returned as the quote route's response;
- * client-facing, it never carries truck counts or exclusion reasons.
+ * form would refuse. A refusal is returned as the quote route's response
+ * body: no truck numbers or exclusion reasons, but the "not enough trucks"
+ * refusal does carry availability counts (as the quote form's success
+ * response does), so the chat passes on only its message.
  */
 
 import type { ClientSession } from '@/lib/clientAuth'

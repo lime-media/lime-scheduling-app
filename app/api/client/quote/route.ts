@@ -52,7 +52,8 @@ async function handlePost(req: NextRequest) {
   }
 
   const { market, start_date, end_date, truck_count } = body
-  if (!market || !start_date || !end_date || !truck_count || truck_count < 1) {
+  if (typeof market !== 'string' || !market.trim() || typeof start_date !== 'string' || typeof end_date !== 'string'
+    || typeof truck_count !== 'number' || !Number.isInteger(truck_count) || truck_count < 1) {
     return NextResponse.json({ error: 'market, start_date, end_date, and truck_count (>= 1) are required' }, { status: 400 })
   }
 

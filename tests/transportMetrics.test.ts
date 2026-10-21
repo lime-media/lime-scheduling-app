@@ -7,7 +7,7 @@
 import { eq, section } from './harness'
 import { absorbedLegCost } from '@/lib/pricing/transport'
 import {
-  activationDaysOf, churnKpis, dealDrift, executedCandidates, executedOrigin, leadBusinessDays, legCost, legFromInbound, legOutcome,
+  activationDaysOf, churnKpis, dealDrift, executedCandidates, partialOpportunities, executedOrigin, leadBusinessDays, legCost, legFromInbound, legOutcome,
   legsFromArrivals, legsFromSelectedTrucks, plannedVsActual, prestartCandidates, quotedPlan, transportKpis, type DealRow, type LegRow,
   type MeasuredLeg,
 } from '@/lib/transportMetrics'
@@ -112,6 +112,30 @@ section('transport metrics: quote vs Salesforce contract')
   ])
   eq('one won deal: latest quote per booking summed, against the latest Amount', [d.wonDeals, d.quoted, d.contract, d.drift, d.driftPct], [1, 50000, 47000, -3000, -6])
   eq('the deal keeps its Amount at won', [d.biggest[0].wonAmount, d.biggest[0].currentAmount], [48000, 47000])
+
+  // Paid review on #124: deals that left Closed Won, and deals the recorded quotes don't cover.
+  const won = [
+    row({ app_quoted_total: 40000 }),
+    row({ event: 'WON', booking_key: null, sf_amount: 48000, sf_stage: 'Closed Won', captured_at: at(10) }),
+  ]
+  const lost = dealDrift([...won, row({ event: 'AMOUNT_CHANGED', booking_key: null, sf_amount: 48000, sf_stage: 'Closed Lost - Budget', captured_at: at(12) })])
+  eq('reopened or lost since: left out, counted', [lost.wonDeals, lost.leftClosedWon, lost.contract], [0, 1, 0])
+  const rewon = dealDrift([...won,
+    row({ event: 'AMOUNT_CHANGED', booking_key: null, sf_amount: 48000, sf_stage: 'WARM', captured_at: at(12) }),
+    row({ event: 'AMOUNT_CHANGED', booking_key: null, sf_amount: 46000, sf_stage: 'Closed Won', captured_at: at(14) })])
+  eq('won again: counted, at its latest Amount', [rewon.wonDeals, rewon.leftClosedWon, rewon.contract], [1, 0, 46000])
+  const partial = dealDrift(won, new Set(['006A']))
+  eq('a booking with no recorded quote: left out, counted', [partial.wonDeals, partial.partialDeals, partial.quoted], [0, 1, 0])
+  eq('older rows with no stage still count', dealDrift([row({ app_quoted_total: 1000 }), row({ event: 'WON', booking_key: null, sf_amount: 1000, captured_at: at(10) })]).wonDeals, 1)
+
+  const hold = (id: string, group: string | null, opp: string | null) => ({ id, campaign_group_id: group, sfdc_opportunity_id: opp })
+  const parts = partialOpportunities([
+    hold('h1', 'cg_1', '006000000000001AAA'), hold('h2', 'cg_1', '006000000000001AAA'), // h1 quoted: the group is
+    hold('h3', 'cg_2', '006000000000002AAA'), // quote-only or pre-metrics: no legs
+    hold('h4', null, '006000000000003AAA'), // on its own, quoted
+    hold('h5', 'cg_9', null),
+  ], new Set(['h1', 'h4']))
+  eq('partial: an opportunity with a campaign group none of whose holds was quoted', [...parts], ['006000000000002'])
 }
 
 section('transport metrics: the pre-start snapshot (local review, pass 1 decisions)')

@@ -8,7 +8,7 @@
  *   recordSwap             a SWAPPED leg for the truck swapped onto a hold
  *   recordPrestart         PRESTART snapshots: where a truck sits before it moves (the sweep)
  *   recordExecuted         EXECUTED legs on a campaign's first day (the sweep)
- *   recordWon              Salesforce's Amount when an opportunity is Closed Won
+ *   recordWon              Salesforce's Amount when an opportunity is Closed Won (once; recordedWins)
  *   recordAmountChanges    a won opportunity's Amount, again, when it changes (the sweep)
  */
 
@@ -34,19 +34,28 @@ type HoldForLeg = {
 
 const day = (d: Date) => d.toISOString().slice(0, 10)
 
+/**
+ * Hold fields are NVARCHAR(1000); the metrics columns are narrower. One
+ * over-long value would fail a whole batch's createMany, so every copied
+ * string is cut to its column's width.
+ */
+function clip<T extends string | null>(v: T, n: number): T {
+  return (v == null ? v : v.slice(0, n)) as T
+}
+
 function legRow(event: LegEvent, hold: HoldForLeg, leg: MeasuredLeg, createdBy: string | null, key?: string | null) {
   return {
     event,
     hold_id: hold.id,
-    booking_key: key ?? bookingKey(hold),
-    sfdc_opportunity_id: hold.sfdc_opportunity_id,
-    client_name: hold.client_name,
-    market: hold.market,
+    booking_key: clip(key ?? bookingKey(hold), 100),
+    sfdc_opportunity_id: clip(hold.sfdc_opportunity_id, 18),
+    client_name: clip(hold.client_name, 255) ?? '',
+    market: clip(hold.market, 200) ?? '',
     campaign_start: hold.start_date,
     campaign_end: hold.end_date,
     activation_days: activationDaysOf(hold.features),
     lead_business_days: leadBusinessDays(hold.created_at, hold.start_date),
-    truck_number: leg.truckNumber,
+    truck_number: clip(leg.truckNumber, 50) ?? '',
     origin_label: leg.originLabel.slice(0, 200),
     origin_kind: leg.originKind,
     miles: leg.miles,
@@ -101,9 +110,9 @@ export async function recordBooking(o: {
     await prisma.dealValue.create({
       data: {
         event: o.event,
-        sfdc_opportunity_id: holds.find(h => h.sfdc_opportunity_id)?.sfdc_opportunity_id ?? null,
-        booking_key: lineage ?? bookingKey(holds[0]),
-        client_name: holds[0].client_name,
+        sfdc_opportunity_id: clip(holds.find(h => h.sfdc_opportunity_id)?.sfdc_opportunity_id ?? null, 18),
+        booking_key: clip(lineage ?? bookingKey(holds[0]), 100),
+        client_name: clip(holds[0].client_name, 255),
         app_quoted_total: o.appQuotedTotal,
         created_by: o.createdBy,
       },
@@ -187,6 +196,20 @@ export async function recordSwap(holdId: string, createdBy: string | null): Prom
   }
 }
 
+/**
+ * The holds whose market can be placed on a map. One that can't is never
+ * measured and stays a candidate, so it's dropped before the fleet load: a
+ * sweep with only such holds loads nothing (it used to reload the fleet and
+ * GPS every 15 minutes for days). Each market is looked up once.
+ */
+async function locatable<H extends { market: string }>(holds: H[]): Promise<H[]> {
+  const markets = [...new Set(holds.map(h => h.market))]
+  const found = new Set((await Promise.all(markets.map(async m => ((await resolveCampaignCoords(m)) ? m : null)))).filter((m): m is string => !!m))
+  const lost = markets.filter(m => !found.has(m))
+  if (lost.length) console.warn(`[transport-metrics] markets with no coordinates, not measured: ${lost.join('; ')}`)
+  return holds.filter(h => found.has(h.market))
+}
+
 // Bounded work per sweep (it runs every 15 minutes).
 const EXECUTED_BATCH = 200
 const PRESTART_BATCH = 200
@@ -217,7 +240,7 @@ export async function recordPrestart(measurerOf: () => Promise<OriginMeasurer> =
     const snapped = new Set(done.filter(d => truckOf.get(d.hold_id!) === d.truck_number).map(d => d.hold_id!))
     const todoIds = prestartCandidates(upcoming, snapped, today).slice(0, PRESTART_BATCH).map(h => h.id)
     if (todoIds.length === 0) return 0
-    const todo = await prisma.hold.findMany({ where: { id: { in: todoIds } } })
+    const todo = await locatable(await prisma.hold.findMany({ where: { id: { in: todoIds } } }))
     if (todo.length === 0) return 0
     const [measurer, planned] = await Promise.all([measurerOf(), plannedLegs(todo.map(h => h.id))])
     const rows = []
@@ -256,7 +279,7 @@ export async function recordExecuted(measurerOf: () => Promise<OriginMeasurer> =
     })
     const todoIds = executedCandidates(recent, new Set(done.map(d => d.hold_id!)), today).slice(0, EXECUTED_BATCH).map(h => h.id)
     if (todoIds.length === 0) return 0
-    const todo = await prisma.hold.findMany({ where: { id: { in: todoIds } } })
+    const todo = await locatable(await prisma.hold.findMany({ where: { id: { in: todoIds } } }))
     if (todo.length === 0) return 0
     const [measurer, planned, snapshots] = await Promise.all([
       measurerOf(),
@@ -287,10 +310,36 @@ export async function recordExecuted(measurerOf: () => Promise<OriginMeasurer> =
 export async function recordWon(o: { opportunityId: string; amount: number | null; stageName: string; clientName: string }): Promise<void> {
   try {
     await prisma.dealValue.create({
-      data: { event: 'WON', sfdc_opportunity_id: o.opportunityId, client_name: o.clientName, sf_amount: o.amount, sf_stage: o.stageName },
+      data: { event: 'WON', sfdc_opportunity_id: clip(o.opportunityId, 18), client_name: clip(o.clientName, 255), sf_amount: o.amount, sf_stage: clip(o.stageName, 100) },
     })
   } catch (err) {
     console.error('[transport-metrics] recordWon failed:', err)
+  }
+}
+
+/**
+ * Which of these opportunities (15-char ids) already have a WON record. If the
+ * table can't be read, all of them are treated as recorded: a missed win can
+ * be recorded on a later pass, a duplicate can't be taken back.
+ */
+export async function recordedWins(opportunityKeys: string[]): Promise<string[]> {
+  try {
+    const keys = new Set(opportunityKeys)
+    const found: string[] = []
+    // Ids are matched by their 15-char prefix (stored ids may be 18); one
+    // parameter each, so in slices under SQL Server's 2100.
+    for (let i = 0; i < opportunityKeys.length; i += 500) {
+      const rows = await prisma.dealValue.findMany({
+        where: { event: 'WON', OR: opportunityKeys.slice(i, i + 500).map(k => ({ sfdc_opportunity_id: { startsWith: k } })) },
+        select: { sfdc_opportunity_id: true },
+        distinct: ['sfdc_opportunity_id'],
+      })
+      found.push(...rows.map(r => r.sfdc_opportunity_id!.slice(0, 15)).filter(k => keys.has(k)))
+    }
+    return found
+  } catch (err) {
+    console.error('[transport-metrics] recordedWins failed:', err)
+    return opportunityKeys
   }
 }
 
@@ -321,10 +370,10 @@ export async function recordAmountChanges(): Promise<number> {
     const won = await prisma.dealValue.findMany({
       where: { event: { in: ['WON', 'AMOUNT_CHANGED'] }, sfdc_opportunity_id: { in: recentIds } },
       orderBy: { captured_at: 'asc' },
-      select: { sfdc_opportunity_id: true, sf_amount: true, client_name: true },
+      select: { sfdc_opportunity_id: true, sf_amount: true, sf_stage: true, client_name: true },
     })
-    const last = new Map<string, { amount: number | null; client: string }>()
-    for (const r of won) last.set(r.sfdc_opportunity_id!, { amount: r.sf_amount == null ? null : Number(r.sf_amount), client: r.client_name })
+    const last = new Map<string, { amount: number | null; stage: string | null; client: string }>()
+    for (const r of won) last.set(r.sfdc_opportunity_id!, { amount: r.sf_amount == null ? null : Number(r.sf_amount), stage: r.sf_stage, client: r.client_name })
     const ids = [...last.keys()].filter(id => SFDC_ID.test(id))
     if (ids.length === 0) return 0
     // Every won opportunity, in SOQL-sized batches (none is left unchecked).
@@ -342,8 +391,12 @@ export async function recordAmountChanges(): Promise<number> {
       // Compared in cents, as stored (DECIMAL(14,2)): a Salesforce Amount with
       // more decimals would otherwise read as changed on every sweep.
       const cents = (n: number | null) => (n == null ? null : Math.round(n * 100))
-      if (!id || !was || cents(was.amount) === cents(r.Amount ?? null)) return []
-      return [{ event: 'AMOUNT_CHANGED', sfdc_opportunity_id: id, client_name: was.client, sf_amount: r.Amount ?? null, sf_stage: r.StageName }]
+      // A stage change is recorded too (a deal reopened or lost after Closed
+      // Won, or won again), so the drift KPIs count only deals still won
+      // (lib/transportMetrics.ts dealDrift). Same event: the row carries both.
+      const stageChanged = was?.stage != null && was.stage !== r.StageName
+      if (!id || !was || (cents(was.amount) === cents(r.Amount ?? null) && !stageChanged)) return []
+      return [{ event: 'AMOUNT_CHANGED', sfdc_opportunity_id: id, client_name: clip(was.client, 255), sf_amount: r.Amount ?? null, sf_stage: clip(r.StageName, 100) }]
     })
     if (changed.length) await prisma.dealValue.createMany({ data: changed })
     return changed.length

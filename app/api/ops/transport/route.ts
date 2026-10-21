@@ -12,7 +12,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { churnKpis, dealDrift, plannedVsActual, transportKpis, type DealRow, type LegRow } from '@/lib/transportMetrics'
+import { churnKpis, dealDrift, partialOpportunities, plannedVsActual, transportKpis, type DealRow, type LegRow } from '@/lib/transportMetrics'
+import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 
 const isDate = (v: string | null): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v)
 const MAX_ROWS = 20000
@@ -63,12 +64,28 @@ export async function GET(req: NextRequest) {
       sf_amount: d.sf_amount == null ? null : Number(d.sf_amount),
     }))
 
+    // Deals whose recorded quotes don't cover every app booking on the
+    // opportunity (a quote-only log, a booking from before the metrics): their
+    // Amount includes bookings with no recorded quote, so they're left out of
+    // drift rather than shown as a gap (dealDrift partialOpps). By campaign
+    // group: a booking records legs per group, and a revision's new holds carry
+    // their own REVISED legs.
+    const appHolds = await inChunks(oppIds, slice => prisma.hold.findMany({
+      where: { sfdc_opportunity_id: { in: slice }, source: { not: 'SALESFORCE' }, OR: [{ status: { not: 'EXPIRED' } }, { origination: QUOTE_ONLY_ORIGINATION }] },
+      select: { id: true, campaign_group_id: true, sfdc_opportunity_id: true },
+      take: MAX_ROWS,
+    }))
+    const quotedHoldIds = new Set((await inChunks(appHolds.map(h => h.id), slice => prisma.transportLeg.findMany({
+      where: { hold_id: { in: slice }, event: { in: ['BOOKED', 'REVISED'] } }, select: { hold_id: true }, take: MAX_ROWS,
+    }))).map(l => l.hold_id!))
+    const partialOpps = partialOpportunities(appHolds, quotedHoldIds)
+
     return NextResponse.json({
       from, to,
       transport: transportKpis(legRows),
       plannedVsActual: plannedVsActual(current),
       churn: churnKpis(legRows),
-      deals: dealDrift(dealRows),
+      deals: dealDrift(dealRows, partialOpps),
       truncated: booked.length >= MAX_ROWS || legs.length >= MAX_ROWS || dealsBooked.length >= MAX_ROWS || deals.length >= MAX_ROWS,
     })
   } catch (err) {

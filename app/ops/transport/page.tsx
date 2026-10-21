@@ -18,7 +18,7 @@ type Data = {
   plannedVsActual: { compared: number; avgQuotedMiles: number; avgActualMiles: number; truckChangedPct: number; outcomeChangedPct: number; unpricedRepositioning: number; unpricedCost: number }
   churn: { bookings: number; changedPct: number; swaps: number; revisions: number; changesPerBooking: number }
   deals: {
-    wonDeals: number; quoted: number; contract: number; drift: number; driftPct: number
+    wonDeals: number; quoted: number; contract: number; drift: number; driftPct: number; leftClosedWon: number; partialDeals: number
     biggest: { opportunityId: string; client: string; quoted: number; wonAmount: number; currentAmount: number; drift: number; driftPct: number }[]
   }
 }
@@ -103,7 +103,7 @@ export default function TransportMetricsPage() {
           <label className="text-xs text-gray-600">Booked from<input type="date" value={from} max={to} onChange={e => setFrom(e.target.value)} className={`${input} block mt-1`} /></label>
           <label className="text-xs text-gray-600">To<input type="date" value={to} min={from} onChange={e => setTo(e.target.value)} className={`${input} block mt-1`} /></label>
         </div>
-        <p className="text-xs text-gray-500 mb-4">Bookings made in the range. &quot;Our cost&quot; is the estimated cost of moving trucks from outside the service area, billed or not; absorbed transport is what we pay ourselves.</p>
+        <p className="text-xs text-gray-500 mb-4">Bookings made in the range on the Quote page, the multi-market planner and the client portal. Holds placed by hand (the schedule grid, MCP) aren&apos;t quoted, so they aren&apos;t counted. &quot;Our cost&quot; is the estimated cost of moving trucks from outside the service area, billed or not; absorbed transport is what we pay ourselves.</p>
 
         {error && <div className="mb-4 bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-800">{error}</div>}
         {loading && !data && <div className="text-sm text-gray-500">Loading…</div>}
@@ -153,6 +153,13 @@ export default function TransportMetricsPage() {
                 <Tile label="Salesforce Amount" value={money(d.contract)} sub="At Closed Won, or its latest change" />
                 <Tile label="Drift" value={signed(d.drift)} sub={`${d.driftPct > 0 ? '+' : ''}${d.driftPct}%`} />
               </div>
+              {(d.leftClosedWon > 0 || d.partialDeals > 0) && (
+                <p className="text-xs text-gray-500 mb-3">
+                  Not counted:{d.leftClosedWon > 0 && ` ${d.leftClosedWon} deal${d.leftClosedWon === 1 ? '' : 's'} no longer Closed Won (reopened or lost)`}
+                  {d.leftClosedWon > 0 && d.partialDeals > 0 && ';'}
+                  {d.partialDeals > 0 && ` ${d.partialDeals} deal${d.partialDeals === 1 ? '' : 's'} with a booking whose quote wasn't recorded (a quote-only log, or booked before these metrics), so their Amount can't be compared`}.
+                </p>
+              )}
               <div className="bg-white border border-gray-200 rounded-xl overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 border-b border-gray-200 text-left text-xs uppercase tracking-wider text-gray-500">

@@ -326,17 +326,27 @@ export function churnKpis(legs: LegRow[]) {
 
 export type DealRow = {
   event: string; sfdc_opportunity_id: string | null; booking_key: string | null; client_name: string
-  app_quoted_total: number | null; sf_amount: number | null; captured_at: Date
+  app_quoted_total: number | null; sf_amount: number | null; sf_stage?: string | null; captured_at: Date
 }
 
 /**
  * Deal value drift, per won opportunity: the app's quoted total (the latest
  * BOOKED / REVISED figure of each booking on it, summed) against Salesforce's
  * Amount at Closed Won and its latest Amount since. Biggest gaps first.
+ *
+ * Only deals that are still won and fully quoted count:
+ * - a deal whose latest captured stage is no longer its won stage (reopened
+ *   or lost since; the Amount sweep records stage changes) is left out and
+ *   counted in `leftClosedWon`;
+ * - a deal in `partialOpps` (some app booking on it has no recorded quote:
+ *   quote-only logs, bookings from before the metrics) is left out and
+ *   counted in `partialDeals`, because its recorded quotes don't cover the
+ *   whole Amount.
  */
-export function dealDrift(rows: DealRow[]) {
+export function dealDrift(rows: DealRow[], partialOpps: Set<string> = new Set()) {
   const byOpp = new Map<string, DealRow[]>()
   for (const r of rows) if (r.sfdc_opportunity_id) byOpp.set(r.sfdc_opportunity_id, [...(byOpp.get(r.sfdc_opportunity_id) ?? []), r])
+  let leftClosedWon = 0, partialDeals = 0
   const deals = [...byOpp].flatMap(([opportunityId, rs]) => {
     const sorted = [...rs].sort((a, b) => a.captured_at.getTime() - b.captured_at.getTime())
     const won = sorted.find(r => r.event === 'WON')
@@ -344,8 +354,12 @@ export function dealDrift(rows: DealRow[]) {
     const latestQuote = new Map<string, number>()
     for (const r of sorted) if ((r.event === 'BOOKED' || r.event === 'REVISED') && r.booking_key && r.app_quoted_total != null) latestQuote.set(r.booking_key, r.app_quoted_total)
     if (latestQuote.size === 0) return []
+    const sfRows = sorted.filter(r => r.event === 'WON' || r.event === 'AMOUNT_CHANGED')
+    const latest = sfRows[sfRows.length - 1]
+    if (won.sf_stage != null && latest.sf_stage != null && latest.sf_stage !== won.sf_stage) { leftClosedWon++; return [] }
+    if (partialOpps.has(opportunityId.slice(0, 15))) { partialDeals++; return [] }
     const quoted = sum([...latestQuote.values()])
-    const amounts = sorted.filter(r => (r.event === 'WON' || r.event === 'AMOUNT_CHANGED') && r.sf_amount != null)
+    const amounts = sfRows.filter(r => r.sf_amount != null)
     const current = amounts[amounts.length - 1].sf_amount!
     return [{
       opportunityId, client: won.client_name || sorted[0].client_name, quoted, wonAmount: won.sf_amount, currentAmount: current,
@@ -354,8 +368,28 @@ export function dealDrift(rows: DealRow[]) {
   })
   const quoted = sum(deals.map(d => d.quoted)), current = sum(deals.map(d => d.currentAmount))
   return {
-    wonDeals: deals.length, quoted, contract: current,
+    wonDeals: deals.length, quoted, contract: current, leftClosedWon, partialDeals,
     drift: Math.round((current - quoted) * 100) / 100, driftPct: quoted ? pct(current - quoted, quoted) : 0,
     biggest: [...deals].sort((a, b) => Math.abs(b.drift) - Math.abs(a.drift)).slice(0, 15),
   }
+}
+
+/**
+ * Opportunities (15-char ids) with an app booking whose quote was never
+ * recorded: a campaign group (else a hold on its own) none of whose holds has
+ * a BOOKED or REVISED leg. Pure.
+ */
+export function partialOpportunities(
+  holds: { id: string; campaign_group_id: string | null; sfdc_opportunity_id: string | null }[],
+  quotedHoldIds: Set<string>,
+): Set<string> {
+  const groups = new Map<string, { opp: string; quoted: boolean }>()
+  for (const h of holds) {
+    if (!h.sfdc_opportunity_id) continue
+    const g = h.campaign_group_id ?? `hold:${h.id}`
+    const cur = groups.get(g) ?? { opp: h.sfdc_opportunity_id.slice(0, 15), quoted: false }
+    cur.quoted ||= quotedHoldIds.has(h.id)
+    groups.set(g, cur)
+  }
+  return new Set([...groups.values()].filter(g => !g.quoted).map(g => g.opp))
 }

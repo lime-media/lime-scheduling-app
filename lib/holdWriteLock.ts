@@ -101,7 +101,8 @@ export async function writeHoldsExclusive<T>(
           // The caller's own conflict rule: the planner books over AT&T soft
           // holds' trucks by its reservation rules, so it doesn't count them.
           ...activeHoldWhere({ excludeAttSoft: opts.excludeAttSoft }),
-          start_date: { lte: new Date(to) },
+          // Through the end of the last day: a hold stored with a time that day still overlaps.
+          start_date: { lte: new Date(`${to}T23:59:59.999Z`) },
           end_date: { gte: new Date(from) },
         },
         select: { id: true, truck_number: true, start_date: true, end_date: true, client_name: true, status: true },

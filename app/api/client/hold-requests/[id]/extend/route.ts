@@ -119,7 +119,7 @@ export async function POST(
           }),
         },
       })
-    }, { ignoreHoldIds: [...ids, hold.id], excludeAttSoft: true })
+    }, { ignoreHoldIds: [...ids, hold.id] })
   } catch (err) {
     if (err instanceof HoldClashError) {
       return NextResponse.json({ error: 'This booking has lapsed and some of its trucks have since been booked, so it can no longer be extended. Request a new quote.' }, { status: 409 })

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { activeHoldWhere } from '@/lib/holdFilters'
+import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
 import { CLOSED_WON_READ_ONLY, closedWonRefusal } from '@/lib/bookings'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { recordSwap, recordWon, winsToRecord } from '@/lib/transportMetricsRecord'
@@ -100,17 +100,21 @@ export async function PUT(
   const effTruck = truck_number || hold.truck_number
   const effStart = (start_date ? new Date(start_date) : hold.start_date).toISOString().slice(0, 10)
   const effEnd = (end_date ? new Date(end_date) : hold.end_date).toISOString().slice(0, 10)
-  const revived = status !== undefined && status !== 'EXPIRED' && hold.status === 'EXPIRED'
+  // Made live again: an EXPIRED hold given a live status, or one whose expiry
+  // passed (unswept) committed, which clears the expiry (holdFilters.ts).
+  const reservesAfter = holdReservesNow({ status: status ?? hold.status, expires_at: status === 'COMMITTED' ? null : hold.expires_at })
+  const revived = reservesAfter && !holdReservesNow(hold)
   const reserves = (status ?? hold.status) !== 'EXPIRED'
   const movesTruck = effTruck !== hold.truck_number || effStart !== hold.start_date.toISOString().slice(0, 10) || effEnd !== hold.end_date.toISOString().slice(0, 10) || revived
   let updated: Awaited<ReturnType<typeof prisma.hold.update>>
   try {
     updated = reserves && movesTruck
       ? await writeHoldsExclusive([{ truck: effTruck, start: effStart, end: effEnd }], tx => tx.hold.update({ where: { id: params.id }, data }),
-        // Same truck (dates moved, or revived): an AT&T soft hold under it gives
-        // way, as it did when the hold was placed. Another truck: counted, as the
-        // swap check always has.
-        { ignoreHoldIds: [hold.id], excludeAttSoft: effTruck === hold.truck_number })
+        // A live hold whose dates move on the same truck: an AT&T soft hold under
+        // it gives way, as it did when the hold was placed. Another truck, or a
+        // lapsed hold brought back (a new reservation): soft holds count, as the
+        // swap check and reinstate always have.
+        { ignoreHoldIds: [hold.id], excludeAttSoft: effTruck === hold.truck_number && !revived })
       : await prisma.hold.update({ where: { id: params.id }, data })
   } catch (err) {
     if (err instanceof HoldClashError) return NextResponse.json({ error: err.message, clashes: err.clashes }, { status: 409 })

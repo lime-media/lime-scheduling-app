@@ -434,9 +434,9 @@ export async function PATCH(
     return writeHoldsExclusive(
       lapsed.map(h => ({ truck: h.truck_number, start: day(h.start_date), end: day(h.end_date) })),
       write,
-      // These holds were placed already: an AT&T soft hold under one gave way
-      // then, and still does. Only someone else's booking is a clash.
-      { ignoreHoldIds: booking.map(h => h.id), excludeAttSoft: true },
+      // Bringing a lapsed hold back is a new reservation of its truck: AT&T soft
+      // holds count, as in reinstate (they're treated as permanent).
+      { ignoreHoldIds: booking.map(h => h.id) },
     )
   }
   const revivalRefusal = (err: unknown) => {

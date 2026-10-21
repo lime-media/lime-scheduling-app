@@ -2,9 +2,9 @@
  * Staff booking: reserve the trucks a staff quote picked and create (or add
  * to) the Salesforce opportunity — the internal /quote page's "Reserve". The
  * hold is placed on behalf of a client; a sfdc_account_id is required for the
- * opportunity, and the availability engine picks the trucks. Shared by POST
- * /api/quote/hold and the staff AI chat's place_hold tool, so a booking made
- * in the chat gets the same truck choice, price check, expiry and opportunity.
+ * opportunity, and the availability engine picks the trucks. Called by POST
+ * /api/quote/hold; a lib function so the staff AI chat (next PR) books
+ * through the same code: truck choice, price check, expiry and opportunity.
  * Returns the route's status and JSON body.
  */
 
@@ -306,7 +306,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor): Promise<C
         if (applied.ok && applied.windowLeft) sfdcWarnings.push(WINDOW_LEFT_NOTE)
       } else {
       // Owned by the rep who booked it (matched by email), else the account owner.
-      const owner = await resolveOpportunityOwner({ creatorEmail: actor.email ?? undefined, accountOwnerId: accountInfo?.ownerId })
+      const owner = await resolveOpportunityOwner({ creatorEmail: actor.email, accountOwnerId: accountInfo?.ownerId })
       const result = await createOpportunity({
         accountId: sfdc_account_id,
         ownerId: owner.ownerId ?? undefined,

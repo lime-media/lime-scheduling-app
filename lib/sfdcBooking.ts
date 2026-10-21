@@ -12,6 +12,7 @@ import { ledWindowFields, mergedOpportunityFields, type BookingLed, type Opportu
 import { loadOpportunityReservingHolds } from '@/lib/bookingLoad'
 import { CLOSED_WON_READ_ONLY } from '@/lib/bookings'
 import { prisma } from '@/lib/prisma'
+import { centralDate } from '@/lib/dateOnly'
 
 const OPP_ID = /^006[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/
 const ACCOUNT_ID = /^001[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/
@@ -118,7 +119,7 @@ export async function applyBookingToOpportunity(opts: {
   was?: { amount: number | null; markets: string[] }
 }): Promise<{ ok: boolean; amountLeft: boolean; windowLeft: boolean }> {
   const linked = await loadOpportunityReservingHolds(opts.opp.Id)
-  const { fields, windowLeft } = mergedOpportunityFields(opts.mode, opts.opp, opts.booking, { date: new Date().toISOString().slice(0, 10), by: opts.by }, linked, opts.was)
+  const { fields, windowLeft } = mergedOpportunityFields(opts.mode, opts.opp, opts.booking, { date: centralDate(new Date()), by: opts.by }, linked, opts.was)
   if (opts.primaryContactId && !opts.opp.Primary_Contact__c) fields.Primary_Contact__c = opts.primaryContactId
   const amountLeft = opts.opp.HasOpportunityLineItem
   if (amountLeft) delete fields.Amount
@@ -154,7 +155,7 @@ export async function syncOpportunityLedWindow(opportunityId: string | null): Pr
   let fields: Record<string, string | null> = {}
   let recorded: { id: string; features: string | null }[] = []
   try {
-    fields = ledWindowFields(await loadOpportunityReservingHolds(opportunityId), new Date().toISOString().slice(0, 10))
+    fields = ledWindowFields(await loadOpportunityReservingHolds(opportunityId), centralDate(new Date()))
     // A date is recorded; a Hold Exp cleared (nothing reserves a truck) clears
     // the record too, so a rep later entering that same date in Salesforce isn't
     // taken for an echo. Left out (all committed): Salesforce keeps its date, and

@@ -2,6 +2,7 @@ import { prisma } from '@/lib/prisma'
 import { sfdcQuery, updateOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { SFDC_SERVICE_USER_EMAIL, reconcileTarget } from '@/lib/sfdcIntegration'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry } from '@/lib/holdExpiry'
+import { centralDate } from '@/lib/dateOnly'
 
 /**
  * Opportunity stage reconcile.
@@ -148,7 +149,7 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
     // A reopened deal's committed holds go back to HOLD with one expiry: the
     // standard length, capped by the earliest start among them (the staff
     // runway), as a fresh booking would get.
-    const today = new Date().toISOString().slice(0, 10)
+    const today = centralDate(new Date())
     const reheldStarts = group.filter(h => h.status === 'COMMITTED').map(h => h.start_date.toISOString().slice(0, 10))
     const futureStarts = reheldStarts.filter(d => d >= today)
     const reheldUntil = reheldStarts.length

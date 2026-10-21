@@ -8,7 +8,7 @@ import { loadOpportunityReservingHolds } from '@/lib/bookingLoad'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
 import { soqlString } from '@/lib/soql'
-import { endOfDayUtc } from '@/lib/dateOnly'
+import { endOfDayCentral } from '@/lib/dateOnly'
 import { HOLD_EXPIRATION_HOURS } from '@/lib/holdExpiry'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 
@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
   // Hold Exp is the last day the hold is valid, so it survives until the END of
   // that day. `new Date('2026-09-08')` is 00:00Z — the start — which would
   // release the truck a full calendar day early.
-  const explicitExpiry = holdExp ? endOfDayUtc(holdExp) : null
+  const explicitExpiry = holdExp ? endOfDayCentral(holdExp) : null
 
   // An LED Opportunity is supposed to carry Hold Exp alongside trucks, start and
   // stop. If the first three are filled in and only the expiration is missing,

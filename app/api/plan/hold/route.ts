@@ -53,6 +53,7 @@ import { SFDC_SERVICE_USER_EMAIL, attachedToOpportunity, reactivationDecision, r
 import { rotationStints, type OrderLine } from '@/lib/planning/order'
 import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuote, type QuoteRequest } from '@/lib/planning/quote'
 import { fitNames, lineFeatures } from '@/lib/planning/booking'
+import { holdExpDate } from '@/lib/dateOnly'
 
 export const maxDuration = 300
 
@@ -474,7 +475,7 @@ async function handlePost(req: NextRequest) {
           ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(l.total)}`)] : []),
           ...(unavailable.length ? ['', 'Quoted but no truck available:', ...unavailable] : []),
         ].join('\n')
-        const holdExp = stretches.length ? new Date(Math.min(...stretches.map(x => x.expiresAt.getTime()))).toISOString().split('T')[0] : undefined
+        const holdExp = stretches.length ? holdExpDate(new Date(Math.min(...stretches.map(x => x.expiresAt.getTime())))) : undefined
         if (target) {
           // The deal's own opportunity: revised (REPLACE) or added to (ADD).
           // The holds are already linked to it, so Salesforce's push back of

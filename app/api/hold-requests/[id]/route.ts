@@ -13,6 +13,7 @@ import { closeOpportunityAsLost, getOpportunityStage } from '@/lib/sfdcOpportuni
 import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { reopenClosedLostOpportunity, syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { sendCancellationEmail, sendExtensionDecisionEmail } from '@/lib/email'
+import { centralDate, endOfDayCentral, holdExpDate } from '@/lib/dateOnly'
 
 type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration' | 'reinstate'
 
@@ -48,12 +49,12 @@ async function loadBooking(hold: HoldWithClient): Promise<HoldWithClient[]> {
 
 /** The start dates that cap the booking's one expiry (lib/bookings.ts bookingCapStarts). */
 function capStarts(booking: Hold[]): string[] {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = centralDate(new Date())
   return bookingCapStarts(booking.map(h => ({ start_date: h.start_date.toISOString().slice(0, 10), status: h.status })), today)
 }
 
-/** The end of a YYYY-MM-DD day, as a hand-set expiry is stored. */
-const endOfDay = (d: string) => new Date(d + 'T23:59:59Z')
+/** The end of a YYYY-MM-DD day in Central time, as a hand-set expiry is stored (lib/dateOnly.ts). */
+const endOfDay = (d: string) => endOfDayCentral(d)
 const day = (d: Date) => d.toISOString().slice(0, 10)
 
 /** The booking's span and markets, for the client's email. */
@@ -198,7 +199,7 @@ export async function PATCH(
     // The whole booking comes back, or none of it: every lapsed hold of it
     // whose market hasn't ended (lib/bookings.ts reinstatableHolds).
     const booking = await loadBooking(hold)
-    const today = new Date().toISOString().slice(0, 10)
+    const today = centralDate(new Date())
     const lapsed = reinstatableHolds(booking, today)
       .filter(h => h.origination !== QUOTE_ONLY_ORIGINATION && !reinstateBlockedByRelease(h.origination))
     if (lapsed.length === 0) return NextResponse.json({ error: NOTHING_TO_REINSTATE }, { status: 400 })
@@ -421,7 +422,7 @@ export async function PATCH(
       const s = bookingSummary(live)
       await sendExtensionDecisionEmail({
         to: client.email, companyName: client.company_name, markets: s.markets,
-        startDate: s.startDate, endDate: s.endDate, heldUntil: day(newExpiresAt),
+        startDate: s.startDate, endDate: s.endDate, heldUntil: holdExpDate(newExpiresAt),
       }).catch(err => console.error('[approve-extension] email send failed:', err))
     }
 

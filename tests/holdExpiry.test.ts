@@ -13,6 +13,7 @@
  */
 import { eq, section } from './harness'
 import { availableHoldDays, bookingHoldExpiry, lastExpiryDate, computeHoldExpiresAt, DEFAULT_HOLD_DAYS, HOLD_EXPIRATION_HOURS, MIN_HOLD_WINDOW_HOURS, STAFF_MIN_DAYS_BEFORE_START, holdExpiry, parseHoldDays } from '@/lib/holdExpiry'
+import { centralDate, endOfDayCentral, holdExpDate } from '@/lib/dateOnly'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -58,9 +59,9 @@ section('hold length chosen on the quote tool')
   eq('a seller can hold 7 days', hrs(holdExpiry(far, 7, now).expiresAt), 168)
   eq('or 1 day', hrs(holdExpiry(far, 1, now).expiresAt), 24)
   eq('not cut short when the campaign is far off', holdExpiry(far, 7, now).cappedByStart, false)
-  // Campaign Oct 27: a hold must end 3 days before, Oct 24 00:00 UTC.
+  // Campaign Oct 27: a hold must end 3 days before: the end of Oct 23, Central (04:59:59Z on Oct 24, daylight time).
   const soon = holdExpiry('2026-10-27', 14, now)
-  eq('cut short by the campaign start', [soon.expiresAt.toISOString(), soon.cappedByStart], ['2026-10-23T23:59:59.000Z', true])
+  eq('cut short by the campaign start', [soon.expiresAt.toISOString(), soon.cappedByStart], ['2026-10-24T04:59:59.000Z', true])
   eq('never under 24 hours, however soon the start', hrs(holdExpiry('2026-10-17', 7, now).expiresAt), 24)
   // Campaign Oct 19: 3 days before is Oct 16 00:00, already past, so the 24h floor decides.
   const floored = holdExpiry('2026-10-19', 7, now)
@@ -95,10 +96,10 @@ section('holdExpiry: a booking has one expiry, capped by its earliest start')
 {
   const now = new Date('2026-10-20T12:00:00Z')
   const one = bookingHoldExpiry(['2026-11-20', '2026-10-25'], 7, now)
-  eq('the earliest start decides', [one.startDate, one.expiresAt.toISOString(), one.cappedByStart], ['2026-10-25', '2026-10-21T23:59:59.000Z', true])
+  eq('the earliest start decides', [one.startDate, one.expiresAt.toISOString(), one.cappedByStart], ['2026-10-25', '2026-10-22T04:59:59.000Z', true])
   eq('far-off starts: the seller\'s length', bookingHoldExpiry(['2026-12-01', '2026-12-15'], 7, now).expiresAt.toISOString(), '2026-10-27T12:00:00.000Z')
   eq('a revision keeps a later expiry it already had', bookingHoldExpiry(['2026-12-01'], 3, now, new Date('2026-11-01T23:59:59Z')).expiresAt.toISOString(), '2026-11-01T23:59:59.000Z')
-  eq('but never past the earliest start\'s cap', bookingHoldExpiry(['2026-11-01'], 3, now, new Date('2026-11-01T23:59:59Z')).expiresAt.toISOString(), '2026-10-28T23:59:59.000Z')
+  eq('but never past the earliest start\'s cap', bookingHoldExpiry(['2026-11-01'], 3, now, new Date('2026-11-01T23:59:59Z')).expiresAt.toISOString(), '2026-10-29T04:59:59.000Z')
   eq('the last date to set by hand: the day before the cap', lastExpiryDate('2026-11-20', now), '2026-11-16')
   eq('cap already past: the 24-hour floor\'s date', lastExpiryDate('2026-10-22', now), '2026-10-21')
 }
@@ -108,12 +109,12 @@ section('holdExpiry: staff may hold until 2 days before the start; everyone else
   const now = new Date('2026-10-20T12:00:00Z')
   eq('the staff runway is 2 days', STAFF_MIN_DAYS_BEFORE_START, 2)
   // Start Oct 25: the default cap is the end of Oct 21, the staff cap the end of Oct 22.
-  eq('default (client portal, MCP, Salesforce): capped 3 days before', holdExpiry('2026-10-25', 7, now).expiresAt.toISOString(), '2026-10-21T23:59:59.000Z')
-  eq('staff: capped 2 days before', holdExpiry('2026-10-25', 7, now, STAFF_MIN_DAYS_BEFORE_START).expiresAt.toISOString(), '2026-10-22T23:59:59.000Z')
+  eq('default (client portal, MCP, Salesforce): capped 3 days before', holdExpiry('2026-10-25', 7, now).expiresAt.toISOString(), '2026-10-22T04:59:59.000Z')
+  eq('staff: capped 2 days before', holdExpiry('2026-10-25', 7, now, STAFF_MIN_DAYS_BEFORE_START).expiresAt.toISOString(), '2026-10-23T04:59:59.000Z')
   eq('staff: one more length worth offering', availableHoldDays(['2026-10-25'], now, STAFF_MIN_DAYS_BEFORE_START), [1, 2, 3])
-  eq('staff, multi-market: the earliest start still decides', bookingHoldExpiry(['2026-11-20', '2026-10-25'], 7, now, null, STAFF_MIN_DAYS_BEFORE_START).expiresAt.toISOString(), '2026-10-22T23:59:59.000Z')
+  eq('staff, multi-market: the earliest start still decides', bookingHoldExpiry(['2026-11-20', '2026-10-25'], 7, now, null, STAFF_MIN_DAYS_BEFORE_START).expiresAt.toISOString(), '2026-10-23T04:59:59.000Z')
   eq('staff: the last date to set by hand', lastExpiryDate('2026-11-20', now, STAFF_MIN_DAYS_BEFORE_START), '2026-11-17')
-  eq('staff: a kept expiry is capped at 2 days before', bookingHoldExpiry(['2026-11-01'], 3, now, new Date('2026-11-01T23:59:59Z'), STAFF_MIN_DAYS_BEFORE_START).expiresAt.toISOString(), '2026-10-29T23:59:59.000Z')
+  eq('staff: a kept expiry is capped at 2 days before', bookingHoldExpiry(['2026-11-01'], 3, now, new Date('2026-11-01T23:59:59Z'), STAFF_MIN_DAYS_BEFORE_START).expiresAt.toISOString(), '2026-10-30T04:59:59.000Z')
 }
 
 section('holdExpiry: an automatic cap and a hand-set date name the same last day')
@@ -126,7 +127,20 @@ section('holdExpiry: an automatic cap and a hand-set date name the same last day
     const cap = bookingHoldExpiry([start], 14, now, null, runway)
     eq(`start ${start}, ${runway}-day runway: capped by the start`, cap.cappedByStart, true)
     const last = lastExpiryDate(start, now, runway)
-    eq(`start ${start}, ${runway}-day runway: the capped expiry falls on the last allowed date`, cap.expiresAt.toISOString().slice(0, 10), last)
-    eq(`start ${start}, ${runway}-day runway: and is that date's end`, cap.expiresAt.toISOString(), `${last}T23:59:59.000Z`)
+    eq(`start ${start}, ${runway}-day runway: the capped expiry falls on the last allowed date`, centralDate(cap.expiresAt), last)
+    eq(`start ${start}, ${runway}-day runway: and is that date's end`, cap.expiresAt.toISOString(), endOfDayCentral(last).toISOString())
   }
+}
+
+section('Central days: a date-only expiry ends at the end of that day in Central time')
+{
+  eq('daylight time: 04:59:59Z the next morning', endOfDayCentral('2026-10-22').toISOString(), '2026-10-23T04:59:59.000Z')
+  eq('standard time: 05:59:59Z the next morning', endOfDayCentral('2027-01-14').toISOString(), '2027-01-15T05:59:59.000Z')
+  eq('the night the clocks go back (Nov 1, 2026) is standard time at its end', endOfDayCentral('2026-11-01').toISOString(), '2026-11-02T05:59:59.000Z')
+  eq('the night the clocks go forward (Mar 14, 2027) ends in daylight time', endOfDayCentral('2027-03-14').toISOString(), '2027-03-15T04:59:59.000Z')
+  eq('an end of day is its own Central date', centralDate(endOfDayCentral('2026-10-22')), '2026-10-22')
+  eq('an expiry stored at the old 23:59:59Z still reads as its date', centralDate(new Date('2026-10-22T23:59:59Z')), '2026-10-22')
+  eq('Thu 8pm CDT (Fri 01:00Z) is Thursday', holdExpDate(new Date('2026-10-23T01:00:00Z')), '2026-10-22')
+  eq('winter: 11:30pm CST Jan 14 is Jan 14', holdExpDate(new Date('2027-01-15T05:30:00Z')), '2027-01-14')
+  eq('a Hold Exp round trip keeps the day', centralDate(endOfDayCentral(holdExpDate(new Date('2026-10-23T01:00:00Z')))), '2026-10-22')
 }

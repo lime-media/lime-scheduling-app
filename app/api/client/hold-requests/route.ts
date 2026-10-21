@@ -24,6 +24,7 @@ import {
   type StudyType,
 } from '@/lib/pricing'
 import { resolveMarketSizeTierId, resolveRateOverrides } from '@/lib/pricing/resolvers'
+import { holdExpDate } from '@/lib/dateOnly'
 
 export async function GET(req: NextRequest) {
   const session = getClientSession(req)
@@ -350,7 +351,7 @@ async function handleAutoSelectHold(
         market,
         holdStart: start_date,
         holdStop: end_date,
-        holdExp: firstHold?.expires_at?.toISOString().split('T')[0],
+        holdExp: firstHold?.expires_at ? holdExpDate(firstHold.expires_at) : undefined,
         truckNumbers: created,
         activationNotes,
       })

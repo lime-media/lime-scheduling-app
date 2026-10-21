@@ -6,7 +6,7 @@ import { format, formatDistanceToNow, isPast } from 'date-fns'
 import { ClientHeader } from '@/components/ClientHeader'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
 import { useClientAuth, hasHoldRequestsAccess } from '@/lib/useClientAuth'
-import { parseDateOnly } from '@/lib/dateOnly'
+import { centralDate, parseDateOnly } from '@/lib/dateOnly'
 import { formatMarketState } from '@/lib/format'
 import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
@@ -118,9 +118,9 @@ function extendWindow(rows: HoldRequest[]): { min: string; max: string } | { ref
   const refusal = clientExtendRefusal(rows)
   if (refusal) return { refusal }
   const held = rows.filter(r => r.status === 'HOLD')
-  const today = new Date().toISOString().slice(0, 10)
+  const today = centralDate(new Date())
   const max = lastExpiryDate([...bookingCapStarts(held, today)].sort()[0])
-  const lapses = held.map(r => r.expires_at?.slice(0, 10)).filter((d): d is string => !!d).sort().reverse()[0] ?? today
+  const lapses = held.map(r => (r.expires_at ? centralDate(new Date(r.expires_at)) : null)).filter((d): d is string => !!d).sort().reverse()[0] ?? today
   const after = new Date(lapses + 'T00:00:00Z')
   after.setUTCDate(after.getUTCDate() + 1)
   const min = [after.toISOString().slice(0, 10), today].sort().reverse()[0]

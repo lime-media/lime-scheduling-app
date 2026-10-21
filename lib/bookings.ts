@@ -11,6 +11,7 @@
  */
 
 import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
+import { centralDate } from '@/lib/dateOnly'
 
 type BookingRow = {
   campaign_group_id: string | null
@@ -382,11 +383,11 @@ export function expiryEdits(
   rows: { id: string; market: string; expires_at: string | null }[],
   chosen: string,
 ): { id: string; market: string; expiresOn: string; changed: boolean }[] {
-  return rows.map(r => ({ id: r.id, market: r.market, expiresOn: chosen, changed: chosen !== (r.expires_at ? r.expires_at.slice(0, 10) : null) }))
+  return rows.map(r => ({ id: r.id, market: r.market, expiresOn: chosen, changed: chosen !== (r.expires_at ? centralDate(new Date(r.expires_at)) : null) }))
 }
 
-/** The date (YYYY-MM-DD) the booking's soonest hold expires, as its card's badge shows. */
+/** The date (YYYY-MM-DD) the booking's soonest hold expires, as its card's badge shows: its Central day, as Salesforce's Hold Exp and the confirmation name it. */
 export function earliestExpiryDate(rows: { expires_at: string | null }[]): string {
-  const dates = rows.map(r => r.expires_at?.slice(0, 10)).filter((d): d is string => !!d).sort()
+  const dates = rows.map(r => (r.expires_at ? centralDate(new Date(r.expires_at)) : null)).filter((d): d is string => !!d).sort()
   return dates[0] ?? ''
 }

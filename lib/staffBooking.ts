@@ -32,6 +32,7 @@ import {
 import { resolveMarketSizeTierId, resolveRateOverridesBySfdcAccount, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
 import type { RateOverrides } from '@/lib/pricing/config'
 import { reply, type CoreResult } from '@/lib/coreResult'
+import { holdExpDate } from '@/lib/dateOnly'
 
 /** The staff member booking it: who the holds and the opportunity are attributed to. */
 export type StaffActor = { id?: string; name?: string | null; email?: string | null }
@@ -294,7 +295,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor): Promise<C
             amount: serverTotal,
             markets: [market],
             trucks: created,
-            ...(quoteOnly ? {} : { holdStart: start_date, holdStop: end_date, holdExp: expiresAt.toISOString().split('T')[0] }),
+            ...(quoteOnly ? {} : { holdStart: start_date, holdStop: end_date, holdExp: holdExpDate(expiresAt) }),
             description: `${market}: ${quoteOnly ? `quote only, ${truck_count} truck${truck_count === 1 ? '' : 's'} quoted` : `${created.length} truck${created.length === 1 ? '' : 's'} (${created.join(', ')})`}, ${start_date} to ${end_date}.`,
           },
           by: actor.name || actor.email || 'the app',
@@ -330,7 +331,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor): Promise<C
         ...(quoteOnly ? {} : {
           holdStart: start_date,
           holdStop: end_date,
-          holdExp: expiresAt.toISOString().split('T')[0],
+          holdExp: holdExpDate(expiresAt),
           truckNumbers: created,
         }),
         activationNotes,

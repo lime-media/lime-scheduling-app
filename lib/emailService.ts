@@ -39,7 +39,10 @@ export async function sendConflictEmail(conflict: ConflictEmailPayload): Promise
   if (!to) return
 
   await transporter.sendMail({
-    from:    process.env.SMTP_USER,
+    // SMTP_FROM, like every other sender (lib/email.ts). Conflict alerts used
+    // to go out as SMTP_USER, so they arrived from a different address than
+    // the rest. SMTP_USER stays the fallback for a setup without SMTP_FROM.
+    from:    process.env.SMTP_FROM ?? process.env.SMTP_USER,
     to,
     subject: `⚠️ Schedule Conflict: Truck ${conflict.truck_number}`,
     html: `

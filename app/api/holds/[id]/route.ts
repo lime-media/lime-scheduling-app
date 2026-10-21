@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { CLOSED_WON_READ_ONLY, closedWonRefusal } from '@/lib/bookings'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
+import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 
 export async function PUT(
   req: NextRequest,
@@ -101,7 +102,15 @@ export async function PUT(
     },
   })
 
-  return NextResponse.json(updated)
+  // A truck, date or status change moves what the opportunity reserves:
+  // Salesforce's LED Trucks and Hold Exp follow (lib/sfdcBooking.ts syncOpportunityLedWindow).
+  const moved = updated.truck_number !== hold.truck_number
+    || updated.status !== hold.status
+    || updated.start_date.getTime() !== hold.start_date.getTime()
+    || updated.end_date.getTime() !== hold.end_date.getTime()
+  const sfdcWarning = moved ? await syncOpportunityLedWindow(hold.sfdc_opportunity_id) : null
+
+  return NextResponse.json({ ...updated, sfdcWarning })
 }
 
 export async function DELETE(
@@ -140,5 +149,9 @@ export async function DELETE(
 
   await prisma.hold.delete({ where: { id: params.id } })
 
-  return NextResponse.json({ success: true })
+  // The truck is released: Salesforce's LED Trucks (and Hold Exp) follow, so
+  // its next push can't re-create the deleted hold (lib/sfdcBooking.ts syncOpportunityLedWindow).
+  const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
+
+  return NextResponse.json({ success: true, sfdcWarning })
 }

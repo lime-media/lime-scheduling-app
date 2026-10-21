@@ -203,6 +203,8 @@ export default function ConflictsPage() {
       })
       if (res.ok) {
         toast.success(action === 'resolve' ? 'Dismissed. These dates will not be flagged again.' : 'Reservation released')
+        const body = await res.json().catch(() => ({}))
+        if (body.sfdcWarning) toast.error(body.sfdcWarning, { duration: 15000 })
         fetchConflicts()
         if (action === 'release-hold') fetchInfeasible()
       } else {

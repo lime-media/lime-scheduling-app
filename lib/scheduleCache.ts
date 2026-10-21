@@ -11,6 +11,7 @@ import { getPool, query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { reconcileSfdcOpportunities, closeOpportunityAsLost } from '@/lib/sfdcOpportunityReconcile'
+import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { warnExpiringHolds } from '@/lib/holdExpiryWarnings'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
@@ -73,8 +74,12 @@ export async function refreshCache(): Promise<RefreshSummary> {
   // committed, not expired out from under itself.
   const sfdc = await reconcileSfdcOpportunities().catch((err) => {
     console.error('[scheduleCache] SFDC opportunity reconcile failed:', err)
-    return { checked: 0, committed: 0, released: 0, uncommitted: 0 }
+    return { checked: 0, committed: 0, released: 0, uncommitted: 0, changedOpportunities: [] as string[] }
   })
+
+  // The reconcile released or un-committed holds on these: Salesforce's LED
+  // Trucks and Hold Exp follow (every release path syncs).
+  await syncOpportunities(sfdc.changedOpportunities, '[sfdc-reconcile]')
 
   const expiry = await expireHolds().catch((err) => {
     console.error('[scheduleCache] hold expiry check failed:', err)
@@ -259,7 +264,36 @@ export async function expireHolds(): Promise<{
     else if (outcome === 'would_close') opportunities_would_close++
   }
 
+  // Then every opportunity a lapse touched (closed or not) gets LED Trucks and
+  // Hold Exp from what the app still holds on it: blank when nothing, so a
+  // later push can't re-create a lapsed truck (lib/sfdcBooking.ts
+  // syncOpportunityLedWindow). After the close, so the stage never waits on
+  // this write; the two touch different fields.
+  const lapsedOn = new Set(stale.map(h => h.sfdc_opportunity_id).filter((id): id is string => Boolean(id)))
+  await syncOpportunities([...lapsedOn], '[hold-expiry]')
+
   return { expired: stale.length, opportunities_closed, opportunities_would_close }
+}
+
+// At most this many Salesforce syncs in flight at once from the sweep, to stay
+// well inside Salesforce's API concurrency.
+const SYNC_CONCURRENCY = 5
+
+/**
+ * Syncs LED Trucks and Hold Exp for each opportunity, a few at a time. Each
+ * sync never throws; a warning is logged. Two syncs of the same opportunity at
+ * the same moment (a sweep and a staff edit) are not ordered: the later write
+ * wins and the next change re-syncs it. Rare enough not to lock for.
+ */
+async function syncOpportunities(ids: string[], tag: string): Promise<void> {
+  const queue = [...new Set(ids)]
+  const worker = async () => {
+    for (let id = queue.shift(); id; id = queue.shift()) {
+      const warning = await syncOpportunityLedWindow(id)
+      if (warning) console.warn(`${tag} ${id}: ${warning}`)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(SYNC_CONCURRENCY, queue.length) }, worker))
 }
 
 // DEPRECATED — kept as re-exports for any callers not yet updated

@@ -37,3 +37,7 @@ next-env.d.ts
 .env
 .env.local
 .env*
+
+# Claude Code: local-only state (the shared settings, skills and hooks are committed)
+.claude/worktrees/
+.claude/settings.local.json

@@ -483,6 +483,8 @@ Market Tier 4 is now reachable: a market that is not one of the accepted top-50 
 
 Clients can no longer self-serve a quote for a campaign starting within **2 days** (`MIN_CLIENT_LEAD_DAYS`). Internal staff are deliberately exempt. Enforced on both the client quote and client hold routes, server-side.
 
+The client portal AI chat answers availability with the same check as the client quote (`lib/clientAvailability.ts`: lead time, market, the client's rate card, trucks free), as a yes or the quote form's message. It never shows truck numbers, other bookings or prices; quotes and holds stay on the quote form.
+
 Single-truck feasibility now checks the campaign window, not just arrival and stranding — see §6b.
 
 ### Resolved 2026-09-11

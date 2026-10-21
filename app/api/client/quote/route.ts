@@ -13,24 +13,18 @@ import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
 import { brandMarkupFor, withMarkup } from '@/lib/pricing/brandMarkup'
 import { NextRequest, NextResponse } from 'next/server'
 import { getClientSession } from '@/lib/clientAuth'
+import { clientAvailability } from '@/lib/clientAvailability'
 import { checkAvailability, legsFromTrucks } from '@/lib/availabilityEngine'
 
 import {
   computeQuote,
   priceTransport,
-  daysUntil,
-  MIN_CLIENT_LEAD_DAYS,
   countActivationDays,
   billedDaysPerWeek,
   VALID_STUDIES,
   type StudyType,
 } from '@/lib/pricing'
-import {
-  resolveMarketInputAll,
-  resolveMarketSizeTierId,
-  resolveRateOverrides,
-  resolveDefaultRateOverrides,
-} from '@/lib/pricing/resolvers'
+import { resolveRateOverrides } from '@/lib/pricing/resolvers'
 
 
 async function handlePost(req: NextRequest) {
@@ -63,60 +57,10 @@ async function handlePost(req: NextRequest) {
   }
 
 
-  // Near-term campaigns are not self-serviceable. Internal staff are NOT subject
-  // to this (see /api/quote) — they may have approval or context the engine
-  // lacks. This is a CLIENT-surface policy, enforced server-side so it cannot be
-  // bypassed by calling the API directly.
-  const leadDays = daysUntil(start_date)
-  if (leadDays < MIN_CLIENT_LEAD_DAYS) {
-    return NextResponse.json({
-      insufficient: true,
-      rushBlocked: true,
-      message: leadDays < 0
-        ? 'That start date has already passed. Please choose a future date.'
-        : `Campaigns starting within ${MIN_CLIENT_LEAD_DAYS} days can't be booked online — there isn't enough time to position trucks and crew. Submit a request and the Lime Media team will see what's possible.`,
-    })
-  }
-
-  // Resolve the market input — handles disambiguation and formalization
-  // Resolve against the hardcoded map AND the 356-market list the team
-  // maintains — /api/markets autocompletes from the latter, so gating on the
-  // former would reject markets the rep just picked from the dropdown.
-  const marketMatches = await resolveMarketInputAll(market)
-
-  if (marketMatches.length === 0) {
-    return NextResponse.json({
-      error: `We couldn't find "${market}". Use a US city with its state (e.g. "Ames, IA") or a ZIP code.`,
-    }, { status: 400 })
-  }
-
-  if (marketMatches.length > 1) {
-    return NextResponse.json({
-      error: 'DISAMBIGUATION_REQUIRED',
-      message: `Multiple markets match "${market}". Please select one:`,
-      candidates: marketMatches.map(m => m.formal),
-    }, { status: 400 })
-  }
-
-  // Single match — use the formalized name going forward
-  const resolvedMarket = marketMatches[0]
-  const formalMarket = resolvedMarket.formal
-
-  // Only serve the contiguous 48 states
-  const EXCLUDED_STATES = new Set(['AK', 'HI'])
-  const stateAbbr = formalMarket.split(',').pop()?.trim().toUpperCase()
-  if (stateAbbr && EXCLUDED_STATES.has(stateAbbr)) {
-    return NextResponse.json({
-      error: `We currently only serve markets within the contiguous 48 states. ${formalMarket} is outside our service area.`,
-    }, { status: 400 })
-  }
-
-  const startDate = new Date(start_date + 'T00:00:00Z')
-  const endDate = new Date(end_date + 'T00:00:00Z')
-  const calendarDays = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1
-  if (!Number.isFinite(calendarDays) || calendarDays < 1) {
-    return NextResponse.json({ error: 'Invalid date range' }, { status: 400 })
-  }
+  // Lead time, market, service area and trucks, by the client rules (lib/clientAvailability.ts).
+  const checked = await clientAvailability(session, { market, start_date, end_date, truck_count })
+  if (checked.refused) return NextResponse.json(checked.refused.body, { status: checked.refused.status })
+  const { formalMarket, calendarDays, availability, rateOverrides, marketSizeTierId } = checked
 
   // Schedule configuration:
   // - Campaigns 6 days or less: every day (default days_per_week=7)
@@ -136,59 +80,6 @@ async function handlePost(req: NextRequest) {
   const includeShadowFencing = body.shadow_fencing !== false
   const includeSmartDirectional = body.smart_directional ?? false
   const includeDeviceId = body.device_id ?? false
-
-  // Resolve rate overrides first — service_area_miles affects availability classification
-  const [clientOverrides, defaultOverrides, marketSizeTierId] = await Promise.all([
-    resolveRateOverrides(session),
-    resolveDefaultRateOverrides(),
-    resolveMarketSizeTierId(formalMarket),
-  ])
-
-  const rateOverrides = clientOverrides
-    ? { ...defaultOverrides, ...clientOverrides, daily_rates: { ...defaultOverrides?.daily_rates, ...clientOverrides.daily_rates } }
-    : defaultOverrides
-
-  const availability = await checkAvailability({
-    market: formalMarket,
-    startDate: start_date,
-    endDate: end_date,
-    truckCount: truck_count,
-    serviceAreaMiles: rateOverrides?.service_area_miles,
-  })
-
-  // There are exactly two reasons to refuse a quote: the market is outside the
-  // service area, or no reachable truck exists. Truck COUNT is never one of
-  // them — extra trucks come from further away and the distance is billed.
-  if (!availability.marketResolved) {
-    return NextResponse.json({
-      availability: {
-        requested: truck_count, available: 0, local: 0, nearby: 0,
-        repositioning: 0, sufficient: false,
-      },
-      insufficient: true,
-      outOfServiceArea: true,
-      message: `We could not locate "${formalMarket}". Lime Media serves the contiguous 48 states — check the spelling, or submit a request and the team will follow up.`,
-    })
-  }
-
-  // Not enough reachable trucks to fill the request — every truck that could
-  // physically make these dates is already committed.
-  if (!availability.sufficient) {
-    return NextResponse.json({
-      availability: {
-        requested: truck_count,
-        available: availability.counts.total,
-        local: availability.counts.local,
-        nearby: availability.counts.nearby,
-        repositioning: availability.counts.repositioning,
-        sufficient: false,
-      },
-      insufficient: true,
-      // Client-facing: the headline only. Truck counts and exclusion reasons are
-      // fleet posture and stay on the staff route.
-      message: 'Automatic quote not feasible without changing existing reservations or commitments. Submit a request and the Lime Media team will work on a solution.',
-    })
-  }
 
   // Select the best trucks (cheapest chain first, up to requested count).
   // Override-only trucks are excluded here for the same reason they are

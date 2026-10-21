@@ -9,7 +9,7 @@ import { eq, section } from './harness'
 section('Client chat: one engine, client rules')
 {
   const route = fs.readFileSync('app/api/client/chat/route.ts', 'utf8')
-  const quote = fs.readFileSync('app/api/client/quote/route.ts', 'utf8')
+  const quote = fs.readFileSync('lib/clientQuote.ts', 'utf8')
   const context = fs.readFileSync('lib/clientChatContext.ts', 'utf8')
   const availability = fs.readFileSync('lib/clientAvailability.ts', 'utf8')
   eq('current Opus', route.includes("model:         'claude-opus-5-5'"), true)

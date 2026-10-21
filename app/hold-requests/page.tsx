@@ -17,7 +17,7 @@ import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
 import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingKey, closedWonRefusal, bookingStatus, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
-import { ownedBy, ownerOptions, runsBetween, type OwnerFilter } from '@/lib/reservationFilters'
+import { ownedBy, ownerOptions, runsBetween, wholeBookings, type OwnerFilter } from '@/lib/reservationFilters'
 import { useSession } from 'next-auth/react'
 
 type HoldRequest = {
@@ -545,10 +545,6 @@ export default function HoldRequestsPage() {
       // Owner, dates and search pick whole bookings: a booking shows if any of
       // it matches, so a card, its total and its Edit always cover the same
       // reservations and a multi-market card never loses a market.
-      const wholeBookings = (rows: HoldRequest[], matches: (r: HoldRequest) => boolean) => {
-        const cards = new Set(rows.filter(matches).map(r => bookingKey(r)).filter(Boolean))
-        return rows.filter((r) => { const k = bookingKey(r); return k ? cards.has(k) : matches(r) })
-      }
       if (ownerShown !== 'all' || dateFrom || dateTo) {
         result = wholeBookings(result, r => ownedBy(r, ownerShown, meId) && runsBetween(r, dateFrom, dateTo))
       }

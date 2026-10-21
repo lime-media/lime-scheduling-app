@@ -6,6 +6,8 @@
  * card, its total and its Edit always cover the same reservations. Pure.
  */
 
+import { bookingKey } from '@/lib/bookings'
+
 export type OwnerFilter = 'all' | 'me' | string // a user id
 
 type Row = { owner_id: string; owner_name: string; start_date: string; end_date: string }
@@ -38,4 +40,14 @@ export function runsBetween(row: Row, from: string, to: string): boolean {
   if (from && row.end_date < from) return false
   if (to && row.start_date > to) return false
   return true
+}
+
+/**
+ * Every reservation of each booking that has at least one reservation
+ * matching, and reservations on their own that match. A filter (owner, dates,
+ * search) never splits a booking: one matching market keeps its whole card.
+ */
+export function wholeBookings<R extends { campaign_group_id: string | null; sfdc_opportunity_id: string | null }>(rows: R[], matches: (r: R) => boolean): R[] {
+  const cards = new Set(rows.filter(matches).map(r => bookingKey(r)).filter(Boolean))
+  return rows.filter((r) => { const k = bookingKey(r); return k ? cards.has(k) : matches(r) })
 }

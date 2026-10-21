@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { ownedBy, ownerOptions, runsBetween } from '@/lib/reservationFilters'
+import { ownedBy, ownerOptions, runsBetween, wholeBookings } from '@/lib/reservationFilters'
 
 const r = (owner_id: string, owner_name: string, start_date = '2026-11-09', end_date = '2026-11-20') => ({ owner_id, owner_name, start_date, end_date })
 // u3 owns an opportunity but has no app login: kept under their Salesforce id and name.
@@ -27,3 +27,17 @@ eq('a range overlapping the start', runsBetween(b, '2026-11-01', '2026-11-10'), 
 eq('a range before it', runsBetween(b, '2026-11-01', '2026-11-08'), false)
 eq('only From: runs on or after it', runsBetween(b, '2026-11-20', ''), true)
 eq('only To: starts on or before it', runsBetween(b, '', '2026-11-08'), false)
+
+section('Reservations: a filter keeps whole bookings')
+{
+  const row = (id: string, group: string | null, opp: string | null, market: string) => ({ id, campaign_group_id: group, sfdc_opportunity_id: opp, market })
+  const rows = [
+    row('a1', 'mm_42_1', null, 'Dallas, TX'), row('a2', 'mm_42_2', null, 'Austin, TX'),
+    row('b1', 'cg_7', null, 'Ames, IA'), row('c1', null, null, 'Reno, NV'), row('c2', null, null, 'Boise, ID'),
+  ]
+  const ids = (m: (r: typeof rows[number]) => boolean) => wholeBookings(rows, m).map(r => r.id)
+  eq('one matching market keeps the whole multi-market booking', ids(r => r.market === 'Austin, TX'), ['a1', 'a2'])
+  eq('a single-market booking by its group', ids(r => r.market === 'Ames, IA'), ['b1'])
+  eq('a reservation on its own matches alone', ids(r => r.market === 'Reno, NV'), ['c1'])
+  eq('nothing matches: nothing', ids(() => false), [])
+}

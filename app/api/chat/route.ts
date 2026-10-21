@@ -270,10 +270,18 @@ async function handlePost(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const { message, history = [], conversation_id: incomingConvId } = await req.json()
-  if (!message) {
+  const { message, history: rawHistory, conversation_id: incomingConvId } = await req.json()
+  if (typeof message !== 'string' || !message.trim()) {
     return NextResponse.json({ error: 'Message required' }, { status: 400 })
   }
+  // Only text turns with content (the API rejects an empty one), starting with
+  // the rep's: a history cut to its last 10 can start on a reply.
+  const history: { role: 'user' | 'assistant'; content: string }[] = (Array.isArray(rawHistory) ? rawHistory : [])
+    .filter((m: unknown): m is { role: string; content: string } => !!m && typeof m === 'object' && typeof (m as { content?: unknown }).content === 'string' && !!(m as { content: string }).content.trim())
+    .map((m: { role: string; content: string }) => ({ role: m.role === 'assistant' ? 'assistant' as const : 'user' as const, content: m.content }))
+  // What the rep was shown, before any trim: a quote ref in it can be booked.
+  const shown = history.filter(m => m.role === 'assistant').map(m => m.content).join('\n')
+  while (history.length && history[0].role === 'assistant') history.shift()
 
   // ── The conversation this message belongs to (lib/conversations.ts) ──────
   const convId = await openConversation({ actorType: 'app_user', userId: session.user.id }, incomingConvId, message)
@@ -289,10 +297,7 @@ async function handlePost(req: NextRequest) {
   }
 
   const messages: Anthropic.MessageParam[] = [
-    ...history.map((msg: { role: string; content: string }) => ({
-      role: msg.role as 'user' | 'assistant',
-      content: msg.content,
-    })),
+    ...history,
     {
       role: 'user',
       content: `${message}\n\n[SCHEDULE DATA]\n${scheduleContext}`,
@@ -302,10 +307,7 @@ async function handlePost(req: NextRequest) {
   // ── Run the tools until the model answers (lib/staffChatTools.ts) ─────────
   const ctx: ChatToolContext = {
     actor: { type: 'app_user', id: session.user.id, name: session.user.name ?? session.user.email ?? '', email: session.user.email },
-    shownText: history
-      .filter((m: { role: string; content: unknown }) => m.role === 'assistant' && typeof m.content === 'string')
-      .map((m: { content: string }) => m.content)
-      .join('\n'),
+    shownText: shown,
     booked: false,
   }
   const actions: ActionResult[] = []
@@ -338,7 +340,8 @@ async function handlePost(req: NextRequest) {
       break
     }
     if (round >= MAX_TOOL_ROUNDS) {
-      reply = `${text ? `${text}\n\n` : ''}I stopped before finishing: that took more steps than I'm allowed in one message. Ask again more narrowly.`
+      // Text beside a tool call is narration ("Let me check…"), not an answer.
+      reply = "I stopped before finishing: that took more steps than I'm allowed in one message. Ask again more narrowly."
       break
     }
     messages.push({ role: 'assistant', content: response.content })
@@ -361,6 +364,8 @@ async function handlePost(req: NextRequest) {
     messages.push({ role: 'user', content: results })
   }
 
+  // An empty reply would be sent back as an empty history turn, which the API rejects.
+  if (!reply && !actions.length) reply = 'Sorry, I could not answer that. Please try asking again.'
   // A bookable quote is always shown with its ref, so the rep's "yes" can book it.
   const missing = quotes.filter(q => !reply.includes(q.ref))
   if (missing.length) reply += `\n\n${missing.map(q => `Quote ref: ${q.ref} (${q.summary})`).join('\n')}`
@@ -370,7 +375,7 @@ async function handlePost(req: NextRequest) {
 
   // ── Persist the reply ────────────────────────────────────────────────────
   await addMessages(convId, [
-    { role: 'assistant', content: reply },
+    ...(reply ? [{ role: 'assistant' as const, content: reply }] : []),
     ...(actionResult ? [{ role: 'assistant' as const, content: actionResult.message }] : []),
   ])
 

@@ -1,7 +1,8 @@
 /**
  * The staff quote: availability, pricing and transport for one market, the
- * way the internal /quote page prices it. Called by POST /api/quote; a lib
- * function so the staff AI chat (next PR) quotes through the same code.
+ * way the internal /quote page prices it. Shared by POST /api/quote and the
+ * staff AI chat's get_quote tool (lib/staffChatTools.ts), so the chat can only
+ * quote what the Quote page would.
  * Returns the route's status and JSON body.
  */
 

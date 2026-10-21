@@ -11,9 +11,9 @@
  * Server only.
  */
 
+import { waitUntil } from '@vercel/functions'
 import { prisma } from '@/lib/prisma'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
-import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
 const SFDC_ID = /^[a-zA-Z0-9]{15,18}$/
 const BATCH = 200
@@ -27,6 +27,8 @@ const key = (id: string) => id.slice(0, 15)
 type OppOwner = { ownerId: string; name: string | null; email: string | null }
 const ownerCache = new Map<string, { owner: OppOwner | null; at: number }>()
 const OWNER_TTL_MS = 15 * 60 * 1000
+/** Opportunities a lookup is already reading, so concurrent loads share it instead of re-querying. */
+const inflight = new Map<string, Promise<void>>()
 
 /**
  * How long the list waits on Salesforce for owners it hasn't cached. Past it
@@ -45,6 +47,7 @@ async function fetchOwners(oppIds: string[]): Promise<void> {
       `SELECT Id, OwnerId, Owner.Name, Owner.Email FROM Opportunity WHERE Id IN (${batch.map(id => `'${id}'`).join(',')})`,
     )
     const at = Date.now()
+    for (const [k, v] of ownerCache) if (at - v.at >= OWNER_TTL_MS) ownerCache.delete(k)
     for (const id of batch) ownerCache.set(key(id), { owner: null, at })
     for (const o of rows) ownerCache.set(key(o.Id), { owner: { ownerId: o.OwnerId, name: o.Owner?.Name ?? null, email: o.Owner?.Email?.toLowerCase() ?? null }, at })
   }
@@ -57,18 +60,29 @@ export async function reservationOwners(holds: OwnerRow[]): Promise<Map<string, 
   if (oppIds.length === 0 || !isSfdcConfigured()) return out
   try {
     const now = Date.now()
-    const missing = oppIds.filter(id => { const hit = ownerCache.get(key(id)); return !hit || now - hit.at >= OWNER_TTL_MS })
-    if (missing.length) {
+    const stale = oppIds.filter(id => { const hit = ownerCache.get(key(id)); return !hit || now - hit.at >= OWNER_TTL_MS })
+    if (stale.length) {
       // Degrade, don't hang the page: past the wait, uncached owners fall back to the creator.
-      const lookup = fetchOwners(missing)
-      lookup.catch(err => console.error('[reservations] opportunity owners unavailable:', err))
+      const toFetch = stale.filter(id => !inflight.has(key(id)))
+      if (toFetch.length) {
+        const started = fetchOwners(toFetch)
+          .catch(err => console.error('[reservations] opportunity owners unavailable:', err))
+          .finally(() => { for (const id of toFetch) if (inflight.get(key(id)) === started) inflight.delete(key(id)) })
+        for (const id of toFetch) inflight.set(key(id), started)
+        // Keep the function alive after the response so the lookup still fills the cache.
+        waitUntil(started)
+      }
+      const lookup = Promise.all([...new Set(stale.map(id => inflight.get(key(id))).filter((p): p is Promise<void> => !!p))])
       let timer: ReturnType<typeof setTimeout> | undefined
       const timedOut = await Promise.race([
-        lookup.then(() => false, () => false),
+        lookup.then(() => false),
         new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(true), OWNER_WAIT_MS) }),
       ])
       clearTimeout(timer)
-      if (timedOut) console.warn(`[reservations] Salesforce owners took over ${OWNER_WAIT_MS}ms; creators stand in for ${missing.length} opportunities`)
+      if (timedOut) {
+        const still = stale.filter(id => { const hit = ownerCache.get(key(id)); return !hit || Date.now() - hit.at >= OWNER_TTL_MS }).length
+        console.warn(`[reservations] Salesforce owners took over ${OWNER_WAIT_MS}ms; creators stand in for ${still} opportunities`)
+      }
     }
     const opps = oppIds.map(id => ownerCache.get(key(id))?.owner).filter((o): o is OppOwner => !!o)
     const emails = [...new Set(opps.map(o => o.email).filter((e): e is string => !!e))]
@@ -77,9 +91,6 @@ export async function reservationOwners(holds: OwnerRow[]): Promise<Map<string, 
     for (const h of holds) {
       const o = h.sfdc_opportunity_id ? ownerCache.get(key(h.sfdc_opportunity_id))?.owner : undefined
       if (!o) continue
-      // An app booking can be owned by the integration user (no Salesforce
-      // user matched the rep or the account): the rep who booked it owns it here.
-      if (o.email === SFDC_SERVICE_USER_EMAIL && !isServiceCreator(h, users)) continue
       const u = o.email ? userByEmail.get(o.email) : undefined
       out.set(h.id, u ? { owner_id: u.id, owner_name: u.name || o.name || 'Unknown' } : { owner_id: `sfdc:${o.ownerId}`, owner_name: o.name || 'Unknown' })
     }
@@ -90,11 +101,3 @@ export async function reservationOwners(holds: OwnerRow[]): Promise<Map<string, 
   return out
 }
 
-/**
- * The hold was created by the app's service user (a Salesforce push or sync),
- * so the creator isn't a rep either. `users` holds the app users matched to
- * owner emails, which includes the service user whenever it owns one.
- */
-function isServiceCreator(h: OwnerRow, users: { id: string; email: string }[]): boolean {
-  return users.some(u => u.id === h.created_by && u.email.toLowerCase() === SFDC_SERVICE_USER_EMAIL)
-}

@@ -7,6 +7,14 @@ export const CODE_TTL_MINUTES     = 10
 export const MAX_ATTEMPTS         = 5
 export const RESEND_COOLDOWN_SECS = 45
 
+/**
+ * A failure the person typing the code should read: no code on file, expired,
+ * wrong, or out of attempts. Anything else thrown while checking a code — a
+ * database outage, a missing table — is not one of these, so a caller can
+ * tell them apart and avoid showing a Prisma error on a login screen.
+ */
+export class OtpError extends Error {}
+
 export class OtpRateLimitError extends Error {
   constructor(public secondsLeft: number) {
     super(`Please wait ${secondsLeft}s before requesting another code.`)
@@ -32,7 +40,14 @@ export type OtpStore = {
   liveCode:         (ownerId: string) => Promise<{ id: string; code_hash: string; expires_at: Date; attempts: number } | null>
   dropUnconsumed:   (ownerId: string) => Promise<void>
   issue:            (ownerId: string, codeHash: string, expiresAt: Date) => Promise<void>
-  countAttempt:     (codeId: string) => Promise<void>
+  /**
+   * Take one of the MAX_ATTEMPTS guesses, atomically, before the code is
+   * compared. Returns how many are left after taking one, or null when there
+   * were none to take. Checking a count and incrementing it afterwards lets
+   * concurrent requests all read the same count and try far more codes than
+   * the limit, which is the whole point of the limit.
+   */
+  claimAttempt:     (codeId: string) => Promise<number | null>
   consume:          (codeId: string) => Promise<void>
   /** Login counts as activity for the Users page. Must never fail the login. */
   recordActivity:   (ownerId: string) => Promise<void>
@@ -74,20 +89,24 @@ export async function checkOtp(store: OtpStore, ownerId: string, submittedCode: 
   const otp = await store.liveCode(ownerId)
 
   if (!otp) {
-    throw new Error('No verification code found. Please request a new one.')
+    throw new OtpError('No verification code found. Please request a new one.')
   }
   if (otp.expires_at < new Date()) {
-    throw new Error('Your code has expired. Please request a new one.')
+    throw new OtpError('Your code has expired. Please request a new one.')
   }
-  if (otp.attempts >= MAX_ATTEMPTS) {
-    throw new Error('Too many incorrect attempts. Please request a new code.')
+
+  // Claimed before the compare, not counted after it: bcrypt takes ~70ms, and
+  // counting afterwards let a burst of parallel guesses all pass the check
+  // while the count was still low. A correct code spends an attempt too,
+  // which costs nothing — it is consumed on success anyway.
+  const attemptsLeft = await store.claimAttempt(otp.id)
+  if (attemptsLeft === null) {
+    throw new OtpError('Too many incorrect attempts. Please request a new code.')
   }
 
   const valid = await bcrypt.compare(submittedCode, otp.code_hash)
   if (!valid) {
-    const attemptsLeft = MAX_ATTEMPTS - (otp.attempts + 1)
-    await store.countAttempt(otp.id)
-    throw new Error(
+    throw new OtpError(
       attemptsLeft > 0
         ? `Incorrect code. ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} left.`
         : 'Incorrect code. Too many attempts — please request a new code.'
@@ -105,7 +124,15 @@ const internalStore: OtpStore = {
   liveCode:       (userId) => prisma.otpCode.findFirst({ where: { user_id: userId, consumed_at: null }, orderBy: { created_at: 'desc' } }),
   dropUnconsumed: async (userId) => { await prisma.otpCode.deleteMany({ where: { user_id: userId, consumed_at: null } }) },
   issue:          async (userId, code_hash, expires_at) => { await prisma.otpCode.create({ data: { user_id: userId, code_hash, expires_at } }) },
-  countAttempt:   async (id) => { await prisma.otpCode.update({ where: { id }, data: { attempts: { increment: 1 } } }) },
+  claimAttempt:   async (id) => {
+    const { count } = await prisma.otpCode.updateMany({
+      where: { id, attempts: { lt: MAX_ATTEMPTS } },
+      data:  { attempts: { increment: 1 } },
+    })
+    if (count === 0) return null
+    const row = await prisma.otpCode.findUnique({ where: { id }, select: { attempts: true } })
+    return Math.max(0, MAX_ATTEMPTS - (row?.attempts ?? MAX_ATTEMPTS))
+  },
   consume:        async (id) => { await prisma.otpCode.update({ where: { id }, data: { consumed_at: new Date() } }) },
   recordActivity: async (userId) => {
     // A login is activity (Users page "Last activity"). Never fails the login.

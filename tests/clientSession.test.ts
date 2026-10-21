@@ -7,9 +7,11 @@
  * database, so they are not covered here — this harness is pure functions.
  * Run with: npm test
  */
-import { eq, section } from './harness'
+import { defer, eq, section } from './harness'
 import { readSession, signSession } from '@/lib/clientSessionToken'
 import { clientEmailRefusal, maskEmail } from '@/lib/clientEmail'
+import { checkOtp, MAX_ATTEMPTS, OtpError } from '@/lib/otp'
+import bcrypt from 'bcryptjs'
 
 const SECRET = 'test-secret'
 const DAY    = 86_400_000
@@ -97,4 +99,65 @@ section('client users: an account with no email could not sign in, so it is refu
     clientEmailRefusal(''), 'An email address is required: client sign-in sends a code to it.')
   eq('and quotes what was typed',
     clientEmailRefusal('nope'), '"nope" is not an email address. Client sign-in sends a code to it.')
+}
+
+section('login codes: a database fault is not a message for the person typing')
+{
+  // checkOtp takes its storage, so the rules can be tested without one.
+  const hash = bcrypt.hashSync('123456', 4)
+  const base = () => ({
+    lastIssued:     async () => null,
+    liveCode:       async () => ({ id: 'c1', code_hash: hash, expires_at: new Date(Date.now() + 60_000), attempts: 0 }),
+    dropUnconsumed: async () => {},
+    issue:          async () => {},
+    claimAttempt:   async () => 4,
+    consume:        async () => {},
+    recordActivity: async () => {},
+  })
+  const thrown = async (store: Parameters<typeof checkOtp>[0], code = '000000') => {
+    try { await checkOtp(store, 'u1', code); return null } catch (e) { return e }
+  }
+
+  // What the person should read.
+  const wrong = thrown(base())
+  const expired = thrown({ ...base(), liveCode: async () => ({ id: 'c1', code_hash: hash, expires_at: new Date(Date.now() - 1), attempts: 0 }) })
+  const none = thrown({ ...base(), liveCode: async () => null })
+  const spent = thrown({ ...base(), claimAttempt: async () => null })
+
+  // A Prisma fault. It must NOT be reportable to the client.
+  const dbDown = thrown({ ...base(), liveCode: async () => { throw new Error('Invalid `prisma.clientOtpCode.findFirst()` invocation: table app_client_login_otps does not exist') } })
+
+  defer(Promise.all([wrong, expired, none, spent, dbDown]).then(([w, e, n, s, d]) => {
+    eq('a wrong code is user-facing, and counts down', [w instanceof OtpError, (w as Error).message], [true, 'Incorrect code. 4 attempts left.'])
+    eq('expired is user-facing', [e instanceof OtpError, (e as Error).message], [true, 'Your code has expired. Please request a new one.'])
+    eq('no code on file is user-facing', n instanceof OtpError, true)
+    eq('out of attempts is user-facing', [s instanceof OtpError, (s as Error).message], [true, 'Too many incorrect attempts. Please request a new code.'])
+    eq('a database fault is NOT user-facing, so the route can send 500 instead of leaking it', d instanceof OtpError, false)
+    eq('and it is still an error that reaches the caller', d instanceof Error, true)
+  }))
+}
+
+section('login codes: guesses are claimed before the slow compare, not counted after')
+{
+  // The reason: bcrypt takes ~70ms, so parallel guesses used to all pass a
+  // count read at 0 and test far more than MAX_ATTEMPTS codes against one code.
+  const hash = bcrypt.hashSync('123456', 4)
+  let attempts = 0
+  const store = {
+    lastIssued:     async () => null,
+    liveCode:       async () => ({ id: 'c1', code_hash: hash, expires_at: new Date(Date.now() + 60_000), attempts }),
+    dropUnconsumed: async () => {},
+    issue:          async () => {},
+    // What the real stores do in one atomic statement.
+    claimAttempt:   async () => (attempts >= MAX_ATTEMPTS ? null : (attempts++, MAX_ATTEMPTS - attempts)),
+    consume:        async () => {},
+    recordActivity: async () => {},
+  }
+
+  // Ten wrong guesses fired at once against one code.
+  defer(Promise.all(Array.from({ length: 10 }, () => checkOtp(store, 'u1', '999999').then(() => 'in' as const, () => 'out' as const)))
+    .then(results => {
+      eq('none of them get in', results.every(r => r === 'out'), true)
+      eq(`only ${MAX_ATTEMPTS} guesses are ever spent, however many arrive together`, attempts, MAX_ATTEMPTS)
+    }))
 }

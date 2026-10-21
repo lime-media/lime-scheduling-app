@@ -11,6 +11,7 @@ import { loadStandardMarketCoords, normalizeMarketKey, titleCaseMarket } from '@
 import { findPlaces, placeCoords, withStateComma } from '@/lib/geo/places'
 import { dmaForPoint } from '@/lib/pricing/dmaArea'
 import type { ClientSession } from '@/lib/clientAuth'
+import { liveClientLinks } from '@/lib/clientLinks'
 
 // ---------------------------------------------------------------------------
 // Market size tier
@@ -75,15 +76,18 @@ export function matchAcceptedDma<T extends { dma_code: string; dma_name: string 
 // ---------------------------------------------------------------------------
 
 /**
- * Look up an active RateAgreement for a client session's partner_id.
+ * Look up an active RateAgreement for a client's partner_id.
  * Returns null (standard rate card) if the client has no partner_id or
  * no active agreement. A lookup failure also falls back to standard
  * pricing — never blocks a quote.
+ *
+ * The links are re-read from the client's row, not taken from the session's
+ * copies: a session lasts 30 days, and an ops correction has to apply to the
+ * next quote, not the next login (lib/clientLinks.ts).
  */
 export async function resolveRateOverrides(session: ClientSession): Promise<RateOverrides | null> {
   // Try sfdc_account_id first (canonical), fall back to partner_id (legacy)
-  const sfdcAccountId = session.sfdcAccountId
-  const partnerId = session.partnerId
+  const { sfdcAccountId, partnerId } = await liveClientLinks(session)
   if (!sfdcAccountId && !partnerId) return null
   try {
     const now = new Date()

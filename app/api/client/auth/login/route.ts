@@ -14,6 +14,7 @@ import bcrypt from 'bcryptjs'
 import { prisma } from '@/lib/prisma'
 import { setClientSession } from '@/lib/clientAuth'
 import { verifyClientLoginOtp } from '@/lib/clientOtp'
+import { OtpError } from '@/lib/otp'
 
 export async function POST(req: NextRequest) {
   try {
@@ -35,15 +36,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
     }
 
-    // Throws a user-facing message: expired, wrong, or too many attempts.
-    // It also marks the code consumed and records the login as activity.
+    // Marks the code consumed and records the login as activity. Only an
+    // OtpError is meant for the person typing — a database fault throws
+    // something else, and its message (table names, SQL text) must not land
+    // on a login screen, so it goes to the outer catch: logged, and a 500.
     try {
       await verifyClientLoginOtp(user.id, otp.trim())
     } catch (err) {
-      return NextResponse.json(
-        { error: err instanceof Error ? err.message : 'That code did not work.' },
-        { status: 401 },
-      )
+      if (err instanceof OtpError) {
+        return NextResponse.json({ error: err.message }, { status: 401 })
+      }
+      throw err
     }
 
     const res = NextResponse.json({

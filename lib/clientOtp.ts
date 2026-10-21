@@ -9,14 +9,22 @@
  */
 
 import { prisma } from '@/lib/prisma'
-import { checkOtp, issueOtp, type OtpStore } from '@/lib/otp'
+import { checkOtp, issueOtp, MAX_ATTEMPTS, type OtpStore } from '@/lib/otp'
 
 const clientStore: OtpStore = {
   lastIssued:     (id) => prisma.clientOtpCode.findFirst({ where: { client_user_id: id }, orderBy: { created_at: 'desc' } }),
   liveCode:       (id) => prisma.clientOtpCode.findFirst({ where: { client_user_id: id, consumed_at: null }, orderBy: { created_at: 'desc' } }),
   dropUnconsumed: async (id) => { await prisma.clientOtpCode.deleteMany({ where: { client_user_id: id, consumed_at: null } }) },
   issue:          async (id, code_hash, expires_at) => { await prisma.clientOtpCode.create({ data: { client_user_id: id, code_hash, expires_at } }) },
-  countAttempt:   async (id) => { await prisma.clientOtpCode.update({ where: { id }, data: { attempts: { increment: 1 } } }) },
+  claimAttempt:   async (id) => {
+    const { count } = await prisma.clientOtpCode.updateMany({
+      where: { id, attempts: { lt: MAX_ATTEMPTS } },
+      data:  { attempts: { increment: 1 } },
+    })
+    if (count === 0) return null
+    const row = await prisma.clientOtpCode.findUnique({ where: { id }, select: { attempts: true } })
+    return Math.max(0, MAX_ATTEMPTS - (row?.attempts ?? MAX_ATTEMPTS))
+  },
   consume:        async (id) => { await prisma.clientOtpCode.update({ where: { id }, data: { consumed_at: new Date() } }) },
   recordActivity: async (id) => {
     // A login is activity (Users page "Last activity"). Never fails the login.

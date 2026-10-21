@@ -23,11 +23,20 @@ if ! printf '%s' "$input" | grep -Eqi 'gh([^"\\]|\\.)*pr([^"\\]|\\.)*(create|new
   exit 0
 fi
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "Review gate: jq is required to check PR commands. Install jq (brew install jq) and retry." >&2
-  exit 2
+# The command itself: jq, else perl's core JSON::PP. With neither, block only
+# input that plainly creates a PR or asks for a review; read-only PR commands
+# (gh pr view --comments, --json reviews) always pass.
+if command -v jq >/dev/null 2>&1; then
+  cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
+elif command -v perl >/dev/null 2>&1; then
+  cmd=$(printf '%s' "$input" | perl -MJSON::PP -0777 -ne 'my $d = eval { decode_json($_) } || {}; print(($d->{tool_input} || {})->{command} // "")')
+else
+  if printf '%s' "$input" | grep -Eqi 'gh[^"]*[[:space:]]pr[[:space:]]+(create|new)([[:space:]"]|$)|@claude review'; then
+    echo "Review gate: jq (or perl) is needed to check this PR command. Install jq and retry." >&2
+    exit 2
+  fi
+  exit 0
 fi
-cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
 [ -z "$cmd" ] && exit 0
 
 # The command on one line with heredoc bodies dropped and quoted strings
@@ -49,7 +58,20 @@ is_gh_pr() {
 
 marker_dir="$(git rev-parse --git-common-dir 2>/dev/null)/claude-local-review"
 
+# gh calls get 15s (well under the hook's 30s): a hook that times out lets the
+# command through, so a slow GitHub must block here instead. Exit 142 = timed
+# out (SIGALRM). macOS has no `timeout`; perl's alarm works everywhere perl is.
+GH_LIMIT=15
+gh_limited() {
+  if command -v perl >/dev/null 2>&1; then perl -e 'alarm shift; exec @ARGV' "$GH_LIMIT" gh "$@"; else gh "$@"; fi
+}
+
 if is_gh_pr 'create|new'; then
+  # The batch release PR, uat → main: its commits arrived through PRs that were
+  # each reviewed, so it needs no local review of its own.
+  if [ "$(git symbolic-ref --short -q HEAD || true)" = "uat" ] && printf '%s' "$bare" | grep -Eq '(--base|-B)([[:space:]]+|=)main([[:space:]]|$)'; then
+    exit 0
+  fi
   sha=$(git rev-parse HEAD)
   if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     echo "Review gate: there are uncommitted changes. Commit them and run /ship so the local review covers what the PR will contain." >&2
@@ -82,12 +104,20 @@ if printf '%s' "$cmd" | grep -qi '@claude review' && is_gh_pr 'comment|review'; 
     rest=$(printf '%s' "$bare" | sed -E 's/.*[[:space:]](comment|review)([[:space:]]|$)//')
     pr=$(printf '%s' "$rest" | tr -s '[:space:]' '\n' | grep -E '^#?[0-9]+$' | head -n1 | tr -d '#')
   fi
-  [ -z "$pr" ] && pr=$(gh pr view --json number --jq .number 2>/dev/null || true)
+  if [ -z "$pr" ]; then
+    pr=$(gh_limited pr view --json number --jq .number 2>/dev/null); rc=$?
+    if [ "$rc" -eq 142 ]; then
+      echo "Review gate: GitHub didn't answer in ${GH_LIMIT}s, so this PR's earlier reviews couldn't be checked. Retry; a PR gets one paid review." >&2
+      exit 2
+    fi
+  fi
   [ -z "$pr" ] && exit 0
   # Already reviewed: Claude posted a review or comment (its automatic run),
   # or someone already asked (a body that starts with the trigger).
-  filter='[(.comments + .reviews)[] | select((.author.login | test("^claude"; "i")) or (.body | test("^\\s*@claude review"; "i")))] | length'
-  if ! asked=$(gh pr view "$pr" --json comments,reviews --jq "$filter" 2>/dev/null); then
+  # The review app posts as "claude" / "claude[bot]" exactly; a teammate whose
+  # login merely starts with "claude" is a person.
+  filter='[(.comments + .reviews)[] | select((.author.login | test("^claude(\\[bot\\])?$"; "i")) or (.body | test("^\\s*@claude review"; "i")))] | length'
+  if ! asked=$(gh_limited pr view "$pr" --json comments,reviews --jq "$filter" 2>/dev/null); then
     echo "Review gate: couldn't check PR #$pr for an earlier review request (gh failed). Retry once gh works; a PR gets one paid review." >&2
     exit 2
   fi

@@ -14,8 +14,12 @@ jobs:
       - name: Look for the local review line
         env:
           BODY: ${{ github.event.pull_request.body }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          if printf '%s' "$BODY" | grep -qi 'Local review: passed at'; then
+          if [ "$HEAD_REF" = "uat" ] && [ "$BASE_REF" = "main" ]; then
+            echo "Release PR (uat → main): its changes were reviewed in their own PRs."
+          elif printf '%s' "$BODY" | grep -qi 'Local review: passed at'; then
             echo "Local review recorded."
           else
             echo "::warning title=No local review::This PR was not opened through /ship. Run the local Claude review (/ship or /code-review) before requesting the one paid @claude review. See CONTRIBUTING.md, Reviews."

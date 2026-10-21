@@ -11,7 +11,7 @@
  *
  * A booking needs the rep to have seen and confirmed the quote: get_quote
  * returns a quote ref, an HMAC of the inputs and total, and place_hold books
- * only when that ref is in a reply the rep was shown in an earlier turn. A
+ * only when that ref is in the reply just before the rep's message. A
  * booking with other inputs or another total has another ref, so the chat
  * can't book something different from what the rep confirmed.
  *
@@ -30,6 +30,8 @@ import { resolveQuoteMarket, staffQuote, type StaffQuoteInput } from '@/lib/staf
 import { placeStaffBooking } from '@/lib/staffBooking'
 import { recordToolRun, type Actor } from '@/lib/usageLog'
 import { quoteRef } from '@/lib/quoteRef'
+import { prisma } from '@/lib/prisma'
+import { activeHoldWhere } from '@/lib/holdFilters'
 
 const DATE = { type: 'string', description: 'YYYY-MM-DD' } as const
 
@@ -82,7 +84,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'place_hold',
-    description: 'Reserve the trucks for a quote the rep has seen and confirmed, and create the Salesforce opportunity, exactly as the Quote page\'s Reserve does. Pass the same quote inputs as the get_quote call, its quote_ref and its grandTotal. Refused unless the quote ref was in an earlier reply and the inputs and total match it.',
+    description: 'Reserve the trucks for a quote the rep has seen and confirmed, and create the Salesforce opportunity, exactly as the Quote page\'s Reserve does. Pass the same quote inputs as the get_quote call, its quote_ref and its grandTotal. Refused unless the quote ref was in your previous reply, the inputs and total match it, and it was not already booked.',
     input_schema: {
       type: 'object',
       properties: {
@@ -107,7 +109,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
 
 export type ChatToolContext = {
   actor: Actor & { email?: string | null }
-  /** Everything the assistant said to the rep in earlier turns. */
+  /** The assistant's reply just before the rep's current message. */
   shownText: string
   /** A booking already ran this turn: one booking per message. */
   booked: boolean
@@ -212,7 +214,13 @@ async function quote(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
   const q = quoteInput(i)
   if (typeof q === 'string') return fail(q)
   const started = Date.now()
-  const result = await staffQuote(q)
+  let result: Awaited<ReturnType<typeof staffQuote>>
+  try {
+    result = await staffQuote(q)
+  } catch (err) {
+    recordToolRun(ctx.actor, 'quote_chat', q, 500, { error: err instanceof Error ? err.message : String(err) }, Date.now() - started)
+    throw err
+  }
   recordToolRun(ctx.actor, 'quote_chat', q, result.status, result.body, Date.now() - started)
   const body = result.body
   if (result.status !== 200 || body.insufficient === true || typeof body.grandTotal !== 'number') {
@@ -255,6 +263,8 @@ async function book(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
   if (typeof q === 'string') return fail(q)
   if (!q.sfdc_account_id) return fail('sfdc_account_id is required: find the account with find_account.')
   if (!isStr(i.sfdc_account_name)) return fail('sfdc_account_name is required.')
+  if (!isStr(i.primary_contact_id)) return fail('primary_contact_id is required: find the contact with find_contacts.')
+  if (i.stage !== undefined && typeof i.stage !== 'string') return fail('stage is text')
   if (!isStr(i.quote_ref) || typeof i.expected_total !== 'number' || !Number.isFinite(i.expected_total)) {
     return fail('quote_ref and expected_total come from get_quote.')
   }
@@ -268,6 +278,24 @@ async function book(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
   if (!ctx.shownText.includes(i.quote_ref.trim())) {
     return fail('The rep has not seen this quote yet. Show it with its quote ref and ask them to confirm; book when they reply.')
   }
+  // Already booked: the same rep's live holds for this account, dates and
+  // total from the last day. A retried message (the first one timed out after
+  // booking) or a second "yes" would otherwise book the quote twice.
+  const already = await prisma.hold.findFirst({
+    where: {
+      ...activeHoldWhere(),
+      created_by: ctx.actor.id,
+      client_name: i.sfdc_account_name.trim(),
+      start_date: new Date(q.start_date),
+      end_date: new Date(q.end_date),
+      quoted_total: { gte: i.expected_total - 1, lte: i.expected_total + 1 },
+      created_at: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+    },
+    select: { truck_number: true },
+  })
+  if (already) {
+    return fail(`This quote looks already booked (truck ${already.truck_number} is held for ${i.sfdc_account_name.trim()} on these dates at this total). Tell the rep; to book it again, use the Quote page.`)
+  }
   ctx.booked = true
   const body = {
     ...q,
@@ -279,7 +307,14 @@ async function book(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
     expected_total: i.expected_total,
   }
   const started = Date.now()
-  const result = await placeStaffBooking(body, ctx.actor)
+  let result: Awaited<ReturnType<typeof placeStaffBooking>>
+  try {
+    result = await placeStaffBooking(body, ctx.actor)
+  } catch (err) {
+    // Logged like the route's own failures, then the chat reports it.
+    recordToolRun(ctx.actor, 'hold_chat', body, 500, { error: err instanceof Error ? err.message : String(err) }, Date.now() - started)
+    throw err
+  }
   recordToolRun(ctx.actor, 'hold_chat', body, result.status, result.body, Date.now() - started)
   const ok = result.status === 200 && result.body.ok === true
   const message = String((ok ? result.body.message : result.body.error) ?? 'The booking failed.')

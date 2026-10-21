@@ -84,12 +84,12 @@ PRICES:
 BOOKING (one market at a time):
 1. Gather the market, dates, truck count and features. For a booking you also need the Salesforce account (find_account) and the opportunity's primary contact (find_contacts). Ask for whichever are missing; if a search finds several, ask which.
 2. Run get_quote with the account, show the quote (total, trucks, transport) with its quote ref, and ask the rep to confirm. Also confirm the brand and hold length if they gave them (hold default 3 days).
-3. Only when the rep confirms in their next message, call place_hold with the same inputs, the quote_ref and the grandTotal. place_hold refuses a quote the rep hasn't seen or anything that differs from it. If anything changes, quote again and ask again.
+3. Only when the rep confirms in their next message, call place_hold with the same inputs, the quote_ref and the grandTotal. place_hold books only the quote ref in your previous reply, so the reply that asks for confirmation must show the quote with its ref (if you asked something else in between, show the quote and its ref again). If anything changes, quote again and ask again.
 4. Report what place_hold returned, including any Salesforce problem. Never describe a refused or partial booking as done.
 - A campaign across several markets is one booking with one quote and one expiry: check availability per market here, but price and book it on the Multi-market planner. Single-market quotes don't add up to its price.
 - Adding to an existing opportunity, or logging a quote without reserving trucks, is done on the Quote page.
 
-RELEASING: release_hold releases one hold by its id from the HOLDS list. Name the hold (truck, client, dates) and ask the rep to confirm first; call it only after they confirm. Committed (Closed Won) and AT&T soft holds can't be released here.
+RELEASING: release_hold releases one hold by its id from the HOLDS list, one per message. Name the hold (truck, client, dates) with its id in brackets and ask the rep to confirm; call it only when they confirm in their next message. It's refused unless that id was in your previous reply. Committed (Closed Won) and AT&T soft holds can't be released here.
 
 Today's date is always provided in the schedule context. Truck schedule data covers a fixed window from 30 days before today through 60 days after today — if asked about a date outside that window, say so explicitly rather than guessing.`
 
@@ -257,8 +257,9 @@ ${holdLines.join('\n') || '  None'}`
 /** Tool rounds per message: enough to find an account, its contact, check and quote. */
 const MAX_TOOL_ROUNDS = 8
 
-function releaseOutcome(r: ActionResult) {
-  return { content: JSON.stringify(r), isError: !r.success, action: r }
+/** A release's result for the model; `shownToRep` false for a refusal the model must act on, not a release the rep sees. */
+function releaseOutcome(r: ActionResult, shownToRep = true) {
+  return { content: JSON.stringify(r), isError: !r.success, action: shownToRep ? r : undefined }
 }
 
 // Several tool rounds on Opus can run past the default limit.
@@ -279,8 +280,12 @@ async function handlePost(req: NextRequest) {
   const history: { role: 'user' | 'assistant'; content: string }[] = (Array.isArray(rawHistory) ? rawHistory : [])
     .filter((m: unknown): m is { role: string; content: string } => !!m && typeof m === 'object' && typeof (m as { content?: unknown }).content === 'string' && !!(m as { content: string }).content.trim())
     .map((m: { role: string; content: string }) => ({ role: m.role === 'assistant' ? 'assistant' as const : 'user' as const, content: m.content }))
-  // What the rep was shown, before any trim: a quote ref in it can be booked.
-  const shown = history.filter(m => m.role === 'assistant').map(m => m.content).join('\n')
+  // What the rep is confirming: the reply just before this message (the
+  // assistant turns after their last one), before any trim. Only a quote ref in
+  // it can be booked, so an older quote, or one already booked, can't be
+  // booked again by a later "yes" or a retried message.
+  const lastUser = history.map(m => m.role).lastIndexOf('user')
+  const shown = history.slice(lastUser + 1).map(m => m.content).join('\n')
   while (history.length && history[0].role === 'assistant') history.shift()
 
   // ── The conversation this message belongs to (lib/conversations.ts) ──────
@@ -309,6 +314,17 @@ async function handlePost(req: NextRequest) {
     actor: { type: 'app_user', id: session.user.id, name: session.user.name ?? session.user.email ?? '', email: session.user.email },
     shownText: shown,
     booked: false,
+  }
+  // A release, like a booking, needs the rep's confirmation: the hold's id in
+  // the reply they're answering, and one per message.
+  let released = false
+  const release = async (holdId: unknown) => {
+    if (released) return releaseOutcome({ success: false, message: 'One release per message. Ask the rep before releasing another hold.' }, false)
+    if (typeof holdId !== 'string' || !holdId || !shown.includes(holdId)) {
+      return releaseOutcome({ success: false, message: 'Name this hold with its id and ask the rep to confirm first; release it when they reply.' }, false)
+    }
+    released = true
+    return releaseOutcome(await executeReleaseHold(holdId, session.user.id))
   }
   const actions: ActionResult[] = []
   const quotes: { ref: string; summary: string }[] = []
@@ -351,7 +367,7 @@ async function handlePost(req: NextRequest) {
       let out
       try {
         out = use.name === 'release_hold'
-          ? releaseOutcome(await executeReleaseHold((use.input as { hold_id?: unknown }).hold_id, session.user.id))
+          ? await release((use.input as { hold_id?: unknown }).hold_id)
           : await runChatTool(use.name, use.input, ctx)
       } catch (err) {
         console.error(`[chat] ${use.name} failed:`, err)

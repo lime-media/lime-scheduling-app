@@ -38,7 +38,9 @@ section('Staff chat: one engine')
     tools.indexOf('quoteRef(q, i.expected_total) !== i.quote_ref.trim()') > -1
       && tools.indexOf('quoteRef(q, i.expected_total)') < tools.indexOf('ctx.shownText.includes(i.quote_ref.trim())')
       && tools.indexOf('ctx.shownText.includes(i.quote_ref.trim())') < tools.indexOf('await placeStaffBooking('), true)
-  eq('the rep only "saw" earlier replies, not this turn', /const shown = history\.filter\(m => m\.role === 'assistant'\)/.test(route) && route.includes('shownText: shown,'), true)
+  eq('the rep only "saw" the reply just before this message, not this turn or older ones',
+    route.includes("const shown = history.slice(lastUser + 1)") && route.includes('shownText: shown,'), true)
   eq('release is by hold id among live holds', route.includes('findFirst({ where: { id: holdId, ...activeHoldWhere() } })'), true)
   eq('AT&T soft holds are not released by the chat', route.includes("hold.status === 'ATT_SOFT'"), true)
+  eq('a release needs the hold id in the reply the rep is answering, one per message', route.includes('!shown.includes(holdId)') && route.includes('if (released) return'), true)
 }

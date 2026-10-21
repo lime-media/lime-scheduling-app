@@ -290,5 +290,9 @@ async function handlePost(req: NextRequest) {
   return NextResponse.json({ reply, actionResult, conversation_id: conversationId })
 }
 
+// A message can chain several Opus calls and availability checks (each a
+// fleet load): the same limit as the other routes that load the fleet or call Claude.
+export const maxDuration = 300
+
 // Every run is logged for the Usage page (lib/usageLog.ts).
 export const POST = withUsageLog('ai_chat_client', 'client', handlePost)

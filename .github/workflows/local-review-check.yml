@@ -1,0 +1,26 @@
+name: local-review-check
+
+# Warns (never fails) when a PR's description has no "Local review: passed at"
+# line, i.e. it wasn't opened through /ship. The Claude Code hook blocks that
+# path; this catches PRs opened by hand on GitHub. See CONTRIBUTING.md "Reviews".
+on:
+  pull_request:
+    types: [opened, edited, reopened]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Look for the local review line
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$HEAD_REF" = "uat" ] && [ "$BASE_REF" = "main" ]; then
+            echo "Release PR (uat → main): its changes were reviewed in their own PRs."
+          elif printf '%s' "$BODY" | grep -qi 'Local review: passed at'; then
+            echo "Local review recorded."
+          else
+            echo "::warning title=No local review::This PR was not opened through /ship. Run the local Claude review (/ship or /code-review) before requesting the one paid @claude review. See CONTRIBUTING.md, Reviews."
+          fi

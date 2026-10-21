@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
-import { SFDC_SERVICE_USER_EMAIL, opportunityMarketCandidates, trucksToMirror } from '@/lib/sfdcIntegration'
+import { SFDC_SERVICE_USER_EMAIL, appHasNotReleased, appHoldExpOf, opportunityMarketCandidates, pushedHoldExpiry, trucksToMirror, withAppHoldExp } from '@/lib/sfdcIntegration'
+import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
+import { ledFieldsDiffer, ledWindowFields } from '@/lib/opportunityMerge'
+import { loadOpportunityReservingHolds } from '@/lib/bookingLoad'
+import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
 import { soqlString } from '@/lib/soql'
 import { endOfDayUtc } from '@/lib/dateOnly'
@@ -88,6 +92,42 @@ export async function POST(req: NextRequest) {
 
   const results: Array<{ truck_number: string; hold_id: string; action: 'created' | 'updated' | 'removed' }> = []
 
+  // An opportunity the app has booked on is the app's: for app-made bookings,
+  // trucks and Hold Exp change only in the app (Andrew, Oct 2026). A push's
+  // LED fields never create, change or delete holds here. When they differ
+  // from what the app would write, the app writes its own back and records
+  // it; the push that follows then matches, so this can't loop. Opportunities
+  // made purely in Salesforce (no app booking, or only quote-only logs) are
+  // mirrored below as before.
+  // While the app holds trucks there (booked, not yet released — not a
+  // quote-only log), the opportunity is the app's. A hold past its expiry the
+  // sweep hasn't reached still counts: the sweep releases it and re-syncs LED
+  // Trucks. Once the app's booking is released, Salesforce is in charge again
+  // and the push is mirrored below.
+  const appHolds = await prisma.hold.findMany({
+    where:  { sfdc_opportunity_id: opportunityId, source: { not: 'SALESFORCE' }, origination: { not: QUOTE_ONLY_ORIGINATION } },
+    select: { status: true },
+  })
+  if (appHolds.some(appHasNotReleased)) {
+    const want = ledWindowFields(await loadOpportunityReservingHolds(opportunityId), now.toISOString().slice(0, 10))
+    if (!ledFieldsDiffer(want, truckNumbers, holdExp ?? null)) {
+      return NextResponse.json({ results: [], app_owned: true })
+    }
+    const warning = await syncOpportunityLedWindow(opportunityId)
+    await prisma.auditLog.create({
+      data: {
+        action:       'SFDC_LED_FIELDS_OVERRIDDEN',
+        truck_number: truckNumbers[0],
+        user_id:      serviceUser.id,
+        details:      JSON.stringify({
+          opportunityId, pushed: { trucks: truckNumbers, holdExp: holdExp ?? null }, app: want,
+          result: warning ?? (isSfdcConfigured() ? 'sync_requested' : 'salesforce_not_configured'),
+        }),
+      },
+    })
+    return NextResponse.json({ results: [], app_owned: true, overridden: true, ...(warning ? { warning } : {}) })
+  }
+
   // Reconcile: drop holds this Opportunity previously pushed for trucks that
   // are no longer in its current LED Trucks list (e.g. a truck got swapped out).
   const stale = await prisma.hold.findMany({
@@ -107,15 +147,29 @@ export async function POST(req: NextRequest) {
     results.push({ truck_number: hold.truck_number, hold_id: hold.id, action: 'removed' })
   }
 
-  // Trucks the app itself holds for this Opportunity right now (it created the
-  // Opportunity from a quote) are an echo, not a second reservation. Stale
-  // SALESFORCE holds above are still reconciled against the full list.
+  // Here the app has released everything on the opportunity (it would have
+  // returned above), so every pushed truck is mirrored, including one from an
+  // app booking that lapsed: a mirror path records, and a clash surfaces
+  // through /api/holds/infeasible. A later Reinstate removes such copies of
+  // its own trucks.
   const linkedHolds = await prisma.hold.findMany({
     where: { sfdc_opportunity_id: opportunityId },
-    select: { truck_number: true, source: true, status: true, expires_at: true },
+    select: { truck_number: true, source: true, origination: true, status: true, features: true, sfdc_hold_exp: true },
   })
-  const toMirror = trucksToMirror(truckNumbers, linkedHolds, now)
+  const toMirror = trucksToMirror(truckNumbers, linkedHolds)
   const skippedAppHeld = truckNumbers.filter(t => !toMirror.includes(t))
+  // The LED Hold Exp the app last wrote here, as recorded on this
+  // opportunity's Salesforce-made rows. A push carrying it is the app's echo:
+  // a truck first seen in such a push takes its siblings' Salesforce date
+  // (blank stays blank, so the deal still never closes as lost), not the
+  // app's date as if Salesforce had sent it.
+  const salesforceRows = linkedHolds.filter(h => h.source === 'SALESFORCE')
+  const appMarker = salesforceRows.map(h => appHoldExpOf(h.features)).find((d): d is string => !!d) ?? null
+  const pushIsEcho = !!holdExp && !!appMarker && holdExp.slice(0, 10) === appMarker
+  // On an echo, a new row takes the Salesforce date its siblings carry if they
+  // agree, else none: blank-Hold-Exp protection is never lost to row order.
+  const siblingDates = [...new Set(salesforceRows.map(h => h.sfdc_hold_exp?.toISOString() ?? null))]
+  const echoSfdcHoldExp = siblingDates.length === 1 && siblingDates[0] ? new Date(siblingDates[0]) : null
 
   // The Opportunity's stage, asked at most once per push and only when a hold
   // would be revived, expired or created: a Closed Won deal's holds are
@@ -150,11 +204,16 @@ export async function POST(req: NextRequest) {
       // A COMMITTED hold is left alone in both directions; that's a real booking,
       // not something this webhook should revert.
       //
-      // Expiry resolution, in order: an explicit Hold Exp always wins; failing
-      // that the row keeps the expiry it already has, so repeated pushes can't
-      // renew a 72h fallback forever; only a row with nothing at all (a legacy
-      // null) gets a fresh default.
-      const effectiveExpiry = explicitExpiry ?? existing.expires_at ?? defaultExpiry
+      // Expiry resolution, in order (lib/sfdcIntegration.ts pushedHoldExpiry):
+      // the echo of the app's own Hold Exp write (the date recorded in this
+      // row's features, appHoldExpOf) keeps the row's expiry, so the app's sync never
+      // re-dates, shortens or revives a hold; otherwise an explicit Hold Exp
+      // wins; failing that the row keeps the expiry it already has, so repeated
+      // pushes can't renew a 72h fallback forever; only a row with nothing at
+      // all (a legacy null) gets a fresh default.
+      const { expiresAt: effectiveExpiry, echo } = pushedHoldExpiry({
+        pushedHoldExp: holdExp ?? null, appHoldExp: appHoldExpOf(existing.features), current: existing.expires_at, fallback: defaultExpiry,
+      })
       const expiryDefaulted = explicitExpiry === null && existing.expires_at === null
       const expiryIsPast    = effectiveExpiry <= now
 
@@ -191,7 +250,15 @@ export async function POST(req: NextRequest) {
         where: { id: existing.id },
         data: {
           ...(known ? { market: known.market, state: known.state } : {}),
-          client_name: accountName, start_date, end_date, sfdc_hold_exp,
+          client_name: accountName, start_date, end_date,
+          // The echo carries the app's own date, not one Salesforce set: keep
+          // what the row had, so a booking pushed with Hold Exp blank still
+          // never closes as lost (expiryClosesOpportunity).
+          sfdc_hold_exp: echo ? existing.sfdc_hold_exp : sfdc_hold_exp,
+          // A different date Salesforce set replaces the app's: drop the marker,
+          // so only the app's latest write ever counts as an echo (the app's own
+          // date on a committed row, which has no expiry to keep, leaves it).
+          ...(holdExp && appHoldExpOf(existing.features) && appHoldExpOf(existing.features) !== holdExp.slice(0, 10) ? { features: withAppHoldExp(existing.features, null) } : {}),
           ...(isCommitted || committedNow || (reactivated && revivedAsCommitted) ? {} : { expires_at: effectiveExpiry }),
           ...(reactivated && { status: revivedAsCommitted ? 'COMMITTED' : 'HOLD' }),
           ...(reactivated && revivedAsCommitted && { expires_at: null }),
@@ -208,11 +275,12 @@ export async function POST(req: NextRequest) {
           hold_id:      updated.id,
           details:      JSON.stringify({
             source: 'salesforce', opportunityId, accountName, start_date, end_date,
-            sfdc_hold_exp,
+            sfdc_hold_exp: echo ? existing.sfdc_hold_exp : sfdc_hold_exp,
             ...(isCommitted
               ? { expires_at_untouched: 'hold_is_committed' }
               : { expires_at: effectiveExpiry }),
             ...(expiryDefaulted && { expires_at_defaulted: 'no_hold_exp_on_push_72h' }),
+            ...(echo && { expires_at_kept: 'echo_of_app_hold_exp' }),
             ...(explicitExpiry === null && existing.expires_at !== null && {
               expires_at_retained: 'no_hold_exp_on_push_kept_existing',
             }),
@@ -262,7 +330,8 @@ export async function POST(req: NextRequest) {
                                  + (explicitExpiry === null ? ' — no Hold Exp on the Opportunity, defaulted to 72h' : ''),
           created_by:          serviceUser.id,
           sfdc_opportunity_id: opportunityId,
-          sfdc_hold_exp,
+          sfdc_hold_exp:       pushIsEcho ? echoSfdcHoldExp : sfdc_hold_exp,
+          ...(pushIsEcho && { features: withAppHoldExp(null, appMarker) }),
           expires_at:          won ? null : newExpiry,
         },
       })
@@ -275,7 +344,9 @@ export async function POST(req: NextRequest) {
           hold_id:      created.id,
           details:      JSON.stringify({
             source: 'salesforce', opportunityId, accountName, start_date, end_date,
-            sfdc_hold_exp, expires_at: won ? null : newExpiry,
+            sfdc_hold_exp: pushIsEcho ? echoSfdcHoldExp : sfdc_hold_exp,
+            expires_at: won ? null : newExpiry,
+            ...(pushIsEcho && { sfdc_hold_exp_from_siblings: 'echo_of_app_hold_exp' }),
             ...(won && { created_committed: 'opportunity_closed_won' }),
             ...(!won && explicitExpiry === null && { expires_at_defaulted: 'no_hold_exp_on_push_72h' }),
             ...(!won && newExpiry <= now && { created_expired: 'expiry_already_passed' }),

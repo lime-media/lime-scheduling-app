@@ -60,6 +60,14 @@ export interface SfdcReconcileSummary {
   released:  number
   /** Committed holds whose deal was moved off Closed Won (reopened) and went back to HOLD. */
   uncommitted: number
+  /**
+   * Opportunities whose holds this pass released or un-committed. The caller
+   * syncs their LED Trucks and Hold Exp (lib/sfdcBooking.ts
+   * syncOpportunityLedWindow): every release path syncs, or a later push could
+   * revive a truck the app let go. Returned rather than synced here because
+   * sfdcBooking imports this module.
+   */
+  changedOpportunities: string[]
 }
 
 /** Salesforce treats 15- and 18-char ids interchangeably; the API always returns 18. */
@@ -74,7 +82,7 @@ function chunk<T>(items: T[], size: number): T[][] {
 }
 
 export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary> {
-  const summary: SfdcReconcileSummary = { checked: 0, committed: 0, released: 0, uncommitted: 0 }
+  const summary: SfdcReconcileSummary = { checked: 0, committed: 0, released: 0, uncommitted: 0, changedOpportunities: [] }
 
   if (!isSfdcConfigured()) {
     console.log('[sfdc-reconcile] SFDC credentials not configured — skipping')
@@ -200,6 +208,9 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
         wonHold = hold
       } else if (target === 'HOLD') summary.uncommitted++
       else summary.released++
+      if (target !== 'COMMITTED' && hold.sfdc_opportunity_id && !summary.changedOpportunities.includes(hold.sfdc_opportunity_id)) {
+        summary.changedOpportunities.push(hold.sfdc_opportunity_id)
+      }
 
       console.log(
         `[sfdc-reconcile] truck ${hold.truck_number} | "${hold.client_name}" — ` +

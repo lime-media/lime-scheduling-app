@@ -62,6 +62,8 @@ export function CellDetail({ cell, lastKnownMarket, onClose, onHoldDeleted }: Ce
     const res = await fetch(`/api/holds/${cell.hold_id}`, { method: 'DELETE' })
     if (res.ok) {
       toast.success('Hold released')
+      const body = await res.json().catch(() => ({}))
+      if (body.sfdcWarning) toast.error(body.sfdcWarning, { duration: 15000 })
       onHoldDeleted()
     } else {
       const err = await res.json()

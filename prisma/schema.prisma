@@ -280,7 +280,8 @@ model UsageLog {
 // Transport metrics (lib/transportMetrics.ts, /ops/transport): one row per
 // truck per event — what transport was quoted when a booking was made or
 // changed, and what actually happened on the campaign's first day.
-// event: BOOKED | SWAPPED | REVISED | EXECUTED
+// event: BOOKED | SWAPPED | REVISED | EXECUTED | PRESTART (a snapshot of where the truck sat
+// before it moved; the source of EXECUTED's origin, in no KPI)
 // origin_kind: PRIOR_JOB | GPS | SAME_ORDER | UNKNOWN
 // outcome: LOCAL | ABSORBED | BILLED
 model TransportLeg {

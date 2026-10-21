@@ -12,7 +12,14 @@
 
 import { absorbedLegCost, needsRepositioning } from '@/lib/pricing/transport'
 
-export type LegEvent = 'BOOKED' | 'SWAPPED' | 'REVISED' | 'EXECUTED'
+export type LegEvent = 'BOOKED' | 'SWAPPED' | 'REVISED' | 'EXECUTED' | 'PRESTART'
+
+/**
+ * The legs that make up a booking's plan. EXECUTED is what happened; PRESTART
+ * is only a snapshot of where the truck sat before it moved (the source of
+ * EXECUTED's origin), never a plan or an outcome in any KPI.
+ */
+export const PLAN_EVENTS: ReadonlySet<string> = new Set(['BOOKED', 'SWAPPED', 'REVISED'])
 export type OriginKind = 'PRIOR_JOB' | 'GPS' | 'SAME_ORDER' | 'UNKNOWN'
 export type LegOutcome = 'LOCAL' | 'ABSORBED' | 'BILLED'
 export type DealEvent = 'BOOKED' | 'REVISED' | 'WON' | 'AMOUNT_CHANGED'
@@ -141,6 +148,54 @@ export function executedCandidates<T extends { id: string; status: string; origi
   })
 }
 
+/**
+ * Holds starting in the next `daysAhead` days (not today) with no PRESTART
+ * snapshot yet: the sweep records where their truck sits now, before it moves,
+ * so the EXECUTED record on the first day can measure the real way in. Same
+ * holds as executedCandidates otherwise. Pure.
+ */
+export function prestartCandidates<T extends { id: string; status: string; origination: string; start_date: Date }>(
+  holds: T[], prestartHoldIds: Set<string>, today: string, daysAhead = 3,
+): T[] {
+  const latest = new Date(today + 'T00:00:00Z')
+  latest.setUTCDate(latest.getUTCDate() + daysAhead)
+  const until = latest.toISOString().slice(0, 10)
+  return holds.filter(h => {
+    const start = h.start_date.toISOString().slice(0, 10)
+    return (h.status === 'HOLD' || h.status === 'COMMITTED')
+      && h.origination !== 'quote_only'
+      && start > today && start <= until
+      && !prestartHoldIds.has(h.id)
+  })
+}
+
+/**
+ * Where the truck that ran a hold came from, as recorded on its first day. On
+ * that day a truck with no prior job usually already sits in the market, so
+ * its GPS reads as local even after a long drive in. Order: the truck's last
+ * job before the start (measured now); else the hold's PRESTART snapshot,
+ * taken before it moved, if it was the same truck; else the GPS reading as
+ * measured. The client still pays what was quoted for the slot. Pure.
+ */
+export function executedOrigin(
+  measured: MeasuredLeg,
+  prestart: { truck_number: string; origin_label: string; origin_kind: string; miles: number | null; transport_days: number } | null,
+  serviceAreaMiles: number,
+): MeasuredLeg {
+  if (measured.originKind === 'PRIOR_JOB' || !prestart || prestart.truck_number !== measured.truckNumber) return measured
+  const repositions = prestart.miles != null && needsRepositioning(prestart.miles, serviceAreaMiles)
+  const kind = prestart.origin_kind
+  return {
+    truckNumber: measured.truckNumber,
+    originLabel: prestart.origin_label,
+    originKind: kind === 'PRIOR_JOB' || kind === 'GPS' || kind === 'SAME_ORDER' ? kind : 'UNKNOWN',
+    miles: prestart.miles,
+    transportDays: repositions ? Math.max(1, prestart.transport_days) : 0,
+    repositions,
+    charge: measured.charge,
+  }
+}
+
 // ── KPIs (/ops/transport) ───────────────────────────────────────────────────
 
 export type LegRow = {
@@ -155,7 +210,7 @@ const sum = (xs: number[]) => Math.round(xs.reduce((s, x) => s + x, 0) * 100) / 
 export function latestPlanned(legs: LegRow[]): Map<string, LegRow> {
   const out = new Map<string, LegRow>()
   for (const l of legs) {
-    if (l.event === 'EXECUTED' || !l.hold_id) continue
+    if (!PLAN_EVENTS.has(l.event) || !l.hold_id) continue
     const was = out.get(l.hold_id)
     if (!was || l.created_at > was.created_at) out.set(l.hold_id, l)
   }
@@ -173,9 +228,39 @@ const split = (rows: LegRow[]): Split => ({
   absorbedCost: sum(rows.filter(r => r.outcome === 'ABSORBED').map(r => r.est_cost)),
 })
 
-/** Quoted transport: the latest plan per hold, as counts, $ charged and our estimated cost, overall and by client and market (top 10 by cost). */
+/**
+ * Everything quoted, one leg per truck slot, cancelled bookings included: per
+ * booking, the latest generation of its plan (its latest revision's REVISED
+ * legs, else its BOOKED legs), each slot updated by any later swap onto that
+ * hold. Whether the holds still exist doesn't matter: a cancelled booking was
+ * still quoted. Legs with no booking key count per hold. Pure.
+ */
+export function quotedPlan(legs: LegRow[]): LegRow[] {
+  const plan = legs.filter(l => PLAN_EVENTS.has(l.event))
+  const byBooking = new Map<string, LegRow[]>()
+  const loose: LegRow[] = []
+  for (const l of plan) {
+    if (l.booking_key) byBooking.set(l.booking_key, [...(byBooking.get(l.booking_key) ?? []), l])
+    else loose.push(l)
+  }
+  const out: LegRow[] = []
+  // A revision writes one row per truck at one moment.
+  const minute = (l: LegRow) => Math.floor(l.created_at.getTime() / 60_000)
+  for (const rows of byBooking.values()) {
+    const revisions = rows.filter(l => l.event === 'REVISED')
+    const lastRevision = revisions.length ? Math.max(...revisions.map(minute)) : null
+    const base = lastRevision != null ? revisions.filter(l => minute(l) === lastRevision) : rows.filter(l => l.event === 'BOOKED')
+    for (const b of base) {
+      const later = rows.filter(l => l.event === 'SWAPPED' && l.hold_id && l.hold_id === b.hold_id && l.created_at > b.created_at)
+      out.push(later.reduce((a, l) => (l.created_at > a.created_at ? l : a), b))
+    }
+  }
+  return [...out, ...latestPlanned(loose).values()]
+}
+
+/** Quoted transport: everything quoted (quotedPlan), as counts, $ charged and our estimated cost, overall and by client and market (top 10 by cost). */
 export function transportKpis(legs: LegRow[]) {
-  const plan = [...latestPlanned(legs).values()]
+  const plan = quotedPlan(legs)
   const top = (key: (r: LegRow) => string) => {
     const by = new Map<string, LegRow[]>()
     for (const r of plan) by.set(key(r), [...(by.get(key(r)) ?? []), r])
@@ -218,7 +303,7 @@ export function plannedVsActual(legs: LegRow[]) {
 export function churnKpis(legs: LegRow[]) {
   const byBooking = new Map<string, { swaps: number; revisions: Set<number> }>()
   for (const l of legs) {
-    if (!l.booking_key || l.event === 'EXECUTED') continue
+    if (!l.booking_key || !PLAN_EVENTS.has(l.event)) continue
     const b = byBooking.get(l.booking_key) ?? { swaps: 0, revisions: new Set<number>() }
     if (l.event === 'SWAPPED') b.swaps++
     // A revision writes one row per truck at one moment: count it once.

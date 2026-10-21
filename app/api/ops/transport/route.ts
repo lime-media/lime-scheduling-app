@@ -35,8 +35,10 @@ export async function GET(req: NextRequest) {
       ? await prisma.transportLeg.findMany({ where: { booking_key: { in: keys } }, take: MAX_ROWS })
       : []
     const legRows: LegRow[] = legs.map(l => ({ ...l, charge: Number(l.charge), est_cost: Number(l.est_cost) }))
-    // The plan as it stands is on holds that still exist: a revision deletes
-    // the holds it replaces, so their legs are history (churn), not the plan.
+    // Quoted transport is everything quoted, cancelled bookings included
+    // (quotedPlan keeps one leg per truck slot, so a revision's replaced holds
+    // don't count twice). Planned vs actual is on holds that still exist: a
+    // revision deletes the holds it replaces, and a cancelled booking never ran.
     const legHoldIds = [...new Set(legRows.map(l => l.hold_id).filter((id): id is string => !!id))]
     const live = new Set(legHoldIds.length
       ? (await prisma.hold.findMany({ where: { id: { in: legHoldIds } }, select: { id: true } })).map(h => h.id)
@@ -58,7 +60,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       from, to,
-      transport: transportKpis(current),
+      transport: transportKpis(legRows),
       plannedVsActual: plannedVsActual(current),
       churn: churnKpis(legRows),
       deals: dealDrift(dealRows),

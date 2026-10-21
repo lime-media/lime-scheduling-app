@@ -7,8 +7,9 @@
 import { eq, section } from './harness'
 import { absorbedLegCost } from '@/lib/pricing/transport'
 import {
-  activationDaysOf, churnKpis, dealDrift, executedCandidates, leadBusinessDays, legCost, legFromInbound, legOutcome,
-  legsFromArrivals, legsFromSelectedTrucks, plannedVsActual, transportKpis, type DealRow, type LegRow,
+  activationDaysOf, churnKpis, dealDrift, executedCandidates, executedOrigin, leadBusinessDays, legCost, legFromInbound, legOutcome,
+  legsFromArrivals, legsFromSelectedTrucks, plannedVsActual, prestartCandidates, quotedPlan, transportKpis, type DealRow, type LegRow,
+  type MeasuredLeg,
 } from '@/lib/transportMetrics'
 
 section('transport metrics: each truck is local, absorbed or billed')
@@ -110,4 +111,46 @@ section('transport metrics: quote vs Salesforce contract')
   ])
   eq('one won deal: latest quote per booking summed, against the latest Amount', [d.wonDeals, d.quoted, d.contract, d.drift, d.driftPct], [1, 50000, 47000, -3000, -6])
   eq('the deal keeps its Amount at won', [d.biggest[0].wonAmount, d.biggest[0].currentAmount], [48000, 47000])
+}
+
+section('transport metrics: the pre-start snapshot (local review, pass 1 decisions)')
+{
+  const h = (id: string, start: string, status = 'HOLD', origination = 'frontend') => ({ id, status, origination, start_date: new Date(start + 'T00:00:00Z') })
+  const holds = [h('a', '2026-10-21'), h('b', '2026-10-23'), h('c', '2026-10-24'), h('d', '2026-10-20'), h('e', '2026-10-22', 'EXPIRED'),
+    h('f', '2026-10-22', 'COMMITTED'), h('g', '2026-10-22', 'HOLD', 'quote_only'), h('i', '2026-10-22')]
+  eq('starts in the next 3 days (not today), live, not yet snapped', prestartCandidates(holds, new Set(['i']), '2026-10-20').map(x => x.id), ['a', 'b', 'f'])
+
+  const gps: MeasuredLeg = { truckNumber: '1867', originLabel: 'current position', originKind: 'GPS', miles: 4, transportDays: 0, repositions: false, charge: 0 }
+  const snap = { truck_number: '1867', origin_label: 'current position', origin_kind: 'GPS', miles: 900, transport_days: 2 }
+  // On the first day the truck already sits in market: the snapshot taken
+  // before it moved shows the 900-mile drive in.
+  const e = executedOrigin(gps, snap, 250)
+  eq('no prior job: the pre-start snapshot (same truck)', [e.miles, e.repositions, e.transportDays, e.originKind], [900, true, 2, 'GPS'])
+  eq('a prior job is measured as is', executedOrigin({ ...gps, originKind: 'PRIOR_JOB', miles: 300, repositions: true, transportDays: 1 }, snap, 250).miles, 300)
+  eq('a different truck ran it: the snapshot was of another truck, so GPS', executedOrigin({ ...gps, truckNumber: '1002' }, snap, 250).miles, 4)
+  eq('no snapshot: GPS', executedOrigin(gps, null, 250).miles, 4)
+  eq('the client still pays the slot\'s quoted charge', executedOrigin({ ...gps, charge: 2100 }, snap, 250).charge, 2100)
+}
+
+section('transport metrics: quoted transport counts everything quoted')
+{
+  const at = (m: number) => new Date(Date.UTC(2026, 9, 20, 12, m))
+  const leg = (o: Partial<LegRow>): LegRow => ({ event: 'BOOKED', hold_id: 'h1', booking_key: 'b1', client_name: 'Acme', market: 'Dallas, TX', truck_number: '0820', miles: 10, outcome: 'LOCAL', charge: 0, est_cost: 0, created_at: at(0), ...o })
+  const legs: LegRow[] = [
+    // b1: booked with 2 trucks, then revised to 3 (new holds), then one swapped.
+    leg({}), leg({ hold_id: 'h2', truck_number: '1867' }),
+    leg({ event: 'REVISED', hold_id: 'h3', created_at: at(10) }), leg({ event: 'REVISED', hold_id: 'h4', truck_number: '1867', created_at: at(10) }),
+    leg({ event: 'REVISED', hold_id: 'h5', truck_number: '9972', miles: 1200, outcome: 'ABSORBED', est_cost: 2478.75, created_at: at(10) }),
+    leg({ event: 'SWAPPED', hold_id: 'h4', truck_number: '1002', miles: 488, outcome: 'ABSORBED', est_cost: 1712.5, created_at: at(15) }),
+    // b2: cancelled (its holds are gone), still quoted.
+    leg({ hold_id: 'h9', booking_key: 'b2', client_name: 'Beta', truck_number: '7423', miles: 900, outcome: 'BILLED', charge: 2100, est_cost: 1712.5 }),
+    // Snapshots and outcomes are never part of the plan.
+    leg({ event: 'PRESTART', hold_id: 'h3', miles: 700, outcome: 'ABSORBED', est_cost: 1712.5, created_at: at(20) }),
+    leg({ event: 'EXECUTED', hold_id: 'h3', miles: 700, outcome: 'ABSORBED', est_cost: 1712.5, created_at: at(30) }),
+  ]
+  const plan = quotedPlan(legs)
+  eq('one leg per truck slot: the latest revision, swaps applied, plus the cancelled booking', plan.map(l => `${l.hold_id}:${l.truck_number}`).sort(), ['h3:0820', 'h4:1002', 'h5:9972', 'h9:7423'])
+  const t = transportKpis(legs)
+  eq('quoted KPIs include the cancelled booking', [t.trucks, t.local, t.absorbed, t.billed, t.charged], [4, 1, 2, 1, 2100])
+  eq('PRESTART is in no churn figure', churnKpis(legs).swaps, 1)
 }

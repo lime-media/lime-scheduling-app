@@ -456,12 +456,13 @@ What bookings quote for transport, how it changes, what actually happens, and ho
   - `BOOKED` / `REVISED`: written when a booking is placed or revised, from what the quote already worked out (single-market: each selected truck and its priced leg; multi-market: each market's arrivals).
     A revision replaces the booking's holds under a new campaign group; its rows keep the booking key the replaced holds were recorded under, so a booking stays one booking across revisions. The Transport page reads a booking's legs by that key, and takes the current plan from holds that still exist.
   - `SWAPPED`: a truck swapped onto a hold, its origin measured at the swap.
-  - `EXECUTED`: written by the 15-minute sweep on a campaign's first day (or within 3 days, once per hold) for the truck actually on the hold, from its last job before the start, else its GPS that morning.
+  - `PRESTART`: a snapshot the sweep records up to 3 days before a campaign starts (once per hold): where its truck sits before it drives in. In no KPI; only EXECUTED's origin.
+  - `EXECUTED`: written by the 15-minute sweep on a campaign's first day (or within 3 days, once per hold) for the truck actually on the hold, from its last job before the start, else its `PRESTART` snapshot (same truck), else its GPS that morning (by then a truck with no prior job usually already sits in the market).
   - Each row: origin and how it was found, miles, travel days, **outcome** (`LOCAL` inside the service area, `BILLED` when the client pays for the move, `ABSORBED` when we do), **charge** (what the client pays; a swapped or executed truck keeps the slot's quoted charge), and **est_cost** (our estimated cost of the move, `absorbedLegCost`, for any out-of-area truck, billed or not). Quote-only logs record nothing.
 - **`app_deal_values`**: the app's quoted total per booking (`BOOKED`, `REVISED`); Salesforce's **Amount** when the reconcile sees the opportunity go Closed Won (`WON`); and the Amount again whenever it changes after (`AMOUNT_CHANGED`, checked by the sweep).
 
 The page shows:
-- **Quoted transport** (each hold's latest plan): trucks, % local / absorbed / billed, $ charged vs our estimated cost, by client and market.
+- **Quoted transport** (everything quoted, cancelled bookings included: each booking's latest plan, one leg per truck slot): trucks, % local / absorbed / billed, $ charged vs our estimated cost, by client and market.
 - **Planned vs actual** (holds that have started): average quoted vs actual miles, how often a different truck ran it or the outcome changed, and **unpriced repositioning** (quoted local, ran from outside the area) with its cost.
 - **Changes after booking**: share of bookings swapped or revised, and changes per booking.
 - **Quote vs Salesforce contract** (won deals): the app's quoted total (the latest figure of each booking on the opportunity) against the Amount at Closed Won and now, with the biggest gaps.

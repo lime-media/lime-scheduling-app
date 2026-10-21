@@ -111,7 +111,7 @@ export default function TransportMetricsPage() {
         {t && p && c && d && (
           <div className={`space-y-6 ${loading ? 'opacity-60' : ''}`}>
             <section>
-              <h2 className="text-sm font-semibold text-gray-900 mb-2">Quoted transport</h2>
+              <h2 className="text-sm font-semibold text-gray-900 mb-2">Quoted transport <span className="font-normal text-gray-500">(everything quoted, cancelled bookings included)</span></h2>
               <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-3">
                 <Tile label="Trucks booked" value={String(t.trucks)} />
                 <Tile label="Local / absorbed / billed" value={`${t.localPct}% / ${t.absorbedPct}% / ${t.billedPct}%`} sub={`${t.local} / ${t.absorbed} / ${t.billed} trucks`} />

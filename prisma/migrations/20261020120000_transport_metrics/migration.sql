@@ -3,7 +3,10 @@
 --   app_transport_legs  One row per truck per event: what transport was quoted
 --                       when a booking was made (BOOKED), changed (SWAPPED,
 --                       REVISED), and what actually happened on the campaign's
---                       first day (EXECUTED): origin, miles, travel days,
+--                       first day (EXECUTED; its origin taken, when the
+--                       truck had no prior job, from a PRESTART snapshot
+--                       recorded up to 3 days before it moved): origin,
+--                       miles, travel days,
 --                       local / absorbed / billed, what we charged and our
 --                       estimated cost.
 --   app_deal_values     The app's quoted total per booking (BOOKED, REVISED)
@@ -41,7 +44,7 @@ BEGIN
         [est_cost]            DECIMAL(12, 2) NOT NULL CONSTRAINT [DF_app_transport_legs_est_cost] DEFAULT 0,
         [created_by]          NVARCHAR(450)  NULL,
         CONSTRAINT [PK_app_transport_legs] PRIMARY KEY CLUSTERED ([id]),
-        CONSTRAINT [CK_app_transport_legs_event] CHECK ([event] IN ('BOOKED', 'SWAPPED', 'REVISED', 'EXECUTED')),
+        CONSTRAINT [CK_app_transport_legs_event] CHECK ([event] IN ('BOOKED', 'SWAPPED', 'REVISED', 'EXECUTED', 'PRESTART')),
         CONSTRAINT [CK_app_transport_legs_outcome] CHECK ([outcome] IN ('LOCAL', 'ABSORBED', 'BILLED')),
         CONSTRAINT [CK_app_transport_legs_origin_kind] CHECK ([origin_kind] IN ('PRIOR_JOB', 'GPS', 'SAME_ORDER', 'UNKNOWN'))
     );

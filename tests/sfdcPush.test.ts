@@ -3,24 +3,42 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, opportunityMarketCandidates, reactivationDecision, reconcileTarget, reopenQuestion, trucksToMirror } from '@/lib/sfdcIntegration'
+import { appHoldExpOf, closedOpportunityBlocksReactivation, expiryClosesOpportunity, opportunityMarketCandidates, pushedHoldExpiry, reactivationDecision, reconcileTarget, reopenQuestion, trucksToMirror, withAppHoldExp } from '@/lib/sfdcIntegration'
+import { parseQuoteFeatures } from '@/lib/quoteFeatures'
+import { ledFieldsDiffer, ledWindowFields, type LinkedHold } from '@/lib/opportunityMerge'
+import { reinstatableHolds, reinstateRefusal } from '@/lib/bookings'
 import { opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 
-const NOW = new Date('2026-10-02T12:00:00Z')
-const later = new Date('2026-10-05T23:59:59Z'), earlier = new Date('2026-09-28T00:00:00Z')
-const row = (truck_number: string, source: string, status: string, expires_at: Date | null) => ({ truck_number, source, status, expires_at })
+const row = (truck_number: string, source: string, origination: string | null = 'frontend', status = 'HOLD') => ({ truck_number, source, origination, status })
 
-section('Salesforce push: trucks the app holds right now are an echo; everything else is mirrored')
-eq('created in Salesforce (nothing linked): mirror every truck', trucksToMirror(['9269'], [], NOW), ['9269'])
-eq('created by a quote tool, holds live: nothing to mirror', trucksToMirror(['7423', '0820'], [row('7423', 'INTERNAL', 'HOLD', later), row('0820', 'INTERNAL', 'HOLD', later)], NOW), [])
-eq('client portal hold, live: echo', trucksToMirror(['7423'], [row('7423', 'CLIENT', 'HOLD', later)], NOW), [])
-eq('committed app booking (expiry irrelevant): echo', trucksToMirror(['7423'], [row('7423', 'INTERNAL', 'COMMITTED', earlier)], NOW), [])
-eq('quote-only log made a booking in Salesforce (EXPIRED rows reserve nothing): mirror it',
-  trucksToMirror(['7423'], [row('7423', 'INTERNAL', 'EXPIRED', NOW)], NOW), ['7423'])
-eq('app hold past its expiry (sweep not run yet): mirror it', trucksToMirror(['7423'], [row('7423', 'INTERNAL', 'HOLD', earlier)], NOW), ['7423'])
-eq('a rep adds a truck to an app quote in Salesforce: only the new truck is mirrored',
-  trucksToMirror(['7423', '1106'], [row('7423', 'INTERNAL', 'HOLD', later)], NOW), ['1106'])
-eq('trucks already mirrored from Salesforce are still updated', trucksToMirror(['9269'], [row('9269', 'SALESFORCE', 'HOLD', later)], NOW), ['9269'])
+section('Salesforce push: trucks the app hasn\'t released are its own')
+eq('created in Salesforce (nothing linked): mirror every truck', trucksToMirror(['9269'], []), ['9269'])
+eq('created by a quote tool: nothing to mirror', trucksToMirror(['7423', '0820'], [row('7423', 'INTERNAL'), row('0820', 'INTERNAL')]), [])
+eq('client portal booking: echo', trucksToMirror(['7423'], [row('7423', 'CLIENT', null)]), [])
+eq('a live app booking is the app\'s: not mirrored', trucksToMirror(['7423'], [row('7423', 'INTERNAL')]), [])
+// #123 review: once the app's booking lapsed, a truck a rep lists is recorded
+// (mirror paths record; clashes surface through /api/holds/infeasible), never
+// dropped silently.
+eq('a lapsed app booking: Salesforce is in charge again, mirror it', trucksToMirror(['7423'], [row('7423', 'INTERNAL', 'frontend', 'EXPIRED')]), ['7423'])
+// Past its expiry but not yet swept: Salesforce still lists it until the sweep
+// releases it and re-syncs, so mirroring now would re-reserve a truck the app
+// is about to release.
+eq('an app hold past expiry the sweep hasn\'t reached: still the app\'s', trucksToMirror(['7423'], [row('7423', 'INTERNAL', 'frontend', 'HOLD')]), [])
+eq('quote-only log made a booking in Salesforce: mirror it', trucksToMirror(['7423'], [row('7423', 'INTERNAL', 'quote_only')]), ['7423'])
+eq('a rep adds a truck to an app quote in Salesforce: only the new truck is mirrored', trucksToMirror(['7423', '1106'], [row('7423', 'INTERNAL')]), ['1106'])
+eq('trucks already mirrored from Salesforce are still updated', trucksToMirror(['9269'], [row('9269', 'SALESFORCE', null)]), ['9269'])
+
+section('the app\'s Hold Exp marker lives in features, never in sfdc_hold_exp')
+{
+  eq('recorded on a hold with no features', withAppHoldExp(null, '2026-10-23'), '{"appHoldExp":"2026-10-23"}')
+  eq('other keys are kept', JSON.parse(withAppHoldExp('{"dailyRate":1200,"truckCount":2}', '2026-10-23')!), { dailyRate: 1200, truckCount: 2, appHoldExp: '2026-10-23' })
+  eq('read back', appHoldExpOf('{"dailyRate":1200,"appHoldExp":"2026-10-23"}'), '2026-10-23')
+  eq('removed: an object left empty goes back to null', withAppHoldExp('{"appHoldExp":"2026-10-23"}', null), null)
+  eq('features that are not an object are left alone', withAppHoldExp('not json', '2026-10-23'), 'not json')
+  eq('nothing recorded', appHoldExpOf(null), null)
+  eq('a marker alone is not a quote breakdown', parseQuoteFeatures('{"appHoldExp":"2026-10-23"}'), null)
+  eq('a real quote with the marker still is', parseQuoteFeatures('{"dailyRate":1200,"appHoldExp":"2026-10-23"}')?.dailyRate, 1200)
+}
 
 section('Salesforce: which expiries close the Opportunity')
 {
@@ -112,4 +130,63 @@ section('reconcile: committed means Closed Won, in both directions (#120 review)
   eq('reopened: a committed hold goes back to HOLD, so it can be changed again', reconcileTarget('COMMITTED', open), 'HOLD')
   eq('open: an ordinary hold is left alone', reconcileTarget('HOLD', open), null)
   eq('open: a waiting extension request is left alone', reconcileTarget('EXTENSION_REQUESTED', open), null)
+}
+
+section('expiry changes: the LED fields the app writes to Salesforce (it owns them)')
+{
+  const today = '2026-10-20'
+  const lh = (truck: string, expires: string | null, fromSalesforce = false): LinkedHold => ({ truck, market: 'Austin, TX', start: '2026-11-02', end: '2026-11-06', expires, fromSalesforce })
+  eq('a reinstated booking: its trucks and its expiry date', ledWindowFields([lh('0382', '2026-10-23'), lh('7402', '2026-10-23')], today), { LED_Trucks__c: 'LED-0382;LED-7402', LED_Hold_Exp__c: '2026-10-23' })
+  eq('several bookings on one opportunity: every held truck once, the earliest expiry still to come', ledWindowFields([lh('0382', '2026-10-30'), lh('7402', '2026-10-25'), lh('0382', '2026-10-30'), lh('LED-1894', '2026-11-02')], today), { LED_Trucks__c: 'LED-0382;LED-7402;LED-1894', LED_Hold_Exp__c: '2026-10-25' })
+  eq('committed holds are listed but set no Hold Exp', ledWindowFields([lh('0382', null), lh('7402', '2026-10-28')], today), { LED_Trucks__c: 'LED-0382;LED-7402', LED_Hold_Exp__c: '2026-10-28' })
+  eq('all committed: trucks only, no Hold Exp', ledWindowFields([lh('0382', null)], today), { LED_Trucks__c: 'LED-0382' })
+  eq('a lapse date already past is not written', ledWindowFields([lh('0382', '2026-10-19'), lh('7402', '2026-10-24')], today), { LED_Trucks__c: 'LED-0382;LED-7402', LED_Hold_Exp__c: '2026-10-24' })
+  eq('Salesforce-made holds: the app writes the Hold Exp too', ledWindowFields([lh('0382', '2026-10-27', true)], today), { LED_Trucks__c: 'LED-0382', LED_Hold_Exp__c: '2026-10-27' })
+  eq('nothing reserves a truck any more (cancelled, denied): both cleared', ledWindowFields([], today), { LED_Trucks__c: null, LED_Hold_Exp__c: null })
+}
+
+section('Salesforce push: the echo of the app\'s own Hold Exp changes nothing')
+{
+  const current = new Date('2026-10-23T23:59:59Z'), fallback = new Date('2026-10-23T12:00:00Z')
+  const recorded = '2026-10-23'
+  eq('the date the app wrote comes back: the hold keeps its expiry', pushedHoldExpiry({ pushedHoldExp: '2026-10-23', appHoldExp: recorded, current, fallback }), { expiresAt: current, echo: true })
+  const earlier = new Date('2026-10-22T18:00:00Z')
+  eq('the echo never re-dates a hold (no shortening)', pushedHoldExpiry({ pushedHoldExp: '2026-10-23', appHoldExp: recorded, current: earlier, fallback }).expiresAt, earlier)
+  const lapsed = new Date('2026-10-10T23:59:59Z')
+  eq('the echo never revives a lapsed hold', pushedHoldExpiry({ pushedHoldExp: '2026-10-23', appHoldExp: recorded, current: lapsed, fallback }).expiresAt, lapsed)
+  eq('a new Hold Exp from Salesforce wins, to the end of its day', pushedHoldExpiry({ pushedHoldExp: '2026-10-30', appHoldExp: recorded, current, fallback }), { expiresAt: new Date('2026-10-30T23:59:59.999Z'), echo: false })
+  eq('nothing recorded yet: the pushed date applies', pushedHoldExpiry({ pushedHoldExp: '2026-10-23', appHoldExp: null, current, fallback }).echo, false)
+  eq('no Hold Exp pushed: the hold keeps its expiry', pushedHoldExpiry({ pushedHoldExp: null, appHoldExp: recorded, current, fallback }).expiresAt, current)
+  eq('no Hold Exp and nothing on the row: the fallback', pushedHoldExpiry({ pushedHoldExp: null, appHoldExp: null, current: null, fallback }).expiresAt, fallback)
+}
+
+section('reinstate: the whole booking or none of it')
+{
+  eq('no truck taken since it lapsed: reinstated', reinstateRefusal([]), null)
+  const one = reinstateRefusal([{ truck: '7402', client: 'Bulldog', start: '2026-11-02', end: '2026-11-03' }])
+  eq('one truck taken: refused, naming it', one?.includes('truck 7402 (Bulldog, 2026-11-02 to 2026-11-03)'), true)
+  eq('and pointing at Revise', one?.includes('Revise the booking'), true)
+  const two = reinstateRefusal([{ truck: '7402', client: 'Bulldog', start: '2026-11-02', end: '2026-11-03' }, { truck: '1894', client: 'McCoy', start: '2026-11-01', end: '2026-11-04' }])
+  eq('several taken: every one named', !!two?.includes('7402') && !!two?.includes('1894') && two.startsWith("Can't reinstate: trucks have"), true)
+}
+
+section('reinstate: a market that already ended stays expired')
+{
+  const today = '2026-10-20'
+  const h = (id: string, status: string, end: string) => ({ id, status, end_date: new Date(`${end}T00:00:00Z`) })
+  const booking = [h('ended', 'EXPIRED', '2026-10-15'), h('today', 'EXPIRED', '2026-10-20'), h('ahead', 'EXPIRED', '2026-11-04'), h('live', 'HOLD', '2026-11-04')]
+  eq('only lapsed markets still running come back', reinstatableHolds(booking, today).map(x => x.id), ['today', 'ahead'])
+  eq('every lapsed market ended: nothing to reinstate', reinstatableHolds([h('ended', 'EXPIRED', '2026-10-15')], today), [])
+}
+
+section('webhook: an app-booked opportunity is the app\'s (#123 review)')
+{
+  const want = { LED_Trucks__c: 'LED-0382;LED-0912', LED_Hold_Exp__c: '2026-10-25' }
+  eq('same trucks (any order, with or without LED-) and date: no difference', ledFieldsDiffer(want, ['0912', 'LED-0382'], '2026-10-25'), false)
+  eq('a truck added in Salesforce: differs, so the app writes its own back', ledFieldsDiffer(want, ['0382', '0912', '0044'], '2026-10-25'), true)
+  eq('a lapsed truck still listed in Salesforce: differs', ledFieldsDiffer({ LED_Trucks__c: 'LED-0382', LED_Hold_Exp__c: '2026-10-25' }, ['0382', '0912'], '2026-10-25'), true)
+  eq('a different Hold Exp typed in Salesforce: differs', ledFieldsDiffer(want, ['0382', '0912'], '2026-11-30'), true)
+  // Everything committed: the app writes no Hold Exp, so Salesforce's date is
+  // never a difference (otherwise every push would re-sync, forever).
+  eq('all committed: Salesforce\'s old date is not a difference', ledFieldsDiffer({ LED_Trucks__c: 'LED-0382' }, ['0382'], '2026-09-01'), false)
 }

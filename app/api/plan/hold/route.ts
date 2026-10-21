@@ -389,29 +389,7 @@ async function handlePost(req: NextRequest) {
     // hold and is written in the same transaction as the delete: the record,
     // the delete and the new holds land together, or none of them do.
     const was = reviseIds.length ? await prisma.hold.findMany({ where: { id: { in: reviseIds } } }) : []
-    // A Closed Lost opportunity the person agreed to reopen: moved back to
-    // WARM last, after every check that could still refuse, so a revision that
-    // stops above never reopens the deal. If Salesforce refuses, nothing here
-    // changes.
-    let reopened: { fromStage: string; toStage: string } | null = null
-    if (reviseKey && target && body.reopenOpportunity === true && target.IsClosed && !target.IsWon) {
-      const r = await reopenClosedLostOpportunity(target.Id)
-      if (!r.ok) return NextResponse.json({ error: r.error }, { status: 409 })
-      reopened = r
-      target = { ...target, StageName: r.toStage, IsClosed: false }
-    }
     await prisma.$transaction([
-      ...(reopened ? [prisma.auditLog.create({
-        data: {
-          action: 'REOPEN_OPPORTUNITY',
-          truck_number: truckNumbers[0] ?? reviseHolds[0]?.truck_number ?? '',
-          user_id: createdBy,
-          details: JSON.stringify({
-            opportunity_id: target!.Id, from_stage: reopened.fromStage, to_stage: reopened.toStage,
-            by: (token.email as string | undefined) ?? createdBy, for: 'REVISE_BOOKING', booking: reviseKey,
-          }),
-        },
-      })] : []),
       ...(reviseKey ? [prisma.auditLog.create({
         data: {
           action: 'REVISE_BOOKING',
@@ -427,6 +405,43 @@ async function handlePost(req: NextRequest) {
       ...Array.from({ length: Math.ceil(rows.length / CHUNK) }, (_, i) =>
         prisma.hold.createMany({ data: rows.slice(i * CHUNK, (i + 1) * CHUNK) })),
     ])
+
+    // A Closed Lost opportunity the person agreed to reopen goes back to WARM
+    // only now, with the revision saved: a push the stage change sets off finds
+    // the app's new holds live, so the webhook treats the opportunity as the
+    // app's rather than mirroring its old trucks. If Salesforce refuses, the
+    // revision is undone (the new holds go, the old ones come back from `was`,
+    // every column) and nothing changes.
+    if (reviseKey && target && body.reopenOpportunity === true && target.IsClosed && !target.IsWon) {
+      const r = await reopenClosedLostOpportunity(target.Id)
+      if (!r.ok) {
+        await prisma.$transaction([
+          prisma.hold.deleteMany({ where: { campaign_group_id: { startsWith: groupPrefix } } }),
+          ...(was.length ? [prisma.hold.createMany({ data: was })] : []),
+          prisma.auditLog.create({
+            data: {
+              action: 'REVISE_REVERTED',
+              truck_number: truckNumbers[0] ?? reviseHolds[0]?.truck_number ?? '',
+              user_id: createdBy,
+              details: JSON.stringify({ booking: reviseKey, reason: 'salesforce_refused_reopen', error: r.error }),
+            },
+          }),
+        ])
+        return NextResponse.json({ error: r.error }, { status: 409 })
+      }
+      target = { ...target, StageName: r.toStage, IsClosed: false }
+      await prisma.auditLog.create({
+        data: {
+          action: 'REOPEN_OPPORTUNITY',
+          truck_number: truckNumbers[0] ?? reviseHolds[0]?.truck_number ?? '',
+          user_id: createdBy,
+          details: JSON.stringify({
+            opportunity_id: target.Id, from_stage: r.fromStage, to_stage: r.toStage,
+            by: (token.email as string | undefined) ?? createdBy, for: 'REVISE_BOOKING', booking: reviseKey,
+          }),
+        },
+      }).catch(err => console.error('[plan/hold] reopen audit failed:', err))
+    }
 
     // What was quoted and is not being booked, for the opportunity's notes.
     const bookedTrucks = new Map(quote.lines.map(l => [l.id, l.trucks]))

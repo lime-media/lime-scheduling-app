@@ -1,5 +1,6 @@
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
-import { holdReservesNow } from '@/lib/holdFilters'
+import { endOfDayUtc } from '@/lib/dateOnly'
+import { APP_HOLD_EXP_KEY } from '@/lib/quoteFeatures'
 
 // Holds pushed in from Salesforce are attributed to this service user, and
 // automated actions on those holds (e.g. auto-release once a real LED shift
@@ -11,17 +12,64 @@ export const SFDC_SERVICE_USER_EMAIL = 'sfdc-integration@lime-media.com'
  * multi-market, client portal) create Opportunities WITH the LED fields set
  * and hold the trucks themselves (source INTERNAL / CLIENT, linked by
  * sfdc_opportunity_id), so Salesforce's push of those is an echo: mirroring it
- * would double-book. Only trucks the app holds RIGHT NOW are skipped — a
- * quote-only log or an expired hold reserves nothing, so when a rep fills in
- * the LED fields to make it a real booking, it is mirrored like any other.
+ * would double-book. A truck the app hasn't released counts, i.e. any app hold
+ * not yet EXPIRED, even one past its expiry the sweep hasn't reached: the
+ * sweep releases it and re-syncs Salesforce's LED Trucks, and until then
+ * Salesforce still lists it. While the app holds trucks on an opportunity the
+ * webhook doesn't mirror at all (it's the app's;
+ * app/api/integrations/salesforce/hold), so this runs only once the app's
+ * booking has been released and Salesforce is in charge again.
+ * Then a truck a rep lists is recorded like any other (a mirror path records,
+ * it doesn't refuse; a clash surfaces through /api/holds/infeasible), never
+ * dropped silently. A quote-only log never reserved anything, so it never
+ * counts. (Reinstate and revise reopen a Closed Lost deal only after their
+ * holds are saved, so the push that fires sees them live.)
  */
+/** An app hold the app hasn't released yet: anything but EXPIRED (or an AT&T soft hold). Pure. */
+export const appHasNotReleased = (h: { status: string }) => h.status !== 'EXPIRED' && h.status !== 'ATT_SOFT'
+
 export function trucksToMirror(
   pushedTrucks: string[],
-  linkedHolds: { truck_number: string; source: string; status: string; expires_at: Date | null }[],
-  now: Date = new Date(),
+  linkedHolds: { truck_number: string; source: string; origination: string | null; status: string }[],
 ): string[] {
-  const held = new Set(linkedHolds.filter(h => h.source !== 'SALESFORCE' && holdReservesNow(h, now)).map(h => h.truck_number))
-  return pushedTrucks.filter(t => !held.has(t))
+  const booked = new Set(linkedHolds
+    .filter(h => h.source !== 'SALESFORCE' && h.origination !== QUOTE_ONLY_ORIGINATION && appHasNotReleased(h))
+    .map(h => h.truck_number))
+  return pushedTrucks.filter(t => !booked.has(t))
+}
+
+// The key in a hold's features JSON recording the LED Hold Exp the app last wrote to its opportunity.
+export { APP_HOLD_EXP_KEY }
+
+const featureObject = (features: string | null | undefined): Record<string, unknown> | null => {
+  if (!features) return {}
+  try {
+    const f = JSON.parse(features)
+    return f && typeof f === 'object' && !Array.isArray(f) ? f : null
+  } catch {
+    return null
+  }
+}
+
+/** The LED Hold Exp (YYYY-MM-DD) the app last wrote, as recorded in a hold's features, else null. Pure. */
+export function appHoldExpOf(features: string | null | undefined): string | null {
+  const v = featureObject(features)?.[APP_HOLD_EXP_KEY]
+  return typeof v === 'string' ? v : null
+}
+
+/**
+ * A hold's features with the app's LED Hold Exp recorded (or removed, with
+ * null), every other key kept. Features that aren't a JSON object are left as
+ * they are: the marker is skipped rather than anything overwritten. An object
+ * left empty goes back to null. Pure.
+ */
+export function withAppHoldExp(features: string | null, date: string | null): string | null {
+  const f = featureObject(features)
+  if (f === null) return features
+  const next = { ...f }
+  if (date) next[APP_HOLD_EXP_KEY] = date
+  else delete next[APP_HOLD_EXP_KEY]
+  return Object.keys(next).length ? JSON.stringify(next) : null
 }
 
 /**
@@ -67,6 +115,33 @@ export function reconcileTarget(status: string, stage: { isClosed: boolean; isWo
   if (stage.isClosed && stage.isWon) return status === 'COMMITTED' ? null : 'COMMITTED'
   if (stage.isClosed) return status === 'EXPIRED' ? null : 'EXPIRED'
   return status === 'COMMITTED' ? 'HOLD' : null
+}
+
+/**
+ * A Salesforce-made hold's expiry after a push. The app owns LED Hold Exp:
+ * after an expiry change it writes the opportunity's Hold Exp and records that
+ * date in the hold's features (APP_HOLD_EXP_KEY; lib/sfdcBooking.ts
+ * syncOpportunityLedWindow) — not in sfdc_hold_exp, which keeps meaning
+ * "Salesforce sent a Hold Exp" and decides whether a lapse closes the deal
+ * (expiryClosesOpportunity) — so a push carrying the date recorded there
+ * is the echo of the app's own write and the hold keeps its expiry: no
+ * re-derived date, no override, no revival of a lapsed hold. A different Hold
+ * Exp from Salesforce wins (the last day it's valid, to its end); with none,
+ * the hold keeps what it has, and only a row with nothing gets the fallback.
+ * Pure.
+ */
+export function pushedHoldExpiry(o: {
+  pushedHoldExp: string | null
+  /** The Hold Exp the app last wrote, from the hold's features (appHoldExpOf). */
+  appHoldExp: string | null
+  current: Date | null
+  fallback: Date
+}): { expiresAt: Date; echo: boolean } {
+  const pushed = o.pushedHoldExp?.slice(0, 10) ?? null
+  if (pushed && o.current && o.appHoldExp === pushed) {
+    return { expiresAt: o.current, echo: true }
+  }
+  return { expiresAt: (pushed ? endOfDayUtc(pushed) : null) ?? o.current ?? o.fallback, echo: false }
 }
 
 export function closedOpportunityBlocksReactivation(stage: { isClosed: boolean; isWon: boolean; stageName: string } | null): string | null {

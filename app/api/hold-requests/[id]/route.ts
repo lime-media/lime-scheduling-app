@@ -14,6 +14,7 @@ import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, reactivat
 import { reopenClosedLostOpportunity } from '@/lib/sfdcBooking'
 import { sendCancellationEmail, sendExtensionDecisionEmail } from '@/lib/email'
 import { recordSwap } from '@/lib/transportMetricsRecord'
+import { waitUntil } from '@vercel/functions'
 
 type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration' | 'reinstate'
 
@@ -152,7 +153,8 @@ export async function PATCH(
         details:      JSON.stringify({ old_truck: oldTruck, new_truck: truck_number }),
       },
     })
-    await recordSwap(hold.id, session.user.id)
+    // Metrics measure the new truck's way in (a fleet and GPS load): after the response.
+    waitUntil(recordSwap(hold.id, session.user.id))
 
     return NextResponse.json({ ok: true, old_truck: oldTruck, new_truck: truck_number })
   }

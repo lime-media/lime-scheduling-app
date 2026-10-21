@@ -66,6 +66,7 @@ section('transport metrics: which holds get an EXECUTED record')
   const holds = [h('a', '2026-10-20'), h('b', '2026-10-17'), h('c', '2026-10-16'), h('d', '2026-10-21'), h('e', '2026-10-20', 'EXPIRED'),
     h('f', '2026-10-20', 'COMMITTED'), h('g', '2026-10-20', 'HOLD', 'quote_only'), h('i', '2026-10-19', 'ATT_SOFT')]
   eq('started today or in the last 3 days, live, not yet recorded', executedCandidates(holds, new Set(['f']), '2026-10-20').map(x => x.id), ['a', 'b'])
+  eq('a hold waiting on an extension request still ran', executedCandidates([h('x', '2026-10-20', 'EXTENSION_REQUESTED')], new Set(), '2026-10-20').map(x => x.id), ['x'])
 }
 
 section('transport metrics: KPIs')

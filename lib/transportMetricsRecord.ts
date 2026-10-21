@@ -23,7 +23,7 @@ import { SERVICE_AREA_RADIUS_MILES } from '@/lib/pricing/config'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import {
-  activationDaysOf, executedCandidates, executedOrigin, leadBusinessDays, legCost, legFromInbound, legOutcome,
+  LIVE_HOLD_STATUSES, activationDaysOf, executedCandidates, executedOrigin, leadBusinessDays, legCost, legFromInbound, legOutcome,
   prestartCandidates, type LegEvent, type MeasuredLeg,
 } from '@/lib/transportMetrics'
 
@@ -91,9 +91,11 @@ export async function recordBooking(o: {
             }))?.booking_key
           : null) ?? o.revised.bookingKey
       : null
+    // One timestamp for every row: the KPIs tell one revision from the next by it.
+    const at = new Date()
     const rows = o.groups.flatMap(g => g.legs.flatMap(leg => {
       const hold = holds.find(h => h.campaign_group_id === g.groupId && h.truck_number === leg.truckNumber)
-      return hold ? [legRow(o.event, hold, leg, o.createdBy, lineage)] : []
+      return hold ? [{ ...legRow(o.event, hold, leg, o.createdBy, lineage), created_at: at }] : []
     }))
     if (rows.length) await prisma.transportLeg.createMany({ data: rows })
     await prisma.dealValue.create({
@@ -140,14 +142,19 @@ async function originMeasurer(excludeHoldIds: Set<string>) {
   }
 }
 
-/** What the client pays for a hold's transport: its latest planned leg's charge (0 if none recorded). */
-async function plannedCharges(holdIds: string[]): Promise<Map<string, number>> {
+/**
+ * Each hold's latest planned leg: what the client pays for its transport (0 if
+ * none recorded), and the booking key it was recorded under. A revision's rows
+ * keep the original booking's key while its holds carry a new campaign group,
+ * so later rows for those holds take the recorded key, not bookingKey(hold).
+ */
+async function plannedLegs(holdIds: string[]): Promise<Map<string, { charge: number; bookingKey: string | null }>> {
   const legs = await prisma.transportLeg.findMany({
     where: { hold_id: { in: holdIds }, event: { in: ['BOOKED', 'SWAPPED', 'REVISED'] } },
     orderBy: { created_at: 'asc' },
-    select: { hold_id: true, charge: true },
+    select: { hold_id: true, charge: true, booking_key: true },
   })
-  return new Map(legs.map(l => [l.hold_id!, Number(l.charge)]))
+  return new Map(legs.map(l => [l.hold_id!, { charge: Number(l.charge), bookingKey: l.booking_key }]))
 }
 
 /** A truck swapped onto a hold: where the new truck comes from, measured now. */
@@ -155,9 +162,10 @@ export async function recordSwap(holdId: string, createdBy: string | null): Prom
   try {
     const hold = await prisma.hold.findUnique({ where: { id: holdId } })
     if (!hold || hold.origination === QUOTE_ONLY_ORIGINATION) return
-    const measurer = await originMeasurer(new Set([hold.id]))
-    const leg = await measurer.measure(hold, (await plannedCharges([hold.id])).get(hold.id) ?? 0)
-    if (leg) await prisma.transportLeg.create({ data: legRow('SWAPPED', hold, leg, createdBy) })
+    const [measurer, planned] = await Promise.all([originMeasurer(new Set([hold.id])), plannedLegs([hold.id])])
+    const was = planned.get(hold.id)
+    const leg = await measurer.measure(hold, was?.charge ?? 0)
+    if (leg) await prisma.transportLeg.create({ data: legRow('SWAPPED', hold, leg, createdBy, was?.bookingKey) })
   } catch (err) {
     console.error('[transport-metrics] recordSwap failed:', err)
   }
@@ -179,7 +187,7 @@ export async function recordPrestart(): Promise<number> {
     const today = day(new Date())
     const until = new Date(today + 'T23:59:59Z')
     until.setUTCDate(until.getUTCDate() + 3)
-    const window = { status: { in: ['HOLD', 'COMMITTED'] }, origination: { not: QUOTE_ONLY_ORIGINATION }, start_date: { gt: new Date(today + 'T23:59:59Z'), lte: until } }
+    const window = { status: { in: LIVE_HOLD_STATUSES }, origination: { not: QUOTE_ONLY_ORIGINATION }, start_date: { gt: new Date(today + 'T23:59:59Z'), lte: until } }
     const upcoming = await prisma.hold.findMany({ where: window, select: { id: true, status: true, origination: true, start_date: true } })
     if (upcoming.length === 0) return 0
     const done = await prisma.transportLeg.findMany({
@@ -190,11 +198,12 @@ export async function recordPrestart(): Promise<number> {
     if (todoIds.length === 0) return 0
     const todo = await prisma.hold.findMany({ where: { id: { in: todoIds } } })
     if (todo.length === 0) return 0
-    const [measurer, charges] = await Promise.all([originMeasurer(new Set(todo.map(h => h.id))), plannedCharges(todo.map(h => h.id))])
+    const [measurer, planned] = await Promise.all([originMeasurer(new Set(todo.map(h => h.id))), plannedLegs(todo.map(h => h.id))])
     const rows = []
     for (const hold of todo) {
-      const leg = await measurer.measure(hold, charges.get(hold.id) ?? 0)
-      if (leg) rows.push(legRow('PRESTART', hold, leg, null))
+      const was = planned.get(hold.id)
+      const leg = await measurer.measure(hold, was?.charge ?? 0)
+      if (leg) rows.push(legRow('PRESTART', hold, leg, null, was?.bookingKey))
     }
     if (rows.length) await prisma.transportLeg.createMany({ data: rows })
     return rows.length
@@ -217,7 +226,7 @@ export async function recordExecuted(): Promise<number> {
     from.setUTCDate(from.getUTCDate() - 3)
     // Every candidate in the window (ids only), so the batch below is taken
     // from the ones not yet recorded, never cut before the done ones drop out.
-    const window = { status: { in: ['HOLD', 'COMMITTED'] }, origination: { not: QUOTE_ONLY_ORIGINATION }, start_date: { gte: from, lte: new Date(today + 'T23:59:59Z') } }
+    const window = { status: { in: LIVE_HOLD_STATUSES }, origination: { not: QUOTE_ONLY_ORIGINATION }, start_date: { gte: from, lte: new Date(today + 'T23:59:59Z') } }
     const recent = await prisma.hold.findMany({ where: window, select: { id: true, status: true, origination: true, start_date: true } })
     if (recent.length === 0) return 0
     const done = await prisma.transportLeg.findMany({
@@ -228,9 +237,9 @@ export async function recordExecuted(): Promise<number> {
     if (todoIds.length === 0) return 0
     const todo = await prisma.hold.findMany({ where: { id: { in: todoIds } } })
     if (todo.length === 0) return 0
-    const [measurer, charges, snapshots] = await Promise.all([
+    const [measurer, planned, snapshots] = await Promise.all([
       originMeasurer(new Set(todo.map(h => h.id))),
-      plannedCharges(todo.map(h => h.id)),
+      plannedLegs(todo.map(h => h.id)),
       prisma.transportLeg.findMany({
         where: { event: 'PRESTART', hold_id: { in: todo.map(h => h.id) } },
         orderBy: { created_at: 'asc' },
@@ -240,8 +249,9 @@ export async function recordExecuted(): Promise<number> {
     const prestartOf = new Map(snapshots.map(s => [s.hold_id!, s]))
     const rows = []
     for (const hold of todo) {
-      const measured = await measurer.measure(hold, charges.get(hold.id) ?? 0)
-      if (measured) rows.push(legRow('EXECUTED', hold, executedOrigin(measured, prestartOf.get(hold.id) ?? null, measurer.serviceAreaMiles), null))
+      const was = planned.get(hold.id)
+      const measured = await measurer.measure(hold, was?.charge ?? 0)
+      if (measured) rows.push(legRow('EXECUTED', hold, executedOrigin(measured, prestartOf.get(hold.id) ?? null, measurer.serviceAreaMiles), null, was?.bookingKey))
     }
     if (rows.length) await prisma.transportLeg.createMany({ data: rows })
     return rows.length
@@ -270,11 +280,24 @@ const AMOUNT_BATCH = 200
  * Salesforce's Amount and records it when it differs from the last captured.
  * Skipped quietly when Salesforce isn't configured. Returns how many changed.
  */
+// Won deals are re-checked for Amount changes for this long after they were
+// won; after that a change is rare and no longer about the quote. Keeps the
+// 15-minute sweep's reads and Salesforce calls from growing without limit.
+const AMOUNT_RECHECK_DAYS = 180
+
 export async function recordAmountChanges(): Promise<number> {
   if (!isSfdcConfigured()) return 0
   try {
+    const since = new Date(Date.now() - AMOUNT_RECHECK_DAYS * 86_400_000)
+    const recent = await prisma.dealValue.findMany({
+      where:    { event: 'WON', sfdc_opportunity_id: { not: null }, captured_at: { gte: since } },
+      select:   { sfdc_opportunity_id: true },
+      distinct: ['sfdc_opportunity_id'],
+    })
+    const recentIds = recent.map(r => r.sfdc_opportunity_id!)
+    if (recentIds.length === 0) return 0
     const won = await prisma.dealValue.findMany({
-      where: { event: { in: ['WON', 'AMOUNT_CHANGED'] }, sfdc_opportunity_id: { not: null } },
+      where: { event: { in: ['WON', 'AMOUNT_CHANGED'] }, sfdc_opportunity_id: { in: recentIds } },
       orderBy: { captured_at: 'asc' },
       select: { sfdc_opportunity_id: true, sf_amount: true, client_name: true },
     })

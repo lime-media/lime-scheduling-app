@@ -11,6 +11,7 @@
  */
 
 import { absorbedLegCost, needsRepositioning } from '@/lib/pricing/transport'
+import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 
 export type LegEvent = 'BOOKED' | 'SWAPPED' | 'REVISED' | 'EXECUTED' | 'PRESTART'
 
@@ -20,6 +21,8 @@ export type LegEvent = 'BOOKED' | 'SWAPPED' | 'REVISED' | 'EXECUTED' | 'PRESTART
  * EXECUTED's origin), never a plan or an outcome in any KPI.
  */
 export const PLAN_EVENTS: ReadonlySet<string> = new Set(['BOOKED', 'SWAPPED', 'REVISED'])
+/** Hold statuses that still reserve the truck for a booking: the sweeps measure these (never ATT_SOFT, EXPIRED). */
+export const LIVE_HOLD_STATUSES = ['HOLD', 'EXTENSION_REQUESTED', 'COMMITTED']
 export type OriginKind = 'PRIOR_JOB' | 'GPS' | 'SAME_ORDER' | 'UNKNOWN'
 export type LegOutcome = 'LOCAL' | 'ABSORBED' | 'BILLED'
 export type DealEvent = 'BOOKED' | 'REVISED' | 'WON' | 'AMOUNT_CHANGED'
@@ -130,7 +133,7 @@ export function activationDaysOf(features: string | null): number | null {
 /**
  * Holds whose first day has come and that have no EXECUTED record yet: the
  * sweep measures what actually ran them. Reservations (HOLD) and committed
- * bookings only, starting today or in the last `lookbackDays` (so a missed
+ * bookings (an extension request included) only, starting today or in the last `lookbackDays` (so a missed
  * sweep still catches them), never quote-only logs or AT&T soft holds. Pure.
  */
 export function executedCandidates<T extends { id: string; status: string; origination: string; start_date: Date }>(
@@ -141,8 +144,8 @@ export function executedCandidates<T extends { id: string; status: string; origi
   const from = earliest.toISOString().slice(0, 10)
   return holds.filter(h => {
     const start = h.start_date.toISOString().slice(0, 10)
-    return (h.status === 'HOLD' || h.status === 'COMMITTED')
-      && h.origination !== 'quote_only'
+    return LIVE_HOLD_STATUSES.includes(h.status)
+      && h.origination !== QUOTE_ONLY_ORIGINATION
       && start >= from && start <= today
       && !executedHoldIds.has(h.id)
   })
@@ -162,8 +165,8 @@ export function prestartCandidates<T extends { id: string; status: string; origi
   const until = latest.toISOString().slice(0, 10)
   return holds.filter(h => {
     const start = h.start_date.toISOString().slice(0, 10)
-    return (h.status === 'HOLD' || h.status === 'COMMITTED')
-      && h.origination !== 'quote_only'
+    return LIVE_HOLD_STATUSES.includes(h.status)
+      && h.origination !== QUOTE_ONLY_ORIGINATION
       && start > today && start <= until
       && !prestartHoldIds.has(h.id)
   })
@@ -244,12 +247,12 @@ export function quotedPlan(legs: LegRow[]): LegRow[] {
     else loose.push(l)
   }
   const out: LegRow[] = []
-  // A revision writes one row per truck at one moment.
-  const minute = (l: LegRow) => Math.floor(l.created_at.getTime() / 60_000)
+  // A revision writes all its rows with one timestamp (recordBooking).
+  const stamp = (l: LegRow) => l.created_at.getTime()
   for (const rows of byBooking.values()) {
     const revisions = rows.filter(l => l.event === 'REVISED')
-    const lastRevision = revisions.length ? Math.max(...revisions.map(minute)) : null
-    const base = lastRevision != null ? revisions.filter(l => minute(l) === lastRevision) : rows.filter(l => l.event === 'BOOKED')
+    const lastRevision = revisions.length ? Math.max(...revisions.map(stamp)) : null
+    const base = lastRevision != null ? revisions.filter(l => stamp(l) === lastRevision) : rows.filter(l => l.event === 'BOOKED')
     for (const b of base) {
       const later = rows.filter(l => l.event === 'SWAPPED' && l.hold_id && l.hold_id === b.hold_id && l.created_at > b.created_at)
       out.push(later.reduce((a, l) => (l.created_at > a.created_at ? l : a), b))
@@ -306,8 +309,8 @@ export function churnKpis(legs: LegRow[]) {
     if (!l.booking_key || !PLAN_EVENTS.has(l.event)) continue
     const b = byBooking.get(l.booking_key) ?? { swaps: 0, revisions: new Set<number>() }
     if (l.event === 'SWAPPED') b.swaps++
-    // A revision writes one row per truck at one moment: count it once.
-    if (l.event === 'REVISED') b.revisions.add(Math.floor(l.created_at.getTime() / 60_000))
+    // A revision writes all its rows with one timestamp: count it once.
+    if (l.event === 'REVISED') b.revisions.add(l.created_at.getTime())
     byBooking.set(l.booking_key, b)
   }
   const bookings = [...byBooking.values()]

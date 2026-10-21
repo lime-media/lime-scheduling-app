@@ -12,7 +12,9 @@ import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { formatMarketState } from '@/lib/format'
 import { HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
 import { CHAT_TOOLS, runChatTool, type ChatToolContext } from '@/lib/staffChatTools'
-import { CLOSED_WON_READ_ONLY, closedWonRefusal } from '@/lib/bookings'
+import { CLOSED_WON_READ_ONLY, bookingKey, closedWonRefusal } from '@/lib/bookings'
+import { loadBookingHolds } from '@/lib/bookingLoad'
+import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -83,7 +85,7 @@ PRICES:
 
 BOOKING (one market at a time):
 1. Gather the market, dates, truck count and features. For a booking you also need the Salesforce account (find_account) and the opportunity's primary contact (find_contacts). Ask for whichever are missing; if a search finds several, ask which.
-2. Run get_quote with the account, show the quote (total, trucks, transport) with its quote ref, and ask the rep to confirm. Also confirm the brand and hold length if they gave them (hold default 3 days).
+2. Run get_quote with the account and the booking terms (account name, primary contact, brand if given, hold days, default 3, and stage, default WARM). Show the quote (total, trucks, transport) and those terms with its quote ref, and ask the rep to confirm. The ref covers all of it: place_hold must pass the same values.
 3. Only when the rep confirms in their next message, call place_hold with the same inputs, the quote_ref and the grandTotal. place_hold books only the quote ref in your previous reply, so the reply that asks for confirmation must show the quote with its ref (if you asked something else in between, show the quote and its ref again). If anything changes, quote again and ask again.
 4. Report what place_hold returned, including any Salesforce problem. Never describe a refused or partial booking as done.
 - A campaign across several markets is one booking with one quote and one expiry: check availability per market here, but price and book it on the Multi-market planner. Single-market quotes don't add up to its price.
@@ -114,8 +116,19 @@ async function executeReleaseHold(
   if (hold.status === 'ATT_SOFT') {
     return { success: false, message: `Truck ${hold.truck_number}'s hold is an AT&T soft hold; release it from the AT&T soft-hold controls.` }
   }
-  // A won deal is never released from here (lib/bookings.ts closedWonRefusal).
-  if (closedWonRefusal([hold])) {
+  // A booking is the unit (lib/bookings.ts): one truck of a campaign group or
+  // opportunity is never released on its own. The whole booking is cancelled
+  // from Reservations, which also emails the client.
+  const key = bookingKey(hold)
+  const booking = key ? await loadBookingHolds(key) : []
+  const others = booking.filter(h => h.id !== hold.id && h.status !== 'EXPIRED')
+  if (others.length) {
+    return { success: false, message: `Truck ${hold.truck_number}'s hold is one of ${others.length + 1} in a booking for "${hold.client_name}"; a booking is released whole, from Reservations (Cancel).` }
+  }
+  // A won deal is never released from here (lib/bookings.ts closedWonRefusal),
+  // including in the minutes before the reconcile commits it.
+  const stage = hold.sfdc_opportunity_id ? await getOpportunityStage(hold.sfdc_opportunity_id) : null
+  if (closedWonRefusal([hold, ...booking], stage?.isClosed ? { isWon: stage.isWon } : null)) {
     return { success: false, message: `Truck ${hold.truck_number} is committed to "${hold.client_name}". ${CLOSED_WON_READ_ONLY}` }
   }
 
@@ -305,7 +318,8 @@ async function handlePost(req: NextRequest) {
     ...history,
     {
       role: 'user',
-      content: `${message}\n\n[SCHEDULE DATA]\n${scheduleContext}`,
+      // Cached too: every tool round resends the whole schedule.
+      content: [{ type: 'text', text: `${message}\n\n[SCHEDULE DATA]\n${scheduleContext}`, cache_control: { type: 'ephemeral' } }],
     },
   ]
 
@@ -314,6 +328,7 @@ async function handlePost(req: NextRequest) {
     actor: { type: 'app_user', id: session.user.id, name: session.user.name ?? session.user.email ?? '', email: session.user.email },
     shownText: shown,
     booked: false,
+    conversationId: convId,
   }
   // A release, like a booking, needs the rep's confirmation: the hold's id in
   // the reply they're answering, and one per message.
@@ -383,7 +398,8 @@ async function handlePost(req: NextRequest) {
   // An empty reply would be sent back as an empty history turn, which the API rejects.
   if (!reply && !actions.length) reply = 'Sorry, I could not answer that. Please try asking again.'
   // A bookable quote is always shown with its ref, so the rep's "yes" can book it.
-  const missing = quotes.filter(q => !reply.includes(q.ref))
+  // One booked this message isn't offered again.
+  const missing = quotes.filter(q => q.ref !== ctx.bookedRef && !reply.includes(q.ref))
   if (missing.length) reply += `\n\n${missing.map(q => `Quote ref: ${q.ref} (${q.summary})`).join('\n')}`
   const actionResult: ActionResult | null = actions.length
     ? { success: actions.every(a => a.success), message: actions.map(a => a.message).join(' ') }

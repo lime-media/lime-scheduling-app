@@ -29,7 +29,7 @@ import { isAccountId, searchAccounts, searchContacts } from '@/lib/sfdcSearch'
 import { resolveQuoteMarket, staffQuote, type StaffQuoteInput } from '@/lib/staffQuote'
 import { placeStaffBooking } from '@/lib/staffBooking'
 import { recordToolRun, type Actor } from '@/lib/usageLog'
-import { quoteRef } from '@/lib/quoteRef'
+import { quoteRef, type BookingTerms } from '@/lib/quoteRef'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 
@@ -53,6 +53,15 @@ const QUOTE_PROPERTIES = {
 
 const QUOTE_REQUIRED = ['market', 'start_date', 'end_date', 'truck_count']
 
+/** What a booking writes beyond the price. Given to get_quote too, so the quote ref covers them (lib/quoteRef.ts). */
+const BOOKING_TERMS = {
+  sfdc_account_name: { type: 'string', description: 'The account name from find_account.' },
+  primary_contact_id: { type: 'string', description: 'Salesforce Contact id from find_contacts.' },
+  brand: { type: 'string', description: 'The brand being advertised, if the rep gave one.' },
+  hold_days: { type: 'integer', minimum: 1, maximum: MAX_HOLD_DAYS, description: 'Days to hold. Default 3; it never runs past 2 days before the start.' },
+  stage: { type: 'string', enum: OPEN_STAGES.map(s => s.value), description: 'Opportunity stage. Default WARM.' },
+} as const
+
 export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'check_availability',
@@ -65,8 +74,8 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'get_quote',
-    description: 'Price one market exactly as the internal Quote page does: trucks picked, media, features, transport, total. Returns quote_ref when the trucks are there to book it. Include sfdc_account_id when the rep may book, so agreement and Brand Direct pricing apply.',
-    input_schema: { type: 'object', properties: QUOTE_PROPERTIES, required: QUOTE_REQUIRED },
+    description: 'Price one market exactly as the internal Quote page does: trucks picked, media, features, transport, total. Returns quote_ref when the trucks are there to book it. When the rep may book, include sfdc_account_id (agreement and Brand Direct pricing) and the booking terms (account name, primary contact, brand, hold days, stage): the ref covers them, so place_hold books exactly what the rep confirmed.',
+    input_schema: { type: 'object', properties: { ...QUOTE_PROPERTIES, ...BOOKING_TERMS }, required: QUOTE_REQUIRED },
   },
   {
     name: 'find_account',
@@ -91,18 +100,14 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         ...QUOTE_PROPERTIES,
         quote_ref: { type: 'string', description: 'The quote_ref get_quote returned.' },
         expected_total: { type: 'number', description: 'The quote\'s grandTotal.' },
-        sfdc_account_name: { type: 'string' },
-        primary_contact_id: { type: 'string', description: 'Salesforce Contact id from find_contacts.' },
-        brand: { type: 'string', description: 'The brand being advertised, if the rep gave one.' },
-        hold_days: { type: 'integer', minimum: 1, maximum: MAX_HOLD_DAYS, description: 'Days to hold. Default 3; it never runs past 2 days before the start.' },
-        stage: { type: 'string', enum: OPEN_STAGES.map(s => s.value), description: 'Opportunity stage. Default WARM.' },
+        ...BOOKING_TERMS,
       },
       required: [...QUOTE_REQUIRED, 'quote_ref', 'expected_total', 'sfdc_account_id', 'sfdc_account_name', 'primary_contact_id'],
     },
   },
   {
     name: 'release_hold',
-    description: 'Release (delete) one hold by its id from the HOLDS list. Only after the rep confirmed this exact hold. Committed (Closed Won) and AT&T soft holds are refused.',
+    description: 'Release (delete) one hold by its id from the HOLDS list. Only after the rep confirmed this exact hold. Committed (Closed Won) and AT&T soft holds, and one hold of a booking with several, are refused.',
     input_schema: { type: 'object', properties: { hold_id: { type: 'string' } }, required: ['hold_id'] },
   },
 ]
@@ -113,6 +118,10 @@ export type ChatToolContext = {
   shownText: string
   /** A booking already ran this turn: one booking per message. */
   booked: boolean
+  /** The quote ref booked this turn, so the reply doesn't offer it again. */
+  bookedRef?: string
+  /** The chat conversation, so the Usage page links its quote and hold rows to it. */
+  conversationId?: string | null
 }
 
 export type ChatToolOutcome = {
@@ -151,8 +160,22 @@ function quoteInput(i: Bag): StaffQuoteInput | string {
   }
 }
 
+/** The booking terms, type-checked; a string saying what's wrong otherwise. */
+function bookingTerms(i: Bag): BookingTerms | string {
+  for (const k of ['sfdc_account_name', 'primary_contact_id', 'brand', 'stage'] as const) {
+    if (i[k] !== undefined && typeof i[k] !== 'string') return `${k} is text`
+  }
+  if (i.hold_days !== undefined && (typeof i.hold_days !== 'number' || !Number.isInteger(i.hold_days))) return 'hold_days is a whole number of days'
+  return {
+    sfdc_account_name: i.sfdc_account_name as string | undefined, primary_contact_id: i.primary_contact_id as string | undefined,
+    brand: i.brand as string | undefined, hold_days: i.hold_days as number | undefined, stage: i.stage as string | undefined,
+  }
+}
+
 const json = (v: unknown) => JSON.stringify(v)
 const fail = (message: string): ChatToolOutcome => ({ content: json({ error: message }), isError: true })
+/** A tool run's logged result, linked to the chat it ran in (lib/usageLog.ts reportFields). */
+const withConv = (ctx: ChatToolContext, body: object) => ({ ...body, conversation_id: ctx.conversationId ?? undefined })
 const money = (n: number) => `$${Math.round(n).toLocaleString('en-US')}`
 
 // ── The tools ───────────────────────────────────────────────────────────────
@@ -213,25 +236,27 @@ async function availability(i: Bag): Promise<ChatToolOutcome> {
 async function quote(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
   const q = quoteInput(i)
   if (typeof q === 'string') return fail(q)
+  const terms = bookingTerms(i)
+  if (typeof terms === 'string') return fail(terms)
   const started = Date.now()
   let result: Awaited<ReturnType<typeof staffQuote>>
   try {
     result = await staffQuote(q)
   } catch (err) {
-    recordToolRun(ctx.actor, 'quote_chat', q, 500, { error: err instanceof Error ? err.message : String(err) }, Date.now() - started)
+    recordToolRun(ctx.actor, 'quote_chat', q, 500, withConv(ctx, { error: err instanceof Error ? err.message : String(err) }), Date.now() - started)
     throw err
   }
-  recordToolRun(ctx.actor, 'quote_chat', q, result.status, result.body, Date.now() - started)
+  recordToolRun(ctx.actor, 'quote_chat', q, result.status, withConv(ctx, result.body), Date.now() - started)
   const body = result.body
   if (result.status !== 200 || body.insufficient === true || typeof body.grandTotal !== 'number') {
     return { content: json(body), isError: result.status !== 200 }
   }
   // The ref covers the market as the quote resolved it: that is what place_hold books.
-  const ref = quoteRef({ ...q, market: String(body.market) }, body.grandTotal)
+  const ref = quoteRef({ ...q, market: String(body.market) }, body.grandTotal, terms)
   const trucks = Array.isArray(body.selectedTrucks) ? body.selectedTrucks.join(', ') : ''
   return {
     content: json({ ...body, quote_ref: ref }),
-    quote: { ref, summary: `${body.market}, ${q.start_date} to ${q.end_date}, ${q.truck_count} truck${q.truck_count === 1 ? '' : 's'}${trucks ? ` (${trucks})` : ''}, ${money(body.grandTotal)}` },
+    quote: { ref, summary: `${body.market}, ${q.start_date} to ${q.end_date}, ${q.truck_count} truck${q.truck_count === 1 ? '' : 's'}${trucks ? ` (${trucks})` : ''}, ${money(body.grandTotal)}${terms.sfdc_account_name ? ` for ${terms.sfdc_account_name.trim()}` : ''}, held ${terms.hold_days ?? 3} days` },
   }
 }
 
@@ -264,16 +289,15 @@ async function book(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
   if (!q.sfdc_account_id) return fail('sfdc_account_id is required: find the account with find_account.')
   if (!isStr(i.sfdc_account_name)) return fail('sfdc_account_name is required.')
   if (!isStr(i.primary_contact_id)) return fail('primary_contact_id is required: find the contact with find_contacts.')
-  if (i.stage !== undefined && typeof i.stage !== 'string') return fail('stage is text')
+  const terms = bookingTerms(i)
+  if (typeof terms === 'string') return fail(terms)
   if (!isStr(i.quote_ref) || typeof i.expected_total !== 'number' || !Number.isFinite(i.expected_total)) {
     return fail('quote_ref and expected_total come from get_quote.')
   }
-  if (i.hold_days !== undefined && (typeof i.hold_days !== 'number' || !Number.isInteger(i.hold_days))) return fail('hold_days is a whole number of days')
-  if (i.brand !== undefined && typeof i.brand !== 'string') return fail('brand is text')
-  // The rep confirms what was quoted, nothing else: same inputs and total, and
-  // a quote they were shown before this message.
-  if (quoteRef(q, i.expected_total) !== i.quote_ref.trim()) {
-    return fail('These inputs or this total are not the quote with that ref. Run get_quote with the exact inputs to book, show it to the rep with its ref, and ask them to confirm.')
+  // The rep confirms what was quoted, nothing else: same inputs, terms and
+  // total, and a quote they were shown just before this message.
+  if (quoteRef(q, i.expected_total, terms) !== i.quote_ref.trim()) {
+    return fail('These inputs, terms or this total are not the quote with that ref. Run get_quote with the exact inputs to book, show it to the rep with its ref, and ask them to confirm.')
   }
   if (!ctx.shownText.includes(i.quote_ref.trim())) {
     return fail('The rep has not seen this quote yet. Show it with its quote ref and ask them to confirm; book when they reply.')
@@ -312,15 +336,21 @@ async function book(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
     result = await placeStaffBooking(body, ctx.actor)
   } catch (err) {
     // Logged like the route's own failures, then the chat reports it.
-    recordToolRun(ctx.actor, 'hold_chat', body, 500, { error: err instanceof Error ? err.message : String(err) }, Date.now() - started)
+    recordToolRun(ctx.actor, 'hold_chat', body, 500, withConv(ctx, { error: err instanceof Error ? err.message : String(err) }), Date.now() - started)
     throw err
   }
-  recordToolRun(ctx.actor, 'hold_chat', body, result.status, result.body, Date.now() - started)
+  recordToolRun(ctx.actor, 'hold_chat', body, result.status, withConv(ctx, result.body), Date.now() - started)
   const ok = result.status === 200 && result.body.ok === true
-  const message = String((ok ? result.body.message : result.body.error) ?? 'The booking failed.')
+  if (ok) ctx.bookedRef = i.quote_ref.trim()
+  // Booked without its opportunity: shown as needing attention, not as a plain
+  // success, so the Salesforce failure can't read as part of a done booking.
+  const sfdcFailure = ok && typeof result.body.sfdcFailure === 'string' ? result.body.sfdcFailure : null
+  const message = sfdcFailure
+    ? `Booked, but Salesforce needs attention: ${String(result.body.confirmation ?? '')} ${sfdcFailure}`.trim()
+    : String((ok ? result.body.message : result.body.error) ?? 'The booking failed.')
   return {
     content: json(result.body),
     isError: !ok,
-    action: { success: ok, message: ok ? message : `Not booked: ${message}` },
+    action: { success: ok && !sfdcFailure, message: ok ? message : `Not booked: ${message}` },
   }
 }

@@ -10,7 +10,9 @@ import { clientTypeOf } from '@/lib/pricing/brandMarkup'
 /** Accounts whose name contains q (at least 2 characters), up to 20. */
 export async function searchAccounts(q: string) {
   if (q.length < 2) return []
-  const escaped = soqlString(q)
+  // Typed % and _ are literal (an account name, not a pattern): the AI chat
+  // passes its own text here, and "_" alone would match any account.
+  const escaped = soqlString(q).replace(/[%_]/g, '\\$&')
   const records = await sfdcQuery<{ Id: string; Name: string; Client_Type2__c: string | null }>(
     `SELECT Id, Name, Client_Type2__c FROM Account WHERE Name LIKE '%${escaped}%' ORDER BY Name LIMIT 20`
   )

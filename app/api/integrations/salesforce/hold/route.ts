@@ -8,7 +8,7 @@ import { loadOpportunityReservingHolds } from '@/lib/bookingLoad'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
 import { soqlString } from '@/lib/soql'
-import { endOfDayCentral } from '@/lib/dateOnly'
+import { centralDate, endOfDayCentral } from '@/lib/dateOnly'
 import { HOLD_EXPIRATION_HOURS } from '@/lib/holdExpiry'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 
@@ -109,7 +109,7 @@ export async function POST(req: NextRequest) {
     select: { status: true },
   })
   if (appHolds.some(appHasNotReleased)) {
-    const want = ledWindowFields(await loadOpportunityReservingHolds(opportunityId), now.toISOString().slice(0, 10))
+    const want = ledWindowFields(await loadOpportunityReservingHolds(opportunityId), centralDate(now))
     if (!ledFieldsDiffer(want, truckNumbers, holdExp ?? null)) {
       return NextResponse.json({ results: [], app_owned: true })
     }

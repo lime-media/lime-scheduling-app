@@ -53,8 +53,6 @@ function capStarts(booking: Hold[]): string[] {
   return bookingCapStarts(booking.map(h => ({ start_date: h.start_date.toISOString().slice(0, 10), status: h.status })), today)
 }
 
-/** The end of a YYYY-MM-DD day in Central time, as a hand-set expiry is stored (lib/dateOnly.ts). */
-const endOfDay = (d: string) => endOfDayCentral(d)
 const day = (d: Date) => d.toISOString().slice(0, 10)
 
 /** The booking's span and markets, for the client's email. */
@@ -395,7 +393,7 @@ export async function PATCH(
     // for, but never past the staff limit (2 days before its earliest start),
     // or the standard length when none was asked.
     const starts = capStarts(booking)
-    const limit = endOfDay(lastExpiryDate([...starts].sort()[0], new Date(), STAFF_MIN_DAYS_BEFORE_START))
+    const limit = endOfDayCentral(lastExpiryDate([...starts].sort()[0], new Date(), STAFF_MIN_DAYS_BEFORE_START))
     const asked = live.map(h => h.extension_until).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0]
     const newExpiresAt = asked
       ? (asked > limit ? limit : asked)
@@ -435,7 +433,7 @@ export async function PATCH(
     if (!newExpiresAtStr) {
       return NextResponse.json({ error: 'expires_at is required' }, { status: 400 })
     }
-    const newExp = /^\d{4}-\d{2}-\d{2}$/.test(newExpiresAtStr) ? endOfDay(newExpiresAtStr) : new Date(NaN)
+    const newExp = /^\d{4}-\d{2}-\d{2}$/.test(newExpiresAtStr) ? endOfDayCentral(newExpiresAtStr) : new Date(NaN)
     if (isNaN(newExp.getTime())) {
       return NextResponse.json({ error: 'Invalid date' }, { status: 400 })
     }

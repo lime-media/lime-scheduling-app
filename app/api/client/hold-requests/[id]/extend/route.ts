@@ -78,7 +78,7 @@ export async function POST(
     }, { status: 400 })
   }
   const currentExpiry = held.map(h => h.expires_at).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0]
-  if (currentExpiry && extendDate <= currentExpiry) {
+  if (currentExpiry && (extendDate <= currentExpiry || extend_until <= holdExpDate(currentExpiry))) {
     return NextResponse.json({ error: `This booking is already held until ${holdExpDate(currentExpiry)}. Choose a later date.` }, { status: 400 })
   }
 

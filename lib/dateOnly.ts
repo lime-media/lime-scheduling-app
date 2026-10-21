@@ -27,14 +27,15 @@ export const APP_TIME_ZONE = 'America/Chicago'
 
 const CENTRAL_DAY = new Intl.DateTimeFormat('en-CA', { timeZone: APP_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' })
 
-/** The calendar day (YYYY-MM-DD) an instant falls on in Central time. */
+/**
+ * The calendar day (YYYY-MM-DD) an instant falls on in Central time. Built
+ * from parts, not the locale's whole-date pattern, so a browser whose en-CA
+ * format differs still gets YYYY-MM-DD.
+ */
 export function centralDate(instant: Date): string {
-  return CENTRAL_DAY.format(instant)
-}
-
-/** Today's date in Central time: what "today" means for expiries and caps. */
-export function todayCentral(now: Date = new Date()): string {
-  return centralDate(now)
+  const parts = CENTRAL_DAY.formatToParts(instant)
+  const part = (type: string) => parts.find(p => p.type === type)?.value
+  return `${part('year')}-${part('month')}-${part('day')}`
 }
 
 /**
@@ -46,6 +47,8 @@ export function todayCentral(now: Date = new Date()): string {
 export function endOfDayCentral(value: string): Date {
   const day = value.slice(0, 10)
   const next = new Date(day + 'T00:00:00Z')
+  // Not a date (e.g. month 13): an Invalid Date, for the caller's isNaN check.
+  if (isNaN(next.getTime())) return next
   next.setUTCDate(next.getUTCDate() + 1)
   const nextDay = next.toISOString().slice(0, 10)
   for (const hour of ['05', '06']) {

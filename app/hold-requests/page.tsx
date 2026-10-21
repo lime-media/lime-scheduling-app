@@ -811,7 +811,7 @@ export default function HoldRequestsPage() {
                   )}
                   {status === 'EXTENSION_REQUESTED' && (
                     <div className="px-4 py-2 text-xs text-amber-800 bg-amber-50 border-t border-amber-100">
-                      Extension requested for the whole booking{first.extension_until ? ` until ${format(parseDateOnly(first.extension_until.slice(0, 10)), 'MMM d')}` : ''}.
+                      Extension requested for the whole booking{first.extension_until ? ` until ${format(parseDateOnly(centralDate(new Date(first.extension_until))), 'MMM d')}` : ''}.
                       {first.extension_reason ? ` Reason: ${first.extension_reason}` : ''}
                     </div>
                   )}

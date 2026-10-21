@@ -28,6 +28,7 @@ import './tableSort.test'
 import './quoteAlternatives.test'
 import './clientChat.test'
 import './clientSession.test'
+import './emailTemplates.test'
 import { report, settle } from './harness'
 
 // settle() lets a suite make assertions after a promise resolves; it is a

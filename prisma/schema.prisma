@@ -123,6 +123,28 @@ model ClientUser {
   @@map("app_client_users")
 }
 
+/// One-time login codes for the client portal (lib/clientOtp.ts). The internal
+/// equivalent is OtpCode, whose user_id is a foreign key to User — client users
+/// are a different table, so they get their own.
+///
+/// No relation to ClientUser on purpose: app_client_users.id is NVARCHAR(1000),
+/// and a referencing column must match that type, which is then too wide to
+/// index (see the migration). client_user_id holds the id and the link is kept
+/// in code — so deleting a client user must delete their codes explicitly
+/// (app/api/admin/client-users/[id]). Codes expire in ten minutes regardless.
+model ClientOtpCode {
+  id             String    @id @default(cuid())
+  client_user_id String
+  code_hash      String
+  expires_at     DateTime
+  attempts       Int       @default(0)
+  consumed_at    DateTime?
+  created_at     DateTime  @default(now())
+
+  @@index([client_user_id])
+  @@map("app_client_login_otps")
+}
+
 // Every question a client has asked the client-portal AI assistant, across all
 // clients in one table — a dedicated log for reporting, decoupled from the
 // conversation-threading internals of dbo.client_chat_conversations /

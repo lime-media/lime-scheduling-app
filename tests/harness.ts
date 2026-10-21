@@ -27,6 +27,25 @@ export function eq(label: string, actual: unknown, expected: unknown): void {
   }
 }
 
+/**
+ * Assertions that can only be made after a promise settles. A suite passes
+ * its work here and report() waits for it, so an async check is counted
+ * rather than running after the process has already exited.
+ */
+const pending: Promise<unknown>[] = []
+
+export function defer(work: Promise<unknown>): void {
+  pending.push(work.catch((err) => {
+    fail++
+    failures.push(`threw: ${err instanceof Error ? err.message : String(err)}`)
+  }))
+}
+
+/** Resolves once every deferred assertion has run. */
+export async function settle(): Promise<void> {
+  await Promise.all(pending)
+}
+
 export function section(name: string): void {
   console.log(`\n-- ${name} --`)
 }

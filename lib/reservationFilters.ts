@@ -1,19 +1,20 @@
 /**
  * Reservations page filters beyond status and text search: whose bookings
- * (owner = the staff user who created them) and which dates they run.
+ * (owner = the Salesforce opportunity's owner, else the user who made the
+ * reservation; lib/reservationOwners.ts) and which dates they run.
  * Like the search, a filter picks whole bookings, never part of one, so a
  * card, its total and its Edit always cover the same reservations. Pure.
  */
 
 export type OwnerFilter = 'all' | 'me' | string // a user id
 
-type Row = { created_by: string; created_by_name: string | null; start_date: string; end_date: string }
+type Row = { owner_id: string; owner_name: string; start_date: string; end_date: string }
 
 /** The owner choices: Everyone, Me, then everyone else who owns a reservation, by name. */
 export function ownerOptions(rows: Row[], meId: string | null): { value: OwnerFilter; label: string }[] {
   const others = new Map<string, string>()
   for (const r of rows) {
-    if (r.created_by && r.created_by !== meId && !others.has(r.created_by)) others.set(r.created_by, r.created_by_name || 'Unknown')
+    if (r.owner_id && r.owner_id !== meId && !others.has(r.owner_id)) others.set(r.owner_id, r.owner_name || 'Unknown')
   }
   return [
     { value: 'all', label: 'Everyone' },
@@ -25,7 +26,7 @@ export function ownerOptions(rows: Row[], meId: string | null): { value: OwnerFi
 /** Is this reservation owned by the chosen owner? */
 export function ownedBy(row: Row, owner: OwnerFilter, meId: string | null): boolean {
   if (owner === 'all') return true
-  return row.created_by === (owner === 'me' ? meId : owner)
+  return row.owner_id === (owner === 'me' ? meId : owner)
 }
 
 /**

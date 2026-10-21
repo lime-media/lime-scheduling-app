@@ -5,12 +5,13 @@
 import { eq, section } from './harness'
 import { ownedBy, ownerOptions, runsBetween } from '@/lib/reservationFilters'
 
-const r = (created_by: string, created_by_name: string | null, start_date = '2026-11-09', end_date = '2026-11-20') => ({ created_by, created_by_name, start_date, end_date })
-const rows = [r('u1', 'Madison Hill'), r('u2', 'Christian Duffey'), r('u1', 'Madison Hill'), r('u3', null)]
+const r = (owner_id: string, owner_name: string, start_date = '2026-11-09', end_date = '2026-11-20') => ({ owner_id, owner_name, start_date, end_date })
+// u3 owns an opportunity but has no app login: kept under their Salesforce id and name.
+const rows = [r('u1', 'Madison Hill'), r('u2', 'Christian Duffey'), r('u1', 'Madison Hill'), r('sfdc:005X', 'Jack Sargent')]
 
 section('reservations: owner filter')
-eq('choices: Everyone, Me, then the others by name', ownerOptions(rows, 'u1').map(o => o.label), ['Everyone', 'Me', 'Christian Duffey', 'Unknown'])
-eq('no session: no Me', ownerOptions(rows, null).map(o => o.label), ['Everyone', 'Christian Duffey', 'Madison Hill', 'Unknown'])
+eq('choices: Everyone, Me, then the others by name', ownerOptions(rows, 'u1').map(o => o.label), ['Everyone', 'Me', 'Christian Duffey', 'Jack Sargent'])
+eq('no session: no Me', ownerOptions(rows, null).map(o => o.label), ['Everyone', 'Christian Duffey', 'Jack Sargent', 'Madison Hill'])
 eq('Everyone shows all', rows.filter(x => ownedBy(x, 'all', 'u1')).length, 4)
 eq('Me shows mine', rows.filter(x => ownedBy(x, 'me', 'u1')).length, 2)
 eq('someone else\'s', rows.filter(x => ownedBy(x, 'u2', 'u1')).length, 1)

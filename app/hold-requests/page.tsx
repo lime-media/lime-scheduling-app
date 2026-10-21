@@ -32,8 +32,10 @@ type HoldRequest = {
   source: string
   origination: string
   company_name: string
-  created_by: string
   created_by_name: string | null
+  /** The booking's owner: its opportunity's owner, else whoever made it (lib/reservationOwners.ts). */
+  owner_id: string
+  owner_name: string
   pricing_tier: string | null
   quoted_total: number | null
   daily_rate: number | null
@@ -212,15 +214,27 @@ export default function HoldRequestsPage() {
   const { data: session } = useSession()
   const meId = session?.user?.id ?? null
   const [owner, setOwnerState] = useState<OwnerFilter>('all')
+  // Remembered per login, so a shared browser doesn't hand one person's choice to the next.
+  const ownerKey = meId ? `reservations.owner.${meId}` : null
   useEffect(() => {
-    try { const saved = localStorage.getItem('reservations.owner'); if (saved) setOwnerState(saved) } catch { /* storage unavailable */ }
-  }, [])
+    if (!ownerKey) return
+    try { setOwnerState(localStorage.getItem(ownerKey) ?? 'all') } catch { /* storage unavailable */ }
+  }, [ownerKey])
   const setOwner = (value: OwnerFilter) => {
     setOwnerState(value)
-    try { localStorage.setItem('reservations.owner', value) } catch { /* storage unavailable */ }
+    if (ownerKey) try { localStorage.setItem(ownerKey, value) } catch { /* storage unavailable */ }
   }
+  // The choices, and the owner actually applied: a remembered owner that is no
+  // longer a choice (their reservations have all dropped off, another user on
+  // this browser, or the session still loading for "Me") falls back to
+  // Everyone, so the dropdown and the list always agree.
+  const owners = useMemo(() => ownerOptions(requests, meId), [requests, meId])
+  const ownerShown: OwnerFilter = owners.some(o => o.value === owner) ? owner : 'all'
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo,   setDateTo]   = useState('')
+  // Keep From <= To: moving one end past the other moves both.
+  const chooseFrom = (v: string) => { setDateFrom(v); if (v && dateTo && v > dateTo) setDateTo(v) }
+  const chooseTo   = (v: string) => { setDateTo(v); if (v && dateFrom && v < dateFrom) setDateFrom(v) }
   const [acting,       setActing]       = useState<string | null>(null) // group/row id currently mid-action
   // Reinstating onto a Closed Lost opportunity: asked before it is moved back to WARM.
   const reopen = useReopenConfirm()
@@ -528,26 +542,25 @@ export default function HoldRequestsPage() {
       const shown = (status: string) => !filterStatus
         || (filterStatus === 'HOLD' ? status === 'HOLD' || status === 'COMMITTED' : status === filterStatus)
       let result = requests.filter(r => shown(statusOf(r).status))
-      // Owner and dates pick whole bookings too: a booking shows if any of it
-      // matches, so a multi-market card never loses a market.
-      if (owner !== 'all' || dateFrom || dateTo) {
-        const keep = (r: HoldRequest) => ownedBy(r, owner, meId) && runsBetween(r, dateFrom, dateTo)
-        const cards = new Set(result.filter(keep).map(r => bookingKey(r)).filter(Boolean))
-        result = result.filter((r) => { const k = bookingKey(r); return k ? cards.has(k) : keep(r) })
+      // Owner, dates and search pick whole bookings: a booking shows if any of
+      // it matches, so a card, its total and its Edit always cover the same
+      // reservations and a multi-market card never loses a market.
+      const wholeBookings = (rows: HoldRequest[], matches: (r: HoldRequest) => boolean) => {
+        const cards = new Set(rows.filter(matches).map(r => bookingKey(r)).filter(Boolean))
+        return rows.filter((r) => { const k = bookingKey(r); return k ? cards.has(k) : matches(r) })
+      }
+      if (ownerShown !== 'all' || dateFrom || dateTo) {
+        result = wholeBookings(result, r => ownedBy(r, ownerShown, meId) && runsBetween(r, dateFrom, dateTo))
       }
       const q = search.trim().toLowerCase()
       if (q) {
-        const matches = (r: HoldRequest) => [r.company_name, r.truck_number, r.market, r.notes]
+        result = wholeBookings(result, r => [r.company_name, r.truck_number, r.market, r.notes]
           .filter(Boolean)
-          .some((field) => field!.toLowerCase().includes(q))
-        // A match shows its whole booking, so a card, its total and its Edit
-        // always cover the same reservations.
-        const cards = new Set(result.filter(matches).map(r => bookingKey(r)).filter(Boolean))
-        result = result.filter((r) => { const k = bookingKey(r); return k ? cards.has(k) : matches(r) })
+          .some((field) => field!.toLowerCase().includes(q)))
       }
       return result
     },
-    [requests, filterStatus, search, statusOf, owner, meId, dateFrom, dateTo]
+    [requests, filterStatus, search, statusOf, ownerShown, meId, dateFrom, dateTo]
   )
 
   // The last date the card being edited can be held to: a booking has one
@@ -730,19 +743,19 @@ export default function HoldRequestsPage() {
           )}
         </div>
         <select
-          value={owner}
+          value={ownerShown}
           onChange={(e) => setOwner(e.target.value)}
           aria-label="Owner"
           className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
         >
-          {ownerOptions(requests, meId).map(o => <option key={o.value} value={o.value}>{o.value === 'all' ? 'Owner: Everyone' : o.label}</option>)}
+          {owners.map(o => <option key={o.value} value={o.value}>{o.value === 'all' ? 'Owner: Everyone' : o.label}</option>)}
         </select>
         <div className="flex items-center gap-1.5 text-sm text-gray-600">
           <span>Running</span>
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} aria-label="Running from"
+          <input type="date" value={dateFrom} onChange={(e) => chooseFrom(e.target.value)} aria-label="Running from"
             className="border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
           <span>to</span>
-          <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => setDateTo(e.target.value)} aria-label="Running to"
+          <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => chooseTo(e.target.value)} aria-label="Running to"
             className="border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
           {(dateFrom || dateTo) && (
             <button onClick={() => { setDateFrom(''); setDateTo('') }} aria-label="Clear dates" className="text-gray-400 hover:text-gray-600 px-1">✕</button>
@@ -757,7 +770,7 @@ export default function HoldRequestsPage() {
           <div className="text-center py-20 text-gray-400">
             <p className="font-medium text-gray-500">No hold requests found</p>
             <p className="text-sm mt-1">
-              {search || filterStatus || owner !== 'all' || dateFrom || dateTo ? 'Try a different search term or filter' : 'Requests submitted by clients will show up here'}
+              {search || filterStatus || ownerShown !== 'all' || dateFrom || dateTo ? 'Try a different search term or filter' : 'Requests submitted by clients will show up here'}
             </p>
           </div>
         ) : (

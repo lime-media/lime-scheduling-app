@@ -4,6 +4,7 @@ import { QUOTE_ONLY_LIST_DAYS, QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { reservationOwners } from '@/lib/reservationOwners'
 
 // EXPIRED holds accumulate forever — every lapsed hold and every Closed Lost
 // Opportunity lands here and never leaves. Ops only care about the recent tail,
@@ -46,6 +47,8 @@ export async function GET() {
     },
   })
 
+  // Who owns each booking (the opportunity owner, else the creator), for the Owner filter.
+  const owners = await reservationOwners(holds.map(h => ({ id: h.id, created_by: h.created_by, created_by_name: h.user?.name ?? null, sfdc_opportunity_id: h.sfdc_opportunity_id })))
   return NextResponse.json({
     expired_window_days: EXPIRED_WINDOW_DAYS,
     holdRequests: holds.map((h) => ({
@@ -60,8 +63,9 @@ export async function GET() {
       source:            h.source,
       origination:       h.origination,
       company_name:      h.client_user?.company_name ?? h.client_name,
-      created_by:        h.created_by,
       created_by_name:   h.user?.name ?? null,
+      owner_id:          owners.get(h.id)!.owner_id,
+      owner_name:        owners.get(h.id)!.owner_name,
       pricing_tier:      h.pricing_tier ?? null,
       quoted_total:      h.quoted_total ?? null,
       daily_rate:        h.daily_rate ?? null,

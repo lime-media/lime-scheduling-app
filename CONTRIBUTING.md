@@ -39,8 +39,10 @@ Applies to `main` (`~DEFAULT_BRANCH`):
 | Allowed merge methods | merge commit, squash, rebase (all three enabled at repo level) |
 | Bypass | **Organization Admins can always bypass** |
 
-There are no GitHub Actions / CI checks wired up (`actions/workflows` is empty) — the
-only gate is the one human approval, and org admins can skip even that.
+GitHub Actions runs two checks, neither of which blocks a merge: `secret-scan`
+(gitleaks) and `local-review-check`, which only warns when a PR wasn't opened
+through `/ship` (see Reviews). The only gate is the one human approval, and org
+admins can skip even that.
 
 ## What actually happens in practice
 
@@ -66,9 +68,39 @@ Looking at PRs #1–#10 (all of which predate the `uat` branch — they went str
 
 1. Branch off `uat` as `feature/…` or `fix/…`.
 2. Open a PR back into `uat`.
-3. If you're not an org admin, you need **1 approval** before merge — no CI gate exists, so review is the only check.
+3. If you're not an org admin, you need **1 approval** before merge — the CI checks only warn, so review is the only gate.
    Note the ruleset only protects `main`, so a PR into `uat` is not gated by it; the review norm is convention, not enforcement.
 4. If you are an org admin, you can merge without an approval (bypass), and that's the observed pattern for admin-authored PRs.
 5. Merge via "Merge pull request" (merge commit) — that's the convention used so far, though squash/rebase are technically permitted.
 6. The topic branch is left in place after merge (not auto-deleted).
 7. Separately, `uat` is PR'd into `main` when a batch is ready to ship. That PR *is* covered by the ruleset above.
+
+## Reviews: local first, one paid review per PR
+
+The paid Claude Code Review (the GitHub app, billed per run to the org) is a
+multi-agent review whose cost grows with the size of the diff; a large PR can
+cost ~$50 a run. So every PR is cleaned up locally first, kept small, and gets
+exactly **one** paid review.
+
+1. **Open PRs with `/ship`** in Claude Code. It checks the size (over ~600 lines
+   or ~15 files it proposes a split), runs the type check, lint, tests and build,
+   runs the local Claude review (`/code-review`, on your own Claude Code plan)
+   and fixes what it finds until a pass is clean, then opens the PR with a
+   `Local review: passed at <sha>` line.
+2. **Enforced:** `.claude/settings.json` runs `.claude/hooks/review-gate.sh` before
+   Bash commands. It blocks `gh pr create` until a local review has passed on that
+   exact commit, and blocks a second `@claude review` on the same PR. A PR opened
+   by hand on GitHub gets a warning from the `local-review-check` workflow.
+3. **The one paid review:** Claude Code Review runs on its own when the PR
+   opens. Findings are fixed, verified with a local `/code-review`, and answered
+   on the PR (finding, cause, resolution, verification, remaining risk). Nobody
+   comments `@claude review`; the gate refuses it once Claude has reviewed.
+4. **Release PRs (`uat` → `main`) skip the local review:** their changes were each
+   reviewed in their own PRs. The gate lets `gh pr create --base main` through from
+   `uat`, and the workflow doesn't warn on them.
+5. **Don't stack PRs.** A PR branched from another open PR gets reviewed again
+   every time its base moves. Wait for the base to merge, or split differently.
+
+What sets the cost of a paid run is mostly how much it has to read, so the
+savings come from exactly one run per PR, small diffs, no stacking, and code
+that's already clean when it gets there.

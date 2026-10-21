@@ -11,7 +11,7 @@ import { appendHoldRequestToSheet } from '@/lib/googleSheets'
 import { computeHoldExpiresAt } from '@/lib/holdExpiry'
 import { daysUntil, MIN_CLIENT_LEAD_DAYS } from '@/lib/pricing'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
-import { HoldClashError, writeHoldsExclusive } from '@/lib/holdWriteLock'
+import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 
 export async function POST(req: NextRequest) {
   const keyError = validateInternalApiKey(req)
@@ -120,6 +120,7 @@ export async function POST(req: NextRequest) {
       }))
     } catch (err) {
       if (err instanceof HoldClashError) return NextResponse.json({ error: clientBookingRefusal(truck_number, 1, null) }, { status: 409 })
+      if (err instanceof HoldLockTimeoutError) return NextResponse.json({ error: err.message }, { status: 409 })
       throw err
     }
 

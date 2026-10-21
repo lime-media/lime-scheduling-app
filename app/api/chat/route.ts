@@ -14,7 +14,7 @@ import { formatMarketState } from '@/lib/format'
 import { checkTruckFeasibility } from '@/lib/availabilityEngine'
 import { CLOSED_WON_READ_ONLY, closedWonRefusal } from '@/lib/bookings'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
-import { HoldClashError, writeHoldsExclusive } from '@/lib/holdWriteLock'
+import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -204,6 +204,7 @@ async function executePlaceHold(
       const c = err.clashes[0]
       return { success: false, message: `Hold not placed — conflict: truck ${truck} already has a ${c.status} for "${c.client}" from ${c.start} to ${c.end}.` }
     }
+    if (err instanceof HoldLockTimeoutError) return { success: false, message: `Hold not placed — ${err.message}` }
     throw err
   }
 

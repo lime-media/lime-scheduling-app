@@ -106,7 +106,11 @@ export async function PUT(
   let updated: Awaited<ReturnType<typeof prisma.hold.update>>
   try {
     updated = reserves && movesTruck
-      ? await writeHoldsExclusive([{ truck: effTruck, start: effStart, end: effEnd }], tx => tx.hold.update({ where: { id: params.id }, data }), { ignoreHoldIds: [hold.id] })
+      ? await writeHoldsExclusive([{ truck: effTruck, start: effStart, end: effEnd }], tx => tx.hold.update({ where: { id: params.id }, data }),
+        // Same truck (dates moved, or revived): an AT&T soft hold under it gives
+        // way, as it did when the hold was placed. Another truck: counted, as the
+        // swap check always has.
+        { ignoreHoldIds: [hold.id], excludeAttSoft: effTruck === hold.truck_number })
       : await prisma.hold.update({ where: { id: params.id }, data })
   } catch (err) {
     if (err instanceof HoldClashError) return NextResponse.json({ error: err.message, clashes: err.clashes }, { status: 409 })

@@ -428,11 +428,15 @@ export async function PATCH(
   // re-checked (lib/holdWriteLock.ts); this booking's own holds don't count.
   const reviveExpiry = (write: (tx: Prisma.TransactionClient) => Promise<unknown>) => {
     const now = new Date()
-    const lapsed = live.filter(h => !holdReservesNow(h, now))
+    const today = now.toISOString().slice(0, 10)
+    // As reinstate: a market that has already ended reserves nothing ahead.
+    const lapsed = live.filter(h => !holdReservesNow(h, now) && day(h.end_date) >= today)
     return writeHoldsExclusive(
       lapsed.map(h => ({ truck: h.truck_number, start: day(h.start_date), end: day(h.end_date) })),
       write,
-      { ignoreHoldIds: booking.map(h => h.id) },
+      // These holds were placed already: an AT&T soft hold under one gave way
+      // then, and still does. Only someone else's booking is a clash.
+      { ignoreHoldIds: booking.map(h => h.id), excludeAttSoft: true },
     )
   }
   const revivalRefusal = (err: unknown) => {

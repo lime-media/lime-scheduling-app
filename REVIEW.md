@@ -38,7 +38,7 @@ findings by how close they come to one of those.
 - **Every path where someone chooses a truck runs the conflict check, and
   writes under the truck's lock.** New entry points (MCP, client portal,
   internal booking) go through `holdService`, a shared booking
-  (`lib/staffBooking.ts`, `lib/clientBooking.ts`) or its conflict query, not a
+  (`lib/staffBooking.ts`, `lib/holdRequestService.ts`) or its conflict query, not a
   direct `prisma.hold.create`. The write itself goes through
   `writeHoldsExclusive` (lib/holdWriteLock.ts), which re-checks inside the
   transaction, so a booking made between picking trucks and writing them is

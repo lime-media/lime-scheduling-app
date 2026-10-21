@@ -4,7 +4,7 @@ import { query } from '@/lib/mssql'
 import { checkTruckFeasibility } from '@/lib/availabilityEngine'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { staffBookingRefusal } from '@/lib/bookingRefusals'
-import { HoldClashError, writeHoldsExclusive } from '@/lib/holdWriteLock'
+import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 
 export interface CreateHoldParams {
   truck_number: string
@@ -135,6 +135,8 @@ export async function createHold(params: CreateHoldParams): Promise<CreateHoldRe
     }))
   } catch (err) {
     if (err instanceof HoldClashError) return { success: false, error: { type: 'hold_conflict', message: err.message } }
+    // Another booking of the truck is mid-save: the caller's 409, to retry.
+    if (err instanceof HoldLockTimeoutError) return { success: false, error: { type: 'hold_conflict', message: err.message } }
     throw err
   }
 

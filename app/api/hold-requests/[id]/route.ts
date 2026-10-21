@@ -15,6 +15,7 @@ import { reopenClosedLostOpportunity, syncOpportunityLedWindow } from '@/lib/sfd
 import { sendCancellationEmail, sendExtensionDecisionEmail } from '@/lib/email'
 import { recordSwap } from '@/lib/transportMetricsRecord'
 import { waitUntil } from '@vercel/functions'
+import { HoldClashError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 
 type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration' | 'reinstate'
 
@@ -142,10 +143,18 @@ export async function PATCH(
       }, { status: 409 })
     }
 
-    await prisma.hold.update({
-      where: { id: hold.id },
-      data:  { truck_number },
-    })
+    // Under the new truck's lock, re-checked for a hold placed since the check
+    // above (lib/holdWriteLock.ts).
+    try {
+      await writeHoldsExclusive(
+        [{ truck: truck_number, start: hold.start_date.toISOString().slice(0, 10), end: hold.end_date.toISOString().slice(0, 10) }],
+        tx => tx.hold.update({ where: { id: hold.id }, data: { truck_number } }),
+        { ignoreHoldIds: [hold.id] },
+      )
+    } catch (err) {
+      if (err instanceof HoldClashError) return NextResponse.json({ error: err.message }, { status: 409 })
+      throw err
+    }
 
     await prisma.auditLog.create({
       data: {
@@ -255,42 +264,59 @@ export async function PATCH(
 
     // The reinstate, the removal of Salesforce's copies of its trucks, and the
     // audit rows land together.
-    const [reinstated] = await prisma.$transaction([
-      prisma.hold.updateMany({
-        where: { id: { in: ids }, status: 'EXPIRED' },
-        data:  { status: newStatus, expires_at: newExpiresAt, extension_until: null, extension_reason: null },
-      }),
-      ...(!won && live.length ? [prisma.hold.updateMany({
-        where: { id: { in: live.map(h => h.id) }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
-        data:  { expires_at: newExpiresAt },
-      })] : []),
-      ...(mirrored.length ? [
-        prisma.hold.deleteMany({ where: { id: { in: mirrored.map(m => m.id) } } }),
-        prisma.auditLog.createMany({
-          data: mirrored.map(m => ({
-            action:       'DELETE_HOLD',
-            truck_number: m.truck_number,
-            user_id:      session.user.id,
-            hold_id:      m.id,
-            details:      JSON.stringify({ reason: 'salesforce_copy_of_reinstated_app_truck', opportunityId: hold.sfdc_opportunity_id }),
-          })),
-        }),
-      ] : []),
-      prisma.auditLog.createMany({
-        data: lapsed.map(h => ({
-          action:       'REINSTATE_HOLD',
-          truck_number: h.truck_number,
-          user_id:      session.user.id,
-          hold_id:      h.id,
-          details:      JSON.stringify({
-            lapsed_expires_at: h.expires_at,
-            new_expires_at:    newExpiresAt?.toISOString() ?? null,
-            status:            newStatus,
-            booking:           bookingKey(h),
-          }),
-        })),
-      }),
-    ])
+    // Under each truck's lock, re-checked for a hold placed since the check
+    // above (lib/holdWriteLock.ts); this booking's own holds and Salesforce's
+    // copies of them don't count, as above.
+    let reinstated: { count: number }
+    try {
+      reinstated = await writeHoldsExclusive(
+        revived.map(h => ({ truck: h.truck_number, start: day(h.start_date), end: day(h.end_date) })),
+        async tx => {
+          const result = await tx.hold.updateMany({
+            where: { id: { in: ids }, status: 'EXPIRED' },
+            data:  { status: newStatus, expires_at: newExpiresAt, extension_until: null, extension_reason: null },
+          })
+          if (!won && live.length) await tx.hold.updateMany({
+            where: { id: { in: live.map(h => h.id) }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
+            data:  { expires_at: newExpiresAt },
+          })
+          if (mirrored.length) {
+            await tx.hold.deleteMany({ where: { id: { in: mirrored.map(m => m.id) } } })
+            await tx.auditLog.createMany({
+              data: mirrored.map(m => ({
+                action:       'DELETE_HOLD',
+                truck_number: m.truck_number,
+                user_id:      session.user.id,
+                hold_id:      m.id,
+                details:      JSON.stringify({ reason: 'salesforce_copy_of_reinstated_app_truck', opportunityId: hold.sfdc_opportunity_id }),
+              })),
+            })
+          }
+          await tx.auditLog.createMany({
+            data: lapsed.map(h => ({
+              action:       'REINSTATE_HOLD',
+              truck_number: h.truck_number,
+              user_id:      session.user.id,
+              hold_id:      h.id,
+              details:      JSON.stringify({
+                lapsed_expires_at: h.expires_at,
+                new_expires_at:    newExpiresAt?.toISOString() ?? null,
+                status:            newStatus,
+                booking:           bookingKey(h),
+              }),
+            })),
+          })
+          return result
+        },
+        { ignoreHoldIds: [...booking.map(h => h.id), ...mirrored.map(m => m.id)] },
+      )
+    } catch (err) {
+      if (err instanceof HoldClashError) {
+        const clashes = err.clashes.map(c => ({ truck: c.truck, client: c.client, start: c.start, end: c.end }))
+        return NextResponse.json({ error: reinstateRefusal(clashes), clashes }, { status: 409 })
+      }
+      throw err
+    }
 
     // A Closed Lost deal the person agreed to reopen goes back to WARM only now,
     // with the reinstate saved: a push the stage change sets off finds the

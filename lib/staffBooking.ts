@@ -31,6 +31,7 @@ import {
 } from '@/lib/pricing'
 import { resolveMarketSizeTierId, resolveRateOverridesBySfdcAccount, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
 import type { RateOverrides } from '@/lib/pricing/config'
+import { HoldClashError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { legsFromSelectedTrucks } from '@/lib/transportMetrics'
 import { reply, type CoreResult } from '@/lib/coreResult'
@@ -234,41 +235,55 @@ export async function placeStaffBooking(body: any, actor: StaffActor): Promise<C
   // Canonical market name — see canonicalMarketName().
   const canonicalMarket = (await canonicalMarketName(market, resolvedState ?? undefined)) ?? market
 
-  const created: string[] = []
   // Quote only with no truck free: still one record of what was quoted.
   const recordTrucks: { truckNumber: string }[] = quoteOnly && selectedTrucks.length === 0 ? [{ truckNumber: QUOTE_ONLY_NO_TRUCK }] : selectedTrucks
-  for (const truck of recordTrucks) {
-    try {
-      await prisma.hold.create({
-        data: {
-          truck_number:      truck.truckNumber,
-          client_name:       sfdc_account_name || 'Unknown',
-          market:            canonicalMarket,
-          state:             resolvedState ?? '',
-          start_date:        new Date(start_date),
-          end_date:          new Date(end_date),
-          // Never committed here: a Closed Won opportunity takes no additions (opportunityRefusal).
-          status:            quoteOnly ? QUOTE_ONLY_STATUS : 'HOLD',
-          source:            'INTERNAL',
-          origination:       quoteOnly ? QUOTE_ONLY_ORIGINATION : 'frontend',
-          notes:             `${quoteOnly ? `${QUOTE_ONLY_NOTE} ` : ''}Internal quote for ${sfdc_account_name || 'Unknown'}${brand ? ` (brand: ${brand})` : ''}`,
-          created_by:        createdBy,
-          // Quote-only logs are internal: never shown in the client portal.
-          client_user_id:    quoteOnly ? null : linkedClient?.id ?? null,
-          pricing_tier:      pricingTier,
-          quoted_total:      serverTotal,
-          daily_rate:        quote.dailyRate,
-          features:          featuresJson,
-          truck_count:       quoteOnly ? truck_count : selectedTrucks.length,
-          campaign_group_id: campaignGroupId,
-          expires_at:        quoteOnly ? new Date() : expiresAt,
-          sfdc_opportunity_id: target?.Id ?? null,
-        },
-      })
-      created.push(truck.truckNumber)
-    } catch (err) {
-      console.error('[quote/hold] failed to create hold for truck:', truck.truckNumber, err)
+  const rows = recordTrucks.map(truck => ({
+    truck_number:      truck.truckNumber,
+    client_name:       sfdc_account_name || 'Unknown',
+    market:            canonicalMarket,
+    state:             resolvedState ?? '',
+    start_date:        new Date(start_date),
+    end_date:          new Date(end_date),
+    // Never committed here: a Closed Won opportunity takes no additions (opportunityRefusal).
+    status:            quoteOnly ? QUOTE_ONLY_STATUS : 'HOLD',
+    source:            'INTERNAL',
+    origination:       quoteOnly ? QUOTE_ONLY_ORIGINATION : 'frontend',
+    notes:             `${quoteOnly ? `${QUOTE_ONLY_NOTE} ` : ''}Internal quote for ${sfdc_account_name || 'Unknown'}${brand ? ` (brand: ${brand})` : ''}`,
+    created_by:        createdBy,
+    // Quote-only logs are internal: never shown in the client portal.
+    client_user_id:    quoteOnly ? null : linkedClient?.id ?? null,
+    pricing_tier:      pricingTier,
+    quoted_total:      serverTotal,
+    daily_rate:        quote.dailyRate,
+    features:          featuresJson,
+    truck_count:       quoteOnly ? truck_count : selectedTrucks.length,
+    campaign_group_id: campaignGroupId,
+    expires_at:        quoteOnly ? new Date() : expiresAt,
+    sfdc_opportunity_id: target?.Id ?? null,
+  }))
+  let created: string[] = []
+  try {
+    if (quoteOnly) {
+      // A quote-only log reserves nothing: no lock, nothing to clash with.
+      await prisma.hold.createMany({ data: rows })
+    } else {
+      // All or nothing, under each truck's lock, re-checked for a hold placed
+      // since the trucks were picked (lib/holdWriteLock.ts): the booking is one
+      // quote, priced for every truck in it.
+      await writeHoldsExclusive(
+        rows.map(r => ({ truck: r.truck_number, start: start_date, end: end_date })),
+        tx => tx.hold.createMany({ data: rows }),
+      )
     }
+    created = recordTrucks.map(t => t.truckNumber)
+  } catch (err) {
+    if (err instanceof HoldClashError) {
+      return reply({
+        error: `${err.message} Nothing was booked. Get a fresh quote and book again.`,
+        clashes: err.clashes,
+      }, { status: 409 })
+    }
+    console.error('[quote/hold] failed to create holds:', err)
   }
 
   if (created.length === 0) {

@@ -54,6 +54,7 @@ import { rotationStints, type OrderLine } from '@/lib/planning/order'
 import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuote, type QuoteRequest } from '@/lib/planning/quote'
 import { fitNames, lineFeatures } from '@/lib/planning/booking'
 import { recordBooking } from '@/lib/transportMetricsRecord'
+import { HoldClashError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { legsFromArrivals } from '@/lib/transportMetrics'
 
 export const maxDuration = 300
@@ -391,8 +392,11 @@ async function handlePost(req: NextRequest) {
     // hold and is written in the same transaction as the delete: the record,
     // the delete and the new holds land together, or none of them do.
     const was = reviseIds.length ? await prisma.hold.findMany({ where: { id: { in: reviseIds } } }) : []
-    await prisma.$transaction([
-      ...(reviseKey ? [prisma.auditLog.create({
+    // Under each truck's lock, re-checked for a hold placed since the check
+    // above (lib/holdWriteLock.ts); the holds a revision replaces don't count.
+    // A quote-only log reserves nothing, so it takes no lock.
+    const writeAll = async (tx: Prisma.TransactionClient) => {
+      if (reviseKey) await tx.auditLog.create({
         data: {
           action: 'REVISE_BOOKING',
           truck_number: truckNumbers[0] ?? reviseHolds[0]?.truck_number ?? '',
@@ -402,11 +406,22 @@ async function handlePost(req: NextRequest) {
             was, trucks: truckNumbers, total: quote.summary.grandTotal,
           }),
         },
-      })] : []),
-      ...(reviseIds.length ? [prisma.hold.deleteMany({ where: { id: { in: reviseIds } } })] : []),
-      ...Array.from({ length: Math.ceil(rows.length / CHUNK) }, (_, i) =>
-        prisma.hold.createMany({ data: rows.slice(i * CHUNK, (i + 1) * CHUNK) })),
-    ])
+      })
+      if (reviseIds.length) await tx.hold.deleteMany({ where: { id: { in: reviseIds } } })
+      for (let i = 0; i < rows.length; i += CHUNK) await tx.hold.createMany({ data: rows.slice(i, i + CHUNK) })
+    }
+    try {
+      if (quoteOnly) await prisma.$transaction(writeAll)
+      else await writeHoldsExclusive(stretches.map(x => ({ truck: x.truckNumber, start: x.stint.start, end: x.stint.end })), writeAll, { ignoreHoldIds: reviseIds })
+    } catch (err) {
+      if (err instanceof HoldClashError) {
+        return NextResponse.json({
+          error: `${err.message} Nothing was booked. Get a fresh quote and book again.`,
+          clashes: err.clashes.map(c => ({ truckNumber: c.truck, start: c.start, end: c.end })),
+        }, { status: 409 })
+      }
+      throw err
+    }
 
     // A Closed Lost opportunity the person agreed to reopen goes back to WARM
     // only now, with the revision saved: a push the stage change sets off finds

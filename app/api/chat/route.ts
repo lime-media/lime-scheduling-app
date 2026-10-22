@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import Anthropic from '@anthropic-ai/sdk'
-import { servedText, servedToolUses } from '@/lib/claudeReply'
+import { callBeforeDeadline, servedText, servedToolUses } from '@/lib/claudeReply'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
@@ -379,7 +379,9 @@ async function handlePost(req: NextRequest) {
     }
     let response: Anthropic.Beta.BetaMessage
     try {
-      response = await anthropic.beta.messages.create({
+      // Done before MODEL_DEADLINE_MS (each attempt gets the time left); a quick
+      // transient failure is retried within it (lib/claudeReply.ts).
+      response = await callBeforeDeadline(startedAt + MODEL_DEADLINE_MS, opts => anthropic.beta.messages.create({
         model: 'claude-opus-5-5',
         // A safety decline is retried server-side on the model Anthropic recommends
         // for its category, instead of returning the refusal (beta).
@@ -392,14 +394,7 @@ async function handlePost(req: NextRequest) {
         system: [{ type: 'text', text: BASE_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
         tools: CHAT_TOOLS,
         messages,
-      }, {
-        // The SDK's own timeout is 10 minutes, and its retries (with their
-        // waits) add more: each call gets the time left before
-        // MODEL_DEADLINE_MS, and no retry. A failed call is the route's error
-        // (round 0) or ends the loop with what was done (later rounds).
-        timeout: MODEL_DEADLINE_MS - (Date.now() - startedAt),
-        maxRetries: 0,
-      })
+      }, opts))
     } catch (err) {
       // Nothing done yet: the route's own error. After a tool ran (a booking,
       // a release), its result is still shown and saved below.

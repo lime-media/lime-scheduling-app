@@ -2,7 +2,7 @@ import { withUsageLog } from '@/lib/usageLog'
 import { addMessages, openConversation } from '@/lib/conversations'
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
-import { servedText, servedToolUses } from '@/lib/claudeReply'
+import { callBeforeDeadline, servedText, servedToolUses } from '@/lib/claudeReply'
 import { prisma } from '@/lib/prisma'
 import { getClientSession, type ClientSession } from '@/lib/clientAuth'
 import { buildClientChatContext } from '@/lib/clientChatContext'
@@ -216,7 +216,9 @@ async function handlePost(req: NextRequest) {
   let availabilityChecks = 0
   try {
     for (let round = 0; ; round++) {
-      const response = await anthropic.beta.messages.create({
+      // Done before MODEL_DEADLINE_MS (each attempt gets the time left); a quick
+      // transient failure is retried within it (lib/claudeReply.ts).
+      const response = await callBeforeDeadline(startedAt + MODEL_DEADLINE_MS, opts => anthropic.beta.messages.create({
         model:         'claude-opus-5-5',
         // A safety decline is retried server-side on the model Anthropic recommends
         // for its category, instead of returning the refusal (beta).
@@ -228,13 +230,7 @@ async function handlePost(req: NextRequest) {
         system:        buildClientSystemPrompt(session.companyName),
         tools:         CLIENT_TOOLS,
         messages,
-      }, {
-        // Every call finishes in time to answer and save before maxDuration
-        // (300s), a fallback hop included: the time left, and no SDK retry
-        // (a retry, or its wait, could outlast the function).
-        timeout: MODEL_DEADLINE_MS - (Date.now() - startedAt),
-        maxRetries: 0,
-      })
+      }, opts))
       // The model that served it (a fallback replaces a declined one: lib/claudeReply.ts).
       const said = servedText(response.content)
       const toolUses = servedToolUses(response.content)

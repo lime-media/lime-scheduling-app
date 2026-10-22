@@ -54,4 +54,7 @@ section('Staff chat: one engine')
     tools.includes('releasedFrom: t.chain.inbound.originIsPriorJob') && !tools.includes("releasedFrom: t.currentMarket || 'Unknown'"), true)
   eq('AT&T soft holds are not released by the chat', route.includes("hold.status === 'ATT_SOFT'"), true)
   eq('a release needs the hold id in the reply the rep is answering, one per message', route.includes('!shown.includes(holdId)') && route.includes('if (released) return'), true)
+  const withFallback = fs.readFileSync('app/api/chat/route.ts', 'utf8')
+  eq('staff chat: a safety decline falls back server-side (fallbacks: default)', withFallback.includes('anthropic.beta.messages.create(') && withFallback.includes("'server-side-fallback-2026-07-01'") && /fallbacks:\s+'default'/.test(withFallback), true)
+  eq('staff chat: a refusal that survives the fallback is still handled', withFallback.includes("stop_reason === 'refusal'"), true)
 }

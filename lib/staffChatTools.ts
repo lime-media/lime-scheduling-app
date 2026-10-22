@@ -62,7 +62,7 @@ const BOOKING_TERMS = {
   stage: { type: 'string', enum: OPEN_STAGES.map(s => s.value), description: 'Opportunity stage. Default WARM.' },
 } as const
 
-export const CHAT_TOOLS: Anthropic.Tool[] = [
+export const CHAT_TOOLS: Anthropic.Beta.BetaTool[] = [
   {
     name: 'check_availability',
     description: 'Which trucks can take a campaign in one market on these dates, nearest first, with distance from where each truck will be released, and the trucks that cannot (with why and the dates they could do). Uses the standard service area; an account\'s rate agreement can change it, so get_quote is the final word. Use this for every availability or "nearest truck" question; never work distances out yourself.',

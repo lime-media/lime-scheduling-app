@@ -53,7 +53,7 @@ Keep every answer short and scannable. Be concise and direct.`
 
 const DATE = { type: 'string', description: 'YYYY-MM-DD' } as const
 
-const CLIENT_TOOLS: Anthropic.Tool[] = [
+const CLIENT_TOOLS: Anthropic.Beta.BetaTool[] = [
   {
     name: 'check_availability',
     description: 'Whether this client can book trucks in one market on these dates online, by the quote form\'s rules (lead time, service area, trucks free). Returns yes or no with a message; never truck numbers or other bookings.',
@@ -199,7 +199,7 @@ async function handlePost(req: NextRequest) {
   const recent = earlier.slice(-10).filter(m => m && typeof m.content === 'string' && m.content.trim())
   while (recent.length && recent[0].role === 'assistant') recent.shift()
 
-  const messages: Anthropic.MessageParam[] = [
+  const messages: Anthropic.Beta.BetaMessageParam[] = [
     ...recent.map(m => ({
       role:    m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
       content: m.content,
@@ -213,8 +213,12 @@ async function handlePost(req: NextRequest) {
   let availabilityChecks = 0
   try {
     for (let round = 0; ; round++) {
-      const response = await anthropic.messages.create({
+      const response = await anthropic.beta.messages.create({
         model:         'claude-opus-5-5',
+        // A safety decline is retried server-side on the model Anthropic recommends
+        // for its category, instead of returning the refusal (beta).
+        betas:         ['server-side-fallback-2026-07-01'],
+        fallbacks:     'default',
         max_tokens:    16000,
         thinking:      { type: 'adaptive' },
         output_config: { effort: 'medium' },
@@ -223,11 +227,11 @@ async function handlePost(req: NextRequest) {
         messages,
       })
       const said = response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text')
         .map(b => b.text)
         .join('\n\n')
         .trim()
-      const toolUses = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+      const toolUses = response.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === 'tool_use')
       // A refusal or a cut-off tool call (max_tokens) is never run.
       if (response.stop_reason !== 'tool_use' || toolUses.length === 0) {
         reply = said || (response.stop_reason === 'refusal' ? "Sorry, I can't help with that. Ask me about availability or your hold requests." : '')
@@ -241,7 +245,7 @@ async function handlePost(req: NextRequest) {
       messages.push({ role: 'assistant', content: response.content })
       // One request to the team per message: claimed before anything runs.
       let assistanceClaimed = actionResult !== null
-      const results: Anthropic.ToolResultBlockParam[] = await Promise.all(toolUses.map(async (use): Promise<Anthropic.ToolResultBlockParam> => {
+      const results: Anthropic.Beta.BetaToolResultBlockParam[] = await Promise.all(toolUses.map(async (use): Promise<Anthropic.Beta.BetaToolResultBlockParam> => {
         const input = (use.input && typeof use.input === 'object' ? use.input : {}) as Record<string, unknown>
         if (use.name === 'check_availability') {
           // Counted before anything runs, like the assistance claim below.

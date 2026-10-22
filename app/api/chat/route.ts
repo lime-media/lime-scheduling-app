@@ -335,7 +335,7 @@ async function handlePost(req: NextRequest) {
     scheduleContext = 'Schedule data temporarily unavailable.'
   }
 
-  const messages: Anthropic.MessageParam[] = [
+  const messages: Anthropic.Beta.BetaMessageParam[] = [
     ...history,
     {
       role: 'user',
@@ -376,10 +376,14 @@ async function handlePost(req: NextRequest) {
         : "I stopped before finishing: that took longer than I'm allowed in one message. Ask again more narrowly."
       break
     }
-    let response: Anthropic.Message
+    let response: Anthropic.Beta.BetaMessage
     try {
-      response = await anthropic.messages.create({
+      response = await anthropic.beta.messages.create({
         model: 'claude-opus-5-5',
+      // A safety decline is retried server-side on the model Anthropic recommends
+      // for its category, instead of returning the refusal (beta).
+        betas: ['server-side-fallback-2026-07-01'],
+        fallbacks: 'default',
         max_tokens: 16000,
         thinking: { type: 'adaptive' },
         output_config: { effort: 'medium' },
@@ -406,7 +410,7 @@ async function handlePost(req: NextRequest) {
       break
     }
     const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text')
       .map(b => b.text)
       .join('\n\n')
       .trim()
@@ -414,7 +418,7 @@ async function handlePost(req: NextRequest) {
       reply = text || "I can't help with that request."
       break
     }
-    const toolUses = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+    const toolUses = response.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === 'tool_use')
     // A cut-off tool call (max_tokens) is never run.
     if (response.stop_reason !== 'tool_use' || toolUses.length === 0) {
       reply = text
@@ -427,7 +431,7 @@ async function handlePost(req: NextRequest) {
     }
     messages.push({ role: 'assistant', content: response.content })
     // One at a time, in order: a booking must never run beside another.
-    const results: Anthropic.ToolResultBlockParam[] = []
+    const results: Anthropic.Beta.BetaToolResultBlockParam[] = []
     for (const use of toolUses) {
       let out
       try {

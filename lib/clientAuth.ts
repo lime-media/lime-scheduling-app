@@ -1,42 +1,29 @@
-import crypto from 'crypto'
 import { NextRequest, NextResponse } from 'next/server'
+import { readSession, signSession, type ClientSessionClaims } from '@/lib/clientSessionToken'
 
 const SECRET      = process.env.NEXTAUTH_SECRET || 'lime-client-secret'
 const TOKEN_NAME  = 'client_token'
 const GUEST_NAME  = 'guest_session'
-const MAX_AGE     = 60 * 60 * 24 * 7 // 7 days
+/**
+ * How long a client stays signed in after passing the login code. The cookie
+ * says the same, but the cookie is the client's copy — `exp` inside the signed
+ * payload is what actually ends the session, so a token kept after the cookie
+ * expires is still refused.
+ */
+export const CLIENT_SESSION_DAYS = 30
+const MAX_AGE     = 60 * 60 * 24 * CLIENT_SESSION_DAYS
 
-export interface ClientSession {
-  id:          string
-  username:    string
-  companyName: string
-  // Optional link to a RateAgreement.partner_id (app_client_users.partner_id) — lets the
-  // client-portal AI quote engine apply this client's negotiated rate. Undefined for a session
-  // signed before this field existed, or for a client with no agreement — both mean "standard
-  // rate card," never an error.
-  partnerId?:       string
-  sfdcAccountId?:   string
-}
+/**
+ * The signed claims. `partnerId` links to a RateAgreement.partner_id
+ * (app_client_users.partner_id) — it lets the client-portal AI quote engine
+ * apply this client's negotiated rate. Undefined for a session signed before
+ * that field existed, or for a client with no agreement — both mean "standard
+ * rate card," never an error.
+ */
+export type ClientSession = ClientSessionClaims
 
-function sign(payload: ClientSession): string {
-  const data = Buffer.from(JSON.stringify(payload)).toString('base64url')
-  const sig  = crypto.createHmac('sha256', SECRET).update(data).digest('base64url')
-  return `${data}.${sig}`
-}
-
-function verify(token: string): ClientSession | null {
-  try {
-    const dot = token.lastIndexOf('.')
-    if (dot < 0) return null
-    const data = token.slice(0, dot)
-    const sig  = token.slice(dot + 1)
-    const expected = crypto.createHmac('sha256', SECRET).update(data).digest('base64url')
-    if (sig !== expected) return null
-    return JSON.parse(Buffer.from(data, 'base64url').toString()) as ClientSession
-  } catch {
-    return null
-  }
-}
+const sign   = (session: ClientSession) => signSession(session, SECRET, MAX_AGE)
+const verify = (token: string) => readSession(token, SECRET)
 
 export function getClientSession(req: NextRequest): ClientSession | null {
   const token = req.cookies.get(TOKEN_NAME)?.value
@@ -51,6 +38,7 @@ export function setClientSession(res: NextResponse, session: ClientSession): voi
   res.cookies.set(TOKEN_NAME, sign(session), {
     httpOnly: true,
     sameSite: 'lax',
+    secure:   process.env.NODE_ENV === 'production',
     path:     '/',
     maxAge:   MAX_AGE,
   })

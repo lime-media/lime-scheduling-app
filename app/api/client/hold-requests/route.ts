@@ -27,6 +27,7 @@ import {
 } from '@/lib/pricing'
 import { resolveMarketSizeTierId, resolveRateOverrides } from '@/lib/pricing/resolvers'
 import { holdExpDate } from '@/lib/dateOnly'
+import { liveClientLinks } from '@/lib/clientLinks'
 
 export async function GET(req: NextRequest) {
   const session = getClientSession(req)
@@ -188,8 +189,11 @@ async function handleAutoSelectHold(
 
   // Brand Direct accounts are priced with the markup folded into every price,
   // at the default rate (clients cannot change it and never see it).
-  const accountInfo = session.sfdcAccountId && isSfdcConfigured()
-    ? await getSfdcAccountInfo(session.sfdcAccountId).catch(() => null)
+  // Read from the client's row, not the session's 30-day-old copy, so an ops
+  // relink reaches the next booking rather than the next login.
+  const { sfdcAccountId } = await liveClientLinks(session)
+  const accountInfo = sfdcAccountId && isSfdcConfigured()
+    ? await getSfdcAccountInfo(sfdcAccountId).catch(() => null)
     : null
   const markupPct = brandMarkupFor(accountInfo?.clientType)
 
@@ -327,7 +331,7 @@ async function handleAutoSelectHold(
   }).catch((e) => console.error('[client/hold-requests] email failed:', e))
 
   // Create Salesforce Opportunity if the client has an SFDC Account ID
-  if (session.sfdcAccountId && isSfdcConfigured() && created.length > 0) {
+  if (sfdcAccountId && isSfdcConfigured() && created.length > 0) {
     try {
       const oppName = opportunityName(brand, session.companyName, `${market} - ${start_date} to ${end_date}`)
       const firstHold = await prisma.hold.findFirst({
@@ -342,7 +346,7 @@ async function handleAutoSelectHold(
 
       // A client's own request has no internal rep: the account's owner owns it.
       const result = await createOpportunity({
-        accountId: session.sfdcAccountId,
+        accountId: sfdcAccountId,
         ownerId: accountInfo?.ownerId ?? undefined,
         clientType: accountInfo?.clientType,
         name: oppName,

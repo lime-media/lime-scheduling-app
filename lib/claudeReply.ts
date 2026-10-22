@@ -38,18 +38,28 @@ const MIN_RETRY_TIME_MS = 30_000
  * A model call that must finish by `deadlineAt` (ms since epoch). Each attempt
  * gets only the time left. A quick transient failure (429, 5xx including 529
  * overloaded, a dropped connection) is retried, up to twice, while at least
- * MIN_RETRY_TIME_MS remains; a timeout is not (the time is used up). The SDK's
- * own retries are off, since they don't know the deadline.
+ * MIN_RETRY_TIME_MS remains after the wait; a timeout is not (the time is used
+ * up). The wait honours the API's retry-after, and `x-should-retry: false` is
+ * never retried. No call starts once the deadline has passed. The SDK's own
+ * retries are off, since they don't know the deadline.
  */
 export async function callBeforeDeadline<T>(deadlineAt: number, call: (opts: { timeout: number; maxRetries: 0 }) => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
+    const left = deadlineAt - Date.now()
+    if (left <= 0) throw new Anthropic.APIConnectionTimeoutError()
     try {
-      return await call({ timeout: Math.max(1_000, deadlineAt - Date.now()), maxRetries: 0 })
+      return await call({ timeout: left, maxRetries: 0 })
     } catch (err) {
       const transient = err instanceof Anthropic.RateLimitError || err instanceof Anthropic.InternalServerError
         || (err instanceof Anthropic.APIConnectionError && !(err instanceof Anthropic.APIConnectionTimeoutError))
-      if (!transient || attempt >= 2 || deadlineAt - Date.now() < MIN_RETRY_TIME_MS) throw err
-      await new Promise(r => setTimeout(r, 1_000 * (attempt + 1)))
+      const headers = err instanceof Anthropic.APIError ? err.headers : undefined
+      if (!transient || attempt >= 2 || headers?.get('x-should-retry') === 'false') throw err
+      const retryAfterMs = Number(headers?.get('retry-after')) * 1_000
+      const wait = Math.max(1_000 * (attempt + 1), Number.isFinite(retryAfterMs) ? retryAfterMs : 0)
+      if (deadlineAt - Date.now() - wait < MIN_RETRY_TIME_MS) throw err
+      // Logged, so an overload isn't hidden behind whatever the retry ends with.
+      console.warn(`[claude] retrying after ${err instanceof Error ? err.constructor.name : 'error'}${err instanceof Anthropic.APIError && err.status ? ` ${err.status}` : ''} (attempt ${attempt + 1}, waiting ${wait}ms)`)
+      await new Promise(r => setTimeout(r, wait))
     }
   }
 }

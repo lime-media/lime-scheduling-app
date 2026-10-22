@@ -47,4 +47,5 @@ section('Hold write lock: every path that chooses a truck writes under it')
   eq('a booking with fewer trucks free than quoted is refused, not booked short (portal and staff)',
     portal.includes('selectedTrucks.length < truck_count') && fs.readFileSync('lib/staffBooking.ts', 'utf8').includes('!quoteOnly && selectedTrucks.length < truck_count'), true)
   eq('a portal booking prices on the default rate card under the client\'s agreement, as its quote does', portal.includes('resolveDefaultRateOverrides()') && portal.includes('{ ...defaultOverrides, ...clientOverrides,'), true)
+  eq('paid review (#133): a refused grid drag is a 409 with its reason, as the portal booking', fs.readFileSync('app/api/client/hold-requests/route.ts', 'utf8').includes('e instanceof ClientHoldRefusal ||'), true)
 }

@@ -56,8 +56,17 @@ function isCalendarDate(s: string): boolean {
 
 const refuse = (body: Record<string, unknown>, init?: { status: number }): ClientAvailability => ({ refused: { status: init?.status ?? 200, body } })
 
+/** The most trucks a client may book in one request, online (portal or MCP). */
+export const CLIENT_MAX_TRUCKS = 20
+
 export async function clientAvailability(session: ClientSession, request: ClientAvailabilityRequest): Promise<ClientAvailability> {
   const { market, start_date, end_date, truck_count } = request
+
+  // More trucks than a client booking takes: no, so the quote, the portal chat
+  // and MCP never say yes to a booking that would then be refused.
+  if (truck_count > CLIENT_MAX_TRUCKS) {
+    return refuse({ insufficient: true, message: `Up to ${CLIENT_MAX_TRUCKS} trucks can be booked online at once. Submit a request and the Lime Media team will work on a solution.` })
+  }
 
   // Real calendar dates only, checked before anything is looked up: JS rolls
   // "2026-02-31" over to March 3, and an unparseable start would slip past

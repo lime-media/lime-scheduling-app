@@ -56,7 +56,9 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   const quoteOnly = quote_only === true
   // The brand, as Salesforce gets it (Brand / Job Name, and first in the name).
   const brand = cleanBrand(typeof rawBrand === 'string' ? rawBrand : '')
-  // Notes from the caller (MCP passes them; the Quote page doesn't), kept short.
+  // Notes from the caller (MCP passes them; the Quote page doesn't). Internal:
+  // they go in the Salesforce opportunity's Description, never on the hold,
+  // whose notes the linked client sees in the portal.
   const callerNotes = typeof body.notes === 'string' ? body.notes.trim().slice(0, 500) : ''
 
   if (!market || !start_date || !end_date || !truck_count) {
@@ -252,8 +254,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
     status:            quoteOnly ? QUOTE_ONLY_STATUS : 'HOLD',
     source:            'INTERNAL',
     origination:       quoteOnly ? QUOTE_ONLY_ORIGINATION : opts.origination ?? 'frontend',
-    // The caller's own notes (MCP), after the Quote page's default note.
-    notes:             `${quoteOnly ? `${QUOTE_ONLY_NOTE} ` : ''}Internal quote for ${sfdc_account_name || 'Unknown'}${brand ? ` (brand: ${brand})` : ''}${callerNotes ? ` | ${callerNotes}` : ''}`,
+    notes:             `${quoteOnly ? `${QUOTE_ONLY_NOTE} ` : ''}Internal quote for ${sfdc_account_name || 'Unknown'}${brand ? ` (brand: ${brand})` : ''}`,
     created_by:        createdBy,
     // Quote-only logs are internal: never shown in the client portal.
     client_user_id:    quoteOnly ? null : linkedClient?.id ?? null,
@@ -318,7 +319,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
             markets: [market],
             trucks: created,
             ...(quoteOnly ? {} : { holdStart: start_date, holdStop: end_date, holdExp: holdExpDate(expiresAt) }),
-            description: `${market}: ${quoteOnly ? `quote only, ${truck_count} truck${truck_count === 1 ? '' : 's'} quoted` : `${created.length} truck${created.length === 1 ? '' : 's'} (${created.join(', ')})`}, ${start_date} to ${end_date}.`,
+            description: `${market}: ${quoteOnly ? `quote only, ${truck_count} truck${truck_count === 1 ? '' : 's'} quoted` : `${created.length} truck${created.length === 1 ? '' : 's'} (${created.join(', ')})`}, ${start_date} to ${end_date}.${callerNotes ? ` Notes: ${callerNotes}` : ''}`,
           },
           by: actor.name || actor.email || 'the app',
           primaryContactId: primary_contact_id,
@@ -339,6 +340,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
           quoteOnly ? `Quote only (low conviction): no trucks reserved. ${truck_count} truck${truck_count === 1 ? '' : 's'} quoted, ${start_date} to ${end_date}`
             + (selectedTrucks.length ? `, priced on ${selectedTrucks.map(t => t.truckNumber).join(', ')}.` : '; no truck was available, so transport is not priced.') : null,
           markupPct ? `Brand Direct pricing: +${markupPct}% folded into every line item.` : null,
+          callerNotes ? `Notes: ${callerNotes}` : null,
         ].filter(Boolean).join('\n') || undefined,
         name: opportunityName(brand, sfdc_account_name || 'Client', `${market} - ${start_date} to ${end_date}`),
         brand: brand || undefined,

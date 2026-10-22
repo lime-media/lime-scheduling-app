@@ -23,6 +23,10 @@ section('MCP: one engine')
   const acting = fs.readFileSync('lib/mcpActing.ts', 'utf8')
   eq('staff markup is type-checked once, for quote and booking alike', quote.includes('parseMcpStaffPricing(body)') && holds.includes('parseMcpStaffPricing(body)') && acting.includes("typeof brand_markup_pct !== 'number'"), true)
   eq('a staff booking needs the account name', holds.includes("if (!accountName) return NextResponse.json({ error: 'sfdc_account_name is required"), true)
-  eq('a staff caller\'s notes reach the hold', holds.includes('notes: str(body.notes)') && fs.readFileSync('lib/staffBooking.ts', 'utf8').includes('callerNotes ?'), true)
-  eq('client availability says no above the client booking limit', avail.includes('q.truck_count > MCP_CLIENT_MAX_TRUCKS'), true)
+  const staffBooking = fs.readFileSync('lib/staffBooking.ts', 'utf8')
+  eq('a staff caller\'s notes go to the opportunity, never the hold the client sees',
+    holds.includes('notes: str(body.notes)') && staffBooking.includes('Notes: ${callerNotes}') && !/notes:\s+`[^`]*callerNotes/.test(staffBooking), true)
+  eq('every client path says no above the client booking limit', fs.readFileSync('lib/clientAvailability.ts', 'utf8').includes('truck_count > CLIENT_MAX_TRUCKS')
+    && fs.readFileSync('lib/clientBooking.ts', 'utf8').includes('truck_count > CLIENT_MAX_TRUCKS'), true)
+  eq('staff fields are checked before the market lookup and the duplicate query', holds.indexOf('parseMcpStaffPricing(body)') < holds.indexOf('resolveQuoteMarket(') && holds.indexOf('parseMcpStaffPricing(body)') < holds.indexOf('confirm_duplicate !== true'), true)
 }

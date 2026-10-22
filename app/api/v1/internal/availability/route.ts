@@ -10,7 +10,7 @@ import { loadFleetTimelines } from '@/lib/fleetTimelines'
 import { checkChainFeasibility } from '@/lib/chainFeasibility'
 import { findWindowClash } from '@/lib/truckTimeline'
 import { resolveCampaignCoords, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
-import { MCP_CLIENT_MAX_TRUCKS, mcpParty, parseMcpCampaign } from '@/lib/mcpActing'
+import { mcpParty, parseMcpCampaign } from '@/lib/mcpActing'
 import { clientAvailability } from '@/lib/clientAvailability'
 import { checkAvailability } from '@/lib/availabilityEngine'
 import { resolveQuoteMarket } from '@/lib/staffQuote'
@@ -362,10 +362,6 @@ async function engineAnswer(request: Request, q: { market: string; start_date: s
   if (party.kind === 'error') return NextResponse.json({ error: party.error }, { status: party.status })
 
   if (party.kind === 'client') {
-    // The same limit the client booking has, so a yes here can be booked.
-    if (q.truck_count > MCP_CLIENT_MAX_TRUCKS) {
-      return NextResponse.json({ can_book: false, message: `Up to ${MCP_CLIENT_MAX_TRUCKS} trucks can be booked online at once. Submit a request and the Lime Media team will work on a solution.` })
-    }
     const checked = await clientAvailability(party.session, q)
     if (checked.refused) {
       const b = checked.refused.body

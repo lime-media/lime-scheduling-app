@@ -84,8 +84,6 @@ export function parseMcpCampaign(body: Record<string, unknown>): McpCampaign | {
   }
 }
 
-/** The most trucks a client may book in one request (the client booking's limit, lib/clientBooking.ts). */
-export const MCP_CLIENT_MAX_TRUCKS = 20
 
 /**
  * The staff-only pricing fields, type-checked once for the quote and the
@@ -93,7 +91,9 @@ export const MCP_CLIENT_MAX_TRUCKS = 20
  * not ignored by one and coerced by the other ("20" or true).
  */
 export function parseMcpStaffPricing(body: Record<string, unknown>): { sfdc_account_id?: string; brand_markup_pct?: number } | { error: string } {
-  const { sfdc_account_id, brand_markup_pct } = body
+  // null is "not given" (tool callers send it for optional arguments).
+  const sfdc_account_id = body.sfdc_account_id ?? undefined
+  const brand_markup_pct = body.brand_markup_pct ?? undefined
   if (sfdc_account_id !== undefined && typeof sfdc_account_id !== 'string') return { error: 'sfdc_account_id must be a Salesforce Account id' }
   if (brand_markup_pct !== undefined && (typeof brand_markup_pct !== 'number' || !Number.isFinite(brand_markup_pct))) {
     return { error: 'brand_markup_pct must be a number (a percentage)' }

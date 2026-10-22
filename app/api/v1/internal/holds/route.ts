@@ -47,6 +47,22 @@ export async function POST(req: NextRequest) {
   const party = await mcpParty(req)
   if (party.kind === 'error') return NextResponse.json({ error: party.error }, { status: party.status })
 
+  // Staff fields, checked before any lookup (cheap checks first). Priced as
+  // the MCP quote prices it (the same markup check), and named: a booking with
+  // no account name would be held as "Unknown" with a "Client - …"
+  // opportunity. null is "not given".
+  const str = (v: unknown) => (typeof v === 'string' ? v : undefined)
+  const staff = party.kind === 'staff' ? parseMcpStaffPricing(body) : null
+  if (staff && 'error' in staff) return NextResponse.json({ error: staff.error }, { status: 400 })
+  const accountName = str(body.sfdc_account_name)?.trim()
+  const expectedTotal = body.expected_total ?? undefined
+  if (party.kind === 'staff') {
+    if (!accountName) return NextResponse.json({ error: 'sfdc_account_name is required: the Salesforce Account the booking is for' }, { status: 400 })
+    if (expectedTotal !== undefined && (typeof expectedTotal !== 'number' || !Number.isFinite(expectedTotal))) {
+      return NextResponse.json({ error: "expected_total must be a number (the quote's grandTotal)" }, { status: 400 })
+    }
+  }
+
   // The market as the quote resolved it (one formal "City, ST" in the
   // contiguous 48, or the same refusal): the booking functions take the
   // portal's and Quote page's already-resolved market, so a raw "Springfield"
@@ -91,26 +107,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(result.body, { status: result.status })
   }
 
-  // Staff: the Quote page's booking, with only the fields it takes. Ids and
-  // names must be strings (a number would reach Prisma and Salesforce as-is);
-  // hold_days and expected_total are type-checked by placeStaffBooking.
-  const str = (v: unknown) => (typeof v === 'string' ? v : undefined)
-  // Priced as the MCP quote prices it (the same markup check), and named: a
-  // booking with no account name would be held as "Unknown" and create a
-  // "Client - …" opportunity.
-  const pricing = parseMcpStaffPricing(body)
-  if ('error' in pricing) return NextResponse.json({ error: pricing.error }, { status: 400 })
-  const accountName = str(body.sfdc_account_name)?.trim()
-  if (!accountName) return NextResponse.json({ error: 'sfdc_account_name is required: the Salesforce Account the booking is for' }, { status: 400 })
-  if (body.expected_total !== undefined && (typeof body.expected_total !== 'number' || !Number.isFinite(body.expected_total))) {
-    return NextResponse.json({ error: 'expected_total must be a number (the quote\'s grandTotal)' }, { status: 400 })
-  }
+  // Staff: the Quote page's booking, with only the fields it takes (checked
+  // above; hold_days by placeStaffBooking). Notes go to the opportunity, not
+  // the hold (lib/staffBooking.ts).
   const result = await placeStaffBooking({
     ...booking,
-    ...pricing,
+    ...staff,
     sfdc_account_name: accountName,
     primary_contact_id: str(body.primary_contact_id), brand: str(body.brand), hold_days: body.hold_days, stage: str(body.stage),
-    notes: str(body.notes), expected_total: body.expected_total,
+    notes: str(body.notes), expected_total: expectedTotal,
   }, party.actor, { origination: 'mcp' })
   return NextResponse.json(result.body, { status: result.status })
 }

@@ -23,10 +23,12 @@ section('Hold write lock: what clashes')
 
 section('Hold write lock: every path that chooses a truck writes under it')
 {
-  for (const f of ['lib/staffBooking.ts', 'lib/holdRequestService.ts', 'lib/holdService.ts', 'app/api/plan/hold/route.ts', 'app/api/hold-requests/[id]/route.ts', 'app/api/holds/[id]/route.ts', 'app/api/v1/internal/holds/route.ts', 'app/api/client/hold-requests/[id]/extend/route.ts']) {
+  for (const f of ['lib/staffBooking.ts', 'lib/holdRequestService.ts', 'lib/holdService.ts', 'app/api/plan/hold/route.ts', 'app/api/hold-requests/[id]/route.ts', 'app/api/holds/[id]/route.ts', 'app/api/client/hold-requests/[id]/extend/route.ts']) {
     eq(`${f} writes through writeHoldsExclusive`, fs.readFileSync(f, 'utf8').includes('writeHoldsExclusive('), true)
   }
   // The staff AI chat books through placeStaffBooking (lib/staffChatTools.ts), which writes under the lock.
+  // MCP books through placeClientBooking / placeStaffBooking, which write under the lock.
+  eq('MCP writes no hold itself', /prisma\.hold\.create|createHold\(/.test(fs.readFileSync('app/api/v1/internal/holds/route.ts', 'utf8')), false)
   eq('the AI chat writes no hold itself', fs.readFileSync('app/api/chat/route.ts', 'utf8').includes('prisma.hold.create'), false)
   const lock = fs.readFileSync('lib/holdWriteLock.ts', 'utf8')
   eq('locks are taken in sorted order (no deadlock)', lock.includes('.sort()') && lock.indexOf('.sort()') < lock.indexOf('EXEC @r = sp_getapplock'), true)
@@ -48,4 +50,5 @@ section('Hold write lock: every path that chooses a truck writes under it')
     portal.includes('selectedTrucks.length < truck_count') && fs.readFileSync('lib/staffBooking.ts', 'utf8').includes('!quoteOnly && selectedTrucks.length < truck_count'), true)
   eq('a portal booking prices on the default rate card under the client\'s agreement, as its quote does', portal.includes('resolveDefaultRateOverrides()') && portal.includes('{ ...defaultOverrides, ...clientOverrides,'), true)
   eq('paid review (#133): a refused grid drag is a 409 with its reason, as the portal booking', fs.readFileSync('app/api/client/hold-requests/route.ts', 'utf8').includes('e instanceof ClientHoldRefusal ||'), true)
+  eq('an MCP client booking keeps its origination through the all-or-nothing batch', portal.includes('origination: opts.origination,') && fs.readFileSync('lib/holdRequestService.ts', 'utf8').includes("params.origination ?? 'client-view'"), true)
 }

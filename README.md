@@ -134,7 +134,7 @@ This is separate from NextAuth. The MCP server authenticates as a privileged int
 
 Individual MCP users are identified via tokens stored in the `mcp_tokens` table. Each token is tied to either an `app_users` record (internal staff) or an `app_client_users` record (external customers like OneScreen), distinguished by the `user_type` column (`app_user` | `client_user`).
 
-The MCP server validates user tokens by calling the `validate-token` endpoint, then passes the resolved `user_id` and `user_type` via `X-Acting-User-Id` and `X-Acting-User-Type` headers on write operations.
+The MCP server validates user tokens by calling the `validate-token` endpoint, then passes the resolved `user_id` and `user_type` via `X-Acting-User-Id` and `X-Acting-User-Type` headers on quotes, bookings and availability questions (`lib/mcpActing.ts`). A client gets the client portal's rules and code, staff the Quote page's.
 
 **Behavior differs by user type:**
 - **`app_user`** — creates actual holds in `app_holds` (same as the internal UI)
@@ -209,6 +209,8 @@ Returns booked (unavailable) intervals for trucks within a date range.
 
 All internal status distinctions (SCHEDULE, HOLD, COMMITTED, ATT_SOFT) are collapsed to a single `"unavailable"` status. No client names, program names, notes, or other internal-only fields are returned. Overlapping or adjacent intervals are merged.
 
+With **`market` and `truck_count`** (and the acting-user headers), the answer is the engine's instead of the calendar: for a client, the client portal's rules and only `can_book` with a message; for staff, the Quote page's rules with `can_book`, the trucks nearest first (`miles` from where each is released) and the ones that can't take it.
+
 ### `POST /api/v1/internal/auth/validate-token`
 
 Validates an MCP user token. Called by the MCP server to resolve a user's identity before forwarding requests.
@@ -243,37 +245,31 @@ Validates an MCP user token. Called by the MCP server to resolve a user's identi
 
 Returns `401` if the token is missing, invalid, or revoked.
 
+### `POST /api/v1/internal/quote`
+
+Quotes one market, the way the app does, for whoever the call acts for (headers as for holds): a client gets the client portal's quote (`lib/clientQuote.ts`: their rate agreement, the lead-time minimum, real trucks), a staff member the Quote page's (`lib/staffQuote.ts`).
+
+**Body:** `market`, `start_date`, `end_date`, `truck_count`; optional `shadow_fencing`, `smart_directional`, `device_id`, `studies`, `days_per_week`, `operating_hours`; staff only: `sfdc_account_id`, `brand_markup_pct`. The response is the client portal's or the Quote page's quote.
+
 ### `POST /api/v1/internal/holds`
 
-Creates a hold or hold request on behalf of an MCP user. Behavior depends on `user_type`:
+Books a market, dates and a truck count on behalf of an MCP user; the engine picks the trucks. Behavior depends on `user_type`:
 
-- **`app_user`** — creates an actual hold in `app_holds` with conflict checking (same as the internal UI)
-- **`client_user`** — creates a hold *request* in `app_hold_requests` (same as the client portal), triggers email notification and Google Sheets logging
+- **`client_user`**: the client portal's booking (`lib/clientBooking.ts`): price recomputed, client expiry, the team emailed, the opportunity created on the client's Salesforce account (and Firefly's sheet appended, as before).
+- **`app_user`**: the Quote page's booking (`lib/staffBooking.ts`): requires `sfdc_account_id`, `sfdc_account_name` and `primary_contact_id`; staff expiry, the opportunity, and the price check when `expected_total` is given.
+
+Holds are marked origination `mcp` ("Via MCP" on the schedule). A body with `truck_number` is refused (400): booking a named truck is no longer offered.
+
+If the same caller already has a live booking for these dates made in the last day, the booking isn't made: the response is 409 with `duplicate: true`, the existing booking and a message. The caller confirms with the person and calls again with `confirm_duplicate: true` to book a second one.
 
 **Request headers:**
 - `Authorization: Bearer <INTERNAL_API_KEY>`
 - `X-Acting-User-Id: <user_id>` (resolved from validate-token)
 - `X-Acting-User-Type: app_user | client_user` (defaults to `app_user`)
 
-**Request body:**
-```json
-{
-  "truck_number": "0042",
-  "market": "Dallas-Ft. Worth, TX",
-  "state": "TX",
-  "client_name": "Acme Corp",
-  "start_date": "2026-08-01",
-  "end_date": "2026-08-15",
-  "status": "HOLD",
-  "notes": "Optional notes"
-}
-```
+**Body:** `market`, `start_date`, `end_date`, `truck_count`; optional features as for the quote, `state`, `notes`, `brand`; staff: `sfdc_account_id`, `sfdc_account_name`, `primary_contact_id`, `hold_days`, `stage`, `brand_markup_pct`, `expected_total`; `confirm_duplicate` (see above).
 
-For `app_user`: requires `truck_number`, `market`, `state`, `client_name`, `start_date`, `end_date`.
-For `client_user`: requires `truck_number`, `start_date`, `end_date` (market/state optional, matching client portal).
-
-**Response (201):** The created record. Includes `"type": "hold"` or `"type": "hold_request"` to distinguish.
-**Response (409):** Conflict (app_user holds only) — truck has an existing hold or LED schedule in the requested date range.
+**Response:** the client portal's or Quote page's booking result (200), or its refusal (400 / 409).
 
 ### `POST /api/v1/internal/query-log`
 

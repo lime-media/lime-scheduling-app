@@ -33,6 +33,8 @@ export interface CreateClientHoldParams {
    * supplies the truck number directly.
    */
   skipFeasibilityCheck?: boolean
+  /** Where the request came from: the client portal (default) or MCP. Shown as "Via MCP" on the schedule. */
+  origination?: 'client-view' | 'mcp'
 }
 
 /**
@@ -141,7 +143,7 @@ async function clientHoldRow(session: ClientSession, params: CreateClientHoldPar
     end_date:          new Date(end_date),
     status:            'HOLD',
     source:            'CLIENT',
-    origination:       'client-view',
+    origination:       params.origination ?? 'client-view',
     notes:             notes ?? null,
     created_by:        serviceUserId,
     client_user_id:    session.id,

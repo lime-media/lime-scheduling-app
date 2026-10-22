@@ -23,10 +23,12 @@ section('Hold write lock: what clashes')
 
 section('Hold write lock: every path that chooses a truck writes under it')
 {
-  for (const f of ['lib/staffBooking.ts', 'lib/holdRequestService.ts', 'lib/holdService.ts', 'app/api/plan/hold/route.ts', 'app/api/hold-requests/[id]/route.ts', 'app/api/holds/[id]/route.ts', 'app/api/v1/internal/holds/route.ts', 'app/api/client/hold-requests/[id]/extend/route.ts']) {
+  for (const f of ['lib/staffBooking.ts', 'lib/holdRequestService.ts', 'lib/holdService.ts', 'app/api/plan/hold/route.ts', 'app/api/hold-requests/[id]/route.ts', 'app/api/holds/[id]/route.ts', 'app/api/client/hold-requests/[id]/extend/route.ts']) {
     eq(`${f} writes through writeHoldsExclusive`, fs.readFileSync(f, 'utf8').includes('writeHoldsExclusive('), true)
   }
   // The staff AI chat books through placeStaffBooking (lib/staffChatTools.ts), which writes under the lock.
+  // MCP books through placeClientBooking / placeStaffBooking, which write under the lock.
+  eq('MCP writes no hold itself', /prisma\.hold\.create|createHold\(/.test(fs.readFileSync('app/api/v1/internal/holds/route.ts', 'utf8')), false)
   eq('the AI chat writes no hold itself', fs.readFileSync('app/api/chat/route.ts', 'utf8').includes('prisma.hold.create'), false)
   const lock = fs.readFileSync('lib/holdWriteLock.ts', 'utf8')
   eq('locks are taken in sorted order (no deadlock)', lock.includes('.sort()') && lock.indexOf('.sort()') < lock.indexOf('EXEC @r = sp_getapplock'), true)

@@ -124,6 +124,12 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   if (selectedTrucks.length === 0 && !quoteOnly) {
     return reply({ error: 'No trucks available' }, { status: 409 })
   }
+  // Fewer trucks free now than the quote was for: refused, not booked short.
+  // The price (and the Salesforce Amount) is for truck_count trucks. A
+  // quote-only log reserves nothing, so it still records what was quoted.
+  if (!quoteOnly && selectedTrucks.length < truck_count) {
+    return reply({ error: `Only ${selectedTrucks.length} of the ${truck_count} trucks are free for these dates now. Nothing was booked. Get a fresh quote.` }, { status: 409 })
+  }
 
   const campaignGroupId = `cg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const resolvedState = state || market.split(',')[1]?.trim() || null

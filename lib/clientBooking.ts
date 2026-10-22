@@ -11,7 +11,8 @@ import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
 import type { ClientSession } from '@/lib/clientAuth'
-import { createClientHold } from '@/lib/holdRequestService'
+import { ClientHoldRefusal, createClientHolds } from '@/lib/holdRequestService'
+import { HoldClashError, HoldLockTimeoutError } from '@/lib/holdWriteLock'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { createOpportunity, isSfdcConfigured, getSfdcAccountInfo } from '@/lib/salesforceClient'
@@ -29,7 +30,7 @@ import {
   VALID_STUDIES,
   type StudyType,
 } from '@/lib/pricing'
-import { resolveMarketSizeTierId, resolveRateOverrides } from '@/lib/pricing/resolvers'
+import { resolveMarketSizeTierId, resolveRateOverrides, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
 import { liveClientLinks } from '@/lib/clientLinks'
 import { holdExpDate } from '@/lib/dateOnly'
 import { reply, type CoreResult } from '@/lib/coreResult'
@@ -90,10 +91,17 @@ export async function placeClientBooking(
   // Resolved before selection: a custom service_area_miles changes WHICH trucks
   // need repositioning, so selecting first and applying the override afterwards
   // makes the hold disagree with the quote the client just accepted.
-  const [marketSizeTierId, rateOverrides] = await Promise.all([
+  // The client's agreement over the editable default rate card, merged exactly
+  // as the quote merges them (lib/clientAvailability.ts), so the booking is
+  // priced and picked on the rates the client was just quoted.
+  const [marketSizeTierId, clientOverrides, defaultOverrides] = await Promise.all([
     resolveMarketSizeTierId(market),
     resolveRateOverrides(session),
+    resolveDefaultRateOverrides(),
   ])
+  const rateOverrides = clientOverrides
+    ? { ...defaultOverrides, ...clientOverrides, daily_rates: { ...defaultOverrides?.daily_rates, ...clientOverrides.daily_rates } }
+    : defaultOverrides
 
   const { selectedTrucks, availability } = await selectTrucksForHold({
     market,
@@ -106,6 +114,13 @@ export async function placeClientBooking(
   if (selectedTrucks.length === 0) {
     return reply({
       error: 'No trucks available for the requested dates and market.',
+    }, { status: 409 })
+  }
+  // Fewer trucks free now than the quote was for: refused, not booked short.
+  // The price (and the Salesforce Amount) is for truck_count trucks.
+  if (selectedTrucks.length < truck_count) {
+    return reply({
+      error: `Only ${selectedTrucks.length} of the ${truck_count} trucks are available for these dates now. Nothing was booked. Get a fresh quote.`,
     }, { status: 409 })
   }
 
@@ -220,39 +235,35 @@ export async function placeClientBooking(
   const campaignGroupId = `cg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const resolvedState = state || market.split(',')[1]?.trim() || null
 
-  const created: string[] = []
-  const failed: string[] = []
-
-  for (const truck of selectedTrucks) {
-    try {
-      await createClientHold(session, {
-        // Already vetted by selectTrucksForHold above — re-checking would reload
-        // the fleet timelines once per truck.
-        skipFeasibilityCheck: true,
-        // One email for the booking, below, not one per truck.
-        skipEmail: true,
-        origination: opts.origination,
-        truck_number: truck.truckNumber,
-        market,
-        state: resolvedState,
-        start_date,
-        end_date,
-        notes: [brand ? `Brand: ${brand}` : null, notes || null].filter(Boolean).join(' | ') || null,
-        pricing_tier: pricingTier,
-        quoted_total: serverTotal,
-        daily_rate: quote.dailyRate,
-        features: featuresJson,
-        truck_count: selectedTrucks.length,
-        campaign_group_id: campaignGroupId,
-      })
-      created.push(truck.truckNumber)
-    } catch (err) {
-      console.error('[client/hold-requests] failed to create hold for truck:', truck.truckNumber, err)
-      failed.push(truck.truckNumber)
+  // All or nothing (lib/holdRequestService.ts createClientHolds): every
+  // truck's checks, then one write under the trucks' locks. A truck booked by
+  // someone else since it was picked books none of them: the booking is one
+  // quote, priced for every truck in it. Every truck's refusal is client-safe.
+  let created: string[]
+  try {
+    created = await createClientHolds(session, selectedTrucks.map(truck => ({
+      // Already vetted by selectTrucksForHold above — re-checking would reload
+      // the fleet timelines once per truck.
+      skipFeasibilityCheck: true,
+      origination: opts.origination,
+      truck_number: truck.truckNumber,
+      market,
+      state: resolvedState,
+      start_date,
+      end_date,
+      notes: [brand ? `Brand: ${brand}` : null, notes || null].filter(Boolean).join(' | ') || null,
+      pricing_tier: pricingTier,
+      quoted_total: serverTotal,
+      daily_rate: quote.dailyRate,
+      features: featuresJson,
+      truck_count: selectedTrucks.length,
+      campaign_group_id: campaignGroupId,
+    })))
+  } catch (err) {
+    if (err instanceof ClientHoldRefusal || err instanceof HoldClashError || err instanceof HoldLockTimeoutError) {
+      return reply({ error: `${err.message} Nothing was booked. Get a fresh quote and try again.` }, { status: 409 })
     }
-  }
-
-  if (created.length === 0) {
+    console.error('[client/hold-requests] failed to create holds:', err)
     return reply({ error: 'Failed to create holds' }, { status: 500 })
   }
 
@@ -318,7 +329,7 @@ export async function placeClientBooking(
   return reply({
     ok: true,
     created: created.length,
-    failed: failed.length,
+    failed: 0, // all or nothing: a booking that returns here held every truck
     campaignGroupId,
     trucksRequested: truck_count,
     trucksAvailable: availability.counts.total,

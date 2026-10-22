@@ -2,6 +2,7 @@ import { withUsageLog } from '@/lib/usageLog'
 import { addMessages, openConversation } from '@/lib/conversations'
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
+import { servedText, servedToolUses } from '@/lib/claudeReply'
 import { prisma } from '@/lib/prisma'
 import { getClientSession, type ClientSession } from '@/lib/clientAuth'
 import { buildClientChatContext } from '@/lib/clientChatContext'
@@ -167,6 +168,8 @@ async function scrubOtherClientNames(reply: string, ownClientId: string): Promis
 // ── Route handler ─────────────────────────────────────────────────────────────
 
 async function handlePost(req: NextRequest) {
+  // The deadline counts from the request, setup included.
+  const startedAt = Date.now()
   const session = getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   if (session.username !== 'testclient') return NextResponse.json({ error: 'Not available yet' }, { status: 403 })
@@ -225,13 +228,16 @@ async function handlePost(req: NextRequest) {
         system:        buildClientSystemPrompt(session.companyName),
         tools:         CLIENT_TOOLS,
         messages,
+      }, {
+        // Every call finishes in time to answer and save before maxDuration
+        // (300s), a fallback hop included: the time left, and no SDK retry
+        // (a retry, or its wait, could outlast the function).
+        timeout: MODEL_DEADLINE_MS - (Date.now() - startedAt),
+        maxRetries: 0,
       })
-      const said = response.content
-        .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text')
-        .map(b => b.text)
-        .join('\n\n')
-        .trim()
-      const toolUses = response.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === 'tool_use')
+      // The model that served it (a fallback replaces a declined one: lib/claudeReply.ts).
+      const said = servedText(response.content)
+      const toolUses = servedToolUses(response.content)
       // A refusal or a cut-off tool call (max_tokens) is never run.
       if (response.stop_reason !== 'tool_use' || toolUses.length === 0) {
         reply = said || (response.stop_reason === 'refusal' ? "Sorry, I can't help with that. Ask me about availability or your hold requests." : '')
@@ -297,6 +303,8 @@ async function handlePost(req: NextRequest) {
 // A message can chain several Opus calls and availability checks (each a
 // fleet load): the same limit as the other routes that load the fleet or call Claude.
 export const maxDuration = 300
+/** Every model call must finish by this point, leaving time to answer and save. */
+const MODEL_DEADLINE_MS = 285_000
 
 // Every run is logged for the Usage page (lib/usageLog.ts).
 export const POST = withUsageLog('ai_chat_client', 'client', handlePost)

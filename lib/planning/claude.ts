@@ -37,6 +37,27 @@ function assertUsable(msg: { stop_reason: string | null }, what: string): void {
   if (msg.stop_reason === 'max_tokens') throw new Error(`The input was too long for Claude to ${what} in one pass. Split the file and try again.`)
 }
 
+/**
+ * The stream's final message, or the refusal / cut-off error for it. The SDK
+ * parses structured output before finalMessage() resolves, so a refusal or a
+ * max_tokens cut-off (text that isn't whole JSON) would otherwise surface as
+ * "Failed to parse structured output" instead of the reason.
+ */
+async function usableFinalMessage<T extends { stop_reason: string | null }>(
+  stream: { finalMessage(): Promise<T>; currentMessage: { stop_reason: string | null } | undefined },
+  what: string,
+): Promise<T> {
+  let msg: T
+  try {
+    msg = await stream.finalMessage()
+  } catch (err) {
+    if (stream.currentMessage) assertUsable(stream.currentMessage, what)
+    throw err
+  }
+  assertUsable(msg, what)
+  return msg
+}
+
 // ---------------------------------------------------------------------------
 // 1. Extraction
 // ---------------------------------------------------------------------------
@@ -103,16 +124,14 @@ export async function extractFootprint(input: { text?: string; pdfBase64?: strin
   }
   content.push({ type: 'text', text: 'Extract the footprint from this file.' })
 
-  const msg = await anthropic().messages
-    .stream({
-      model: PLANNER_MODEL,
-      max_tokens: 64000,
-      system: EXTRACT_SYSTEM,
-      output_config: { effort: 'low', format: jsonSchemaOutputFormat(EXTRACT_SCHEMA) },
-      messages: [{ role: 'user', content }],
-    })
-    .finalMessage()
-  assertUsable(msg, 'read this file')
+  const stream = anthropic().messages.stream({
+    model: PLANNER_MODEL,
+    max_tokens: 64000,
+    system: EXTRACT_SYSTEM,
+    output_config: { effort: 'low', format: jsonSchemaOutputFormat(EXTRACT_SCHEMA) },
+    messages: [{ role: 'user', content }],
+  })
+  const msg = await usableFinalMessage(stream, 'read this file')
   const out = msg.parsed_output
   if (!out) throw new Error('Claude returned an unreadable result. Try again, or paste the ZIP list as CSV.')
 
@@ -199,16 +218,14 @@ export async function reviewFootprint(opts: {
     already_flagged: opts.flags.map(f => ({ kind: f.kind, zip: f.zip ?? '', detail: f.detail })),
   }
 
-  const msg = await anthropic().messages
-    .stream({
-      model: PLANNER_MODEL,
-      max_tokens: 16000,
-      system: REVIEW_SYSTEM,
-      output_config: { effort: 'medium', format: jsonSchemaOutputFormat(REVIEW_SCHEMA) },
-      messages: [{ role: 'user', content: `Review this client ZIP list.\n\n${JSON.stringify(payload)}` }],
-    })
-    .finalMessage()
-  assertUsable(msg, 'review this list')
+  const stream = anthropic().messages.stream({
+    model: PLANNER_MODEL,
+    max_tokens: 16000,
+    system: REVIEW_SYSTEM,
+    output_config: { effort: 'medium', format: jsonSchemaOutputFormat(REVIEW_SCHEMA) },
+    messages: [{ role: 'user', content: `Review this client ZIP list.\n\n${JSON.stringify(payload)}` }],
+  })
+  const msg = await usableFinalMessage(stream, 'review this list')
   const out = msg.parsed_output
   if (!out) throw new Error('Claude returned an unreadable review.')
 

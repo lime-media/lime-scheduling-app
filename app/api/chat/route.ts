@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import Anthropic from '@anthropic-ai/sdk'
+import { servedText, servedToolUses } from '@/lib/claudeReply'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
@@ -380,8 +381,8 @@ async function handlePost(req: NextRequest) {
     try {
       response = await anthropic.beta.messages.create({
         model: 'claude-opus-5-5',
-      // A safety decline is retried server-side on the model Anthropic recommends
-      // for its category, instead of returning the refusal (beta).
+        // A safety decline is retried server-side on the model Anthropic recommends
+        // for its category, instead of returning the refusal (beta).
         betas: ['server-side-fallback-2026-07-01'],
         fallbacks: 'default',
         max_tokens: 16000,
@@ -409,16 +410,13 @@ async function handlePost(req: NextRequest) {
         : 'I hit an error before finishing. Please try again.'
       break
     }
-    const text = response.content
-      .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text')
-      .map(b => b.text)
-      .join('\n\n')
-      .trim()
+    // The model that served it (a fallback replaces a declined one: lib/claudeReply.ts).
+    const text = servedText(response.content)
     if (response.stop_reason === 'refusal') {
       reply = text || "I can't help with that request."
       break
     }
-    const toolUses = response.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === 'tool_use')
+    const toolUses = servedToolUses(response.content)
     // A cut-off tool call (max_tokens) is never run.
     if (response.stop_reason !== 'tool_use' || toolUses.length === 0) {
       reply = text

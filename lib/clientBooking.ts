@@ -31,6 +31,7 @@ import {
 } from '@/lib/pricing'
 import { resolveMarketSizeTierId, resolveRateOverrides } from '@/lib/pricing/resolvers'
 import { liveClientLinks } from '@/lib/clientLinks'
+import { holdExpDate } from '@/lib/dateOnly'
 import { reply, type CoreResult } from '@/lib/coreResult'
 
 export type ClientBookingInput = {
@@ -289,7 +290,7 @@ export async function placeClientBooking(
         market,
         holdStart: start_date,
         holdStop: end_date,
-        holdExp: firstHold?.expires_at?.toISOString().split('T')[0],
+        holdExp: firstHold?.expires_at ? holdExpDate(firstHold.expires_at) : undefined,
         truckNumbers: created,
         activationNotes,
       })

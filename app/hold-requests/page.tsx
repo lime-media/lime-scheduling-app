@@ -8,7 +8,7 @@ import { format, formatDistanceToNow, isPast } from 'date-fns'
 import toast from 'react-hot-toast'
 import { Navbar } from '@/components/Navbar'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
-import { parseDateOnly } from '@/lib/dateOnly'
+import { centralDate, parseDateOnly } from '@/lib/dateOnly'
 import { useReopenConfirm, type Reopenable } from '@/components/ReopenOpportunityDialog'
 import { formatMarketState } from '@/lib/format'
 import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
@@ -554,7 +554,7 @@ export default function HoldRequestsPage() {
   const editLastDate = useMemo(() => {
     if (!editingGroup?.length) return ''
     const key = bookingKey(editingGroup[0])
-    const starts = bookingCapStarts((key ? rowsByBooking.get(key) : undefined) ?? editingGroup, new Date().toISOString().slice(0, 10))
+    const starts = bookingCapStarts((key ? rowsByBooking.get(key) : undefined) ?? editingGroup, centralDate(new Date()))
     return lastExpiryDate([...starts].sort()[0], new Date(), STAFF_MIN_DAYS_BEFORE_START)
   }, [editingGroup, rowsByBooking])
 
@@ -863,7 +863,7 @@ export default function HoldRequestsPage() {
                   )}
                   {status === 'EXTENSION_REQUESTED' && (
                     <div className="px-4 py-2 text-xs text-amber-800 bg-amber-50 border-t border-amber-100">
-                      Extension requested for the whole booking{first.extension_until ? ` until ${format(parseDateOnly(first.extension_until.slice(0, 10)), 'MMM d')}` : ''}.
+                      Extension requested for the whole booking{first.extension_until ? ` until ${format(parseDateOnly(centralDate(new Date(first.extension_until))), 'MMM d')}` : ''}.
                       {first.extension_reason ? ` Reason: ${first.extension_reason}` : ''}
                     </div>
                   )}
@@ -965,7 +965,7 @@ export default function HoldRequestsPage() {
         const first = editingGroup[0]
         // A won deal: truck swaps only (lib/bookings.ts closedWonRefusal).
         const won = !!closedWonRefusal(editingGroup)
-        const currentExpDate = first.expires_at ? first.expires_at.split('T')[0] : ''
+        const currentExpDate = first.expires_at ? centralDate(new Date(first.expires_at)) : ''
         const hasChanges = editingGroup.some(r => selectedTrucks.get(r.id) !== r.truck_number) || (!won && newExpiresAt !== currentExpDate)
         return (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -1122,9 +1122,7 @@ export default function HoldRequestsPage() {
                           <button
                             type="button"
                             onClick={() => {
-                              const d = new Date()
-                              d.setDate(d.getDate() + 3)
-                              setNewExpiresAt(d.toISOString().split('T')[0])
+                              setNewExpiresAt(centralDate(new Date(Date.now() + 3 * 864e5)))
                               setExpiryEdited(true)
                             }}
                             className="text-xs text-green-600 hover:text-green-700 font-medium transition-colors"

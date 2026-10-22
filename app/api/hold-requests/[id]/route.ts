@@ -13,6 +13,7 @@ import { closeOpportunityAsLost, getOpportunityStage } from '@/lib/sfdcOpportuni
 import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { reopenClosedLostOpportunity, syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { sendCancellationEmail, sendExtensionDecisionEmail } from '@/lib/email'
+import { centralDate, endOfDayCentral, holdExpDate } from '@/lib/dateOnly'
 import { recordSwap } from '@/lib/transportMetricsRecord'
 import { waitUntil } from '@vercel/functions'
 
@@ -50,12 +51,10 @@ async function loadBooking(hold: HoldWithClient): Promise<HoldWithClient[]> {
 
 /** The start dates that cap the booking's one expiry (lib/bookings.ts bookingCapStarts). */
 function capStarts(booking: Hold[]): string[] {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = centralDate(new Date())
   return bookingCapStarts(booking.map(h => ({ start_date: h.start_date.toISOString().slice(0, 10), status: h.status })), today)
 }
 
-/** The end of a YYYY-MM-DD day, as a hand-set expiry is stored. */
-const endOfDay = (d: string) => new Date(d + 'T23:59:59Z')
 const day = (d: Date) => d.toISOString().slice(0, 10)
 
 /** The booking's span and markets, for the client's email. */
@@ -202,7 +201,7 @@ export async function PATCH(
     // The whole booking comes back, or none of it: every lapsed hold of it
     // whose market hasn't ended (lib/bookings.ts reinstatableHolds).
     const booking = await loadBooking(hold)
-    const today = new Date().toISOString().slice(0, 10)
+    const today = centralDate(new Date())
     const lapsed = reinstatableHolds(booking, today)
       .filter(h => h.origination !== QUOTE_ONLY_ORIGINATION && !reinstateBlockedByRelease(h.origination))
     if (lapsed.length === 0) return NextResponse.json({ error: NOTHING_TO_REINSTATE }, { status: 400 })
@@ -398,7 +397,7 @@ export async function PATCH(
     // for, but never past the staff limit (2 days before its earliest start),
     // or the standard length when none was asked.
     const starts = capStarts(booking)
-    const limit = endOfDay(lastExpiryDate([...starts].sort()[0], new Date(), STAFF_MIN_DAYS_BEFORE_START))
+    const limit = endOfDayCentral(lastExpiryDate([...starts].sort()[0], new Date(), STAFF_MIN_DAYS_BEFORE_START))
     const asked = live.map(h => h.extension_until).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0]
     const newExpiresAt = asked
       ? (asked > limit ? limit : asked)
@@ -425,7 +424,7 @@ export async function PATCH(
       const s = bookingSummary(live)
       await sendExtensionDecisionEmail({
         to: client.email, companyName: client.company_name, markets: s.markets,
-        startDate: s.startDate, endDate: s.endDate, heldUntil: day(newExpiresAt),
+        startDate: s.startDate, endDate: s.endDate, heldUntil: holdExpDate(newExpiresAt),
       }).catch(err => console.error('[approve-extension] email send failed:', err))
     }
 
@@ -438,7 +437,7 @@ export async function PATCH(
     if (!newExpiresAtStr) {
       return NextResponse.json({ error: 'expires_at is required' }, { status: 400 })
     }
-    const newExp = /^\d{4}-\d{2}-\d{2}$/.test(newExpiresAtStr) ? endOfDay(newExpiresAtStr) : new Date(NaN)
+    const newExp = /^\d{4}-\d{2}-\d{2}$/.test(newExpiresAtStr) ? endOfDayCentral(newExpiresAtStr) : new Date(NaN)
     if (isNaN(newExp.getTime())) {
       return NextResponse.json({ error: 'Invalid date' }, { status: 400 })
     }

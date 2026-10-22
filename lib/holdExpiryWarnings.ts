@@ -22,6 +22,10 @@
 
 import { prisma } from '@/lib/prisma'
 import { sendExpiringHoldsEmail, type ExpiringHoldSummary } from '@/lib/email'
+import { APP_TIME_ZONE } from '@/lib/dateOnly'
+
+/** When a hold lapses, as reps read it (Central time). */
+const EXPIRES_AT = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: APP_TIME_ZONE, timeZoneName: 'short' })
 
 export const WARN_ACTION = 'WARN_HOLD_EXPIRY'
 
@@ -119,7 +123,8 @@ export async function warnExpiringHolds(now = new Date()): Promise<ExpiryWarning
       market:      h.market,
       startDate:   toDateStr(h.start_date),
       endDate:     toDateStr(h.end_date),
-      expiresAt:   h.expires_at ? h.expires_at.toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : 'unknown',
+      // In Central time, as the rep's confirmation and Salesforce's Hold Exp give it.
+      expiresAt:   h.expires_at ? EXPIRES_AT.format(h.expires_at) : 'unknown',
       hoursLeft:   h.expires_at
         ? Math.max(0, Math.round((h.expires_at.getTime() - now.getTime()) / 3600_000))
         : 0,

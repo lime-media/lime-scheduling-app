@@ -62,8 +62,15 @@ findings by how close they come to one of those.
   `EXTENSION_REQUESTED` holds expired under the cron; the booking-unit
   cleanup PR: a request left `expires_at` alone, so it still lapsed at the
   original date while waiting.)*
-- **Date-only values expire at the end of the day,** not at midnight UTC when
-  the day begins. *(#51: SFDC `sfdc_hold_exp`.)*
+- **Date-only values expire at the end of the day, in Central time,** not at
+  midnight when the day begins and not at the end of the UTC day. A hold's day
+  is its Central day everywhere: an expiry is shown, compared with "today" and
+  written to Salesforce's LED Hold Exp as `centralDate` / `holdExpDate`, and a
+  date read in (Edit, a client's extension, Salesforce's Hold Exp) ends at
+  `endOfDayCentral` (lib/dateOnly.ts). Flag `toISOString().slice(0, 10)` on an
+  expiry or a "today" used with expiries. *(#51: SFDC `sfdc_hold_exp`; Central
+  days: an evening expiry read as the next day in Salesforce and on
+  Reservations.)*
 - **Webhooks only touch the rows they own.** The Salesforce hold webhook
   matches on `source: 'SALESFORCE'` as well as the Opportunity id, so it can't
   update or delete client-created holds. *(#51.)*

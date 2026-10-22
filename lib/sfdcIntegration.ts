@@ -1,5 +1,5 @@
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
-import { endOfDayUtc } from '@/lib/dateOnly'
+import { endOfDayCentral } from '@/lib/dateOnly'
 import { APP_HOLD_EXP_KEY } from '@/lib/quoteFeatures'
 
 // Holds pushed in from Salesforce are attributed to this service user, and
@@ -141,7 +141,7 @@ export function pushedHoldExpiry(o: {
   if (pushed && o.current && o.appHoldExp === pushed) {
     return { expiresAt: o.current, echo: true }
   }
-  return { expiresAt: (pushed ? endOfDayUtc(pushed) : null) ?? o.current ?? o.fallback, echo: false }
+  return { expiresAt: (pushed ? endOfDayCentral(pushed) : null) ?? o.current ?? o.fallback, echo: false }
 }
 
 export function closedOpportunityBlocksReactivation(stage: { isClosed: boolean; isWon: boolean; stageName: string } | null): string | null {

@@ -9,6 +9,7 @@ import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { holdReservesNow } from '@/lib/holdFilters'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
+import { centralDate, endOfDayCentral, holdExpDate } from '@/lib/dateOnly'
 
 /**
  * POST /api/client/hold-requests/[id]/extend
@@ -46,7 +47,7 @@ export async function POST(
   if (typeof extend_until !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(extend_until)) {
     return NextResponse.json({ error: 'extend_until date is required (YYYY-MM-DD)' }, { status: 400 })
   }
-  const extendDate = new Date(extend_until + 'T23:59:59Z')
+  const extendDate = endOfDayCentral(extend_until)
   if (isNaN(extendDate.getTime())) {
     return NextResponse.json({ error: 'Invalid extend_until date' }, { status: 400 })
   }
@@ -69,7 +70,7 @@ export async function POST(
   if (refusal) return NextResponse.json({ error: refusal }, { status: 400 })
 
   const held = holds.filter(h => h.status === 'HOLD')
-  const today = new Date().toISOString().slice(0, 10)
+  const today = centralDate(new Date())
   const starts = bookingCapStarts(held.map(h => ({ start_date: h.start_date.toISOString().slice(0, 10), status: h.status })), today)
   const lastDate = lastExpiryDate([...starts].sort()[0])
   if (extend_until > lastDate) {
@@ -79,8 +80,8 @@ export async function POST(
     }, { status: 400 })
   }
   const currentExpiry = held.map(h => h.expires_at).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0]
-  if (currentExpiry && extendDate <= currentExpiry) {
-    return NextResponse.json({ error: `This booking is already held until ${currentExpiry.toISOString().slice(0, 10)}. Choose a later date.` }, { status: 400 })
+  if (currentExpiry && (extendDate <= currentExpiry || extend_until <= holdExpDate(currentExpiry))) {
+    return NextResponse.json({ error: `This booking is already held until ${holdExpDate(currentExpiry)}. Choose a later date.` }, { status: 400 })
   }
 
   // The audit row's user is a staff record (FK to app_users); a client has

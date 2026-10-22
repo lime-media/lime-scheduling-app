@@ -7,6 +7,7 @@ import { placeClientBooking } from '@/lib/clientBooking'
 import { createClientHold } from '@/lib/holdRequestService'
 import { HoldClashError, HoldLockTimeoutError } from '@/lib/holdWriteLock'
 import { bookingKey } from '@/lib/bookings'
+import { holdExpDate } from '@/lib/dateOnly'
 
 export async function GET(req: NextRequest) {
   const session = getClientSession(req)
@@ -48,7 +49,7 @@ export async function GET(req: NextRequest) {
       truck_count:       r.truck_count ?? null,
       campaign_group_id: r.campaign_group_id ?? null,
       expires_at:        r.expires_at?.toISOString() ?? null,
-      extension_until:   r.extension_until?.toISOString().split('T')[0] ?? null,
+      extension_until:   r.extension_until ? holdExpDate(r.extension_until) : null,
       extension_reason:  r.extension_reason ?? null,
     })),
   })

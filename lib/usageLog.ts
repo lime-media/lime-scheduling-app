@@ -248,6 +248,15 @@ export function withUsageLog(
 
 
 /**
+ * A quote or booking run from inside another run (the staff AI chat's
+ * get_quote and place_hold tools call the same functions as the quote page),
+ * logged as its own row like a route run. Written after the response is sent.
+ */
+export function recordToolRun(actor: Actor, tool: UsageTool, inputs: unknown, status: number, json: unknown, latencyMs: number): void {
+  waitUntil(record(actor, tool, pruneInputs(inputs), status, json, latencyMs))
+}
+
+/**
  * An MCP tool call, reported by the MCP server (POST /api/v1/internal/query-log).
  * Same table, tool "mcp_<name>". The server's outcome maps onto ours:
  * no_availability is "not feasible".

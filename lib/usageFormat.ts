@@ -4,17 +4,19 @@
  */
 
 export type UsageTool =
-  | 'quote_classic' | 'quote_multi' | 'quote_client'
-  | 'hold_classic' | 'hold_multi' | 'hold_client'
+  | 'quote_classic' | 'quote_multi' | 'quote_client' | 'quote_chat'
+  | 'hold_classic' | 'hold_multi' | 'hold_client' | 'hold_chat'
   | 'ai_chat_staff' | 'ai_chat_client' | 'ai_plan_areas' | 'ai_plan_review'
 
 export const TOOL_LABELS: Record<UsageTool, string> = {
   quote_classic: 'Quote (Classic)',
   quote_multi: 'Quote (Multi-market)',
   quote_client: 'Quote (client portal)',
+  quote_chat: 'Quote (AI chat)',
   hold_classic: 'Hold placed (Classic)',
   hold_multi: 'Hold placed (Multi-market)',
   hold_client: 'Hold placed (client portal)',
+  hold_chat: 'Hold placed (AI chat)',
   ai_chat_staff: 'AI chat (staff)',
   ai_chat_client: 'AI chat (client portal)',
   ai_plan_areas: 'AI: ZIP list → areas',

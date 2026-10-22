@@ -2,9 +2,10 @@
  * Staff booking: reserve the trucks a staff quote picked and create (or add
  * to) the Salesforce opportunity — the internal /quote page's "Reserve". The
  * hold is placed on behalf of a client; a sfdc_account_id is required for the
- * opportunity, and the availability engine picks the trucks. Called by POST
- * /api/quote/hold; a lib function so the staff AI chat (next PR) books
- * through the same code: truck choice, price check, expiry and opportunity.
+ * opportunity, and the availability engine picks the trucks. Shared by POST
+ * /api/quote/hold and the staff AI chat's place_hold tool
+ * (lib/staffChatTools.ts), so a chat booking gets the same truck choice, price
+ * check, expiry and opportunity.
  * Returns the route's status and JSON body.
  */
 

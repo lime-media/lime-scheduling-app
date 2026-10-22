@@ -450,6 +450,25 @@ Multi-market plans evolve: a market is dropped or added, dates move. Two ways to
 
 Both are staff only; the client portal is unchanged.
 
+## 6g. Transport metrics (Transport page)
+
+What bookings quote for transport, how it changes, what actually happens, and how quotes compare with the contract. Recorded by `lib/transportMetricsRecord.ts` (best-effort: a recording failure never blocks a booking); KPIs in `lib/transportMetrics.ts`; shown at `/ops/transport` to any staff user, for bookings made in a date range.
+
+- **`app_transport_legs`**, one row per truck per event:
+  - `BOOKED` / `REVISED`: written when a booking is placed or revised on the Quote page, the multi-market planner or the client portal, from what the quote already worked out (single-market: each selected truck and its priced leg; multi-market: each market's arrivals). Holds placed by hand (the schedule grid, MCP) aren't quoted and record nothing.
+    A revision replaces the booking's holds under a new campaign group; its rows keep the booking key the replaced holds were recorded under, so a booking stays one booking across revisions. The Transport page reads a booking's legs by that key, and takes the current plan from holds that still exist.
+  - `SWAPPED`: a truck swapped onto a hold, its origin measured at the swap.
+  - `PRESTART`: a snapshot the sweep records up to 3 days before a campaign starts (once per hold and truck, so a truck swapped on gets its own): where its truck sits before it drives in. In no KPI; only EXECUTED's origin.
+  - `EXECUTED`: written by the 15-minute sweep on a campaign's first day (or within 3 days, once per hold) for the truck actually on the hold. Its origin is that truck's `PRESTART` snapshot, taken up to 3 days before the start while the truck's previous job (or, with none, its GPS) still shows where it's coming from; by the first day the previous job has ended and a truck usually already sits in the market. Without a snapshot (a hold booked and started the same day, or a truck swapped on after its snapshot), it falls back to GPS that morning, which can under-count repositioning. The page's date range is UTC.
+  - Each row: origin and how it was found, miles, travel days, **outcome** (`LOCAL` inside the service area, `BILLED` when the client pays for the move, `ABSORBED` when we do), **charge** (what the client pays; a swapped or executed truck keeps the slot's quoted charge), and **est_cost** (our estimated cost of the move, `absorbedLegCost`, for any out-of-area truck, billed or not). Quote-only logs record nothing.
+- **`app_deal_values`**: the app's quoted total per booking (`BOOKED`, `REVISED`); Salesforce's **Amount** the first time the reconcile (or a hand commit) sees an opportunity the app quoted Closed Won, whichever path committed its holds (`WON`, once per opportunity); and the Amount and stage again whenever either changes after (`AMOUNT_CHANGED`, checked by the sweep for 180 days after the deal was won).
+
+The page shows:
+- **Quoted transport** (everything quoted, cancelled bookings included: each booking's latest plan, one leg per truck slot): trucks, % local / absorbed / billed, $ charged vs our estimated cost, by client and market.
+- **Planned vs actual** (holds that have started): average quoted vs actual miles, how often a different truck ran it or the outcome changed, and **unpriced repositioning** (quoted local, ran from outside the area) with its cost.
+- **Changes after booking**: share of bookings swapped or revised, and changes per booking.
+- **Quote vs Salesforce contract** (won deals): the app's quoted total (the latest figure of each booking on the opportunity) against the Amount at Closed Won and now, with the biggest gaps. Left out, and counted beside it: deals whose latest stage is no longer Closed Won (reopened or lost), and deals with an app booking whose quote wasn't recorded (a quote-only log, or booked before these metrics), since their Amount covers more than the recorded quotes.
+
 ## 7. What the client sees vs. what's internal
 
 Nothing under an `_internal` key is returned on a client-authenticated route — not the margin check, and not the downstream deadhead flags. Those appear only on the staff routes (`/api/quote`, `/api/quote/hold`) and the MCP endpoint; on the client routes the same values are logged server-side instead. A client-facing response is visible in the browser network tab whether or not the UI renders it.

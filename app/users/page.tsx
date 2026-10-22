@@ -6,6 +6,7 @@ import { useSession } from 'next-auth/react'
 // import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
 import toast from 'react-hot-toast'
+import { clientEmailRefusal } from '@/lib/clientEmail'
 
 interface AppUser {
   id:         string
@@ -245,6 +246,13 @@ export default function UsersPage() {
       toast.error('Username and company name are required')
       return
     }
+    // A client signs in with a code sent to this address; without it the
+    // account cannot log in (lib/clientOtp.ts). The API refuses it too.
+    const clientEmailProblem = clientEmailRefusal(clientForm.email)
+    if (clientEmailProblem) {
+      toast.error(clientEmailProblem)
+      return
+    }
     if (clientModalMode === 'add' && !clientForm.password) {
       toast.error('Password is required for new client users')
       return
@@ -258,7 +266,7 @@ export default function UsersPage() {
 
       const body: Record<string, string | null> = {
         username:        clientForm.username.trim(),
-        email:           clientForm.email.trim() || null,
+        email:           clientForm.email.trim(),
         company_name:    clientForm.company_name.trim(),
         partner_id:      clientSfdcAccount?.id ?? clientForm.partner_id.trim() ?? '',
         sfdc_account_id: clientSfdcAccount?.id ?? null,
@@ -756,10 +764,12 @@ export default function UsersPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Email <span className="text-gray-400 font-normal ml-1">(for notifications)</span>
+                  Email <span className="text-red-500">*</span>
+                  <span className="text-gray-400 font-normal ml-1">(sign-in codes are sent here)</span>
                 </label>
                 <input
                   type="email"
+                  required
                   value={clientForm.email}
                   onChange={(e) => setClientForm({ ...clientForm, email: e.target.value })}
                   placeholder="client@example.com"

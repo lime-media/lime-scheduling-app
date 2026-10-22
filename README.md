@@ -62,9 +62,9 @@ TRUCK STATUS (today: 2026-05-15):
 - Truck 0825: AVAILABLE | GPS: Bloomington, MN | Last market: Minneapolis, MN
 - Truck 0786: AVAILABLE | Location unknown
 
-ALL HOLDS & COMMITMENTS (12 total):
-  Truck 0786: HOLD for "Nike" in Oklahoma City, OK (2026-05-20 → 2026-06-05)
-  Truck 7245: ATT_SOFT for "AT&T" in  (2026-06-01 → 2026-06-30)
+HOLDS (id in brackets; 12 total, including committed and AT&T soft holds):
+  [3F2A…] Truck 0786: HOLD for "Nike" in Oklahoma City, OK (2026-05-20 → 2026-06-05)
+  [9B1C…] Truck 7245: ATT_SOFT for "AT&T" in  (2026-06-01 → 2026-06-30)
 ```
 
 Location priority in the context:
@@ -73,6 +73,8 @@ Location priority in the context:
 3. `Location unknown`
 
 The AI is instructed never to guess or infer a truck's location — it can only report what appears explicitly in this context.
+
+Availability for a market, distances, prices and bookings don't come from this context: the chat calls tools that run the app's own engine (`lib/staffChatTools.ts`; see QUOTING.md, "The staff AI chat"). It releases a hold only by the id shown here, never a committed or AT&T soft hold.
 
 ---
 

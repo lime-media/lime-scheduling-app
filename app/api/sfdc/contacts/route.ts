@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
-import { isSfdcConfigured, sfdcQuery, soqlString } from '@/lib/salesforceClient'
+import { isSfdcConfigured } from '@/lib/salesforceClient'
+import { isAccountId, searchContacts } from '@/lib/sfdcSearch'
 
 /**
  * GET /api/sfdc/contacts?accountId=001…&q=search_term
@@ -16,24 +17,12 @@ export async function GET(req: NextRequest) {
   if (!isSfdcConfigured()) return NextResponse.json({ error: 'Salesforce not configured' }, { status: 503 })
 
   const accountId = req.nextUrl.searchParams.get('accountId')?.trim() ?? ''
-  if (!/^001[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/.test(accountId)) {
+  if (!isAccountId(accountId)) {
     return NextResponse.json({ error: 'accountId must be a Salesforce Account id' }, { status: 400 })
   }
   const q = req.nextUrl.searchParams.get('q')?.trim() ?? ''
-  // Typed % and _ are literal here (a contact search is for names), unlike
-  // soqlString's default of leaving LIKE wildcards as typed.
-  const term = soqlString(q).replace(/[%_]/g, '\\$&')
-  const match = q
-    ? ` AND (Name LIKE '%${term}%' OR Email LIKE '%${term}%')`
-    : ''
-
   try {
-    const rows = await sfdcQuery<{ Id: string; Name: string; Title: string | null; Email: string | null }>(
-      `SELECT Id, Name, Title, Email FROM Contact WHERE AccountId = '${accountId}'${match} ORDER BY Name LIMIT 50`,
-    )
-    return NextResponse.json({
-      contacts: rows.map(r => ({ id: r.Id, name: r.Name, title: r.Title, email: r.Email })),
-    })
+    return NextResponse.json({ contacts: await searchContacts(accountId, q) })
   } catch (err) {
     console.error('[sfdc/contacts] search failed:', err)
     return NextResponse.json({ error: 'Contact search failed' }, { status: 500 })

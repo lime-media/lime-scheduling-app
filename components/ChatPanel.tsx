@@ -180,7 +180,7 @@ export function ChatPanel() {
       if (res.ok) {
         const msgs: Message[] = [
           ...newHistory,
-          { role: 'assistant', content: data.reply },
+          ...(data.reply ? [{ role: 'assistant' as const, content: data.reply }] : []),
         ]
         if (data.actionResult) {
           msgs.push({

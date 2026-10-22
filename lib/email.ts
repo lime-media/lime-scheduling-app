@@ -1,4 +1,5 @@
 import { getSetting } from '@/lib/appSettings'
+import { otpHtml } from '@/lib/emailTemplates'
 
 // Email notifications — wire up SMTP credentials in .env when ready.
 // Required env vars: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
@@ -231,6 +232,8 @@ export async function sendOtpEmail(data: OtpEmailData): Promise<void> {
   })
 
   const subject = `Your Lime Media login code: ${data.code}`
+  // Sent alongside the HTML: what a plain-text client, a screen reader or a
+  // phone's notification preview shows.
   const text = [
     `Hi ${data.name},`,
     ``,
@@ -245,6 +248,7 @@ export async function sendOtpEmail(data: OtpEmailData): Promise<void> {
     to:      data.to,
     subject,
     text,
+    html:    otpHtml(data),
   })
 }
 

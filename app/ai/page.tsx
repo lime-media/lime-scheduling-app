@@ -252,7 +252,7 @@ export default function AIPage() {
         if (res.ok) {
           const msgs: Message[] = [
             ...nextMessages,
-            { role: 'assistant', content: data.reply },
+            ...(data.reply ? [{ role: 'assistant' as const, content: data.reply }] : []),
           ]
           if (data.actionResult) {
             msgs.push({

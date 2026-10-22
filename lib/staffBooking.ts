@@ -56,6 +56,8 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   const quoteOnly = quote_only === true
   // The brand, as Salesforce gets it (Brand / Job Name, and first in the name).
   const brand = cleanBrand(typeof rawBrand === 'string' ? rawBrand : '')
+  // Notes from the caller (MCP passes them; the Quote page doesn't), kept short.
+  const callerNotes = typeof body.notes === 'string' ? body.notes.trim().slice(0, 500) : ''
 
   if (!market || !start_date || !end_date || !truck_count) {
     return reply({ error: 'market, start_date, end_date, truck_count required' }, { status: 400 })
@@ -250,7 +252,8 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
     status:            quoteOnly ? QUOTE_ONLY_STATUS : 'HOLD',
     source:            'INTERNAL',
     origination:       quoteOnly ? QUOTE_ONLY_ORIGINATION : opts.origination ?? 'frontend',
-    notes:             `${quoteOnly ? `${QUOTE_ONLY_NOTE} ` : ''}Internal quote for ${sfdc_account_name || 'Unknown'}${brand ? ` (brand: ${brand})` : ''}`,
+    // The caller's own notes (MCP), after the Quote page's default note.
+    notes:             `${quoteOnly ? `${QUOTE_ONLY_NOTE} ` : ''}Internal quote for ${sfdc_account_name || 'Unknown'}${brand ? ` (brand: ${brand})` : ''}${callerNotes ? ` | ${callerNotes}` : ''}`,
     created_by:        createdBy,
     // Quote-only logs are internal: never shown in the client portal.
     client_user_id:    quoteOnly ? null : linkedClient?.id ?? null,

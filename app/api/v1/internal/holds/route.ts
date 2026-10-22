@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { validateInternalApiKey } from '@/lib/internalAuth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
-import { mcpParty, parseMcpCampaign } from '@/lib/mcpActing'
+import { mcpParty, parseMcpCampaign, parseMcpStaffPricing } from '@/lib/mcpActing'
 import { resolveQuoteMarket } from '@/lib/staffQuote'
 import { placeClientBooking } from '@/lib/clientBooking'
 import { placeStaffBooking } from '@/lib/staffBooking'
@@ -95,11 +95,22 @@ export async function POST(req: NextRequest) {
   // names must be strings (a number would reach Prisma and Salesforce as-is);
   // hold_days and expected_total are type-checked by placeStaffBooking.
   const str = (v: unknown) => (typeof v === 'string' ? v : undefined)
+  // Priced as the MCP quote prices it (the same markup check), and named: a
+  // booking with no account name would be held as "Unknown" and create a
+  // "Client - …" opportunity.
+  const pricing = parseMcpStaffPricing(body)
+  if ('error' in pricing) return NextResponse.json({ error: pricing.error }, { status: 400 })
+  const accountName = str(body.sfdc_account_name)?.trim()
+  if (!accountName) return NextResponse.json({ error: 'sfdc_account_name is required: the Salesforce Account the booking is for' }, { status: 400 })
+  if (body.expected_total !== undefined && (typeof body.expected_total !== 'number' || !Number.isFinite(body.expected_total))) {
+    return NextResponse.json({ error: 'expected_total must be a number (the quote\'s grandTotal)' }, { status: 400 })
+  }
   const result = await placeStaffBooking({
     ...booking,
-    sfdc_account_id: str(body.sfdc_account_id), sfdc_account_name: str(body.sfdc_account_name),
+    ...pricing,
+    sfdc_account_name: accountName,
     primary_contact_id: str(body.primary_contact_id), brand: str(body.brand), hold_days: body.hold_days, stage: str(body.stage),
-    brand_markup_pct: body.brand_markup_pct, expected_total: body.expected_total,
+    notes: str(body.notes), expected_total: body.expected_total,
   }, party.actor, { origination: 'mcp' })
   return NextResponse.json(result.body, { status: result.status })
 }

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { validateInternalApiKey } from '@/lib/internalAuth'
-import { mcpParty, parseMcpCampaign } from '@/lib/mcpActing'
+import { mcpParty, parseMcpCampaign, parseMcpStaffPricing } from '@/lib/mcpActing'
 import { clientQuote } from '@/lib/clientQuote'
 import { staffQuote } from '@/lib/staffQuote'
 
@@ -38,13 +38,13 @@ export async function POST(request: Request) {
   const party = await mcpParty(request)
   if (party.kind === 'error') return NextResponse.json({ error: party.error }, { status: party.status })
 
-  const result = party.kind === 'client'
-    // A client can't name another account or set a markup: the session's own apply.
-    ? await clientQuote(party.session, common)
-    : await staffQuote({
-        ...common,
-        sfdc_account_id: typeof body.sfdc_account_id === 'string' ? body.sfdc_account_id : undefined,
-        brand_markup_pct: typeof body.brand_markup_pct === 'number' ? body.brand_markup_pct : undefined,
-      })
+  // A client can't name another account or set a markup: the session's own apply.
+  if (party.kind === 'client') {
+    const result = await clientQuote(party.session, common)
+    return NextResponse.json(result.body, { status: result.status })
+  }
+  const pricing = parseMcpStaffPricing(body)
+  if ('error' in pricing) return NextResponse.json({ error: pricing.error }, { status: 400 })
+  const result = await staffQuote({ ...common, ...pricing })
   return NextResponse.json(result.body, { status: result.status })
 }

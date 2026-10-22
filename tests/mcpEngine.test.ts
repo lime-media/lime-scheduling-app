@@ -19,4 +19,10 @@ section('MCP: one engine')
   eq('booking: a repeat of the same caller\'s booking needs confirm_duplicate', holds.includes('if (body.confirm_duplicate !== true)') && holds.includes('duplicate: true'), true)
   eq('booking: no direct hold writes', /prisma\.hold\.create|createHold\(/.test(holds), false)
   eq('availability: market + truck count is the engine\'s answer, client rules for clients', avail.includes('await clientAvailability(party.session, q)') && avail.includes('await checkAvailability({'), true)
+  // Paid review on #134.
+  const acting = fs.readFileSync('lib/mcpActing.ts', 'utf8')
+  eq('staff markup is type-checked once, for quote and booking alike', quote.includes('parseMcpStaffPricing(body)') && holds.includes('parseMcpStaffPricing(body)') && acting.includes("typeof brand_markup_pct !== 'number'"), true)
+  eq('a staff booking needs the account name', holds.includes("if (!accountName) return NextResponse.json({ error: 'sfdc_account_name is required"), true)
+  eq('a staff caller\'s notes reach the hold', holds.includes('notes: str(body.notes)') && fs.readFileSync('lib/staffBooking.ts', 'utf8').includes('callerNotes ?'), true)
+  eq('client availability says no above the client booking limit', avail.includes('q.truck_count > MCP_CLIENT_MAX_TRUCKS'), true)
 }

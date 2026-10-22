@@ -10,7 +10,7 @@ import { loadFleetTimelines } from '@/lib/fleetTimelines'
 import { checkChainFeasibility } from '@/lib/chainFeasibility'
 import { findWindowClash } from '@/lib/truckTimeline'
 import { resolveCampaignCoords, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
-import { mcpParty } from '@/lib/mcpActing'
+import { mcpParty, parseMcpCampaign } from '@/lib/mcpActing'
 import { clientAvailability } from '@/lib/clientAvailability'
 import { checkAvailability } from '@/lib/availabilityEngine'
 import { resolveQuoteMarket } from '@/lib/staffQuote'
@@ -82,11 +82,14 @@ export async function GET(request: Request) {
   const truckCountParam = searchParams.get('truck_count')
   const engineMarket = searchParams.get('market')
   if (truckCountParam !== null && engineMarket) {
-    const truckCount = Number(truckCountParam)
-    if (!/^\d+$/.test(truckCountParam) || truckCount < 1) {
+    if (!/^\d+$/.test(truckCountParam) || Number(truckCountParam) < 1) {
       return NextResponse.json({ error: 'truck_count must be a whole number of at least 1' }, { status: 400 })
     }
-    return engineAnswer(request, { market: engineMarket, start_date: startDate, end_date: endDate, truck_count: truckCount })
+    // Real calendar dates (the regex above lets "2026-02-31" through) and a
+    // trimmed market, by the same check as the quote and the booking.
+    const q = parseMcpCampaign({ market: engineMarket, start_date: startDate, end_date: endDate, truck_count: Number(truckCountParam) })
+    if ('error' in q) return NextResponse.json({ error: q.error }, { status: 400 })
+    return engineAnswer(request, q)
   }
 
   // Optional. Without it this endpoint answers "when is each truck booked?",

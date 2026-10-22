@@ -6,7 +6,6 @@ import { mcpParty, parseMcpCampaign } from '@/lib/mcpActing'
 import { resolveQuoteMarket } from '@/lib/staffQuote'
 import { placeClientBooking } from '@/lib/clientBooking'
 import { placeStaffBooking } from '@/lib/staffBooking'
-import { appendHoldRequestToSheet } from '@/lib/googleSheets'
 
 /**
  * POST /api/v1/internal/holds: the MCP server's booking.
@@ -88,26 +87,18 @@ export async function POST(req: NextRequest) {
       notes: typeof body.notes === 'string' ? body.notes : undefined,
       brand: typeof body.brand === 'string' ? body.brand : undefined,
     }, { origination: 'mcp' })
-    // Firefly's bookings also go to their sheet, as MCP holds always have.
-    const groupId = result.body.campaignGroupId
-    if (result.status === 200 && typeof groupId === 'string' && party.session.companyName === 'Firefly' && party.session.username === 'firefly') {
-      const held = await prisma.hold.findMany({ where: { campaign_group_id: groupId }, select: { truck_number: true, market: true, state: true } })
-      for (const h of held) {
-        appendHoldRequestToSheet({
-          submittedAt: new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }),
-          companyName: party.session.companyName, truckNumber: h.truck_number, market: h.market, state: h.state ?? '',
-          startDate: start_date, endDate: end_date, notes: typeof body.notes === 'string' ? body.notes : '', status: 'HOLD',
-        }).catch((e) => console.error('[mcp/holds] sheets append failed:', e))
-      }
-    }
+    // Firefly's sheet rows are appended per hold by createClientHold (lib/holdRequestService.ts).
     return NextResponse.json(result.body, { status: result.status })
   }
 
-  // Staff: the Quote page's booking, with only the fields it takes.
+  // Staff: the Quote page's booking, with only the fields it takes. Ids and
+  // names must be strings (a number would reach Prisma and Salesforce as-is);
+  // hold_days and expected_total are type-checked by placeStaffBooking.
+  const str = (v: unknown) => (typeof v === 'string' ? v : undefined)
   const result = await placeStaffBooking({
     ...booking,
-    sfdc_account_id: body.sfdc_account_id, sfdc_account_name: body.sfdc_account_name,
-    primary_contact_id: body.primary_contact_id, brand: body.brand, hold_days: body.hold_days, stage: body.stage,
+    sfdc_account_id: str(body.sfdc_account_id), sfdc_account_name: str(body.sfdc_account_name),
+    primary_contact_id: str(body.primary_contact_id), brand: str(body.brand), hold_days: body.hold_days, stage: str(body.stage),
     brand_markup_pct: body.brand_markup_pct, expected_total: body.expected_total,
   }, party.actor, { origination: 'mcp' })
   return NextResponse.json(result.body, { status: result.status })

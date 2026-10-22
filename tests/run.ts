@@ -29,6 +29,10 @@ import './tableSort.test'
 import './quoteAlternatives.test'
 import './reservationFilters.test'
 import './clientChat.test'
-import { report } from './harness'
+import './clientSession.test'
+import './emailTemplates.test'
+import { report, settle } from './harness'
 
-process.exit(report())
+// settle() lets a suite make assertions after a promise resolves; it is a
+// no-op for the synchronous ones.
+settle().then(() => process.exit(report()))

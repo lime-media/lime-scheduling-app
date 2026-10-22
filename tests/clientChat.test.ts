@@ -24,4 +24,6 @@ section('Client chat: one engine, client rules')
   eq('replies still pass the other-client scrub', route.includes('reply = await scrubOtherClientNames(reply, session.id)'), true)
   const booking = fs.readFileSync('lib/clientBooking.ts', 'utf8')
   eq('paid review (#130): the client booking requires a whole truck count', booking.includes("typeof truck_count !== 'number' || !Number.isInteger(truck_count)"), true)
+  eq('client chat: a safety decline falls back server-side (fallbacks: default)', route.includes('anthropic.beta.messages.create(') && route.includes("'server-side-fallback-2026-07-01'") && /fallbacks:\s+'default'/.test(route), true)
+  eq('client chat: a refusal that survives the fallback is still handled', route.includes("stop_reason === 'refusal'"), true)
 }

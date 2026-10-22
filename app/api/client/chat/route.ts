@@ -2,6 +2,7 @@ import { withUsageLog } from '@/lib/usageLog'
 import { addMessages, openConversation } from '@/lib/conversations'
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
+import { callBeforeDeadline, servedText, servedToolUses } from '@/lib/claudeReply'
 import { prisma } from '@/lib/prisma'
 import { getClientSession, type ClientSession } from '@/lib/clientAuth'
 import { buildClientChatContext } from '@/lib/clientChatContext'
@@ -53,7 +54,7 @@ Keep every answer short and scannable. Be concise and direct.`
 
 const DATE = { type: 'string', description: 'YYYY-MM-DD' } as const
 
-const CLIENT_TOOLS: Anthropic.Tool[] = [
+const CLIENT_TOOLS: Anthropic.Beta.BetaTool[] = [
   {
     name: 'check_availability',
     description: 'Whether this client can book trucks in one market on these dates online, by the quote form\'s rules (lead time, service area, trucks free). Returns yes or no with a message; never truck numbers or other bookings.',
@@ -167,6 +168,8 @@ async function scrubOtherClientNames(reply: string, ownClientId: string): Promis
 // ── Route handler ─────────────────────────────────────────────────────────────
 
 async function handlePost(req: NextRequest) {
+  // The deadline counts from the request, setup included.
+  const startedAt = Date.now()
   const session = getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   if (session.username !== 'testclient') return NextResponse.json({ error: 'Not available yet' }, { status: 403 })
@@ -199,7 +202,7 @@ async function handlePost(req: NextRequest) {
   const recent = earlier.slice(-10).filter(m => m && typeof m.content === 'string' && m.content.trim())
   while (recent.length && recent[0].role === 'assistant') recent.shift()
 
-  const messages: Anthropic.MessageParam[] = [
+  const messages: Anthropic.Beta.BetaMessageParam[] = [
     ...recent.map(m => ({
       role:    m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
       content: m.content,
@@ -213,21 +216,24 @@ async function handlePost(req: NextRequest) {
   let availabilityChecks = 0
   try {
     for (let round = 0; ; round++) {
-      const response = await anthropic.messages.create({
+      // Done before MODEL_DEADLINE_MS (each attempt gets the time left); a quick
+      // transient failure is retried within it (lib/claudeReply.ts).
+      const response = await callBeforeDeadline(startedAt + MODEL_DEADLINE_MS, opts => anthropic.beta.messages.create({
         model:         'claude-opus-5-5',
+        // A safety decline is retried server-side on the model Anthropic recommends
+        // for its category, instead of returning the refusal (beta).
+        betas:         ['server-side-fallback-2026-07-01'],
+        fallbacks:     'default',
         max_tokens:    16000,
         thinking:      { type: 'adaptive' },
         output_config: { effort: 'medium' },
         system:        buildClientSystemPrompt(session.companyName),
         tools:         CLIENT_TOOLS,
         messages,
-      })
-      const said = response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map(b => b.text)
-        .join('\n\n')
-        .trim()
-      const toolUses = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+      }, opts))
+      // The model that served it (a fallback replaces a declined one: lib/claudeReply.ts).
+      const said = servedText(response.content)
+      const toolUses = servedToolUses(response.content)
       // A refusal or a cut-off tool call (max_tokens) is never run.
       if (response.stop_reason !== 'tool_use' || toolUses.length === 0) {
         reply = said || (response.stop_reason === 'refusal' ? "Sorry, I can't help with that. Ask me about availability or your hold requests." : '')
@@ -241,7 +247,7 @@ async function handlePost(req: NextRequest) {
       messages.push({ role: 'assistant', content: response.content })
       // One request to the team per message: claimed before anything runs.
       let assistanceClaimed = actionResult !== null
-      const results: Anthropic.ToolResultBlockParam[] = await Promise.all(toolUses.map(async (use): Promise<Anthropic.ToolResultBlockParam> => {
+      const results: Anthropic.Beta.BetaToolResultBlockParam[] = await Promise.all(toolUses.map(async (use): Promise<Anthropic.Beta.BetaToolResultBlockParam> => {
         const input = (use.input && typeof use.input === 'object' ? use.input : {}) as Record<string, unknown>
         if (use.name === 'check_availability') {
           // Counted before anything runs, like the assistance claim below.
@@ -293,6 +299,8 @@ async function handlePost(req: NextRequest) {
 // A message can chain several Opus calls and availability checks (each a
 // fleet load): the same limit as the other routes that load the fleet or call Claude.
 export const maxDuration = 300
+/** Every model call must finish by this point, leaving time to answer and save. */
+const MODEL_DEADLINE_MS = 285_000
 
 // Every run is logged for the Usage page (lib/usageLog.ts).
 export const POST = withUsageLog('ai_chat_client', 'client', handlePost)

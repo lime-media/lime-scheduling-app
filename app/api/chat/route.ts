@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import Anthropic from '@anthropic-ai/sdk'
+import { callBeforeDeadline, servedText, servedToolUses } from '@/lib/claudeReply'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
@@ -335,7 +336,7 @@ async function handlePost(req: NextRequest) {
     scheduleContext = 'Schedule data temporarily unavailable.'
   }
 
-  const messages: Anthropic.MessageParam[] = [
+  const messages: Anthropic.Beta.BetaMessageParam[] = [
     ...history,
     {
       role: 'user',
@@ -376,10 +377,16 @@ async function handlePost(req: NextRequest) {
         : "I stopped before finishing: that took longer than I'm allowed in one message. Ask again more narrowly."
       break
     }
-    let response: Anthropic.Message
+    let response: Anthropic.Beta.BetaMessage
     try {
-      response = await anthropic.messages.create({
+      // Done before MODEL_DEADLINE_MS (each attempt gets the time left); a quick
+      // transient failure is retried within it (lib/claudeReply.ts).
+      response = await callBeforeDeadline(startedAt + MODEL_DEADLINE_MS, opts => anthropic.beta.messages.create({
         model: 'claude-opus-5-5',
+        // A safety decline is retried server-side on the model Anthropic recommends
+        // for its category, instead of returning the refusal (beta).
+        betas: ['server-side-fallback-2026-07-01'],
+        fallbacks: 'default',
         max_tokens: 16000,
         thinking: { type: 'adaptive' },
         output_config: { effort: 'medium' },
@@ -387,14 +394,7 @@ async function handlePost(req: NextRequest) {
         system: [{ type: 'text', text: BASE_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
         tools: CHAT_TOOLS,
         messages,
-      }, {
-        // The SDK's own timeout is 10 minutes, and its retries (with their
-        // waits) add more: each call gets the time left before
-        // MODEL_DEADLINE_MS, and no retry. A failed call is the route's error
-        // (round 0) or ends the loop with what was done (later rounds).
-        timeout: MODEL_DEADLINE_MS - (Date.now() - startedAt),
-        maxRetries: 0,
-      })
+      }, opts))
     } catch (err) {
       // Nothing done yet: the route's own error. After a tool ran (a booking,
       // a release), its result is still shown and saved below.
@@ -405,16 +405,13 @@ async function handlePost(req: NextRequest) {
         : 'I hit an error before finishing. Please try again.'
       break
     }
-    const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map(b => b.text)
-      .join('\n\n')
-      .trim()
+    // The model that served it (a fallback replaces a declined one: lib/claudeReply.ts).
+    const text = servedText(response.content)
     if (response.stop_reason === 'refusal') {
       reply = text || "I can't help with that request."
       break
     }
-    const toolUses = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+    const toolUses = servedToolUses(response.content)
     // A cut-off tool call (max_tokens) is never run.
     if (response.stop_reason !== 'tool_use' || toolUses.length === 0) {
       reply = text
@@ -427,7 +424,7 @@ async function handlePost(req: NextRequest) {
     }
     messages.push({ role: 'assistant', content: response.content })
     // One at a time, in order: a booking must never run beside another.
-    const results: Anthropic.ToolResultBlockParam[] = []
+    const results: Anthropic.Beta.BetaToolResultBlockParam[] = []
     for (const use of toolUses) {
       let out
       try {

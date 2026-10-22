@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
 import { placeClientBooking } from '@/lib/clientBooking'
 import { createClientHold } from '@/lib/holdRequestService'
+import { HoldClashError, HoldLockTimeoutError } from '@/lib/holdWriteLock'
 import { bookingKey } from '@/lib/bookings'
 import { holdExpDate } from '@/lib/dateOnly'
 
@@ -82,6 +83,11 @@ async function handlePost(req: NextRequest) {
 
     return NextResponse.json({ ok: true, id: hold.id })
   } catch (e) {
+    // Booked by someone else since it was picked, or mid-save: a 409, not a
+    // server error. The message names the truck, never who holds it.
+    if (e instanceof HoldClashError || e instanceof HoldLockTimeoutError) {
+      return NextResponse.json({ error: e.message }, { status: 409 })
+    }
     console.error('[client/hold-requests POST]', e)
     return NextResponse.json({ error: 'Failed to create hold' }, { status: 500 })
   }

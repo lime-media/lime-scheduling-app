@@ -11,6 +11,7 @@ import { appendHoldRequestToSheet } from '@/lib/googleSheets'
 import { computeHoldExpiresAt } from '@/lib/holdExpiry'
 import { daysUntil, MIN_CLIENT_LEAD_DAYS } from '@/lib/pricing'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
+import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 
 export async function POST(req: NextRequest) {
   const keyError = validateInternalApiKey(req)
@@ -95,23 +96,33 @@ export async function POST(req: NextRequest) {
       console.error('[v1/internal/holds] FEASIBILITY_CHECK_FAILED (allowing hold):', err)
     }
 
-    const hold = await prisma.hold.create({
-      data: {
-        truck_number,
-        client_name:    clientUser.company_name,
-        market:         (await canonicalMarketName(market ?? '', state ?? undefined)) ?? (market ?? ''),
-        state:          state  ?? '',
-        start_date:     new Date(start_date),
-        end_date:       new Date(end_date),
-        status:         'HOLD',
-        source:         'CLIENT',
-        origination:    'mcp',
-        notes:          notes ?? null,
-        created_by:     serviceUser.id,
-        client_user_id: actingUserId,
-        expires_at:     expiresAt,
-      },
-    })
+    // Written under the truck's lock, re-checked for a hold placed since the
+    // check above (lib/holdWriteLock.ts). A clash never names who holds it.
+    const canonicalMarket = (await canonicalMarketName(market ?? '', state ?? undefined)) ?? (market ?? '')
+    let hold: Awaited<ReturnType<typeof prisma.hold.create>>
+    try {
+      hold = await writeHoldsExclusive([{ truck: truck_number, start: String(start_date).slice(0, 10), end: String(end_date).slice(0, 10) }], tx => tx.hold.create({
+        data: {
+          truck_number,
+          client_name:    clientUser.company_name,
+          market:         canonicalMarket,
+          state:          state  ?? '',
+          start_date:     new Date(start_date),
+          end_date:       new Date(end_date),
+          status:         'HOLD',
+          source:         'CLIENT',
+          origination:    'mcp',
+          notes:          notes ?? null,
+          created_by:     serviceUser.id,
+          client_user_id: actingUserId,
+          expires_at:     expiresAt,
+        },
+      }))
+    } catch (err) {
+      if (err instanceof HoldClashError) return NextResponse.json({ error: clientBookingRefusal(truck_number, 1, null) }, { status: 409 })
+      if (err instanceof HoldLockTimeoutError) return NextResponse.json({ error: err.message }, { status: 409 })
+      throw err
+    }
 
     // Fire-and-forget side effects
     if (clientUser.company_name === 'Firefly' && clientUser.username === 'firefly') {

@@ -35,10 +35,17 @@ findings by how close they come to one of those.
   truck, dates *and* program. Dropping the program lets a new double-booking
   hide inside an old dismissed one. *(#111: `conflictKey` and the prior-decision
   lookup omitted `scheduled_program`.)*
-- **Every path where someone chooses a truck runs the conflict check.** New
-  entry points (MCP, client portal, internal booking) go through `holdService`
-  or its conflict query, not a direct `prisma.hold.create`. *(#51: MCP client
-  holds skipped the truck/date check.)*
+- **Every path where someone chooses a truck runs the conflict check, and
+  writes under the truck's lock.** New entry points (MCP, client portal,
+  internal booking) go through `holdService`, a shared booking
+  (`lib/staffBooking.ts`, `lib/holdRequestService.ts`) or its conflict query, not a
+  direct `prisma.hold.create`. The write itself goes through
+  `writeHoldsExclusive` (lib/holdWriteLock.ts), which re-checks inside the
+  transaction, so a booking made between picking trucks and writing them is
+  caught. A change that puts a truck on new dates (swap, date edit,
+  reinstate) counts too. *(#51: MCP client holds skipped the truck/date check;
+  the write-lock PR: picking and writing were seconds apart, and a hold's date
+  edit was never checked.)*
 - **Mirror paths record, they don't refuse.** A path that copies a booking
   made elsewhere (the Salesforce hold webhook, AT&T sync) writes the hold even
   if it clashes, because refusing would drop a record the source system

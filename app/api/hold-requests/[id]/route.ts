@@ -16,6 +16,8 @@ import { sendCancellationEmail, sendExtensionDecisionEmail } from '@/lib/email'
 import { centralDate, endOfDayCentral, holdExpDate } from '@/lib/dateOnly'
 import { recordSwap } from '@/lib/transportMetricsRecord'
 import { waitUntil } from '@vercel/functions'
+import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
+import type { Prisma } from '@prisma/client'
 
 type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration' | 'reinstate'
 
@@ -141,10 +143,19 @@ export async function PATCH(
       }, { status: 409 })
     }
 
-    await prisma.hold.update({
-      where: { id: hold.id },
-      data:  { truck_number },
-    })
+    // Under the new truck's lock, re-checked for a hold placed since the check
+    // above (lib/holdWriteLock.ts).
+    try {
+      await writeHoldsExclusive(
+        [{ truck: truck_number, start: hold.start_date.toISOString().slice(0, 10), end: hold.end_date.toISOString().slice(0, 10) }],
+        tx => tx.hold.update({ where: { id: hold.id }, data: { truck_number } }),
+        { ignoreHoldIds: [hold.id] },
+      )
+    } catch (err) {
+      if (err instanceof HoldClashError) return NextResponse.json({ error: err.message }, { status: 409 })
+      if (err instanceof HoldLockTimeoutError) return NextResponse.json({ error: err.message }, { status: 409 })
+      throw err
+    }
 
     await prisma.auditLog.create({
       data: {
@@ -254,42 +265,60 @@ export async function PATCH(
 
     // The reinstate, the removal of Salesforce's copies of its trucks, and the
     // audit rows land together.
-    const [reinstated] = await prisma.$transaction([
-      prisma.hold.updateMany({
-        where: { id: { in: ids }, status: 'EXPIRED' },
-        data:  { status: newStatus, expires_at: newExpiresAt, extension_until: null, extension_reason: null },
-      }),
-      ...(!won && live.length ? [prisma.hold.updateMany({
-        where: { id: { in: live.map(h => h.id) }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
-        data:  { expires_at: newExpiresAt },
-      })] : []),
-      ...(mirrored.length ? [
-        prisma.hold.deleteMany({ where: { id: { in: mirrored.map(m => m.id) } } }),
-        prisma.auditLog.createMany({
-          data: mirrored.map(m => ({
-            action:       'DELETE_HOLD',
-            truck_number: m.truck_number,
-            user_id:      session.user.id,
-            hold_id:      m.id,
-            details:      JSON.stringify({ reason: 'salesforce_copy_of_reinstated_app_truck', opportunityId: hold.sfdc_opportunity_id }),
-          })),
-        }),
-      ] : []),
-      prisma.auditLog.createMany({
-        data: lapsed.map(h => ({
-          action:       'REINSTATE_HOLD',
-          truck_number: h.truck_number,
-          user_id:      session.user.id,
-          hold_id:      h.id,
-          details:      JSON.stringify({
-            lapsed_expires_at: h.expires_at,
-            new_expires_at:    newExpiresAt?.toISOString() ?? null,
-            status:            newStatus,
-            booking:           bookingKey(h),
-          }),
-        })),
-      }),
-    ])
+    // Under each truck's lock, re-checked for a hold placed since the check
+    // above (lib/holdWriteLock.ts); this booking's own holds and Salesforce's
+    // copies of them don't count, as above.
+    let reinstated: { count: number }
+    try {
+      reinstated = await writeHoldsExclusive(
+        revived.map(h => ({ truck: h.truck_number, start: day(h.start_date), end: day(h.end_date) })),
+        async tx => {
+          const result = await tx.hold.updateMany({
+            where: { id: { in: ids }, status: 'EXPIRED' },
+            data:  { status: newStatus, expires_at: newExpiresAt, extension_until: null, extension_reason: null },
+          })
+          if (!won && live.length) await tx.hold.updateMany({
+            where: { id: { in: live.map(h => h.id) }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
+            data:  { expires_at: newExpiresAt },
+          })
+          if (mirrored.length) {
+            await tx.hold.deleteMany({ where: { id: { in: mirrored.map(m => m.id) } } })
+            await tx.auditLog.createMany({
+              data: mirrored.map(m => ({
+                action:       'DELETE_HOLD',
+                truck_number: m.truck_number,
+                user_id:      session.user.id,
+                hold_id:      m.id,
+                details:      JSON.stringify({ reason: 'salesforce_copy_of_reinstated_app_truck', opportunityId: hold.sfdc_opportunity_id }),
+              })),
+            })
+          }
+          await tx.auditLog.createMany({
+            data: lapsed.map(h => ({
+              action:       'REINSTATE_HOLD',
+              truck_number: h.truck_number,
+              user_id:      session.user.id,
+              hold_id:      h.id,
+              details:      JSON.stringify({
+                lapsed_expires_at: h.expires_at,
+                new_expires_at:    newExpiresAt?.toISOString() ?? null,
+                status:            newStatus,
+                booking:           bookingKey(h),
+              }),
+            })),
+          })
+          return result
+        },
+        { ignoreHoldIds: [...booking.map(h => h.id), ...mirrored.map(m => m.id)] },
+      )
+    } catch (err) {
+      if (err instanceof HoldClashError) {
+        const clashes = err.clashes.map(c => ({ truck: c.truck, client: c.client, start: c.start, end: c.end }))
+        return NextResponse.json({ error: reinstateRefusal(clashes), clashes }, { status: 409 })
+      }
+      if (err instanceof HoldLockTimeoutError) return NextResponse.json({ error: err.message }, { status: 409 })
+      throw err
+    }
 
     // A Closed Lost deal the person agreed to reopen goes back to WARM only now,
     // with the reinstate saved: a push the stage change sets off finds the
@@ -392,6 +421,32 @@ export async function PATCH(
   }
 
   // ── approve_extension ───────────────────────────────────────────────────
+  // Giving a new expiry to holds that lapsed by time but haven't been swept
+  // yet brings them back, like reinstate: their trucks may have been booked by
+  // someone else since they lapsed. Written under those trucks' locks and
+  // re-checked (lib/holdWriteLock.ts); this booking's own holds don't count.
+  const reviveExpiry = (write: (tx: Prisma.TransactionClient) => Promise<unknown>) => {
+    const now = new Date()
+    const today = centralDate(now)
+    // As reinstate: a market that has already ended reserves nothing ahead.
+    const lapsed = live.filter(h => !holdReservesNow(h, now) && day(h.end_date) >= today)
+    return writeHoldsExclusive(
+      lapsed.map(h => ({ truck: h.truck_number, start: day(h.start_date), end: day(h.end_date) })),
+      write,
+      // Bringing a lapsed hold back is a new reservation of its truck: AT&T soft
+      // holds count, as in reinstate (they're treated as permanent).
+      { ignoreHoldIds: booking.map(h => h.id) },
+    )
+  }
+  const revivalRefusal = (err: unknown) => {
+    if (err instanceof HoldClashError) {
+      const clashes = err.clashes.map(c => ({ truck: c.truck, client: c.client, start: c.start, end: c.end }))
+      return NextResponse.json({ error: reinstateRefusal(clashes), clashes }, { status: 409 })
+    }
+    if (err instanceof HoldLockTimeoutError) return NextResponse.json({ error: err.message }, { status: 409 })
+    throw err
+  }
+
   if (action === 'approve_extension') {
     // The booking's one expiry, on every live hold: the date the client asked
     // for, but never past the staff limit (2 days before its earliest start),
@@ -403,21 +458,25 @@ export async function PATCH(
       ? (asked > limit ? limit : asked)
       : bookingHoldExpiry(starts, DEFAULT_HOLD_DAYS, new Date(), null, STAFF_MIN_DAYS_BEFORE_START).expiresAt
 
-    await prisma.$transaction([
-      prisma.hold.updateMany({
-        where: { id: { in: live.map(h => h.id) } },
-        data:  { status: 'HOLD', expires_at: newExpiresAt, extension_until: null, extension_reason: null },
-      }),
-      prisma.auditLog.createMany({
-        data: live.map(h => ({
-          action:       'APPROVE_HOLD_EXTENSION',
-          truck_number: h.truck_number,
-          user_id:      session.user.id,
-          hold_id:      h.id,
-          details:      JSON.stringify({ new_expires_at: newExpiresAt.toISOString(), booking: bookingKey(h) }),
-        })),
-      }),
-    ])
+    try {
+      await reviveExpiry(async tx => {
+        await tx.hold.updateMany({
+          where: { id: { in: live.map(h => h.id) } },
+          data:  { status: 'HOLD', expires_at: newExpiresAt, extension_until: null, extension_reason: null },
+        })
+        await tx.auditLog.createMany({
+          data: live.map(h => ({
+            action:       'APPROVE_HOLD_EXTENSION',
+            truck_number: h.truck_number,
+            user_id:      session.user.id,
+            hold_id:      h.id,
+            details:      JSON.stringify({ new_expires_at: newExpiresAt.toISOString(), booking: bookingKey(h) }),
+          })),
+        })
+      })
+    } catch (err) {
+      return revivalRefusal(err)
+    }
 
     const client = live.find(h => h.client_user?.email)?.client_user
     if (client?.email) {
@@ -455,21 +514,25 @@ export async function PATCH(
     if (closed) return NextResponse.json({ error: `Can't change the expiry: ${closed}` }, { status: 409 })
 
     // Every live hold of the booking to the one date.
-    await prisma.$transaction([
-      prisma.hold.updateMany({
-        where: { id: { in: live.map(h => h.id) } },
-        data:  { expires_at: newExp, status: 'HOLD', extension_until: null, extension_reason: null },
-      }),
-      prisma.auditLog.createMany({
-        data: live.map(h => ({
-          action:       'UPDATE_HOLD_EXPIRATION',
-          truck_number: h.truck_number,
-          user_id:      session.user.id,
-          hold_id:      h.id,
-          details:      JSON.stringify({ new_expires_at: newExp.toISOString(), booking: bookingKey(h) }),
-        })),
-      }),
-    ])
+    try {
+      await reviveExpiry(async tx => {
+        await tx.hold.updateMany({
+          where: { id: { in: live.map(h => h.id) } },
+          data:  { expires_at: newExp, status: 'HOLD', extension_until: null, extension_reason: null },
+        })
+        await tx.auditLog.createMany({
+          data: live.map(h => ({
+            action:       'UPDATE_HOLD_EXPIRATION',
+            truck_number: h.truck_number,
+            user_id:      session.user.id,
+            hold_id:      h.id,
+            details:      JSON.stringify({ new_expires_at: newExp.toISOString(), booking: bookingKey(h) }),
+          })),
+        })
+      })
+    } catch (err) {
+      return revivalRefusal(err)
+    }
 
     const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
     return NextResponse.json({ ok: true, holds: live.length, expires_at: newExp.toISOString(), sfdcWarning })

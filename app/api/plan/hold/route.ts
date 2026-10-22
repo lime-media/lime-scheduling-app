@@ -42,7 +42,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { activeHoldWhere } from '@/lib/holdFilters'
+import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { bookingHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
 import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
@@ -55,6 +55,7 @@ import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuot
 import { fitNames, lineFeatures } from '@/lib/planning/booking'
 import { holdExpDate } from '@/lib/dateOnly'
 import { recordBooking } from '@/lib/transportMetricsRecord'
+import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { legsFromArrivals } from '@/lib/transportMetrics'
 
 export const maxDuration = 300
@@ -392,8 +393,11 @@ async function handlePost(req: NextRequest) {
     // hold and is written in the same transaction as the delete: the record,
     // the delete and the new holds land together, or none of them do.
     const was = reviseIds.length ? await prisma.hold.findMany({ where: { id: { in: reviseIds } } }) : []
-    await prisma.$transaction([
-      ...(reviseKey ? [prisma.auditLog.create({
+    // Under each truck's lock, re-checked for a hold placed since the check
+    // above (lib/holdWriteLock.ts); the holds a revision replaces don't count.
+    // A quote-only log reserves nothing, so it takes no lock.
+    const writeAll = async (tx: Prisma.TransactionClient) => {
+      if (reviseKey) await tx.auditLog.create({
         data: {
           action: 'REVISE_BOOKING',
           truck_number: truckNumbers[0] ?? reviseHolds[0]?.truck_number ?? '',
@@ -403,11 +407,23 @@ async function handlePost(req: NextRequest) {
             was, trucks: truckNumbers, total: quote.summary.grandTotal,
           }),
         },
-      })] : []),
-      ...(reviseIds.length ? [prisma.hold.deleteMany({ where: { id: { in: reviseIds } } })] : []),
-      ...Array.from({ length: Math.ceil(rows.length / CHUNK) }, (_, i) =>
-        prisma.hold.createMany({ data: rows.slice(i * CHUNK, (i + 1) * CHUNK) })),
-    ])
+      })
+      if (reviseIds.length) await tx.hold.deleteMany({ where: { id: { in: reviseIds } } })
+      for (let i = 0; i < rows.length; i += CHUNK) await tx.hold.createMany({ data: rows.slice(i, i + CHUNK) })
+    }
+    try {
+      if (quoteOnly) await prisma.$transaction(writeAll)
+      else await writeHoldsExclusive(stretches.map(x => ({ truck: x.truckNumber, start: x.stint.start, end: x.stint.end })), writeAll, { ignoreHoldIds: reviseIds, excludeAttSoft: true })
+    } catch (err) {
+      if (err instanceof HoldClashError) {
+        return NextResponse.json({
+          error: `${err.message} Nothing was booked. Get a fresh quote and book again.`,
+          clashes: err.clashes.map(c => ({ truckNumber: c.truck, start: c.start, end: c.end })),
+        }, { status: 409 })
+      }
+      if (err instanceof HoldLockTimeoutError) return NextResponse.json({ error: err.message }, { status: 409 })
+      throw err
+    }
 
     // A Closed Lost opportunity the person agreed to reopen goes back to WARM
     // only now, with the revision saved: a push the stage change sets off finds
@@ -418,18 +434,37 @@ async function handlePost(req: NextRequest) {
     if (reviseKey && target && body.reopenOpportunity === true && target.IsClosed && !target.IsWon) {
       const r = await reopenClosedLostOpportunity(target.Id)
       if (!r.ok) {
-        await prisma.$transaction([
-          prisma.hold.deleteMany({ where: { campaign_group_id: { startsWith: groupPrefix } } }),
-          ...(was.length ? [prisma.hold.createMany({ data: was })] : []),
-          prisma.auditLog.create({
-            data: {
-              action: 'REVISE_REVERTED',
-              truck_number: truckNumbers[0] ?? reviseHolds[0]?.truck_number ?? '',
-              user_id: createdBy,
-              details: JSON.stringify({ booking: reviseKey, reason: 'salesforce_refused_reopen', error: r.error }),
+        // Put the old booking back. Its holds are normally lapsed already (the
+        // deal was lost), but any that still reserve are re-checked under their
+        // trucks' locks: a truck the revision let go may have been booked by
+        // someone else during the Salesforce call. If so the revision stands.
+        const fresh = await prisma.hold.findMany({ where: { campaign_group_id: { startsWith: groupPrefix } }, select: { id: true } })
+        const now = new Date()
+        try {
+          await writeHoldsExclusive(
+            was.filter(h => holdReservesNow(h, now)).map(h => ({ truck: h.truck_number, start: h.start_date.toISOString().slice(0, 10), end: h.end_date.toISOString().slice(0, 10) })),
+            async tx => {
+              await tx.hold.deleteMany({ where: { campaign_group_id: { startsWith: groupPrefix } } })
+              if (was.length) await tx.hold.createMany({ data: was })
+              await tx.auditLog.create({
+                data: {
+                  action: 'REVISE_REVERTED',
+                  truck_number: truckNumbers[0] ?? reviseHolds[0]?.truck_number ?? '',
+                  user_id: createdBy,
+                  details: JSON.stringify({ booking: reviseKey, reason: 'salesforce_refused_reopen', error: r.error }),
+                },
+              })
             },
-          }),
-        ])
+            { ignoreHoldIds: fresh.map(h => h.id), excludeAttSoft: true },
+          )
+        } catch (err) {
+          if (err instanceof HoldClashError || err instanceof HoldLockTimeoutError) {
+            return NextResponse.json({
+              error: `${r.error} The revised booking was kept: the old one can't be put back (${err.message}). Reopen the opportunity in Salesforce by hand.`,
+            }, { status: 409 })
+          }
+          throw err
+        }
         return NextResponse.json({ error: r.error }, { status: 409 })
       }
       target = { ...target, StageName: r.toStage, IsClosed: false }

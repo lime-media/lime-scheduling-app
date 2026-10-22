@@ -7,6 +7,8 @@ import { loadBookingHolds } from '@/lib/bookingLoad'
 import { lastExpiryDate } from '@/lib/holdExpiry'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
+import { holdReservesNow } from '@/lib/holdFilters'
+import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { centralDate, endOfDayCentral, holdExpDate } from '@/lib/dateOnly'
 
 /**
@@ -86,31 +88,46 @@ export async function POST(
   // none, so the service user stands in, as for client holds.
   const serviceUser = await prisma.user.findFirst({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } })
 
-  await prisma.$transaction([
-    prisma.hold.updateMany({
-      where: { id: { in: held.map(h => h.id) }, status: 'HOLD' },
-      data: {
-        status: 'EXTENSION_REQUESTED',
-        extension_reason: reason || null,
-        extension_until: extendDate,
-        // Held until the date asked while staff decide (see above).
-        expires_at: extendDate,
-      },
-    }),
-    prisma.auditLog.create({
-      data: {
-        action:       'REQUEST_HOLD_EXTENSION',
-        truck_number: held[0].truck_number,
-        user_id:      serviceUser?.id ?? held[0].created_by,
-        hold_id:      held[0].id,
-        details:      JSON.stringify({
-          booking: key, client: session.companyName, client_user_id: session.id,
-          holds: held.map(h => h.id), extend_until: extend_until, reason: reason || null,
-          was_expires_at: currentExpiry?.toISOString() ?? null,
-        }),
-      },
-    }),
-  ])
+  // Holds whose expiry has passed but the sweep hasn't reached yet reserve
+  // nothing: moving their expiry to the date asked brings them back, and their
+  // trucks may have been booked since. Written under those trucks' locks and
+  // re-checked (lib/holdWriteLock.ts); this booking's own holds don't count.
+  // A clash never names who holds the truck.
+  const now = new Date()
+  const lapsed = held.filter(h => !holdReservesNow(h, now) && h.end_date.toISOString().slice(0, 10) >= today)
+  try {
+    await writeHoldsExclusive(lapsed.map(h => ({ truck: h.truck_number, start: h.start_date.toISOString().slice(0, 10), end: h.end_date.toISOString().slice(0, 10) })), async tx => {
+      await tx.hold.updateMany({
+        where: { id: { in: held.map(h => h.id) }, status: 'HOLD' },
+        data: {
+          status: 'EXTENSION_REQUESTED',
+          extension_reason: reason || null,
+          extension_until: extendDate,
+          // Held until the date asked while staff decide (see above).
+          expires_at: extendDate,
+        },
+      })
+      await tx.auditLog.create({
+        data: {
+          action:       'REQUEST_HOLD_EXTENSION',
+          truck_number: held[0].truck_number,
+          user_id:      serviceUser?.id ?? held[0].created_by,
+          hold_id:      held[0].id,
+          details:      JSON.stringify({
+            booking: key, client: session.companyName, client_user_id: session.id,
+            holds: held.map(h => h.id), extend_until: extend_until, reason: reason || null,
+            was_expires_at: currentExpiry?.toISOString() ?? null,
+          }),
+        },
+      })
+    }, { ignoreHoldIds: [...ids, hold.id] })
+  } catch (err) {
+    if (err instanceof HoldClashError) {
+      return NextResponse.json({ error: 'This booking has lapsed and some of its trucks have since been booked, so it can no longer be extended. Request a new quote.' }, { status: 409 })
+    }
+    if (err instanceof HoldLockTimeoutError) return NextResponse.json({ error: err.message }, { status: 409 })
+    throw err
+  }
 
   const markets = [...new Set(held.map(h => h.market))]
   const trucks = [...new Set(held.map(h => h.truck_number))]

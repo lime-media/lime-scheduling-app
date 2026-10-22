@@ -9,6 +9,7 @@ import { sendHoldRequestEmail } from '@/lib/email'
 import { appendHoldRequestToSheet } from '@/lib/googleSheets'
 import type { ClientSession } from '@/lib/clientAuth'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
+import { writeHoldsExclusive } from '@/lib/holdWriteLock'
 
 export interface CreateClientHoldParams {
   truck_number: string
@@ -124,7 +125,9 @@ export async function createClientHold(
   // is what resolves the hold's coordinates later.
   const canonicalMarket = (await canonicalMarketName(market ?? '', state ?? undefined)) ?? (market ?? '')
 
-  const hold = await prisma.hold.create({
+  // Written under the truck's lock, re-checked for a hold placed since the
+  // checks above (lib/holdWriteLock.ts). A clash throws, like the refusals above.
+  const hold = await writeHoldsExclusive([{ truck: truck_number, start: start_date.slice(0, 10), end: end_date.slice(0, 10) }], tx => tx.hold.create({
     data: {
       truck_number,
       client_name:       session.companyName,
@@ -146,7 +149,7 @@ export async function createClientHold(
       campaign_group_id: campaign_group_id ?? null,
       expires_at:        expiresAt,
     },
-  })
+  }))
 
   // Append to Google Sheet — Firefly only (no-op if env vars not set)
   if (session.companyName === 'Firefly' && session.username === 'firefly') {

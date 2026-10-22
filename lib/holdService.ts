@@ -4,6 +4,7 @@ import { query } from '@/lib/mssql'
 import { checkTruckFeasibility } from '@/lib/availabilityEngine'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { staffBookingRefusal } from '@/lib/bookingRefusals'
+import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 
 export interface CreateHoldParams {
   truck_number: string
@@ -114,20 +115,30 @@ export async function createHold(params: CreateHoldParams): Promise<CreateHoldRe
   // coordinates later — holds carry no standard_market_uid.
   const canonicalMarket = (await canonicalMarketName(market, state)) ?? market
 
-  const hold = await prisma.hold.create({
-    data: {
-      truck_number,
-      market: canonicalMarket,
-      state,
-      client_name,
-      start_date: new Date(start_date),
-      end_date: new Date(end_date),
-      status: status || 'HOLD',
-      origination,
-      notes,
-      created_by,
-    },
-  })
+  // Written under the truck's lock, re-checked for a hold placed since the
+  // check above (lib/holdWriteLock.ts).
+  let hold: Awaited<ReturnType<typeof prisma.hold.create>>
+  try {
+    hold = await writeHoldsExclusive([{ truck: truck_number, start: start_date.slice(0, 10), end: end_date.slice(0, 10) }], tx => tx.hold.create({
+      data: {
+        truck_number,
+        market: canonicalMarket,
+        state,
+        client_name,
+        start_date: new Date(start_date),
+        end_date: new Date(end_date),
+        status: status || 'HOLD',
+        origination,
+        notes,
+        created_by,
+      },
+    }))
+  } catch (err) {
+    if (err instanceof HoldClashError) return { success: false, error: { type: 'hold_conflict', message: err.message } }
+    // Another booking of the truck is mid-save: the caller's 409, to retry.
+    if (err instanceof HoldLockTimeoutError) return { success: false, error: { type: 'hold_conflict', message: err.message } }
+    throw err
+  }
 
   await prisma.auditLog.create({
     data: {

@@ -2,9 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { activeHoldWhere } from '@/lib/holdFilters'
+import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
 import { CLOSED_WON_READ_ONLY, closedWonRefusal } from '@/lib/bookings'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
+import { recordSwap, recordWon, winsToRecord } from '@/lib/transportMetricsRecord'
+import { waitUntil } from '@vercel/functions'
+import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
+import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 
 export async function PUT(
   req: NextRequest,
@@ -33,8 +37,10 @@ export async function PUT(
   // Won; a hold committed here on an open deal, or with no deal, would be locked
   // with nothing in Salesforce to change (#120 review). So committing checks the
   // live stage, and an unknown stage refuses rather than guesses.
+  let wonStage: Awaited<ReturnType<typeof getOpportunityStage>> = null
   if (status === 'COMMITTED' && hold.status !== 'COMMITTED') {
     const stage = hold.sfdc_opportunity_id ? await getOpportunityStage(hold.sfdc_opportunity_id) : null
+    wonStage = stage
     if (!stage?.isClosed || !stage.isWon) {
       return NextResponse.json({
         error: hold.sfdc_opportunity_id
@@ -75,21 +81,46 @@ export async function PUT(
     }
   }
 
-  const updated = await prisma.hold.update({
-    where: { id: params.id },
-    data: {
-      ...(status && { status }),
-      // Committed is booked, not held: no expiry left to show or sweep.
-      ...(status === 'COMMITTED' && { expires_at: null, extension_until: null, extension_reason: null }),
-      ...(notes !== undefined && { notes }),
-      ...(start_date && { start_date: new Date(start_date) }),
-      ...(end_date && { end_date: new Date(end_date) }),
-      ...(client_name && { client_name }),
-      ...(market && { market }),
-      ...(state && { state }),
-      ...(truck_number && { truck_number }),
-    },
-  })
+  const data = {
+    ...(status && { status }),
+    // Committed is booked, not held: no expiry left to show or sweep.
+    ...(status === 'COMMITTED' && { expires_at: null, extension_until: null, extension_reason: null }),
+    ...(notes !== undefined && { notes }),
+    ...(start_date && { start_date: new Date(start_date) }),
+    ...(end_date && { end_date: new Date(end_date) }),
+    ...(client_name && { client_name }),
+    ...(market && { market }),
+    ...(state && { state }),
+    ...(truck_number && { truck_number }),
+  }
+  // A change that puts a truck on dates (another truck, other dates, or an
+  // expired hold made live again) is written under the truck's lock and
+  // re-checked for any other live hold on those dates (lib/holdWriteLock.ts).
+  // Before, only a truck swap was checked, and only before the write.
+  const effTruck = truck_number || hold.truck_number
+  const effStart = (start_date ? new Date(start_date) : hold.start_date).toISOString().slice(0, 10)
+  const effEnd = (end_date ? new Date(end_date) : hold.end_date).toISOString().slice(0, 10)
+  // Made live again: an EXPIRED hold given a live status, or one whose expiry
+  // passed (unswept) committed, which clears the expiry (holdFilters.ts).
+  const reservesAfter = holdReservesNow({ status: status ?? hold.status, expires_at: status === 'COMMITTED' ? null : hold.expires_at })
+  const revived = reservesAfter && !holdReservesNow(hold)
+  const reserves = (status ?? hold.status) !== 'EXPIRED'
+  const movesTruck = effTruck !== hold.truck_number || effStart !== hold.start_date.toISOString().slice(0, 10) || effEnd !== hold.end_date.toISOString().slice(0, 10) || revived
+  let updated: Awaited<ReturnType<typeof prisma.hold.update>>
+  try {
+    updated = reserves && movesTruck
+      ? await writeHoldsExclusive([{ truck: effTruck, start: effStart, end: effEnd }], tx => tx.hold.update({ where: { id: params.id }, data }),
+        // A live hold whose dates move on the same truck: an AT&T soft hold under
+        // it gives way, as it did when the hold was placed. Another truck, or a
+        // lapsed hold brought back (a new reservation): soft holds count, as the
+        // swap check and reinstate always have.
+        { ignoreHoldIds: [hold.id], excludeAttSoft: effTruck === hold.truck_number && !revived })
+      : await prisma.hold.update({ where: { id: params.id }, data })
+  } catch (err) {
+    if (err instanceof HoldClashError) return NextResponse.json({ error: err.message, clashes: err.clashes }, { status: 409 })
+    if (err instanceof HoldLockTimeoutError) return NextResponse.json({ error: err.message }, { status: 409 })
+    throw err
+  }
 
   await prisma.auditLog.create({
     data: {
@@ -100,8 +131,28 @@ export async function PUT(
       details: JSON.stringify(body),
     },
   })
+  // Committed here: record the won Amount now, once per opportunity (the same
+  // check the reconcile makes, so a deal reopened and won again, or committed
+  // here and seen by the reconcile, isn't recorded twice).
+  if (wonStage && hold.sfdc_opportunity_id) {
+    const opportunityId = hold.sfdc_opportunity_id
+    const amount = wonStage.amount, stageName = wonStage.stageName, clientName = hold.client_name
+    waitUntil((async () => {
+      if ((await winsToRecord([opportunityId.slice(0, 15)])).length) await recordWon({ opportunityId, amount, stageName, clientName })
+    })())
+  }
+  // A truck swapped onto the hold: a SWAPPED transport leg (best-effort, after the response).
+  if (truck_number && truck_number !== hold.truck_number) waitUntil(recordSwap(hold.id, session.user.id))
 
-  return NextResponse.json(updated)
+  // A truck, date or status change moves what the opportunity reserves:
+  // Salesforce's LED Trucks and Hold Exp follow (lib/sfdcBooking.ts syncOpportunityLedWindow).
+  const moved = updated.truck_number !== hold.truck_number
+    || updated.status !== hold.status
+    || updated.start_date.getTime() !== hold.start_date.getTime()
+    || updated.end_date.getTime() !== hold.end_date.getTime()
+  const sfdcWarning = moved ? await syncOpportunityLedWindow(hold.sfdc_opportunity_id) : null
+
+  return NextResponse.json({ ...updated, sfdcWarning })
 }
 
 export async function DELETE(
@@ -140,5 +191,9 @@ export async function DELETE(
 
   await prisma.hold.delete({ where: { id: params.id } })
 
-  return NextResponse.json({ success: true })
+  // The truck is released: Salesforce's LED Trucks (and Hold Exp) follow, so
+  // its next push can't re-create the deleted hold (lib/sfdcBooking.ts syncOpportunityLedWindow).
+  const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
+
+  return NextResponse.json({ success: true, sfdcWarning })
 }

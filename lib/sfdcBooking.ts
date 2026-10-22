@@ -7,10 +7,12 @@
 import { isSfdcConfigured, sfdcQuery, updateOpportunity, updateOpportunityWithError } from '@/lib/salesforceClient'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
-import { closedOpportunityBlocksReactivation } from '@/lib/sfdcIntegration'
-import { mergedOpportunityFields, type BookingLed, type OpportunityLed } from '@/lib/opportunityMerge'
+import { closedOpportunityBlocksReactivation, withAppHoldExp } from '@/lib/sfdcIntegration'
+import { ledWindowFields, mergedOpportunityFields, type BookingLed, type OpportunityLed } from '@/lib/opportunityMerge'
 import { loadOpportunityReservingHolds } from '@/lib/bookingLoad'
 import { CLOSED_WON_READ_ONLY } from '@/lib/bookings'
+import { prisma } from '@/lib/prisma'
+import { centralDate } from '@/lib/dateOnly'
 
 const OPP_ID = /^006[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/
 const ACCOUNT_ID = /^001[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/
@@ -76,7 +78,10 @@ export async function reopenClosedLostOpportunity(opportunityId: string): Promis
   const write = await updateOpportunityWithError(opportunityId, { StageName: DEFAULT_STAGE }).catch(err => ({ ok: false as const, error: err instanceof Error ? err.message : 'Salesforce could not be reached' }))
   if (!write.ok) return { ok: false, error: `Salesforce refused to move the opportunity to Warm: ${write.error}. Nothing was changed.` }
   const after = await getOpportunityStage(opportunityId)
-  if (!after) return { ok: false, error: 'The opportunity was moved to Warm, but Salesforce could not be read back to confirm it. Nothing else was changed; check it in Salesforce and try again.' }
+  // The write succeeded; a failed read-back is "couldn't confirm", not a
+  // refusal. Undoing the app's change here would leave Salesforce Warm with no
+  // booking behind it.
+  if (!after) return { ok: true, fromStage: before.stageName, toStage: DEFAULT_STAGE }
   if (after.isClosed) return { ok: false, error: `Salesforce put the opportunity back to "${after.stageName}" (an automation or rule there). Nothing was changed here; reopen it in Salesforce.` }
   return { ok: true, fromStage: before.stageName, toStage: after.stageName }
 }
@@ -114,11 +119,89 @@ export async function applyBookingToOpportunity(opts: {
   was?: { amount: number | null; markets: string[] }
 }): Promise<{ ok: boolean; amountLeft: boolean; windowLeft: boolean }> {
   const linked = await loadOpportunityReservingHolds(opts.opp.Id)
-  const { fields, windowLeft } = mergedOpportunityFields(opts.mode, opts.opp, opts.booking, { date: new Date().toISOString().slice(0, 10), by: opts.by }, linked, opts.was)
+  const { fields, windowLeft } = mergedOpportunityFields(opts.mode, opts.opp, opts.booking, { date: centralDate(new Date()), by: opts.by }, linked, opts.was)
   if (opts.primaryContactId && !opts.opp.Primary_Contact__c) fields.Primary_Contact__c = opts.primaryContactId
   const amountLeft = opts.opp.HasOpportunityLineItem
   if (amountLeft) delete fields.Amount
   return { ok: await updateOpportunity(opts.opp.Id, fields), amountLeft, windowLeft }
+}
+
+/**
+ * After any expiry change or release (reinstate, approve or deny extension,
+ * Edit expiry, cancel, delete, chat or conflict release, a client's extension
+ * request, the expiry sweep), the
+ * opportunity's LED Trucks and LED Hold Exp are set from the app's holds that
+ * reserve trucks on it now (lib/opportunityMerge.ts ledWindowFields): the app
+ * owns them, so Salesforce shows the date the app holds to, and its push can
+ * neither keep a lapsed truck nor carry a lapsed date back.
+ *
+ * The Hold Exp is recorded in the features of the opportunity's
+ * Salesforce-made holds (APP_HOLD_EXP_KEY) BEFORE the write (the push can
+ * arrive before the call returns), so the push that follows is taken as the
+ * echo of this write and changes no expiry (lib/sfdcIntegration.ts
+ * pushedHoldExpiry). It is never written to sfdc_hold_exp: that keeps meaning
+ * "Salesforce sent a Hold Exp" and decides whether a lapse closes the deal
+ * (expiryClosesOpportunity), so a booking pushed with Hold Exp blank still
+ * never closes as lost. If the write fails, each hold's previous features are
+ * put back: Salesforce still holds its old date, so its next push stays an
+ * echo instead of re-dating (or expiring) what the app just changed.
+ *
+ * Best-effort, after the app's own change has committed: never throws.
+ * Returns what to tell the rep when Salesforce wasn't updated, else null.
+ * Takes the named hold's opportunity id as is: null (no opportunity) does nothing.
+ */
+export async function syncOpportunityLedWindow(opportunityId: string | null): Promise<string | null> {
+  if (!opportunityId || !isSfdcConfigured() || !OPP_ID.test(opportunityId)) return null
+  let fields: Record<string, string | null> = {}
+  let recorded: { id: string; features: string | null }[] = []
+  try {
+    fields = ledWindowFields(await loadOpportunityReservingHolds(opportunityId), centralDate(new Date()))
+    // A date is recorded; a Hold Exp cleared (nothing reserves a truck) clears
+    // the record too, so a rep later entering that same date in Salesforce isn't
+    // taken for an echo. Left out (all committed): Salesforce keeps its date, and
+    // so does the record.
+    if (fields.LED_Hold_Exp__c !== undefined) {
+      const rows = await prisma.hold.findMany({
+        where:  { sfdc_opportunity_id: opportunityId, source: 'SALESFORCE' },
+        select: { id: true, features: true },
+      })
+      // Only rows whose marker actually changes are written (and restored on failure).
+      const marked = rows.map(h => ({ id: h.id, before: h.features, after: withAppHoldExp(h.features, fields.LED_Hold_Exp__c ?? null) }))
+        .filter(h => h.after !== h.before)
+      recorded = marked.map(h => ({ id: h.id, features: h.before }))
+      await setFeatures(marked.map(h => ({ id: h.id, features: h.after })))
+    }
+    const r = await updateOpportunityWithError(opportunityId, fields)
+    if (r.ok) return null
+    await setFeatures(recorded)
+    return ledWindowWarning(fields, r.error)
+  } catch (err) {
+    console.error(`[sfdc] LED window sync failed for ${opportunityId}:`, err)
+    await setFeatures(recorded).catch(e => console.error(`[sfdc] restoring the Hold Exp marker failed for ${opportunityId}:`, e))
+    return ledWindowWarning(fields, err instanceof Error ? err.message : String(err))
+  }
+}
+
+/** Write each hold's features (the Hold Exp marker, or what it was before a failed write), one update per distinct value. */
+async function setFeatures(rows: { id: string; features: string | null }[]): Promise<void> {
+  const byValue = new Map<string, string[]>()
+  for (const r of rows) {
+    const k = r.features ?? '\u0000'
+    byValue.set(k, [...(byValue.get(k) ?? []), r.id])
+  }
+  for (const [k, ids] of byValue) {
+    await prisma.hold.updateMany({ where: { id: { in: ids } }, data: { features: k === '\u0000' ? null : k } })
+  }
+}
+
+function ledWindowWarning(fields: Record<string, string | null>, error: string): string {
+  const set = fields.LED_Trucks__c === null
+    ? 'LED Trucks and LED Hold Exp to blank'
+    : [
+        fields.LED_Hold_Exp__c ? `LED Hold Exp to ${fields.LED_Hold_Exp__c}` : null,
+        fields.LED_Trucks__c ? `LED Trucks to ${fields.LED_Trucks__c}` : null,
+      ].filter(Boolean).join(' and ')
+  return `Saved here, but Salesforce wasn't updated (${error}).${set ? ` Set ${set} on the opportunity,` : ' Check the opportunity,'} or a later Salesforce update may expire this booking again.`
 }
 
 /** What the rep is told when Salesforce reserved trucks on the opportunity and its hold dates were left alone. */

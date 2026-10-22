@@ -59,6 +59,43 @@ const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
 /** Salesforce's LED Trucks values ("LED-0044"). */
 const ledTruck = (t: string) => (t.startsWith('LED-') ? t : `LED-${t}`)
 
+/** The LED Trucks value for the holds that reserve trucks on an opportunity: each truck once. */
+export const ledTruckList = (linked: LinkedHold[]) => [...new Set(linked.map(h => ledTruck(h.truck)))].join(';')
+
+/** The LED Hold Exp for those holds: the earliest expiry still to come, or null when none lapses (all committed). */
+export const earliestHoldExp = (linked: LinkedHold[], today: string) =>
+  linked.map(h => h.expires).filter((e): e is string => !!e && e >= today).sort()[0] ?? null
+
+/**
+ * The LED fields an expiry change or release writes (reinstate, approve or
+ * deny extension, Edit expiry, cancel; lib/sfdcBooking.ts
+ * syncOpportunityLedWindow). The app owns them, so they come from its holds
+ * that reserve trucks on the opportunity now:
+ * - LED Trucks: only trucks held now, so Salesforce's push can't mirror a
+ *   truck the app isn't holding (trucksToMirror) or keep a released one;
+ * - LED Hold Exp: the earliest expiry still to come, left out when nothing
+ *   on it lapses (all committed).
+ * Both cleared when nothing reserves a truck on it any more. Pure.
+ */
+export function ledWindowFields(linked: LinkedHold[], today: string): Record<string, string | null> {
+  if (linked.length === 0) return { LED_Trucks__c: null, LED_Hold_Exp__c: null }
+  const exp = earliestHoldExp(linked, today)
+  return { LED_Trucks__c: ledTruckList(linked), ...(exp ? { LED_Hold_Exp__c: exp } : {}) }
+}
+
+/**
+ * Do the LED fields a Salesforce push carries differ from what the app would
+ * write for its bookings on that opportunity (ledWindowFields)? Trucks compare
+ * as a set, ignoring the LED- prefix and order. Hold Exp compares only when the
+ * app would write one: with every hold committed the app leaves Salesforce's
+ * date alone, so it is never a difference (or the two would never agree). Pure.
+ */
+export function ledFieldsDiffer(want: Record<string, string | null>, pushedTrucks: string[], pushedHoldExp: string | null): boolean {
+  const norm = (ts: string[]) => [...new Set(ts.map(t => t.trim().replace(/^LED[\s-]*/i, '')).filter(Boolean))].sort().join(';')
+  if (norm((want.LED_Trucks__c ?? '').split(';')) !== norm(pushedTrucks)) return true
+  return 'LED_Hold_Exp__c' in want && (want.LED_Hold_Exp__c ?? null) !== (pushedHoldExp?.slice(0, 10) ?? null)
+}
+
 export function mergedOpportunityFields(
   mode: 'ADD' | 'REPLACE',
   existing: OpportunityLed,
@@ -124,15 +161,15 @@ function ledFields(
   if (mode === 'ADD' && !booking.holdStart) return { fields: {}, windowLeft: false }
   // Only trucks something holds now, in both modes: a listed truck whose
   // hold lapsed would otherwise be mirrored again over the new window.
-  const trucks = [...new Set(linked.map(h => ledTruck(h.truck)))]
-  if (linked.some(h => h.fromSalesforce)) return { fields: { LED_Trucks__c: trucks.join(';') }, windowLeft: true }
-  const exps = linked.map(h => h.expires).filter((e): e is string => !!e && e >= today).sort()
+  const trucks = ledTruckList(linked)
+  if (linked.some(h => h.fromSalesforce)) return { fields: { LED_Trucks__c: trucks }, windowLeft: true }
+  const exp = earliestHoldExp(linked, today)
   return {
     fields: {
-      LED_Trucks__c: trucks.join(';'),
+      LED_Trucks__c: trucks,
       LED_Hold_Start__c: linked.map(h => h.start).sort()[0],
       LED_Hold_Stop__c: linked.map(h => h.end).sort().reverse()[0],
-      ...(exps.length ? { LED_Hold_Exp__c: exps[0] } : {}),
+      ...(exp ? { LED_Hold_Exp__c: exp } : {}),
     },
     windowLeft: false,
   }

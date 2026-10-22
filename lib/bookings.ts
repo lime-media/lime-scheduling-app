@@ -11,6 +11,7 @@
  */
 
 import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
+import { centralDate } from '@/lib/dateOnly'
 
 type BookingRow = {
   campaign_group_id: string | null
@@ -61,6 +62,34 @@ export const CLOSED_WON_READ_ONLY = 'This deal is Closed Won in Salesforce; chan
  */
 export function closedWonRefusal(holds: { status: string; sfdc_opportunity_id: string | null }[], opportunity?: { isWon: boolean } | null): string | null {
   return opportunity?.isWon || holds.some(h => h.status === 'COMMITTED' && !!h.sfdc_opportunity_id) ? CLOSED_WON_READ_ONLY : null
+}
+
+/**
+ * The holds of a lapsed booking that Reinstate brings back: the lapsed ones
+ * whose dates haven't all passed. A market that already ended stays expired —
+ * there's nothing left to hold, and its past dates mustn't be clash-checked
+ * or listed in Salesforce. Pure.
+ */
+export function reinstatableHolds<H extends { status: string; end_date: Date | string }>(holds: H[], today: string): H[] {
+  const day = (d: Date | string) => (typeof d === 'string' ? d : d.toISOString()).slice(0, 10)
+  return holds.filter(h => h.status === 'EXPIRED' && day(h.end_date) >= today)
+}
+
+/** What a rep is told when every lapsed market of a booking has already ended. */
+export const NOTHING_TO_REINSTATE = "Can't reinstate: every market of this booking has already ended. To book these trucks again, get a fresh quote."
+
+/**
+ * Why a booking can't be reinstated, or null: reinstating is all or nothing
+ * (a booking is one quote), so any truck booked by someone else since it
+ * lapsed refuses the whole booking, naming each one. Only then is anything
+ * reinstated or written to Salesforce, which therefore never lists a truck the
+ * app didn't take back. Pure.
+ */
+export function reinstateRefusal(clashes: { truck: string; client: string; start: string; end: string }[]): string | null {
+  if (clashes.length === 0) return null
+  const list = clashes.map(c => `truck ${c.truck} (${c.client}, ${c.start} to ${c.end})`).join('; ')
+  return `Can't reinstate: ${clashes.length === 1 ? 'a truck has' : 'trucks have'} been booked since this lapsed: ${list}. `
+    + 'Revise the booking to pick other trucks (a Salesforce booking: change its trucks in Salesforce).'
 }
 
 /**
@@ -354,11 +383,11 @@ export function expiryEdits(
   rows: { id: string; market: string; expires_at: string | null }[],
   chosen: string,
 ): { id: string; market: string; expiresOn: string; changed: boolean }[] {
-  return rows.map(r => ({ id: r.id, market: r.market, expiresOn: chosen, changed: chosen !== (r.expires_at ? r.expires_at.slice(0, 10) : null) }))
+  return rows.map(r => ({ id: r.id, market: r.market, expiresOn: chosen, changed: chosen !== (r.expires_at ? centralDate(new Date(r.expires_at)) : null) }))
 }
 
-/** The date (YYYY-MM-DD) the booking's soonest hold expires, as its card's badge shows. */
+/** The date (YYYY-MM-DD) the booking's soonest hold expires, as its card's badge shows: its Central day, as Salesforce's Hold Exp and the confirmation name it. */
 export function earliestExpiryDate(rows: { expires_at: string | null }[]): string {
-  const dates = rows.map(r => r.expires_at?.slice(0, 10)).filter((d): d is string => !!d).sort()
+  const dates = rows.map(r => (r.expires_at ? centralDate(new Date(r.expires_at)) : null)).filter((d): d is string => !!d).sort()
   return dates[0] ?? ''
 }

@@ -2,38 +2,37 @@ import { withUsageLog } from '@/lib/usageLog'
 import { addMessages, openConversation } from '@/lib/conversations'
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
+import { callBeforeDeadline, servedText, servedToolUses } from '@/lib/claudeReply'
 import { prisma } from '@/lib/prisma'
 import { getClientSession, type ClientSession } from '@/lib/clientAuth'
 import { buildClientChatContext } from '@/lib/clientChatContext'
 import { sendAssistanceRequestEmail } from '@/lib/email'
+import { clientAvailability, parseClientAvailabilityRequest } from '@/lib/clientAvailability'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 // ── System prompt ────────────────────────────────────────────────────────────
-// Simplified: the chat is now conversational only. Quoting and hold placement
-// are handled by direct API endpoints (POST /api/client/quote and
-// POST /api/client/hold-requests). The AI answers questions, discusses
-// availability, explains features, and relays team assistance requests.
+// Conversational: quoting and hold placement are the quote form's (POST
+// /api/client/quote and POST /api/client/hold-requests). The AI answers
+// questions, checks availability with the quote form's own rules (the
+// check_availability tool), explains features, and relays team assistance
+// requests (request_assistance). It never states a price.
 
 function buildClientSystemPrompt(companyName: string): string {
   return `You are the Lime Media client portal assistant, speaking with ${companyName}.
 
 CRITICAL — DATA ISOLATION. Read this before anything else:
-- You may ONLY discuss ${companyName}'s own account: their own hold requests, and general truck availability (whether a truck/date is open or already booked).
+- You may ONLY discuss ${companyName}'s own account: their own hold requests, and whether their campaign can be booked (check_availability).
 - You have ZERO information about any other client's identity — the data you're given never contains another client's name, company, or account details, by design. Do not guess, infer, speculate, or make one up under any circumstance.
-- If a truck is booked/unavailable, you may say so and give the destination market and dates — but NEVER say or imply who booked it, never guess a company name or industry, and never mention any brand name (including AT&T) even if a pattern seems familiar to you.
+- If trucks aren't available, you may say so — but NEVER say or imply who booked them, never guess a company name or industry, and never mention any brand name (including AT&T) even if a pattern seems familiar to you.
 - If asked who else uses this platform, which other clients have trucks booked, to compare them to another company, or anything about another client's identity or activity — decline clearly and briefly, and redirect to what you can help with (their own availability and hold requests). Do not soften this into a partial answer.
 - Never fabricate a company name, ever, for any reason.
 
-AVAILABILITY RULE: a truck is available for a requested date whenever none of its booked ranges in the data below cover that date — this is true for near-term dates and far-future dates alike. A date with no LED schedule entered yet means the truck is genuinely open then, not unknown — never refuse to confirm availability, or hedge with "I don't have visibility that far out," just because a requested date is far in the future. Each truck's "last known market" (when listed) is your best signal for where an available truck is likely to be once its listed booked ranges run out — use it to judge whether a truck fits a requested city/market.
-
-RIGOR REQUIREMENT — read before stating any count: even though you never display truck numbers to the client, you must still work out the real, specific trucks internally before saying a number out loud. Go through the truck list below, check each one's booked ranges against the exact requested dates and its last known market against the requested city, and only count a truck if it concretely passes both checks. Never state a count you haven't actually derived this way.
-
-NEVER SHOW YOUR WORK — do the per-truck checking entirely to yourself; the client-facing reply must jump straight to the finished answer. Your reply must NEVER contain: a truck-by-truck list, any truck number, any truck's last-known market or booking history, or narration like "Let me check X." The client only ever sees the final result — never the reasoning trail.
+AVAILABILITY: for any question about whether trucks are available in a market on dates, call check_availability with the market, dates and number of trucks. It applies exactly the rules the quote form uses, so give its answer as it is: whether the campaign can be booked online, or its message if not. Never work availability out yourself, and never mention truck numbers, other bookings or where trucks are. If the client hasn't said how many trucks, assume 1 and say so.
 
 WHAT YOU CAN HELP WITH:
 - "Tell me about the holds we've placed" / "my hold requests" → list ${companyName}'s own hold requests from the data below.
-- Availability questions → check truck booked ranges and provide counts. Never mention truck numbers.
+- Availability questions → check_availability, as above.
 - Questions about pricing features (shadow fencing, Smart Directional, Device ID Passback, lift studies) → explain what they are and how they work.
 - Market recommendations or campaign planning advice.
 - Answering general questions about Lime Media's LED truck advertising.
@@ -44,48 +43,81 @@ QUOTING AND HOLDS:
 - You can still discuss pricing concepts, explain features, or help them understand their options conversationally.
 - Do NOT attempt to generate prices, state dollar amounts, or submit holds yourself.
 
-TAKING ACTION — requesting team assistance:
-- This is your "get a human involved" tool — use it when the client wants to reach the Lime Media team or has a question you can't answer from the data.
-- Once you have an actual question/need to relay, append this block at the very end of your reply:
-[ACTION: REQUEST_ASSISTANCE]
-market: <City, ST — omit if not relevant>
-state: <2-letter state — omit if not relevant>
-start: <YYYY-MM-DD — omit if not relevant>
-end: <YYYY-MM-DD — omit if not relevant>
-details: <the client's question or need, in plain language>
-[/ACTION]
-  - "details" is the only required line.
-  - Tell the client: you'll hear back from the Lime Media team by email within 12-24 hours.
-  - No markdown inside the block. Plain text only.
+REQUESTING TEAM ASSISTANCE:
+- request_assistance is your "get a human involved" tool — use it when the client wants to reach the Lime Media team, or has a question you can't answer, once you know what they need.
+- The portal shows the client the request's confirmation (or its failure) on its own line, so don't repeat it; just say what you passed on.
 
 Keep every answer short and scannable. Be concise and direct.`
 }
 
-// ── Action block parsing ─────────────────────────────────────────────────────
+// ── Tools ───────────────────────────────────────────────────────────────────
 
-const ACTION_RE = /\[ACTION:\s*REQUEST_ASSISTANCE\]([\s\S]*?)\[\/ACTION\]/
+const DATE = { type: 'string', description: 'YYYY-MM-DD' } as const
 
-function stripActionBlock(text: string): string {
-  return text.replace(ACTION_RE, '').trim()
-}
+const CLIENT_TOOLS: Anthropic.Beta.BetaTool[] = [
+  {
+    name: 'check_availability',
+    description: 'Whether this client can book trucks in one market on these dates online, by the quote form\'s rules (lead time, service area, trucks free). Returns yes or no with a message; never truck numbers or other bookings.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        market: { type: 'string', description: 'One US market as "City, ST" or a ZIP.' },
+        start_date: DATE,
+        end_date: DATE,
+        truck_count: { type: 'integer', minimum: 1 },
+      },
+      required: ['market', 'start_date', 'end_date', 'truck_count'],
+    },
+  },
+  {
+    name: 'request_assistance',
+    description: 'Send the client\'s question or need to the Lime Media team by email.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        details: { type: 'string', description: 'The client\'s question or need, in plain language.' },
+        market: { type: 'string', description: 'City, ST, if relevant.' },
+        state: { type: 'string', description: '2-letter state, if relevant.' },
+        start: DATE,
+        end: DATE,
+      },
+      required: ['details'],
+    },
+  },
+]
 
-function parseKeyValueLines(body: string): Record<string, string> {
-  const fields: Record<string, string> = {}
-  for (const line of body.trim().split('\n')) {
-    const colon = line.indexOf(':')
-    if (colon === -1) continue
-    const k = line.slice(0, colon).trim().toLowerCase()
-    const v = line.slice(colon + 1).trim()
-    if (k && v) fields[k] = v
+/** Tool rounds per message. */
+const MAX_TOOL_ROUNDS = 5
+/** Availability checks per message: each one loads the whole fleet's timelines and live GPS. */
+const MAX_AVAILABILITY_CHECKS = 6
+
+const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined)
+
+/** The quote form's availability answer, client-safe: no counts, trucks or reasons. */
+async function checkClientAvailability(input: Record<string, unknown>, session: ClientSession): Promise<string> {
+  const request = parseClientAvailabilityRequest(input)
+  if (!request) {
+    return JSON.stringify({ error: 'market, start_date and end_date (YYYY-MM-DD) and truck_count (a whole number, at least 1) are required' })
   }
-  return fields
+  const { truck_count } = request
+  const checked = await clientAvailability(session, request)
+  if (checked.refused) {
+    const b = checked.refused.body
+    // The refusals the quote form shows the client, and nothing else from the body.
+    return JSON.stringify({ canBookOnline: false, message: b.message ?? b.error, candidates: b.candidates })
+  }
+  return JSON.stringify({
+    canBookOnline: true,
+    market: checked.formalMarket,
+    message: `${truck_count} truck${truck_count === 1 ? '' : 's'} can be booked in ${checked.formalMarket} for these dates. The quote form gives the price and places the hold.`,
+  })
 }
 
 async function executeRequestAssistance(
-  actionBody: string,
+  input: Record<string, unknown>,
   session: ClientSession
 ): Promise<{ success: boolean; message: string }> {
-  const fields = parseKeyValueLines(actionBody)
+  const fields = { details: text(input.details), market: text(input.market), state: text(input.state), start: text(input.start), end: text(input.end) }
   if (!fields.details) {
     return { success: false, message: "Sorry, I couldn't send that request — no question or need was included." }
   }
@@ -136,12 +168,14 @@ async function scrubOtherClientNames(reply: string, ownClientId: string): Promis
 // ── Route handler ─────────────────────────────────────────────────────────────
 
 async function handlePost(req: NextRequest) {
+  // The deadline counts from the request, setup included.
+  const startedAt = Date.now()
   const session = getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   if (session.username !== 'testclient') return NextResponse.json({ error: 'Not available yet' }, { status: 403 })
 
   const { message, history = [], conversation_id: requestedConversation } = await req.json()
-  if (!message) return NextResponse.json({ error: 'Message required' }, { status: 400 })
+  if (typeof message !== 'string' || !message.trim()) return NextResponse.json({ error: 'Message required' }, { status: 400 })
 
   // The conversation this message belongs to (lib/conversations.ts).
   const conversationId = await openConversation({ actorType: 'client_user', userId: session.id }, requestedConversation, message)
@@ -158,52 +192,115 @@ async function handlePost(req: NextRequest) {
 
   const userTurn = `${message}\n\n[ACCOUNT DATA]\n${context}`
 
-  const messages: Anthropic.MessageParam[] = [
-    ...history.slice(-10).map((m: { role: string; content: string }) => ({
+  // The portal sends its history with this message already on the end; drop
+  // that copy so the model sees it once, with the account data.
+  const prior: { role: string; content: string }[] = Array.isArray(history) ? history : []
+  const last = prior[prior.length - 1]
+  const earlier = last && last.role !== 'assistant' && last.content === message ? prior.slice(0, -1) : prior
+
+  // The conversation sent to the model starts with a user turn.
+  const recent = earlier.slice(-10).filter(m => m && typeof m.content === 'string' && m.content.trim())
+  while (recent.length && recent[0].role === 'assistant') recent.shift()
+
+  const messages: Anthropic.Beta.BetaMessageParam[] = [
+    ...recent.map(m => ({
       role:    m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
       content: m.content,
     })),
     { role: 'user', content: userTurn },
   ]
 
-  let reply: string
+  let reply = ''
+  // Set inside the tool callbacks; the cast keeps TS from narrowing it to null.
+  let actionResult = null as { success: boolean; message: string } | null
+  let availabilityChecks = 0
   try {
-    const response = await anthropic.messages.create({
-      model:      'claude-opus-4-6',
-      max_tokens: 1024,
-      system:     buildClientSystemPrompt(session.companyName),
-      messages,
-    })
-    reply = response.content[0]?.type === 'text' ? response.content[0].text : ''
+    for (let round = 0; ; round++) {
+      // Done before MODEL_DEADLINE_MS (each attempt gets the time left); a quick
+      // transient failure is retried within it (lib/claudeReply.ts).
+      const response = await callBeforeDeadline(startedAt + MODEL_DEADLINE_MS, opts => anthropic.beta.messages.create({
+        model:         'claude-opus-5-5',
+        // A safety decline is retried server-side on the model Anthropic recommends
+        // for its category, instead of returning the refusal (beta).
+        betas:         ['server-side-fallback-2026-07-01'],
+        fallbacks:     'default',
+        max_tokens:    16000,
+        thinking:      { type: 'adaptive' },
+        output_config: { effort: 'medium' },
+        system:        buildClientSystemPrompt(session.companyName),
+        tools:         CLIENT_TOOLS,
+        messages,
+      }, opts))
+      // The model that served it (a fallback replaces a declined one: lib/claudeReply.ts).
+      const said = servedText(response.content)
+      const toolUses = servedToolUses(response.content)
+      // A refusal or a cut-off tool call (max_tokens) is never run.
+      if (response.stop_reason !== 'tool_use' || toolUses.length === 0) {
+        reply = said || (response.stop_reason === 'refusal' ? "Sorry, I can't help with that. Ask me about availability or your hold requests." : '')
+        break
+      }
+      if (round >= MAX_TOOL_ROUNDS) {
+        // Text beside a tool call is narration ("Let me check…"), not an answer.
+        reply = 'Sorry, I could not finish that. Please ask again more narrowly.'
+        break
+      }
+      messages.push({ role: 'assistant', content: response.content })
+      // One request to the team per message: claimed before anything runs.
+      let assistanceClaimed = actionResult !== null
+      const results: Anthropic.Beta.BetaToolResultBlockParam[] = await Promise.all(toolUses.map(async (use): Promise<Anthropic.Beta.BetaToolResultBlockParam> => {
+        const input = (use.input && typeof use.input === 'object' ? use.input : {}) as Record<string, unknown>
+        if (use.name === 'check_availability') {
+          // Counted before anything runs, like the assistance claim below.
+          if (++availabilityChecks > MAX_AVAILABILITY_CHECKS) {
+            return { type: 'tool_result', tool_use_id: use.id, is_error: true, content: `At most ${MAX_AVAILABILITY_CHECKS} availability checks per message. Answer with what you have, and ask the client to narrow the rest down.` }
+          }
+          try {
+            return { type: 'tool_result', tool_use_id: use.id, content: await checkClientAvailability(input, session) }
+          } catch (err) {
+            console.error('[client/chat] availability check failed:', err)
+            return { type: 'tool_result', tool_use_id: use.id, is_error: true, content: 'Availability could not be checked right now. Suggest the quote form, or a request to the team.' }
+          }
+        }
+        if (use.name === 'request_assistance' && !assistanceClaimed) {
+          assistanceClaimed = true
+          let result: { success: boolean; message: string }
+          try {
+            result = await executeRequestAssistance(input, session)
+          } catch (err) {
+            console.error('[client/chat] action execution failed:', err)
+            result = { success: false, message: 'Failed to submit your request due to a server error.' }
+          }
+          actionResult = result
+          return { type: 'tool_result', tool_use_id: use.id, content: JSON.stringify(result) }
+        }
+        return { type: 'tool_result', tool_use_id: use.id, is_error: true, content: use.name === 'request_assistance' ? 'Already sent one request this message.' : `Unknown tool ${use.name}` }
+      }))
+      messages.push({ role: 'user', content: results })
+    }
   } catch (err) {
     console.error('[client/chat] Anthropic call failed:', err)
-    return NextResponse.json({ error: 'Assistant is temporarily unavailable.' }, { status: 502 })
+    // A request already sent to the team is still reported, so it isn't sent twice.
+    if (!actionResult) return NextResponse.json({ error: 'Assistant is temporarily unavailable.' }, { status: 502 })
   }
 
-  // Parse & execute REQUEST_ASSISTANCE action block (the only action remaining)
-  const actionMatch = reply.match(ACTION_RE)
-  reply = actionMatch ? stripActionBlock(reply) : reply
+  // An empty reply would go back as an empty history turn, which the API rejects.
+  if (!reply && !actionResult) reply = 'Sorry, I could not answer that. Please try asking again.'
   reply = await scrubOtherClientNames(reply, session.id)
-
-  let actionResult: { success: boolean; message: string } | null = null
-  if (actionMatch) {
-    const [, actionBody] = actionMatch
-    try {
-      actionResult = await executeRequestAssistance(actionBody, session)
-    } catch (err) {
-      console.error('[client/chat] action execution failed:', err)
-      actionResult = { success: false, message: 'Failed to submit your request due to a server error.' }
-    }
-  }
 
   // The conversation keeps the text; the usage log (withUsageLog, below)
   // records that the chat ran and links here by conversation id.
   await addMessages(conversationId, [
-    { role: 'assistant', content: reply },
+    ...(reply ? [{ role: 'assistant' as const, content: reply }] : []),
     ...(actionResult ? [{ role: 'assistant' as const, content: actionResult.message }] : []),
   ])
   return NextResponse.json({ reply, actionResult, conversation_id: conversationId })
 }
+
+// A message can chain several Opus calls and availability checks (each a
+// fleet load): the same limit as the other routes that load the fleet or call Claude.
+export const maxDuration = 300
+/** Every model call must finish by this point, leaving time to answer and save. */
+const MODEL_DEADLINE_MS = 285_000
 
 // Every run is logged for the Usage page (lib/usageLog.ts).
 export const POST = withUsageLog('ai_chat_client', 'client', handlePost)

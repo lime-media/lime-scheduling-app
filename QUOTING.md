@@ -215,11 +215,9 @@ The rules never change, but *where the distance comes from* depends on whether t
 | Surface | Distance measured from |
 |---|---|
 | Quote Builder, rep quote, hold requests | Each truck's **live GPS position** |
-| AI / MCP endpoint | The **nearest accepted market**, for every truck |
+| AI chat, MCP | The same: they quote through the Quote page's and client portal's code |
 
-The MCP endpoint runs before truck selection, so it can't know where individual trucks are. It assumes every truck starts at the nearest accepted market, which is deliberately **conservative** — an MCP quote can come in *higher* than the final quote, never lower, because real trucks are often closer than the market centroid.
-
-**This is an estimate, not a disagreement.** Same rules, same formula, same thresholds. If an MCP quote and a rep quote differ, it is because the real trucks were closer than assumed — not because two different rule sets were applied. MCP responses mark billed transport with `estimated: true` and report the distance used.
+MCP used to quote before picking trucks, assuming every truck started at the nearest accepted market. It now quotes the way the app does, for whoever the call acts for (`app/api/v1/internal/quote`, `lib/mcpActing.ts`): a client gets the client portal's quote and a staff member the Quote page's, from real trucks.
 
 ### Cancellation
 
@@ -313,9 +311,11 @@ A campaign that leaves a truck far out with nothing after it carries **no return
 | Path | Behavior |
 |---|---|
 | Quote Builder, rep quote, hold requests | gated at truck selection |
-| Grid hold, MCP hold (`createHold`) | **hard blocked** — `feasibility_conflict` |
-| AI chat hold | **hard blocked** |
-| MCP availability (`?market=`) | reports `feasibility` per truck |
+| Grid hold (`createHold`) | **hard blocked** — `feasibility_conflict` |
+| MCP hold | gated at truck selection: a market and truck count, booked through the client portal's or the Quote page's booking (`lib/clientBooking.ts`, `lib/staffBooking.ts`) |
+| AI chat hold | gated at truck selection: the chat books through the Quote page's booking (`lib/staffBooking.ts`) |
+| MCP availability (`?market=&truck_count=`) | the engine's answer, by the caller's rules |
+| MCP availability (`?market=` only) | reports `feasibility` per truck |
 | Salesforce push | writes, never blocked |
 | ATT sync | writes, never blocked |
 
@@ -334,6 +334,8 @@ If the feasibility lookup itself errors, the hold is allowed through and the err
 `GET /api/v1/internal/availability` answers "when is each truck booked?" — a calendar view that says nothing about whether a truck could serve a given market. Pass an optional **`market`** parameter and every truck is additionally run through the chain rules, returning a `feasibility` block per truck plus a top-level `feasibility_checked` flag.
 
 **A free calendar slot is not the same as a servable truck.** Callers that omit `market` get the old behavior, unchanged — and no feasibility guarantee.
+
+Pass **`market` and `truck_count`** for the question a booking asks, answered by the engine for whoever the call acts for: a client gets the client portal's rules (lead time, their rate card, no displacing an AT&T soft hold) and only yes or the refusal message; staff get the Quote page's rules and the trucks, nearest first.
 
 ### Where market coordinates come from
 
@@ -411,6 +413,8 @@ The pool is the bookable fleet (`HIDDEN_TRUCKS` excluded), with jobs and holds l
 
 Routing, truck choice and every price come only from code. Without the API key, typed markets and CSV/`.xlsx` lists still work.
 
+**The staff AI chat** (`claude-opus-5-5`, `app/api/chat/route.ts`) is the same rule: it never prices, picks trucks or writes holds itself. Its tools (`lib/staffChatTools.ts`) call the availability engine, the Quote page's quote (`lib/staffQuote.ts`) and its booking (`lib/staffBooking.ts`), so a chat booking gets the same trucks, price check, hold expiry and Salesforce opportunity. A booking needs the rep's confirmation: a quote comes with a quote ref (`lib/quoteRef.ts`, an HMAC of the inputs and total), and the chat books only a ref shown to the rep in an earlier reply, with the same inputs and total. It books one market at a time; a multi-market campaign is priced and booked on the planner.
+
 ## 6d. The opportunity's primary contact
 
 Every opportunity needs a primary contact (sales ops' rule). Both booking endpoints, `/api/quote/hold` (`primary_contact_id`) and `/api/plan/hold` (`primaryContactId`), require one, for holds and quote-only logs alike. The rep picks it after the account, from that account's Salesforce Contacts (`GET /api/sfdc/contacts?accountId=&q=`, searching name or email).
@@ -429,7 +433,9 @@ A reservation holds its trucks for **3 days** by default. On both quote tools th
 
 **A multi-market booking is one quote with one expiry.** Every hold in it lapses at the same moment: the seller's length, capped by the **earliest** market's start (`bookingHoldExpiry`). Committed markets have no expiry and don't count, nor do markets already running (`lib/bookings.ts bookingCapStarts`). The confirmation states the one lapse date.
 
-Quote-only logs hold nothing, so they have no hold length. An expiry can be changed afterwards from Reservations → Edit: one date for every hold on the card, no later than 2 days before the booking's earliest start (`lastExpiryDate`). The date field stops there and `update_expiration` refuses a later date (400) instead of cutting it back. Reinstate and approve-extension give the whole booking the same expiry by the same rule. Bookings made under the earlier per-market rule keep their differing expiries until their next edit or reinstate.
+**A hold's day is its Central day.** Expiries are instants; wherever one becomes a date it's the date in Central time (`lib/dateOnly.ts`): the Reservations badge and Edit date, the client portal, the start-date caps and "today", and LED Hold Exp in Salesforce (`holdExpDate`). A date read in (Edit, a client's extension request, Salesforce's Hold Exp) expires at the end of that day in Central time (`endOfDayCentral`), and so does the start-date cap. A 3-day hold booked Monday at 8pm CT lapses Thursday at 8pm CT and shows as Thursday everywhere; its UTC date would be Friday. Expiries stored before this, at 23:59:59 UTC (6:59pm Central), keep their date.
+
+Quote-only logs hold nothing, so they have no hold length. An expiry can be changed afterwards from Reservations → Edit: one date for every hold on the card, no later than 2 days before the booking's earliest start (`lastExpiryDate`). The date field stops there and `update_expiration` refuses a later date (400) instead of cutting it back. Reinstate and approve-extension give the whole booking the same expiry by the same rule. Reinstate brings back the whole booking or none of it: if any truck was booked by someone else since it lapsed, it's refused, naming each one (revise the booking to pick other trucks). A market that already ended stays expired, and any market still live gets the same new expiry (the later of a fresh window and its current one, within the cap). **The app owns the opportunity's LED Hold Exp:** after every release or re-date (reinstate, approve or deny extension, Edit, cancel, deleting a hold, chat or conflict release, a client's extension request, the expiry sweep) it writes LED Trucks (only the trucks it holds there now; blank when none) and LED Hold Exp (the earliest expiry still to come among its live reservations) to Salesforce (`syncOpportunityLedWindow`). The date written is recorded in the features of the opportunity's Salesforce-made holds (`appHoldExp`, not `sfdc_hold_exp`, so whether a lapse closes the deal is unchanged), so on a Salesforce-made opportunity the push Salesforce sends back is recognized as an echo and changes no expiry (`pushedHoldExpiry`), while a different Hold Exp entered in Salesforce still applies. Until the app has released its trucks on an opportunity (a hold past its expiry counts until the sweep expires it), the opportunity is the app's: for app-made bookings, trucks and hold dates change only in the app, so the webhook never creates, changes or deletes holds from a push there. If the push's LED Trucks or Hold Exp differ from what the app would write (`ledFieldsDiffer`), the app writes its own back and records `SFDC_LED_FIELDS_OVERRIDDEN`; the push that follows matches. Once the app's booking has been released, Salesforce is in charge again and a push is mirrored like one for a Salesforce-made opportunity: a truck a rep lists is recorded (clashes surface through `/api/holds/infeasible`), never dropped; a later Reinstate removes such copies of its own trucks. Reinstate and revise move a Closed Lost deal back to Warm only after their holds are saved (and undo them if Salesforce refuses), so the push that stage change fires finds the app's holds live. If the write fails, the change stands in the app and the rep is told what to set in Salesforce. Bookings made under the earlier per-market rule keep their differing expiries until their next edit or reinstate.
 
 A booking is the unit everywhere: one card on Reservations and in the client portal, one status, and Edit, cancel, approve and deny act on the whole booking in one request. A client asks to extend the whole booking (client portal → Request Hold Extension), up to 3 days before its first start (the client runway; staff approving may give up to 2). While the request waits, the booking is held until the date asked, so it never lapses before staff answer; approving gives the booking that date (capped at the staff limit) and denying releases it, and the client is emailed either way. A committed (Closed Won) booking is read-only in the app except for truck swaps: no expiry, cancel, revise or added quote (`closedWonRefusal`); change the deal in Salesforce.
 
@@ -447,6 +453,25 @@ Multi-market plans evolve: a market is dropped or added, dates move. Two ways to
 **Add to an existing opportunity** (both quote tools, after the primary contact). The picker lists the account's open LED opportunities; choosing one adds the quote to it (`attach_opportunity_id` / `attachOpportunityId`): the new holds link to it, its amount adds, markets and trucks are the union, the hold window widens, and the description notes what was added. For changing or dropping markets already on it, use Revise.
 
 Both are staff only; the client portal is unchanged.
+
+## 6g. Transport metrics (Transport page)
+
+What bookings quote for transport, how it changes, what actually happens, and how quotes compare with the contract. Recorded by `lib/transportMetricsRecord.ts` (best-effort: a recording failure never blocks a booking); KPIs in `lib/transportMetrics.ts`; shown at `/ops/transport` to any staff user, for bookings made in a date range.
+
+- **`app_transport_legs`**, one row per truck per event:
+  - `BOOKED` / `REVISED`: written when a booking is placed or revised on the Quote page, the multi-market planner or the client portal, from what the quote already worked out (single-market: each selected truck and its priced leg; multi-market: each market's arrivals). Holds placed by hand (the schedule grid, MCP) aren't quoted and record nothing.
+    A revision replaces the booking's holds under a new campaign group; its rows keep the booking key the replaced holds were recorded under, so a booking stays one booking across revisions. The Transport page reads a booking's legs by that key, and takes the current plan from holds that still exist.
+  - `SWAPPED`: a truck swapped onto a hold, its origin measured at the swap.
+  - `PRESTART`: a snapshot the sweep records up to 3 days before a campaign starts (once per hold and truck, so a truck swapped on gets its own): where its truck sits before it drives in. In no KPI; only EXECUTED's origin.
+  - `EXECUTED`: written by the 15-minute sweep on a campaign's first day (or within 3 days, once per hold) for the truck actually on the hold. Its origin is that truck's `PRESTART` snapshot, taken up to 3 days before the start while the truck's previous job (or, with none, its GPS) still shows where it's coming from; by the first day the previous job has ended and a truck usually already sits in the market. Without a snapshot (a hold booked and started the same day, or a truck swapped on after its snapshot), it falls back to GPS that morning, which can under-count repositioning. The page's date range is UTC.
+  - Each row: origin and how it was found, miles, travel days, **outcome** (`LOCAL` inside the service area, `BILLED` when the client pays for the move, `ABSORBED` when we do), **charge** (what the client pays; a swapped or executed truck keeps the slot's quoted charge), and **est_cost** (our estimated cost of the move, `absorbedLegCost`, for any out-of-area truck, billed or not). Quote-only logs record nothing.
+- **`app_deal_values`**: the app's quoted total per booking (`BOOKED`, `REVISED`); Salesforce's **Amount** the first time the reconcile (or a hand commit) sees an opportunity the app quoted Closed Won, whichever path committed its holds (`WON`, once per opportunity); and the Amount and stage again whenever either changes after (`AMOUNT_CHANGED`, checked by the sweep for 180 days after the deal was won).
+
+The page shows:
+- **Quoted transport** (everything quoted, cancelled bookings included: each booking's latest plan, one leg per truck slot): trucks, % local / absorbed / billed, $ charged vs our estimated cost, by client and market.
+- **Planned vs actual** (holds that have started): average quoted vs actual miles, how often a different truck ran it or the outcome changed, and **unpriced repositioning** (quoted local, ran from outside the area) with its cost.
+- **Changes after booking**: share of bookings swapped or revised, and changes per booking.
+- **Quote vs Salesforce contract** (won deals): the app's quoted total (the latest figure of each booking on the opportunity) against the Amount at Closed Won and now, with the biggest gaps. Left out, and counted beside it: deals whose latest stage is no longer Closed Won (reopened or lost), and deals with an app booking whose quote wasn't recorded (a quote-only log, or booked before these metrics), since their Amount covers more than the recorded quotes.
 
 ## 7. What the client sees vs. what's internal
 
@@ -482,6 +507,8 @@ Market Tier 4 is now reachable: a market that is not one of the accepted top-50 
 **Lift studies will qualify less often in small markets.** That is the point: estimated reach was double the modelled figure for every market outside the top 50.
 
 Clients can no longer self-serve a quote for a campaign starting within **2 days** (`MIN_CLIENT_LEAD_DAYS`). Internal staff are deliberately exempt. Enforced on both the client quote and client hold routes, server-side.
+
+The client portal AI chat answers availability with the same check as the client quote (`lib/clientAvailability.ts`: lead time, market, the client's rate card, trucks free), as a yes or the quote form's message. It never shows truck numbers, other bookings or prices; quotes and holds stay on the quote form.
 
 Single-truck feasibility now checks the campaign window, not just arrival and stranding — see §6b.
 
@@ -520,4 +547,4 @@ The two-transport-engine split and the calendar-vs-activation-day mismatch descr
 
 ---
 
-*Generated from `lib/pricing/{config,engine,transport,resolvers}.ts`, `lib/availabilityEngine.ts`, and the quote API routes. If pricing logic changes, it changes in `lib/pricing/` first — the MCP server is a pass-through.*
+*Generated from `lib/pricing/{config,engine,transport,resolvers}.ts`, `lib/availabilityEngine.ts`, `lib/staffQuote.ts`, `lib/clientQuote.ts` and the quote API routes. If pricing logic changes, it changes in `lib/pricing/` first — the MCP server is a pass-through.*

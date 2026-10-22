@@ -3,6 +3,14 @@
  * API routes (SFDC activation notes) and the client-side QuoteBreakdown component.
  */
 
+/**
+ * The key in a hold's features JSON recording the LED Hold Exp the app last
+ * wrote to its opportunity (lib/sfdcIntegration.ts appHoldExpOf). Kept here,
+ * not in the server-side Salesforce module, because this file is bundled for
+ * the browser too.
+ */
+export const APP_HOLD_EXP_KEY = 'appHoldExp'
+
 export type QuoteFeatures = {
   dailyRate?: number
   hourSurcharge?: number
@@ -52,10 +60,17 @@ export type QuoteFeatures = {
   }[]
 }
 
+/**
+ * A hold's quote breakdown, or null when its features hold no quote: a
+ * Salesforce-made hold's features may carry only the app's bookkeeping (the
+ * LED Hold Exp it last wrote, APP_HOLD_EXP_KEY), which
+ * must not render as an empty breakdown.
+ */
 export function parseQuoteFeatures(features: string | null | undefined): QuoteFeatures | null {
   if (!features) return null
   try {
-    return JSON.parse(features) as QuoteFeatures
+    const f = JSON.parse(features) as QuoteFeatures
+    return f && typeof f === 'object' && Object.keys(f).some(k => k !== APP_HOLD_EXP_KEY) ? f : null
   } catch {
     return null
   }

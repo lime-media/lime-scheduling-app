@@ -6,7 +6,7 @@ import { format, formatDistanceToNow, isPast } from 'date-fns'
 import { ClientHeader } from '@/components/ClientHeader'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
 import { useClientAuth, hasHoldRequestsAccess } from '@/lib/useClientAuth'
-import { parseDateOnly } from '@/lib/dateOnly'
+import { APP_TIME_ZONE, centralDate, parseDateOnly } from '@/lib/dateOnly'
 import { formatMarketState } from '@/lib/format'
 import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
@@ -58,6 +58,11 @@ function fmtMoney(n: number): string {
   return '$' + Math.round(n).toLocaleString('en-US')
 }
 
+/** An expiry as the client is told it: Central time, as the confirmation and the extension window name it. */
+const EXP_DAY = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: APP_TIME_ZONE })
+const EXP_TIME = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: APP_TIME_ZONE, timeZoneName: 'short' })
+const EXP_FULL = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: APP_TIME_ZONE, timeZoneName: 'short' })
+
 function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; status: string }) {
   // A confirmed booking is booked, not held: it has no expiry to show.
   if (!expiresAt || status === 'COMMITTED') return null
@@ -65,16 +70,16 @@ function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; stat
 
   if (status === 'EXPIRED') {
     return (
-      <span className="text-xs text-gray-400" title={format(expDate, 'MMM d, yyyy h:mm a')}>
-        Expired {format(expDate, 'MMM d')}
+      <span className="text-xs text-gray-400" title={EXP_FULL.format(expDate)}>
+        Expired {EXP_DAY.format(expDate)}
       </span>
     )
   }
 
   if (isPast(expDate)) {
     return (
-      <span className="text-xs text-red-500 font-medium" title={format(expDate, 'MMM d, yyyy h:mm a')}>
-        Expired {format(expDate, 'MMM d, h:mm a')}
+      <span className="text-xs text-red-500 font-medium" title={EXP_FULL.format(expDate)}>
+        Expired {EXP_TIME.format(expDate)}
       </span>
     )
   }
@@ -84,9 +89,9 @@ function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; stat
   return (
     <span
       className={`text-xs ${isUrgent ? 'text-amber-600 font-medium' : 'text-gray-500'}`}
-      title={format(expDate, 'MMM d, yyyy h:mm a')}
+      title={EXP_FULL.format(expDate)}
     >
-      {status === 'EXTENSION_REQUESTED' ? 'Held until' : 'Expires'} {format(expDate, 'MMM d, h:mm a')} ({remaining} left)
+      {status === 'EXTENSION_REQUESTED' ? 'Held until' : 'Expires'} {EXP_TIME.format(expDate)} ({remaining} left)
     </span>
   )
 }
@@ -118,9 +123,9 @@ function extendWindow(rows: HoldRequest[]): { min: string; max: string } | { ref
   const refusal = clientExtendRefusal(rows)
   if (refusal) return { refusal }
   const held = rows.filter(r => r.status === 'HOLD')
-  const today = new Date().toISOString().slice(0, 10)
+  const today = centralDate(new Date())
   const max = lastExpiryDate([...bookingCapStarts(held, today)].sort()[0])
-  const lapses = held.map(r => r.expires_at?.slice(0, 10)).filter((d): d is string => !!d).sort().reverse()[0] ?? today
+  const lapses = held.map(r => (r.expires_at ? centralDate(new Date(r.expires_at)) : null)).filter((d): d is string => !!d).sort().reverse()[0] ?? today
   const after = new Date(lapses + 'T00:00:00Z')
   after.setUTCDate(after.getUTCDate() + 1)
   const min = [after.toISOString().slice(0, 10), today].sort().reverse()[0]

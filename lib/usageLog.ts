@@ -248,6 +248,15 @@ export function withUsageLog(
 
 
 /**
+ * A quote or booking run from inside another run (the staff AI chat's
+ * get_quote and place_hold tools call the same functions as the quote page),
+ * logged as its own row like a route run. Written after the response is sent.
+ */
+export function recordToolRun(actor: Actor, tool: UsageTool, inputs: unknown, status: number, json: unknown, latencyMs: number): void {
+  waitUntil(record(actor, tool, pruneInputs(inputs), status, json, latencyMs))
+}
+
+/**
  * An MCP tool call, reported by the MCP server (POST /api/v1/internal/query-log).
  * Same table, tool "mcp_<name>". The server's outcome maps onto ours:
  * no_availability is "not feasible".
@@ -257,7 +266,7 @@ export async function recordMcpUsage(call: {
   requestParams: unknown; responseSummary: unknown; outcome: string; latencyMs: number
 }): Promise<string | null> {
   const actorType = call.userType === 'client_user' ? 'client_user' : 'app_user'
-  const outcome: Outcome = call.outcome === 'success' ? 'success' : call.outcome === 'no_availability' ? 'not_feasible' : 'error'
+  const outcome: Outcome = call.outcome === 'success' ? 'success' : call.outcome === 'no_availability' ? 'not_feasible' : call.outcome === 'needs_confirmation' ? 'refused' : 'error'
   let name = ''
   if (call.userId) {
     try {
@@ -272,7 +281,7 @@ export async function recordMcpUsage(call: {
         actor_type: actorType, actor_id: call.userId ?? 'unknown', actor_name: name || 'Unknown', tool: `mcp_${call.toolName}`.slice(0, 100),
         inputs: capJson(pruneInputs(call.requestParams)), result: capJson(call.responseSummary ?? {}),
         ...reportFields(pruneInputs(call.requestParams), call.responseSummary, { type: actorType, id: call.userId ?? '', name }),
-        outcome, status: outcome === 'success' ? 200 : outcome === 'not_feasible' ? 409 : 500, latency_ms: Math.max(0, Math.round(call.latencyMs)),
+        outcome, status: outcome === 'success' ? 200 : outcome === 'not_feasible' || outcome === 'refused' ? 409 : 500, latency_ms: Math.max(0, Math.round(call.latencyMs)),
       },
     })
     if (call.userId) await touchActivity({ type: actorType, id: call.userId, name })

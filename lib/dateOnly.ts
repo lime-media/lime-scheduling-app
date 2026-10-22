@@ -17,19 +17,54 @@ export function parseDateOnly(value: string): Date {
   return parseISO(value.slice(0, 10))
 }
 
+
 /**
- * The last instant of a calendar day, in UTC.
- *
- * Salesforce sends Hold Exp as a bare "YYYY-MM-DD", and that date is the LAST
- * day the hold is valid — the truck is only released the day after (see the
- * expiry contract in lib/scheduleCache.ts). Parsing it with `new Date()` yields
- * 00:00Z, the *start* of that day, so comparing it against `now` releases the
- * hold a full calendar day early.
- *
- * The rest of the app already anchors date-only expirations to end-of-day —
- * see the `update_expiration` action in app/api/hold-requests/[id]/route.ts,
- * which builds `T23:59:59Z`. This keeps the Salesforce path on that convention.
+ * The zone a hold's dates are in: reps, confirmations, the expiry sweep's
+ * emails and LED Hold Exp. A date-only expiry ("held until Thursday") means
+ * the end of that day here.
  */
-export function endOfDayUtc(value: string): Date {
-  return new Date(value.slice(0, 10) + 'T23:59:59.999Z')
+export const APP_TIME_ZONE = 'America/Chicago'
+
+const CENTRAL_DAY = new Intl.DateTimeFormat('en-CA', { timeZone: APP_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' })
+
+/**
+ * The calendar day (YYYY-MM-DD) an instant falls on in Central time. Built
+ * from parts, not the locale's whole-date pattern, so a browser whose en-CA
+ * format differs still gets YYYY-MM-DD.
+ */
+export function centralDate(instant: Date): string {
+  const parts = CENTRAL_DAY.formatToParts(instant)
+  const part = (type: string) => parts.find(p => p.type === type)?.value
+  return `${part('year')}-${part('month')}-${part('day')}`
+}
+
+/**
+ * The end of a calendar day in Central time (the last second, :59.000, like
+ * every end-of-day expiry the app stores): 04:59:59Z the next morning in
+ * daylight time, 05:59:59Z in standard time. Midnight is never a DST change
+ * (those happen at 2am), so it's one of the two.
+ */
+export function endOfDayCentral(value: string): Date {
+  const day = value.slice(0, 10)
+  const next = new Date(day + 'T00:00:00Z')
+  // Not a date (e.g. month 13): an Invalid Date, for the caller's isNaN check.
+  if (isNaN(next.getTime())) return next
+  next.setUTCDate(next.getUTCDate() + 1)
+  const nextDay = next.toISOString().slice(0, 10)
+  for (const hour of ['05', '06']) {
+    const midnight = new Date(`${nextDay}T${hour}:00:00Z`)
+    if (centralDate(midnight) === nextDay && centralDate(new Date(midnight.getTime() - 1)) === day) return new Date(midnight.getTime() - 1000)
+  }
+  return new Date(day + 'T23:59:59Z')
+}
+
+/**
+ * The LED Hold Exp date to write to Salesforce for a hold expiring at
+ * `expiresAt`: the day it lapses in Central time, the day the rep was told
+ * ("held until Thu 8:00 PM CDT"). Its UTC date is a day late for an evening
+ * expiry (Thu 8pm CDT is Fri 01:00Z). A Hold Exp read back from Salesforce
+ * means the end of that day (endOfDayCentral), so the round trip keeps the day.
+ */
+export function holdExpDate(expiresAt: Date): string {
+  return centralDate(expiresAt)
 }

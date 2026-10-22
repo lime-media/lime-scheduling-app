@@ -84,6 +84,7 @@ export function Navbar() {
     { href: '/quote',                  label: 'LED Quote' },
     { href: '/saturation-calculator',  label: 'Saturation' },
     { href: '/rate-cards', label: 'Rate Cards' },
+    { href: '/ops/transport', label: 'Transport' },
     { href: '/users', label: 'Users' },
     ...(session?.user?.role === 'OPERATIONS' ? [{ href: '/usage', label: 'Usage' }] : []),
     { href: '/settings', label: 'Settings' },

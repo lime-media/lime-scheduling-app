@@ -1,188 +1,121 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { validateInternalApiKey } from '@/lib/internalAuth'
 import { prisma } from '@/lib/prisma'
-import { canonicalMarketName } from '@/lib/marketBounds'
 import { activeHoldWhere } from '@/lib/holdFilters'
-import { createHold } from '@/lib/holdService'
-import { clientBookingRefusal } from '@/lib/bookingRefusals'
-import { checkTruckFeasibility } from '@/lib/availabilityEngine'
-import { sendHoldRequestEmail } from '@/lib/email'
-import { appendHoldRequestToSheet } from '@/lib/googleSheets'
-import { computeHoldExpiresAt } from '@/lib/holdExpiry'
-import { daysUntil, MIN_CLIENT_LEAD_DAYS } from '@/lib/pricing'
-import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
+import { mcpParty, parseMcpCampaign, parseMcpStaffPricing } from '@/lib/mcpActing'
+import { resolveQuoteMarket } from '@/lib/staffQuote'
+import { placeClientBooking } from '@/lib/clientBooking'
+import { placeStaffBooking } from '@/lib/staffBooking'
 
+/**
+ * POST /api/v1/internal/holds: the MCP server's booking.
+ *
+ * A booking is a market, dates and a truck count, booked by the same code as
+ * the app for whoever the call acts for (lib/mcpActing.ts):
+ * - a client gets the client portal's booking (lib/clientBooking.ts): the
+ *   engine picks the trucks, the price is recomputed, holds get the client
+ *   expiry, the team is emailed and the opportunity is created on the
+ *   client's Salesforce account;
+ * - a staff member gets the Quote page's (lib/staffBooking.ts): it needs the
+ *   Salesforce account and its primary contact, as the Quote page does, and
+ *   gets the staff expiry, the opportunity and the price check
+ *   (expected_total, when given).
+ * Holds are marked origination 'mcp' ("Via MCP" on the schedule).
+ *
+ * Booking a named truck is no longer offered: the caller couldn't see
+ * transport or chain feasibility, and it skipped pricing, expiry and
+ * Salesforce. The engine picks the trucks, as everywhere else.
+ */
 export async function POST(req: NextRequest) {
   const keyError = validateInternalApiKey(req)
   if (keyError) return keyError
 
-  const actingUserId = req.headers.get('x-acting-user-id')
-  if (!actingUserId) {
-    return NextResponse.json({ error: 'Missing X-Acting-User-Id header' }, { status: 400 })
+  let body: Record<string, unknown>
+  try {
+    body = await req.json()
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
+  if (!body || typeof body !== 'object') return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
 
-  const actingUserType = req.headers.get('x-acting-user-type') || 'app_user'
-  if (actingUserType !== 'app_user' && actingUserType !== 'client_user') {
-    return NextResponse.json({ error: 'X-Acting-User-Type must be "app_user" or "client_user"' }, { status: 400 })
+  if (body.truck_number !== undefined) {
+    return NextResponse.json({ error: 'Booking a named truck is no longer supported. Book a market, dates and truck_count; the trucks are picked for you.' }, { status: 400 })
   }
+  const campaign = parseMcpCampaign(body)
+  if ('error' in campaign) return NextResponse.json({ error: campaign.error }, { status: 400 })
 
-  const body = await req.json()
-  const { truck_number, market, state, client_name, start_date, end_date, status, notes } = body
+  const party = await mcpParty(req)
+  if (party.kind === 'error') return NextResponse.json({ error: party.error }, { status: party.status })
 
-  if (!truck_number || !start_date || !end_date) {
-    return NextResponse.json({ error: 'Missing required fields: truck_number, start_date, end_date' }, { status: 400 })
-  }
-
-  // Client users create holds directly (same as client view flow)
-  if (actingUserType === 'client_user') {
-    const clientUser = await prisma.clientUser.findUnique({ where: { id: actingUserId } })
-    if (!clientUser) {
-      return NextResponse.json({ error: 'Acting client user not found' }, { status: 404 })
+  // Staff fields, checked before any lookup (cheap checks first). Priced as
+  // the MCP quote prices it (the same markup check), and named: a booking with
+  // no account name would be held as "Unknown" with a "Client - …"
+  // opportunity. null is "not given".
+  const str = (v: unknown) => (typeof v === 'string' ? v : undefined)
+  const staff = party.kind === 'staff' ? parseMcpStaffPricing(body) : null
+  if (staff && 'error' in staff) return NextResponse.json({ error: staff.error }, { status: 400 })
+  const accountName = str(body.sfdc_account_name)?.trim()
+  const expectedTotal = body.expected_total ?? undefined
+  if (party.kind === 'staff') {
+    if (!accountName) return NextResponse.json({ error: 'sfdc_account_name is required: the Salesforce Account the booking is for' }, { status: 400 })
+    if (expectedTotal !== undefined && (typeof expectedTotal !== 'number' || !Number.isFinite(expectedTotal))) {
+      return NextResponse.json({ error: "expected_total must be a number (the quote's grandTotal)" }, { status: 400 })
     }
+  }
 
-    // Same rush policy the client portal enforces on its own quote and hold routes. Without it
-    // this endpoint was the one client-facing write with no lead-time floor: a partner's assistant
-    // got a 201 for a campaign starting tomorrow, and the team met the booking with no runway to
-    // position a truck. A refusal the partner can act on beats a hold nobody can honour.
-    const leadDays = daysUntil(start_date)
-    if (leadDays < MIN_CLIENT_LEAD_DAYS) {
+  // The market as the quote resolved it (one formal "City, ST" in the
+  // contiguous 48, or the same refusal): the booking functions take the
+  // portal's and Quote page's already-resolved market, so a raw "Springfield"
+  // or ZIP would otherwise be booked unresolved, at a price the quote didn't give.
+  const resolved = await resolveQuoteMarket(campaign.market)
+  if ('status' in resolved) return NextResponse.json(resolved.body, { status: resolved.status })
+  const booking = { ...campaign, market: resolved.formal }
+  const { start_date, end_date } = booking
+
+  // A second booking of the same campaign (a retry after a timeout, or a
+  // repeat) isn't refused, but the caller must confirm it: the same caller's
+  // live booking for these dates in the last day is named, and booking again
+  // needs confirm_duplicate: true.
+  if (body.confirm_duplicate !== true) {
+    const existing = await prisma.hold.findMany({
+      where: {
+        ...activeHoldWhere(),
+        ...(party.kind === 'client' ? { client_user_id: party.session.id } : { created_by: party.actor.id }),
+        start_date: new Date(start_date), end_date: new Date(end_date),
+        created_at: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+      },
+      select: { truck_number: true, market: true, campaign_group_id: true, created_at: true },
+      orderBy: { created_at: 'desc' },
+    })
+    if (existing.length) {
+      const trucks = existing.map(h => h.truck_number).join(', ')
       return NextResponse.json({
-        error: leadDays < 0
-          ? 'That start date has already passed.'
-          : `Campaigns starting within ${MIN_CLIENT_LEAD_DAYS} days can't be booked automatically. ` +
-            `Contact the Lime Media team and they will see what's possible.`,
-        rushBlocked: true,
+        duplicate: true,
+        existing: { market: existing[0].market, start_date, end_date, trucks: existing.map(h => h.truck_number), booked_at: existing[0].created_at.toISOString() },
+        message: `You already booked ${start_date} to ${end_date} in ${existing[0].market} in the last day (truck${existing.length === 1 ? '' : 's'} ${trucks}). Ask the person whether they mean a second booking; to book again, call again with confirm_duplicate: true.`,
       }, { status: 409 })
     }
-
-    const serviceUser = await prisma.user.findFirst({
-      where: { email: SFDC_SERVICE_USER_EMAIL },
-      select: { id: true },
-    })
-    if (!serviceUser) {
-      return NextResponse.json({ error: 'Service user not found' }, { status: 500 })
-    }
-
-    const expiresAt = computeHoldExpiresAt(start_date)
-
-    // Conflict check — same as the app_user path via createHold(). AT&T soft
-    // holds block too: the partner/MCP API may never book over AT&T.
-    const conflicts = await prisma.hold.findMany({
-      where: {
-        truck_number,
-        ...activeHoldWhere(),
-        start_date: { lte: new Date(end_date) },
-        end_date: { gte: new Date(start_date) },
-      },
-    })
-    const conflictRefusal = clientBookingRefusal(truck_number, conflicts.length, null)
-    if (conflictRefusal) return NextResponse.json({ error: conflictRefusal }, { status: 409 })
-
-    // Chain feasibility — this is a booking DECISION made through MCP, not a
-    // mirror of one made elsewhere, so it is gated like every other decision
-    // path. (The Salesforce and ATT sync writers are the deliberate exemptions.)
-    try {
-      const feasibility = await checkTruckFeasibility({
-        truckNumber: truck_number,
-        market: market ?? '',
-        startDate: start_date,
-        endDate: end_date,
-      })
-      // Refused even when the only blocker is an AT&T soft hold it would strand.
-      const refusal = clientBookingRefusal(truck_number, 0, feasibility)
-      if (refusal) return NextResponse.json({ error: refusal, reason: feasibility.reason }, { status: 409 })
-    } catch (err) {
-      console.error('[v1/internal/holds] FEASIBILITY_CHECK_FAILED (allowing hold):', err)
-    }
-
-    const hold = await prisma.hold.create({
-      data: {
-        truck_number,
-        client_name:    clientUser.company_name,
-        market:         (await canonicalMarketName(market ?? '', state ?? undefined)) ?? (market ?? ''),
-        state:          state  ?? '',
-        start_date:     new Date(start_date),
-        end_date:       new Date(end_date),
-        status:         'HOLD',
-        source:         'CLIENT',
-        origination:    'mcp',
-        notes:          notes ?? null,
-        created_by:     serviceUser.id,
-        client_user_id: actingUserId,
-        expires_at:     expiresAt,
-      },
-    })
-
-    // Fire-and-forget side effects
-    if (clientUser.company_name === 'Firefly' && clientUser.username === 'firefly') {
-      appendHoldRequestToSheet({
-        submittedAt:  new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }),
-        companyName:  clientUser.company_name,
-        truckNumber:  truck_number,
-        market:       market ?? '',
-        state:        state  ?? '',
-        startDate:    start_date,
-        endDate:      end_date,
-        notes:        notes  ?? '',
-        status:       'HOLD',
-      }).catch((e) => console.error('[mcp/holds] sheets append failed:', e))
-    }
-
-    sendHoldRequestEmail({
-      companyName:  clientUser.company_name,
-      truckNumbers: [truck_number],
-      market:      market ?? '',
-      startDate:   start_date,
-      endDate:     end_date,
-      notes:       notes,
-    }).catch((e) => console.error('[mcp/holds] email send failed:', e))
-
-    return NextResponse.json({
-      type: 'hold',
-      id: hold.id,
-      truck_number: hold.truck_number,
-      market: hold.market,
-      state: hold.state,
-      start_date: hold.start_date.toISOString().split('T')[0],
-      end_date: hold.end_date.toISOString().split('T')[0],
-      status: hold.status,
-      source: hold.source,
-      company_name: clientUser.company_name,
-    }, { status: 201 })
   }
 
-  // App users create actual holds
-  const user = await prisma.user.findUnique({ where: { id: actingUserId } })
-  if (!user) {
-    return NextResponse.json({ error: 'Acting user not found' }, { status: 404 })
+  if (party.kind === 'client') {
+    const result = await placeClientBooking(party.session, {
+      ...booking,
+      notes: typeof body.notes === 'string' ? body.notes : undefined,
+      brand: typeof body.brand === 'string' ? body.brand : undefined,
+    }, { origination: 'mcp' })
+    // Firefly's sheet rows are appended per hold by createClientHold (lib/holdRequestService.ts).
+    return NextResponse.json(result.body, { status: result.status })
   }
 
-  if (!market || !state || !client_name) {
-    return NextResponse.json({ error: 'Missing required fields for hold: market, state, client_name' }, { status: 400 })
-  }
-
-  const result = await createHold({
-    truck_number,
-    market,
-    state,
-    client_name,
-    start_date,
-    end_date,
-    status,
-    notes,
-    created_by: actingUserId,
-    origination: 'mcp',
-  })
-
-  if (!result.success) {
-    return NextResponse.json({ error: result.error.message }, { status: 409 })
-  }
-
-  // Return the hold with user info, matching the shape the front-end sees
-  const hold = await prisma.hold.findUnique({
-    where: { id: result.hold.id },
-    include: { user: { select: { name: true, email: true } } },
-  })
-
-  return NextResponse.json({ type: 'hold', ...hold }, { status: 201 })
+  // Staff: the Quote page's booking, with only the fields it takes (checked
+  // above; hold_days by placeStaffBooking). Notes go to the opportunity, not
+  // the hold (lib/staffBooking.ts).
+  const result = await placeStaffBooking({
+    ...booking,
+    ...staff,
+    sfdc_account_name: accountName,
+    primary_contact_id: str(body.primary_contact_id), brand: str(body.brand), hold_days: body.hold_days, stage: str(body.stage),
+    notes: str(body.notes), expected_total: expectedTotal,
+  }, party.actor, { origination: 'mcp' })
+  return NextResponse.json(result.body, { status: result.status })
 }

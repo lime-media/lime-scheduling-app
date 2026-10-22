@@ -11,11 +11,13 @@ import { getPool, query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { reconcileSfdcOpportunities, closeOpportunityAsLost } from '@/lib/sfdcOpportunityReconcile'
+import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { warnExpiringHolds } from '@/lib/holdExpiryWarnings'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 import { syncAttSoftHolds } from '@/lib/attSoftHolds'
 import { freeRanges } from '@/lib/ranges'
+import { recordAmountChanges, recordExecuted, recordPrestart, sharedOriginMeasurer } from '@/lib/transportMetricsRecord'
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────
 
@@ -73,8 +75,12 @@ export async function refreshCache(): Promise<RefreshSummary> {
   // committed, not expired out from under itself.
   const sfdc = await reconcileSfdcOpportunities().catch((err) => {
     console.error('[scheduleCache] SFDC opportunity reconcile failed:', err)
-    return { checked: 0, committed: 0, released: 0, uncommitted: 0 }
+    return { checked: 0, committed: 0, released: 0, uncommitted: 0, changedOpportunities: [] as string[] }
   })
+
+  // The reconcile released or un-committed holds on these: Salesforce's LED
+  // Trucks and Hold Exp follow (every release path syncs).
+  await syncOpportunities(sfdc.changedOpportunities, '[sfdc-reconcile]')
 
   const expiry = await expireHolds().catch((err) => {
     console.error('[scheduleCache] hold expiry check failed:', err)
@@ -137,6 +143,18 @@ export async function refreshCache(): Promise<RefreshSummary> {
   })
 
   await detectConflicts(schedules, holds, new Set(reconciled.resolvedIds))
+
+  // Transport and deal-value metrics: where trucks sit before campaigns that
+  // start soon, what actually ran each campaign that started, and won deals'
+  // Amount changes. Last, so the fleet load and Salesforce reads never delay
+  // conflict detection; independent (different holds), so in parallel.
+  // Best-effort; never fails the sweep.
+  // The two recorders that measure trucks share one fleet and GPS load.
+  const measurer = sharedOriginMeasurer()
+  const [metricsPrestart, metricsExecuted, metricsAmounts] = await Promise.all([recordPrestart(measurer), recordExecuted(measurer), recordAmountChanges()])
+  if (metricsPrestart || metricsExecuted || metricsAmounts) {
+    console.log(`[scheduleCache] metrics: ${metricsPrestart} pre-start snapshot(s), ${metricsExecuted} executed leg(s), ${metricsAmounts} amount change(s)`)
+  }
   console.log(
     `[scheduleCache] refresh complete — ${expiry.expired} hold(s) expired ` +
     `(${expiry.opportunities_closed} opportunit${expiry.opportunities_closed === 1 ? 'y' : 'ies'} closed lost, ` +
@@ -259,7 +277,36 @@ export async function expireHolds(): Promise<{
     else if (outcome === 'would_close') opportunities_would_close++
   }
 
+  // Then every opportunity a lapse touched (closed or not) gets LED Trucks and
+  // Hold Exp from what the app still holds on it: blank when nothing, so a
+  // later push can't re-create a lapsed truck (lib/sfdcBooking.ts
+  // syncOpportunityLedWindow). After the close, so the stage never waits on
+  // this write; the two touch different fields.
+  const lapsedOn = new Set(stale.map(h => h.sfdc_opportunity_id).filter((id): id is string => Boolean(id)))
+  await syncOpportunities([...lapsedOn], '[hold-expiry]')
+
   return { expired: stale.length, opportunities_closed, opportunities_would_close }
+}
+
+// At most this many Salesforce syncs in flight at once from the sweep, to stay
+// well inside Salesforce's API concurrency.
+const SYNC_CONCURRENCY = 5
+
+/**
+ * Syncs LED Trucks and Hold Exp for each opportunity, a few at a time. Each
+ * sync never throws; a warning is logged. Two syncs of the same opportunity at
+ * the same moment (a sweep and a staff edit) are not ordered: the later write
+ * wins and the next change re-syncs it. Rare enough not to lock for.
+ */
+async function syncOpportunities(ids: string[], tag: string): Promise<void> {
+  const queue = [...new Set(ids)]
+  const worker = async () => {
+    for (let id = queue.shift(); id; id = queue.shift()) {
+      const warning = await syncOpportunityLedWindow(id)
+      if (warning) console.warn(`${tag} ${id}: ${warning}`)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(SYNC_CONCURRENCY, queue.length) }, worker))
 }
 
 // DEPRECATED — kept as re-exports for any callers not yet updated

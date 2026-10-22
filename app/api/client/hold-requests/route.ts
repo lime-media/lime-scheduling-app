@@ -1,29 +1,13 @@
 import { withUsageLog } from '@/lib/usageLog'
-import { cleanBrand, opportunityName } from '@/lib/brand'
 import { NextRequest, NextResponse } from 'next/server'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
-import { DEFAULT_STAGE } from '@/lib/sfdcStages'
-import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
-import { createClientHold } from '@/lib/holdRequestService'
-import { sendHoldRequestEmail } from '@/lib/email'
+import { placeClientBooking } from '@/lib/clientBooking'
+import { ClientHoldRefusal, createClientHold } from '@/lib/holdRequestService'
+import { HoldClashError, HoldLockTimeoutError } from '@/lib/holdWriteLock'
 import { bookingKey } from '@/lib/bookings'
-import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
-import { createOpportunity, isSfdcConfigured, getSfdcAccountInfo } from '@/lib/salesforceClient'
-import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
-import {
-  computeQuote,
-  priceTransport,
-  countActivationDays,
-  countCalendarDays,
-  daysUntil,
-  MIN_CLIENT_LEAD_DAYS,
-  billedDaysPerWeek,
-  VALID_STUDIES,
-  type StudyType,
-} from '@/lib/pricing'
-import { resolveMarketSizeTierId, resolveRateOverrides } from '@/lib/pricing/resolvers'
+import { holdExpDate } from '@/lib/dateOnly'
 
 export async function GET(req: NextRequest) {
   const session = getClientSession(req)
@@ -65,7 +49,7 @@ export async function GET(req: NextRequest) {
       truck_count:       r.truck_count ?? null,
       campaign_group_id: r.campaign_group_id ?? null,
       expires_at:        r.expires_at?.toISOString() ?? null,
-      extension_until:   r.extension_until?.toISOString().split('T')[0] ?? null,
+      extension_until:   r.extension_until ? holdExpDate(r.extension_until) : null,
       extension_reason:  r.extension_reason ?? null,
     })),
   })
@@ -80,7 +64,11 @@ async function handlePost(req: NextRequest) {
 
     // Auto-select trucks when truck_number is not provided.
     if (!body.truck_number && body.market && body.start_date && body.end_date && body.truck_count) {
-      return handleAutoSelectHold(req, session, body)
+      // Returned, not awaited, as before the move: a throw from the booking
+      // propagates to withUsageLog (which logs the real error) instead of the
+      // generic catch below.
+      return placeClientBooking(session, body)
+        .then(result => NextResponse.json(result.body, { status: result.status }))
     }
 
     // Legacy flow: client provides a specific truck_number (drag-on-grid)
@@ -95,291 +83,17 @@ async function handlePost(req: NextRequest) {
 
     return NextResponse.json({ ok: true, id: hold.id })
   } catch (e) {
+    // Refused (lead time, an existing hold, feasibility), booked by someone
+    // else since it was picked, or mid-save: a 409 with the client-safe
+    // reason, not a server error. It names the truck, never who holds it.
+    if (e instanceof ClientHoldRefusal || e instanceof HoldClashError || e instanceof HoldLockTimeoutError) {
+      return NextResponse.json({ error: e.message }, { status: 409 })
+    }
     console.error('[client/hold-requests POST]', e)
     return NextResponse.json({ error: 'Failed to create hold' }, { status: 500 })
   }
 }
 
-/**
- * Auto-select trucks and create holds for a campaign.
- *
- * IMPORTANT: All pricing is recomputed server-side from market/dates/truck_count
- * and the client's feature selections. Client-sent quoted_total/daily_rate values
- * are ignored — the trust boundary is the HTTP request, not the UI.
- */
-async function handleAutoSelectHold(
-  _req: NextRequest,
-  session: Awaited<ReturnType<typeof getClientSession>> & {},
-  body: {
-    market: string
-    state?: string
-    start_date: string
-    end_date: string
-    truck_count: number
-    notes?: string
-    shadow_fencing?: boolean
-    smart_directional?: boolean
-    device_id?: boolean
-    studies?: string[]
-    days_per_week?: number
-    operating_hours?: number
-    /** Optional brand; cleaned before it goes to Salesforce (lib/brand.ts). */
-    brand?: string
-  },
-) {
-  const {
-    market, state, start_date, end_date, truck_count, notes,
-  } = body
-  const brand = cleanBrand(body.brand)
-
-  if (truck_count < 1 || truck_count > 20) {
-    return NextResponse.json({ error: 'truck_count must be between 1 and 20' }, { status: 400 })
-  }
-
-  // Same policy as the client quote route — enforced here too so the hold
-  // cannot be placed by calling this endpoint directly.
-  const leadDays = daysUntil(start_date)
-  if (leadDays < MIN_CLIENT_LEAD_DAYS) {
-    return NextResponse.json({
-      error: leadDays < 0
-        ? 'That start date has already passed.'
-        : `Campaigns starting within ${MIN_CLIENT_LEAD_DAYS} days can't be booked online. Submit a request and the Lime Media team will follow up.`,
-      rushBlocked: true,
-    }, { status: 409 })
-  }
-
-  // Resolved before selection: a custom service_area_miles changes WHICH trucks
-  // need repositioning, so selecting first and applying the override afterwards
-  // makes the hold disagree with the quote the client just accepted.
-  const [marketSizeTierId, rateOverrides] = await Promise.all([
-    resolveMarketSizeTierId(market),
-    resolveRateOverrides(session),
-  ])
-
-  const { selectedTrucks, availability } = await selectTrucksForHold({
-    market,
-    startDate: start_date,
-    endDate: end_date,
-    truckCount: truck_count,
-    serviceAreaMiles: rateOverrides?.service_area_miles,
-  })
-
-  if (selectedTrucks.length === 0) {
-    return NextResponse.json({
-      error: 'No trucks available for the requested dates and market.',
-    }, { status: 409 })
-  }
-
-  // ── Server-side price recomputation ──────────────────────────────────────
-  const calendarDays = countCalendarDays(start_date, end_date)
-  const daysPerWeek = billedDaysPerWeek(start_date, end_date, body.days_per_week)
-  const operatingHours = body.operating_hours ?? 8
-  const activationDays = countActivationDays(start_date, end_date, daysPerWeek)
-
-  const includeShadowFencing = body.shadow_fencing !== false
-  const includeSmartDirectional = body.smart_directional ?? false
-  const includeDeviceId = body.device_id ?? false
-  const studies = (body.studies ?? [])
-    .map(s => s.trim().toLowerCase())
-    .filter((s): s is StudyType => (VALID_STUDIES as readonly string[]).includes(s))
-
-  // Brand Direct accounts are priced with the markup folded into every price,
-  // at the default rate (clients cannot change it and never see it).
-  const accountInfo = session.sfdcAccountId && isSfdcConfigured()
-    ? await getSfdcAccountInfo(session.sfdcAccountId).catch(() => null)
-    : null
-  const markupPct = brandMarkupFor(accountInfo?.clientType)
-
-  const quote = computeQuote({
-    truckCount: truck_count,
-    days: activationDays,
-    operatingHours,
-    marketSizeTierId,
-    includeSmartDirectional,
-    includeDeviceId,
-    studies,
-    rateOverrides,
-    markupPct,
-  })
-
-  let mediaTotal = quote.good.baseMedia
-  if (includeShadowFencing) mediaTotal += quote.better.shadowFencing
-  if (includeSmartDirectional) mediaTotal += quote.better.smartDirectional
-  if (includeDeviceId) mediaTotal += quote.better.deviceId
-  if (quote.best.reachOk && studies.length > 0) {
-    mediaTotal += studies.length * quote.best.studyCost
-  }
-
-  const transport = priceTransport({
-    activationDays,
-    leadBusinessDays: availability.campaignFlags.leadBusinessDays,
-    legs: legsFromTrucks(selectedTrucks),
-    transportIncluded: rateOverrides?.transport_included,
-    overrides: {
-      dayRate: rateOverrides?.transport_day_rate,
-      airfare: rateOverrides?.transport_airfare,
-      hotelPerNight: rateOverrides?.transport_hotel_per_night,
-    },
-    markupPct,
-  })
-
-  const transportCharge = transport.charge
-
-  const serverTotal = mediaTotal + transportCharge
-
-  let pricingTier = 'Custom'
-  if (!includeShadowFencing && !includeSmartDirectional && !includeDeviceId && studies.length === 0) pricingTier = 'Good'
-  else if (includeShadowFencing && !includeSmartDirectional && !includeDeviceId && studies.length === 0) pricingTier = 'Better'
-  else if (includeShadowFencing && studies.length > 0 && quote.best.reachOk) pricingTier = 'Best'
-
-
-  // Deadhead this booking imposes on each truck's NEXT job. Recorded with the
-  // reservation and returned to the caller so it is visible at the moment the
-  // hold is placed — not billed, and not re-rating the successor's own quote.
-  const successorImpact = selectedTrucks
-    .filter(t => t.chain.successor && !t.chain.successor.unresolvedMarket
-      && (t.chain.successor.deltaTransportDays !== 0 || t.chain.successor.deltaCost !== 0))
-    .map(t => ({
-      truckNumber: t.truckNumber,
-      successorMarket: t.chain.successor!.market,
-      successorStart: t.chain.successor!.startsOn,
-      deltaTransportDays: t.chain.successor!.deltaTransportDays,
-      deltaCost: Math.round(t.chain.successor!.deltaCost),
-    }))
-
-  if (successorImpact.length > 0) {
-    console.info('[client/hold-requests] downstream deadhead (not billed):', JSON.stringify(successorImpact))
-  }
-
-  const featuresJson = JSON.stringify({
-    dailyRate: quote.dailyRate,
-    hourSurcharge: quote.hourSurcharge,
-    truckDays: quote.input.truckDays,
-    truckCount: truck_count,
-    activationDays,
-    calendarDays,
-    daysPerWeek,
-    operatingHours,
-    baseMedia: quote.good.baseMedia,
-    shadowFencing: includeShadowFencing ? quote.better.shadowFencing : 0,
-    shadowFencingFloored: quote.better.shadowFencingFloored,
-    smartDirectionalIncluded: includeSmartDirectional,
-    smartDirectional: includeSmartDirectional ? quote.better.smartDirectional : 0,
-    deviceIdIncluded: includeDeviceId,
-    deviceId: includeDeviceId ? quote.better.deviceId : 0,
-    studies,
-    studyCost: quote.best.studyCost,
-    studiesTotal: quote.best.reachOk ? studies.length * quote.best.studyCost : 0,
-    transportCharge,
-    successorImpact,
-  })
-
-  // ── Create holds ────────────────────────────────────────────────────────
-  const campaignGroupId = `cg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-  const resolvedState = state || market.split(',')[1]?.trim() || null
-
-  const created: string[] = []
-  const failed: string[] = []
-
-  for (const truck of selectedTrucks) {
-    try {
-      await createClientHold(session, {
-        // Already vetted by selectTrucksForHold above — re-checking would reload
-        // the fleet timelines once per truck.
-        skipFeasibilityCheck: true,
-        // One email for the booking, below, not one per truck.
-        skipEmail: true,
-        truck_number: truck.truckNumber,
-        market,
-        state: resolvedState,
-        start_date,
-        end_date,
-        notes: [brand ? `Brand: ${brand}` : null, notes || null].filter(Boolean).join(' | ') || null,
-        pricing_tier: pricingTier,
-        quoted_total: serverTotal,
-        daily_rate: quote.dailyRate,
-        features: featuresJson,
-        truck_count: selectedTrucks.length,
-        campaign_group_id: campaignGroupId,
-      })
-      created.push(truck.truckNumber)
-    } catch (err) {
-      console.error('[client/hold-requests] failed to create hold for truck:', truck.truckNumber, err)
-      failed.push(truck.truckNumber)
-    }
-  }
-
-  if (created.length === 0) {
-    return NextResponse.json({ error: 'Failed to create holds' }, { status: 500 })
-  }
-
-  // ONE email for the booking, naming every truck it holds.
-  await sendHoldRequestEmail({
-    companyName:  session.companyName,
-    truckNumbers: created,
-    market,
-    startDate:    start_date,
-    endDate:      end_date,
-    notes:        [brand ? `Brand: ${brand}` : null, notes || null, `${pricingTier} tier at $${Math.round(serverTotal).toLocaleString('en-US')}`].filter(Boolean).join(' | '),
-  }).catch((e) => console.error('[client/hold-requests] email failed:', e))
-
-  // Create Salesforce Opportunity if the client has an SFDC Account ID
-  if (session.sfdcAccountId && isSfdcConfigured() && created.length > 0) {
-    try {
-      const oppName = opportunityName(brand, session.companyName, `${market} - ${start_date} to ${end_date}`)
-      const firstHold = await prisma.hold.findFirst({
-        where: { campaign_group_id: campaignGroupId },
-        select: { expires_at: true },
-      })
-
-      const parsedFeatures = parseQuoteFeatures(featuresJson)
-      const activationNotes = parsedFeatures
-        ? buildActivationNotes(parsedFeatures, pricingTier)
-        : undefined
-
-      // A client's own request has no internal rep: the account's owner owns it.
-      const result = await createOpportunity({
-        accountId: session.sfdcAccountId,
-        ownerId: accountInfo?.ownerId ?? undefined,
-        clientType: accountInfo?.clientType,
-        name: oppName,
-        brand: brand || undefined,
-        stageName: DEFAULT_STAGE, // a client's own request: no seller to choose
-        closeDate: start_date,
-        amount: serverTotal,
-        market,
-        holdStart: start_date,
-        holdStop: end_date,
-        holdExp: firstHold?.expires_at?.toISOString().split('T')[0],
-        truckNumbers: created,
-        activationNotes,
-      })
-
-      if (result.success && result.id) {
-        await prisma.hold.updateMany({
-          where: { campaign_group_id: campaignGroupId },
-          data: { sfdc_opportunity_id: result.id },
-        })
-      } else {
-        console.error('[client/hold-requests] SFDC opportunity creation failed:', result.errors)
-      }
-    } catch (err) {
-      console.error('[client/hold-requests] SFDC opportunity creation error:', err)
-    }
-  }
-
-  return NextResponse.json({
-    ok: true,
-    created: created.length,
-    failed: failed.length,
-    campaignGroupId,
-    trucksRequested: truck_count,
-    trucksAvailable: availability.counts.total,
-    message: `Reserved ${created.length} truck${created.length > 1 ? 's' : ''}. Holds expire in 72 hours.`,
-    // NO _internal BLOCK HERE — client-authenticated route. successorImpact is
-    // recorded on the hold's features JSON and logged; it is not sent back.
-  })
-}
 
 // Every run is logged for the Usage page (lib/usageLog.ts).
 export const POST = withUsageLog('hold_client', 'client', handlePost)

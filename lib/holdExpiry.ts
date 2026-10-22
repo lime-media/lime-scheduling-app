@@ -6,6 +6,8 @@
  * engine and cannot be loaded without credentials.
  */
 
+import { centralDate, endOfDayCentral } from '@/lib/dateOnly'
+
 // Standard review SLA — 72 hours (3 days) from submission.
 // Exported so the Salesforce webhook can fall back to the same window when an
 // Opportunity arrives with trucks/start/stop but no Hold Exp date.
@@ -97,15 +99,15 @@ export function bookingHoldExpiry(
 
 /**
  * The latest a hold may run for a campaign starting `startDate`: the END of
- * the day `minDaysBeforeStart` + 1 days before it (23:59:59Z), leaving
+ * the day `minDaysBeforeStart` + 1 days before it, in Central time, leaving
  * `minDaysBeforeStart` full days. It is the end of a day, not midnight
  * starting the next one, so an automatic cap and a date set by hand
  * (Reservations → Edit stores a date's end) name the same last day.
  */
 function latestHoldMoment(startDate: string, minDaysBeforeStart: number = MIN_PROCESSING_DAYS_BEFORE_START): Date {
   const d = new Date(startDate + 'T00:00:00Z')
-  d.setUTCDate(d.getUTCDate() - minDaysBeforeStart)
-  return new Date(d.getTime() - 1000)
+  d.setUTCDate(d.getUTCDate() - minDaysBeforeStart - 1)
+  return endOfDayCentral(d.toISOString().slice(0, 10))
 }
 
 /**
@@ -115,8 +117,8 @@ function latestHoldMoment(startDate: string, minDaysBeforeStart: number = MIN_PR
  * moment), or the 24-hour floor's date when the cap has already passed. Pure.
  */
 export function lastExpiryDate(earliestStart: string, now: Date = new Date(), minDaysBeforeStart: number = MIN_PROCESSING_DAYS_BEFORE_START): string {
-  const byStart = latestHoldMoment(earliestStart, minDaysBeforeStart).toISOString().slice(0, 10)
-  const floor = addHours(now, MIN_HOLD_WINDOW_HOURS).toISOString().slice(0, 10)
+  const byStart = centralDate(latestHoldMoment(earliestStart, minDaysBeforeStart))
+  const floor = centralDate(addHours(now, MIN_HOLD_WINDOW_HOURS))
   return byStart > floor ? byStart : floor
 }
 

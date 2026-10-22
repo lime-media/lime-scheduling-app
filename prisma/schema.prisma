@@ -123,6 +123,28 @@ model ClientUser {
   @@map("app_client_users")
 }
 
+/// One-time login codes for the client portal (lib/clientOtp.ts). The internal
+/// equivalent is OtpCode, whose user_id is a foreign key to User — client users
+/// are a different table, so they get their own.
+///
+/// No relation to ClientUser on purpose: app_client_users.id is NVARCHAR(1000),
+/// and a referencing column must match that type, which is then too wide to
+/// index (see the migration). client_user_id holds the id and the link is kept
+/// in code — so deleting a client user must delete their codes explicitly
+/// (app/api/admin/client-users/[id]). Codes expire in ten minutes regardless.
+model ClientOtpCode {
+  id             String    @id @default(cuid())
+  client_user_id String
+  code_hash      String
+  expires_at     DateTime
+  attempts       Int       @default(0)
+  consumed_at    DateTime?
+  created_at     DateTime  @default(now())
+
+  @@index([client_user_id])
+  @@map("app_client_login_otps")
+}
+
 // Every question a client has asked the client-portal AI assistant, across all
 // clients in one table — a dedicated log for reporting, decoupled from the
 // conversation-threading internals of dbo.client_chat_conversations /
@@ -275,4 +297,59 @@ model UsageLog {
   @@index([actor_id, created_at])
   @@index([tool, created_at])
   @@map("app_usage_log")
+}
+
+// Transport metrics (lib/transportMetrics.ts, /ops/transport): one row per
+// truck per event — what transport was quoted when a booking was made or
+// changed, and what actually happened on the campaign's first day.
+// event: BOOKED | SWAPPED | REVISED | EXECUTED | PRESTART (a snapshot of where the truck sat
+// before it moved; the source of EXECUTED's origin, in no KPI)
+// origin_kind: PRIOR_JOB | GPS | SAME_ORDER | UNKNOWN
+// outcome: LOCAL | ABSORBED | BILLED
+model TransportLeg {
+  id                  String    @id @default(cuid()) @db.NVarChar(36)
+  created_at          DateTime  @default(now())
+  event               String    @db.NVarChar(20)
+  hold_id             String?   @db.NVarChar(36)
+  booking_key         String?   @db.NVarChar(100)
+  sfdc_opportunity_id String?   @db.NVarChar(18)
+  client_name         String    @default("") @db.NVarChar(255)
+  market              String    @default("") @db.NVarChar(200)
+  campaign_start      DateTime? @db.Date
+  campaign_end        DateTime? @db.Date
+  activation_days     Int?
+  lead_business_days  Int?
+  truck_number        String    @db.NVarChar(50)
+  origin_label        String    @default("") @db.NVarChar(200)
+  origin_kind         String    @db.NVarChar(20)
+  miles               Int?
+  transport_days      Int       @default(0)
+  outcome             String    @db.NVarChar(20)
+  charge              Decimal   @default(0) @db.Decimal(12, 2)
+  est_cost            Decimal   @default(0) @db.Decimal(12, 2)
+  created_by          String?   @db.NVarChar(450)
+
+  @@index([booking_key])
+  @@index([created_at])
+  @@index([hold_id, event])
+  @@map("app_transport_legs")
+}
+
+// The app's quoted total per booking against Salesforce's Amount when the
+// opportunity is Closed Won, and whenever it changes after.
+// event: BOOKED | REVISED | WON | AMOUNT_CHANGED
+model DealValue {
+  id                  String   @id @default(cuid()) @db.NVarChar(36)
+  captured_at         DateTime @default(now())
+  event               String   @db.NVarChar(20)
+  sfdc_opportunity_id String?  @db.NVarChar(18)
+  booking_key         String?  @db.NVarChar(100)
+  client_name         String   @default("") @db.NVarChar(255)
+  app_quoted_total    Decimal? @db.Decimal(14, 2)
+  sf_amount           Decimal? @db.Decimal(14, 2)
+  sf_stage            String?  @db.NVarChar(100)
+  created_by          String?  @db.NVarChar(450)
+
+  @@index([sfdc_opportunity_id, captured_at])
+  @@map("app_deal_values")
 }

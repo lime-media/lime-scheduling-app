@@ -8,7 +8,7 @@ import { format, formatDistanceToNow, isPast } from 'date-fns'
 import toast from 'react-hot-toast'
 import { Navbar } from '@/components/Navbar'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
-import { parseDateOnly } from '@/lib/dateOnly'
+import { centralDate, parseDateOnly } from '@/lib/dateOnly'
 import { useReopenConfirm, type Reopenable } from '@/components/ReopenOpportunityDialog'
 import { formatMarketState } from '@/lib/format'
 import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
@@ -17,6 +17,8 @@ import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
 import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingKey, closedWonRefusal, bookingStatus, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
+import { ownedBy, ownerOptions, runsBetween, wholeBookings, type OwnerFilter } from '@/lib/reservationFilters'
+import { useSession } from 'next-auth/react'
 
 type HoldRequest = {
   id: string
@@ -31,6 +33,9 @@ type HoldRequest = {
   origination: string
   company_name: string
   created_by_name: string | null
+  /** The booking's owner: its opportunity's owner, else whoever made it (lib/reservationOwners.ts). */
+  owner_id: string
+  owner_name: string
   pricing_tier: string | null
   quoted_total: number | null
   daily_rate: number | null
@@ -204,6 +209,32 @@ export default function HoldRequestsPage() {
   // reorder the reservations tab.
   const { sort, sortBy, chooseSort } = useTableSort<SortKey>(`reservations.sort.${filterStatus || 'all'}`, SORT_KEYS)
   const [search,       setSearch]       = useState('')
+  // Whose reservations, and which dates they run (lib/reservationFilters.ts).
+  // The owner choice is remembered per browser; the dates are not.
+  const { data: session } = useSession()
+  const meId = session?.user?.id ?? null
+  const [owner, setOwnerState] = useState<OwnerFilter>('all')
+  // Remembered per login, so a shared browser doesn't hand one person's choice to the next.
+  const ownerKey = meId ? `reservations.owner.${meId}` : null
+  useEffect(() => {
+    if (!ownerKey) return
+    try { setOwnerState(localStorage.getItem(ownerKey) ?? 'all') } catch { /* storage unavailable */ }
+  }, [ownerKey])
+  const setOwner = (value: OwnerFilter) => {
+    setOwnerState(value)
+    if (ownerKey) try { localStorage.setItem(ownerKey, value) } catch { /* storage unavailable */ }
+  }
+  // The choices, and the owner actually applied: a remembered owner that is no
+  // longer a choice (their reservations have all dropped off, another user on
+  // this browser, or the session still loading for "Me") falls back to
+  // Everyone, so the dropdown and the list always agree.
+  const owners = useMemo(() => ownerOptions(requests, meId), [requests, meId])
+  const ownerShown: OwnerFilter = owners.some(o => o.value === owner) ? owner : 'all'
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo,   setDateTo]   = useState('')
+  // Keep From <= To: moving one end past the other moves both.
+  const chooseFrom = (v: string) => { setDateFrom(v); if (v && dateTo && v > dateTo) setDateTo(v) }
+  const chooseTo   = (v: string) => { setDateTo(v); if (v && dateFrom && v < dateFrom) setDateFrom(v) }
   const [acting,       setActing]       = useState<string | null>(null) // group/row id currently mid-action
   // Reinstating onto a Closed Lost opportunity: asked before it is moved back to WARM.
   const reopen = useReopenConfirm()
@@ -278,51 +309,38 @@ export default function HoldRequestsPage() {
 
   useEffect(() => { fetchRequests() }, [fetchRequests])
 
-  // Approve or deny an extension: ONE request for the whole booking (the
-  // server answers it for every hold in it, in one transaction, with one
-  // email to the client). Reinstate runs against every id (each truck is
-  // re-checked for conflicts on its own), reports partial failures
-  // individually, and refetches once regardless so the list reflects whatever
-  // did land.
+  // Approve or deny an extension, or reinstate: ONE request for the whole
+  // booking (the server acts on every hold in it, in one transaction: a
+  // reinstate comes back whole or is refused whole, naming any truck taken
+  // since it lapsed), then a refetch so the list reflects what landed.
   const runAction = useCallback(async (allIds: string[], action: 'approve' | 'reject' | 'approve_extension' | 'deny_extension' | 'reinstate', groupKey: string) => {
-    const ids = action === 'reinstate' ? allIds : allIds.slice(0, 1)
     setActing(groupKey)
     try {
-      const send = async (id: string, reopenOpportunity = false): Promise<{ id: string; ok: boolean; error?: string; reopenable?: Reopenable }> => {
-        const res = await fetch(`/api/hold-requests/${id}`, {
+      const send = async (reopenOpportunity = false): Promise<{ ok: boolean; error?: string; reopenable?: Reopenable; holds?: number; sfdcWarning?: string | null }> => {
+        const res = await fetch(`/api/hold-requests/${allIds[0]}`, {
           method:  'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify({ action, ...(reopenOpportunity ? { reopenOpportunity: true } : {}) }),
         })
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}))
-          return { id, ok: false, error: err.error || 'Failed', reopenable: err.reopenable }
-        }
-        return { id, ok: true }
+        const body = await res.json().catch(() => ({}))
+        if (!res.ok) return { ok: false, error: body.error || 'Failed', reopenable: body.reopenable }
+        return { ok: true, holds: body.holds, sfdcWarning: body.sfdcWarning ?? null }
       }
-      let results = await Promise.all(ids.map(id => send(id)))
-      // Reinstating onto a Closed Lost opportunity: ask once, then retry those
-      // holds one at a time (the first reopens it; the rest find it open).
-      const lost = results.filter(r => r.reopenable)
-      if (lost.length > 0 && await reopen.ask(lost[0].reopenable!.question)) {
-        const retried: typeof results = []
-        for (const r of lost) retried.push(await send(r.id, true))
-        results = results.map(r => retried.find(x => x.id === r.id) ?? r)
-      }
+      let result = await send()
+      // Reinstating onto a Closed Lost opportunity: ask once, then send it again.
+      if (result.reopenable && await reopen.ask(result.reopenable.question)) result = await send(true)
 
-      const failed = results.filter((r) => !r.ok)
-      const succeeded = results.length - failed.length
       const actionLabel = action.replace('_', ' ')
-      if (failed.length === 0) {
+      if (result.ok) {
         // A reinstated hold is no longer EXPIRED, so it leaves whichever expired view the
         // button was clicked from. Follow it to Active rather than letting the row vanish.
         if (action === 'reinstate') setFilterStatus('HOLD')
-        const trucks = action === 'reinstate' ? succeeded : allIds.length
+        const trucks = result.holds ?? allIds.length
         toast.success(`${actionLabel} — ${trucks} truck${trucks === 1 ? '' : 's'}`)
-      } else if (succeeded > 0) {
-        toast.error(`${actionLabel}: ${succeeded} succeeded, ${failed.length} failed — ${failed[0].error}`)
+        // Saved here, but Salesforce's LED fields weren't updated: say so, and keep it up.
+        if (result.sfdcWarning) toast.error(result.sfdcWarning, { duration: 15000 })
       } else {
-        toast.error(failed[0].error || `Failed to ${actionLabel}`)
+        toast.error(result.error || `Failed to ${actionLabel}`)
       }
     } finally {
       setActing(null)
@@ -411,28 +429,27 @@ export default function HoldRequestsPage() {
         }
       }
 
-      // Truck swaps
+      // Truck swaps, one at a time: each syncs Salesforce's LED Trucks from
+      // what the app holds, so the next swap's sync sees the one before it.
       if (truckChanges.length > 0) {
-        const results = await Promise.all(
-          truckChanges.map(async (r) => {
-            const newTruck = selectedTrucks.get(r.id)
-            if (!newTruck) return { ok: true }
-            const res = await fetch(`/api/hold-requests/${r.id}`, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'swap_truck', truck_number: newTruck }),
-            })
-            if (!res.ok) {
-              const err = await res.json()
-              return { ok: false, error: err.error }
-            }
-            return { ok: true }
+        const results: { ok: boolean; error?: string; sfdcWarning?: string | null }[] = []
+        for (const r of truckChanges) {
+          const newTruck = selectedTrucks.get(r.id)
+          if (!newTruck) { results.push({ ok: true }); continue }
+          const res = await fetch(`/api/hold-requests/${r.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'swap_truck', truck_number: newTruck }),
           })
-        )
+          const body = await res.json().catch(() => ({}))
+          results.push(res.ok ? { ok: true, sfdcWarning: body.sfdcWarning ?? null } : { ok: false, error: body.error })
+        }
         const failed = results.filter(r => !r.ok)
         if (failed.length > 0) {
           toast.error(failed[0].error || 'Some swaps failed')
         }
+        // The swap saved, but Salesforce's LED Trucks didn't follow: say so.
+        for (const w of new Set(results.map(r => r.sfdcWarning).filter(Boolean))) toast.error(w!, { duration: 15000 })
       }
 
       // Expiration update — ONE request: the server sets the one date on every
@@ -443,12 +460,14 @@ export default function HoldRequestsPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'update_expiration', expires_at: expiryChanges[0].expiresOn }),
         })
+        const body = await res.json().catch(() => ({}))
         if (!res.ok) {
-          const err = await res.json().catch(() => ({}))
-          toast.error(`Expiry not changed: ${err.error || 'request failed'}`)
+          toast.error(`Expiry not changed: ${body.error || 'request failed'}`)
           fetchRequests()
           return
         }
+        // Saved here, but Salesforce's LED fields weren't updated: say so, and keep it up.
+        if (body.sfdcWarning) toast.error(body.sfdcWarning, { duration: 15000 })
       }
 
       toast.success('Reservation updated')
@@ -475,6 +494,7 @@ export default function HoldRequestsPage() {
       const data = await res.json().catch(() => ({}))
       if (res.ok) {
         toast.success(data.emailed ? 'Reservation cancelled — client notified' : 'Reservation cancelled')
+        if (data.sfdcWarning) toast.error(data.sfdcWarning, { duration: 15000 })
       } else {
         toast.error(data.error || 'Reservation not cancelled')
       }
@@ -511,19 +531,21 @@ export default function HoldRequestsPage() {
       const shown = (status: string) => !filterStatus
         || (filterStatus === 'HOLD' ? status === 'HOLD' || status === 'COMMITTED' : status === filterStatus)
       let result = requests.filter(r => shown(statusOf(r).status))
+      // Owner, dates and search pick whole bookings: a booking shows if any of
+      // it matches, so a card, its total and its Edit always cover the same
+      // reservations and a multi-market card never loses a market.
+      if (ownerShown !== 'all' || dateFrom || dateTo) {
+        result = wholeBookings(result, r => ownedBy(r, ownerShown, meId) && runsBetween(r, dateFrom, dateTo))
+      }
       const q = search.trim().toLowerCase()
       if (q) {
-        const matches = (r: HoldRequest) => [r.company_name, r.truck_number, r.market, r.notes]
+        result = wholeBookings(result, r => [r.company_name, r.truck_number, r.market, r.notes]
           .filter(Boolean)
-          .some((field) => field!.toLowerCase().includes(q))
-        // A match shows its whole booking, so a card, its total and its Edit
-        // always cover the same reservations.
-        const cards = new Set(result.filter(matches).map(r => bookingKey(r)).filter(Boolean))
-        result = result.filter((r) => { const k = bookingKey(r); return k ? cards.has(k) : matches(r) })
+          .some((field) => field!.toLowerCase().includes(q)))
       }
       return result
     },
-    [requests, filterStatus, search, statusOf]
+    [requests, filterStatus, search, statusOf, ownerShown, meId, dateFrom, dateTo]
   )
 
   // The last date the card being edited can be held to: a booking has one
@@ -532,7 +554,7 @@ export default function HoldRequestsPage() {
   const editLastDate = useMemo(() => {
     if (!editingGroup?.length) return ''
     const key = bookingKey(editingGroup[0])
-    const starts = bookingCapStarts((key ? rowsByBooking.get(key) : undefined) ?? editingGroup, new Date().toISOString().slice(0, 10))
+    const starts = bookingCapStarts((key ? rowsByBooking.get(key) : undefined) ?? editingGroup, centralDate(new Date()))
     return lastExpiryDate([...starts].sort()[0], new Date(), STAFF_MIN_DAYS_BEFORE_START)
   }, [editingGroup, rowsByBooking])
 
@@ -705,6 +727,25 @@ export default function HoldRequestsPage() {
             </button>
           )}
         </div>
+        <select
+          value={ownerShown}
+          onChange={(e) => setOwner(e.target.value)}
+          aria-label="Owner"
+          className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+        >
+          {owners.map(o => <option key={o.value} value={o.value}>{o.value === 'all' ? 'Owner: Everyone' : o.label}</option>)}
+        </select>
+        <div className="flex items-center gap-1.5 text-sm text-gray-600">
+          <span>Running</span>
+          <input type="date" value={dateFrom} onChange={(e) => chooseFrom(e.target.value)} aria-label="Running from"
+            className="border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+          <span>to</span>
+          <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => chooseTo(e.target.value)} aria-label="Running to"
+            className="border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+          {(dateFrom || dateTo) && (
+            <button onClick={() => { setDateFrom(''); setDateTo('') }} aria-label="Clear dates" className="text-gray-400 hover:text-gray-600 px-1">✕</button>
+          )}
+        </div>
         <SortSelect columns={SORT_COLUMNS} sort={sort} onChange={chooseSort} defaultLabel="Newest first" />
         </div>
 
@@ -714,7 +755,7 @@ export default function HoldRequestsPage() {
           <div className="text-center py-20 text-gray-400">
             <p className="font-medium text-gray-500">No hold requests found</p>
             <p className="text-sm mt-1">
-              {search || filterStatus ? 'Try a different search term or filter' : 'Requests submitted by clients will show up here'}
+              {search || filterStatus || ownerShown !== 'all' || dateFrom || dateTo ? 'Try a different search term or filter' : 'Requests submitted by clients will show up here'}
             </p>
           </div>
         ) : (
@@ -822,7 +863,7 @@ export default function HoldRequestsPage() {
                   )}
                   {status === 'EXTENSION_REQUESTED' && (
                     <div className="px-4 py-2 text-xs text-amber-800 bg-amber-50 border-t border-amber-100">
-                      Extension requested for the whole booking{first.extension_until ? ` until ${format(parseDateOnly(first.extension_until.slice(0, 10)), 'MMM d')}` : ''}.
+                      Extension requested for the whole booking{first.extension_until ? ` until ${format(parseDateOnly(centralDate(new Date(first.extension_until))), 'MMM d')}` : ''}.
                       {first.extension_reason ? ` Reason: ${first.extension_reason}` : ''}
                     </div>
                   )}
@@ -924,7 +965,7 @@ export default function HoldRequestsPage() {
         const first = editingGroup[0]
         // A won deal: truck swaps only (lib/bookings.ts closedWonRefusal).
         const won = !!closedWonRefusal(editingGroup)
-        const currentExpDate = first.expires_at ? first.expires_at.split('T')[0] : ''
+        const currentExpDate = first.expires_at ? centralDate(new Date(first.expires_at)) : ''
         const hasChanges = editingGroup.some(r => selectedTrucks.get(r.id) !== r.truck_number) || (!won && newExpiresAt !== currentExpDate)
         return (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -1081,9 +1122,7 @@ export default function HoldRequestsPage() {
                           <button
                             type="button"
                             onClick={() => {
-                              const d = new Date()
-                              d.setDate(d.getDate() + 3)
-                              setNewExpiresAt(d.toISOString().split('T')[0])
+                              setNewExpiresAt(centralDate(new Date(Date.now() + 3 * 864e5)))
                               setExpiryEdited(true)
                             }}
                             className="text-xs text-green-600 hover:text-green-700 font-medium transition-colors"

@@ -8,6 +8,7 @@ import { holdReservesNow } from '@/lib/holdFilters'
 import { bookingKey, type RevisableHold } from '@/lib/bookings'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import type { LinkedHold } from '@/lib/opportunityMerge'
+import { holdExpDate } from '@/lib/dateOnly'
 
 /** Every hold in the booking, any status (an expired booking can be revised too). */
 export async function loadBookingHolds(key: string): Promise<(RevisableHold & { sfdc_opportunity_id: string | null; client_name: string; quoted_total: number | null; expires_at: Date | null })[]> {
@@ -62,7 +63,8 @@ export async function loadOpportunityReservingHolds(opportunityId: string): Prom
       market: h.market,
       start: h.start_date.toISOString().slice(0, 10),
       end: h.end_date.toISOString().slice(0, 10),
-      expires: h.expires_at ? h.expires_at.toISOString().slice(0, 10) : null,
+      // The Hold Exp date it is written as, compared with a Central today.
+      expires: h.expires_at ? holdExpDate(h.expires_at) : null,
       fromSalesforce: h.source === 'SALESFORCE',
     }))
 }

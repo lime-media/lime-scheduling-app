@@ -33,12 +33,18 @@ export interface CreateClientHoldParams {
    * supplies the truck number directly.
    */
   skipFeasibilityCheck?: boolean
-  /**
-   * Leave the team's "hold request" email to the caller. A multi-truck
-   * booking sends ONE email for the whole booking once every truck is held
-   * (app/api/client/hold-requests), not one per truck.
-   */
-  skipEmail?: boolean
+}
+
+/**
+ * A client hold refused by its checks (lead time, a hold on the truck,
+ * feasibility). The message is safe to show the client: it never names who
+ * holds the truck (lib/bookingRefusals.ts). Nothing was written.
+ */
+export class ClientHoldRefusal extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ClientHoldRefusal'
+  }
 }
 
 /** The service user client holds are created by (Hold.created_by is a FK to app_users; clients aren't in it). */
@@ -55,7 +61,8 @@ async function clientHoldCreator(): Promise<string> {
 
 /**
  * The checks a client hold must pass (lead time, an existing hold on the
- * truck, feasibility) and the row it would write. Throws the refusal. Nothing
+ * truck, feasibility) and the row it would write. Throws the refusal
+ * (ClientHoldRefusal). Nothing
  * is written: the caller writes under the truck's lock (lib/holdWriteLock.ts).
  */
 async function clientHoldRow(session: ClientSession, params: CreateClientHoldParams, serviceUserId: string) {
@@ -71,7 +78,7 @@ async function clientHoldRow(session: ClientSession, params: CreateClientHoldPar
   // straight in with a truck number and would otherwise skip the gate entirely.
   const leadDays = daysUntil(start_date)
   if (leadDays < MIN_CLIENT_LEAD_DAYS) {
-    throw new Error(
+    throw new ClientHoldRefusal(
       leadDays < 0
         ? 'That start date has already passed.'
         : `Campaigns starting within ${MIN_CLIENT_LEAD_DAYS} days can't be booked online. Submit a request and the Lime Media team will follow up.`,
@@ -92,7 +99,7 @@ async function clientHoldRow(session: ClientSession, params: CreateClientHoldPar
     },
   })
   const conflictRefusal = clientBookingRefusal(truck_number, conflicts.length, null)
-  if (conflictRefusal) throw new Error(conflictRefusal)
+  if (conflictRefusal) throw new ClientHoldRefusal(conflictRefusal)
 
   // The conflict query above sees the hold table ONLY — it knows nothing about
   // dbo.program_schedule, so on its own it would let a client book a truck that
@@ -118,7 +125,7 @@ async function clientHoldRow(session: ClientSession, params: CreateClientHoldPar
     // Refused even when only an AT&T soft hold would be stranded (overridable):
     // clients never displace AT&T.
     const refusal = clientBookingRefusal(truck_number, 0, feasibility)
-    if (refusal) throw new Error(refusal)
+    if (refusal) throw new ClientHoldRefusal(refusal)
   }
 
   // Canonical market name — holds carry no standard_market_uid, so this string
@@ -150,8 +157,9 @@ async function clientHoldRow(session: ClientSession, params: CreateClientHoldPar
 
 /**
  * Creates a Hold record for a client-originated booking. All holds are immediately valid
- * with a 72-hour expiration window. Used by the legacy drag-on-grid flow and
- * MCP; a multi-truck booking uses createClientHolds (all or nothing).
+ * with a 72-hour expiration window. Used by the legacy drag-on-grid flow; a
+ * booking of trucks the engine picks (lib/clientBooking.ts) uses
+ * createClientHolds (all or nothing).
  */
 export async function createClientHold(
   session: ClientSession,
@@ -167,11 +175,12 @@ export async function createClientHold(
 }
 
 /**
- * A multi-truck client booking (the portal's place-hold, MCP clients): every
+ * A client booking of trucks the engine picked (lib/clientBooking.ts): every
  * truck's checks, then every row in one write under the trucks' locks. All or
  * nothing: a refusal or a clash on any truck books none of them, so a booking
- * is never left with fewer trucks than it was priced for. Throws the refusal
- * (HoldClashError for a truck taken since it was picked). Returns the truck
+ * is never left with fewer trucks than it was picked with. Throws the refusal
+ * (ClientHoldRefusal, or HoldClashError for a truck taken since it was
+ * picked). Returns the truck
  * numbers held. The caller sends the one email for the booking.
  */
 export async function createClientHolds(session: ClientSession, all: CreateClientHoldParams[]): Promise<string[]> {
@@ -203,7 +212,7 @@ function afterClientHolds(session: ClientSession, all: CreateClientHoldParams[])
   }
 }
 
-/** The team's email for a single client hold (unless the caller sends one for the booking). */
+/** The team's email for a single client hold (a batch's caller sends one for the booking). */
 async function notifyClientHold<H>(session: ClientSession, params: CreateClientHoldParams, hold: H): Promise<H> {
   const { truck_number, market, start_date, end_date, notes, pricing_tier, quoted_total } = params
   // Build pricing summary for the email notification
@@ -212,7 +221,6 @@ async function notifyClientHold<H>(session: ClientSession, params: CreateClientH
     : ''
 
   // Send email notification (no-op if SMTP not configured)
-  if (params.skipEmail) return hold
   await sendHoldRequestEmail({
     companyName:  session.companyName,
     truckNumbers: [truck_number],

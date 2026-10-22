@@ -44,4 +44,6 @@ section('Hold write lock: every path that chooses a truck writes under it')
   const portal = fs.readFileSync('lib/clientBooking.ts', 'utf8')
   eq('a client portal booking is all or nothing', portal.includes('await createClientHolds(session,') && !portal.includes('await createClientHold(session,'), true)
   eq('the client batch writes every row in one locked write', fs.readFileSync('lib/holdRequestService.ts', 'utf8').includes('tx => tx.hold.createMany({ data: rows })'), true)
+  eq('a booking with fewer trucks free than quoted is refused, not booked short (portal and staff)',
+    portal.includes('selectedTrucks.length < truck_count') && fs.readFileSync('lib/staffBooking.ts', 'utf8').includes('!quoteOnly && selectedTrucks.length < truck_count'), true)
 }

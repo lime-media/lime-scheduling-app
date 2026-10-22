@@ -11,7 +11,7 @@ import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
 import type { ClientSession } from '@/lib/clientAuth'
-import { createClientHolds } from '@/lib/holdRequestService'
+import { ClientHoldRefusal, createClientHolds } from '@/lib/holdRequestService'
 import { HoldClashError, HoldLockTimeoutError } from '@/lib/holdWriteLock'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
@@ -105,6 +105,13 @@ export async function placeClientBooking(
   if (selectedTrucks.length === 0) {
     return reply({
       error: 'No trucks available for the requested dates and market.',
+    }, { status: 409 })
+  }
+  // Fewer trucks free now than the quote was for: refused, not booked short.
+  // The price (and the Salesforce Amount) is for truck_count trucks.
+  if (selectedTrucks.length < truck_count) {
+    return reply({
+      error: `Only ${selectedTrucks.length} of the ${truck_count} trucks are available for these dates now. Nothing was booked. Get a fresh quote.`,
     }, { status: 409 })
   }
 
@@ -222,16 +229,13 @@ export async function placeClientBooking(
   // All or nothing (lib/holdRequestService.ts createClientHolds): every
   // truck's checks, then one write under the trucks' locks. A truck booked by
   // someone else since it was picked books none of them: the booking is one
-  // quote, priced for every truck in it.
-  let created: string[] = []
-  const failed: string[] = []
+  // quote, priced for every truck in it. Every truck's refusal is client-safe.
+  let created: string[]
   try {
     created = await createClientHolds(session, selectedTrucks.map(truck => ({
       // Already vetted by selectTrucksForHold above — re-checking would reload
       // the fleet timelines once per truck.
       skipFeasibilityCheck: true,
-      // One email for the booking, below, not one per truck.
-      skipEmail: true,
       truck_number: truck.truckNumber,
       market,
       state: resolvedState,
@@ -246,13 +250,10 @@ export async function placeClientBooking(
       campaign_group_id: campaignGroupId,
     })))
   } catch (err) {
-    if (err instanceof HoldClashError || err instanceof HoldLockTimeoutError) {
+    if (err instanceof ClientHoldRefusal || err instanceof HoldClashError || err instanceof HoldLockTimeoutError) {
       return reply({ error: `${err.message} Nothing was booked. Get a fresh quote and try again.` }, { status: 409 })
     }
     console.error('[client/hold-requests] failed to create holds:', err)
-  }
-
-  if (created.length === 0) {
     return reply({ error: 'Failed to create holds' }, { status: 500 })
   }
 
@@ -318,7 +319,7 @@ export async function placeClientBooking(
   return reply({
     ok: true,
     created: created.length,
-    failed: failed.length,
+    failed: 0, // all or nothing: a booking that returns here held every truck
     campaignGroupId,
     trucksRequested: truck_count,
     trucksAvailable: availability.counts.total,

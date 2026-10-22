@@ -41,4 +41,7 @@ section('Hold write lock: every path that chooses a truck writes under it')
   eq('only a live hold moving dates on its own truck lets an AT&T soft hold give way; revivals count soft holds',
     !actions.includes('excludeAttSoft: true') && !fs.readFileSync('app/api/client/hold-requests/[id]/extend/route.ts', 'utf8').includes('excludeAttSoft')
       && fs.readFileSync('app/api/holds/[id]/route.ts', 'utf8').includes('excludeAttSoft: effTruck === hold.truck_number && !revived'), true)
+  const portal = fs.readFileSync('lib/clientBooking.ts', 'utf8')
+  eq('a client portal booking is all or nothing', portal.includes('await createClientHolds(session,') && !portal.includes('await createClientHold(session,'), true)
+  eq('the client batch writes every row in one locked write', fs.readFileSync('lib/holdRequestService.ts', 'utf8').includes('tx => tx.hold.createMany({ data: rows })'), true)
 }

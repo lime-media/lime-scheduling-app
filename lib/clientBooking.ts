@@ -11,7 +11,8 @@ import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
 import type { ClientSession } from '@/lib/clientAuth'
-import { createClientHold } from '@/lib/holdRequestService'
+import { createClientHolds } from '@/lib/holdRequestService'
+import { HoldClashError, HoldLockTimeoutError } from '@/lib/holdWriteLock'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { createOpportunity, isSfdcConfigured, getSfdcAccountInfo } from '@/lib/salesforceClient'
@@ -218,35 +219,37 @@ export async function placeClientBooking(
   const campaignGroupId = `cg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const resolvedState = state || market.split(',')[1]?.trim() || null
 
-  const created: string[] = []
+  // All or nothing (lib/holdRequestService.ts createClientHolds): every
+  // truck's checks, then one write under the trucks' locks. A truck booked by
+  // someone else since it was picked books none of them: the booking is one
+  // quote, priced for every truck in it.
+  let created: string[] = []
   const failed: string[] = []
-
-  for (const truck of selectedTrucks) {
-    try {
-      await createClientHold(session, {
-        // Already vetted by selectTrucksForHold above — re-checking would reload
-        // the fleet timelines once per truck.
-        skipFeasibilityCheck: true,
-        // One email for the booking, below, not one per truck.
-        skipEmail: true,
-        truck_number: truck.truckNumber,
-        market,
-        state: resolvedState,
-        start_date,
-        end_date,
-        notes: [brand ? `Brand: ${brand}` : null, notes || null].filter(Boolean).join(' | ') || null,
-        pricing_tier: pricingTier,
-        quoted_total: serverTotal,
-        daily_rate: quote.dailyRate,
-        features: featuresJson,
-        truck_count: selectedTrucks.length,
-        campaign_group_id: campaignGroupId,
-      })
-      created.push(truck.truckNumber)
-    } catch (err) {
-      console.error('[client/hold-requests] failed to create hold for truck:', truck.truckNumber, err)
-      failed.push(truck.truckNumber)
+  try {
+    created = await createClientHolds(session, selectedTrucks.map(truck => ({
+      // Already vetted by selectTrucksForHold above — re-checking would reload
+      // the fleet timelines once per truck.
+      skipFeasibilityCheck: true,
+      // One email for the booking, below, not one per truck.
+      skipEmail: true,
+      truck_number: truck.truckNumber,
+      market,
+      state: resolvedState,
+      start_date,
+      end_date,
+      notes: [brand ? `Brand: ${brand}` : null, notes || null].filter(Boolean).join(' | ') || null,
+      pricing_tier: pricingTier,
+      quoted_total: serverTotal,
+      daily_rate: quote.dailyRate,
+      features: featuresJson,
+      truck_count: selectedTrucks.length,
+      campaign_group_id: campaignGroupId,
+    })))
+  } catch (err) {
+    if (err instanceof HoldClashError || err instanceof HoldLockTimeoutError) {
+      return reply({ error: `${err.message} Nothing was booked. Get a fresh quote and try again.` }, { status: 409 })
     }
+    console.error('[client/hold-requests] failed to create holds:', err)
   }
 
   if (created.length === 0) {

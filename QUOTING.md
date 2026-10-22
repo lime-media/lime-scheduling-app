@@ -314,7 +314,7 @@ A campaign that leaves a truck far out with nothing after it carries **no return
 |---|---|
 | Quote Builder, rep quote, hold requests | gated at truck selection |
 | Grid hold, MCP hold (`createHold`) | **hard blocked** — `feasibility_conflict` |
-| AI chat hold | **hard blocked** |
+| AI chat hold | gated at truck selection: the chat books through the Quote page's booking (`lib/staffBooking.ts`) |
 | MCP availability (`?market=`) | reports `feasibility` per truck |
 | Salesforce push | writes, never blocked |
 | ATT sync | writes, never blocked |
@@ -410,6 +410,8 @@ The pool is the bookable fleet (`HIDDEN_TRUCKS` excluded), with jobs and holds l
 - **Reviewing the list.** It looks for what geometry cannot see: a DMA label naming a different city than its ZIPs, or a digit slip. A suggested ZIP is shown as verified only when code confirms it exists and lies within 60 miles of the DMA's other ZIPs. The rep applies a correction with one click.
 
 Routing, truck choice and every price come only from code. Without the API key, typed markets and CSV/`.xlsx` lists still work.
+
+**The staff AI chat** (`claude-opus-5-5`, `app/api/chat/route.ts`) is the same rule: it never prices, picks trucks or writes holds itself. Its tools (`lib/staffChatTools.ts`) call the availability engine, the Quote page's quote (`lib/staffQuote.ts`) and its booking (`lib/staffBooking.ts`), so a chat booking gets the same trucks, price check, hold expiry and Salesforce opportunity. A booking needs the rep's confirmation: a quote comes with a quote ref (`lib/quoteRef.ts`, an HMAC of the inputs and total), and the chat books only a ref shown to the rep in an earlier reply, with the same inputs and total. It books one market at a time; a multi-market campaign is priced and booked on the planner.
 
 ## 6d. The opportunity's primary contact
 

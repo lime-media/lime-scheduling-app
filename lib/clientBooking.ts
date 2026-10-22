@@ -33,6 +33,7 @@ import { resolveMarketSizeTierId, resolveRateOverrides } from '@/lib/pricing/res
 import { liveClientLinks } from '@/lib/clientLinks'
 import { holdExpDate } from '@/lib/dateOnly'
 import { reply, type CoreResult } from '@/lib/coreResult'
+import { CLIENT_MAX_TRUCKS } from '@/lib/clientAvailability'
 
 export type ClientBookingInput = {
   market: string
@@ -61,6 +62,7 @@ export type ClientBookingInput = {
 export async function placeClientBooking(
   session: ClientSession,
   body: ClientBookingInput,
+  opts: { origination?: 'client-view' | 'mcp' } = {},
 ): Promise<CoreResult> {
   const {
     market, state, start_date, end_date, truck_count, notes,
@@ -69,8 +71,8 @@ export async function placeClientBooking(
 
   // A whole number, as the quote requires (lib/clientAvailability.ts): 2.5,
   // "2" or true would hold one count of trucks and bill another.
-  if (typeof truck_count !== 'number' || !Number.isInteger(truck_count) || truck_count < 1 || truck_count > 20) {
-    return reply({ error: 'truck_count must be between 1 and 20' }, { status: 400 })
+  if (typeof truck_count !== 'number' || !Number.isInteger(truck_count) || truck_count < 1 || truck_count > CLIENT_MAX_TRUCKS) {
+    return reply({ error: `truck_count must be between 1 and ${CLIENT_MAX_TRUCKS}` }, { status: 400 })
   }
 
   // Same policy as the client quote (lib/clientQuote.ts) — enforced here too so
@@ -229,6 +231,7 @@ export async function placeClientBooking(
         skipFeasibilityCheck: true,
         // One email for the booking, below, not one per truck.
         skipEmail: true,
+        origination: opts.origination,
         truck_number: truck.truckNumber,
         market,
         state: resolvedState,

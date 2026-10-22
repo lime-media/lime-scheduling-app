@@ -9,7 +9,7 @@ import { eq, section } from './harness'
 section('Client chat: one engine, client rules')
 {
   const route = fs.readFileSync('app/api/client/chat/route.ts', 'utf8')
-  const quote = fs.readFileSync('app/api/client/quote/route.ts', 'utf8')
+  const quote = fs.readFileSync('lib/clientQuote.ts', 'utf8')
   const context = fs.readFileSync('lib/clientChatContext.ts', 'utf8')
   const availability = fs.readFileSync('lib/clientAvailability.ts', 'utf8')
   eq('current Opus', route.includes("model:         'claude-opus-5-5'"), true)
@@ -22,4 +22,6 @@ section('Client chat: one engine, client rules')
   eq('the context is the client\'s own holds only', /client_user_id: session\.id/.test(context) && !context.includes('SCHEDULED_QUERY') && !context.includes('getLiveVehicleLocations'), true)
   eq('still no prices', route.includes('Do NOT attempt to generate prices'), true)
   eq('replies still pass the other-client scrub', route.includes('reply = await scrubOtherClientNames(reply, session.id)'), true)
+  const booking = fs.readFileSync('lib/clientBooking.ts', 'utf8')
+  eq('paid review (#130): the client booking requires a whole truck count', booking.includes("typeof truck_count !== 'number' || !Number.isInteger(truck_count)"), true)
 }

@@ -6,7 +6,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { daysSold, ledStandings, type JobHold } from '@/lib/ledJobs'
+import { daysSold, ledMarketMatches, ledStandings, type JobHold } from '@/lib/ledJobs'
 import { isOwnLedProgram, jobKey, linkedJob, realJobNumber } from '@/lib/jobNumber'
 import { fieldUnreadable } from '@/lib/salesforceClient'
 import { bookingInLed, ledProgress } from '@/lib/bookings'
@@ -28,6 +28,8 @@ eq('the quote\'s activation days (6 days a week over 56)', daysSold(JSON.stringi
 eq('no quote on file: every calendar day', daysSold(null, '2026-10-30', '2026-11-01'), 3)
 eq('unreadable features: every calendar day', daysSold('{oops', '2026-10-30', '2026-11-01'), 3)
 eq('never more than the span', daysSold(JSON.stringify({ activationDays: 9 }), '2026-10-30', '2026-11-01'), 3)
+eq('a rotating stint sells its own work days, not the line\'s span', daysSold(JSON.stringify({ activationDays: 12, calendarDays: 28, heldStart: '2026-10-16', heldEnd: '2026-10-22', heldWorkDays: 6 }), '2026-10-16', '2026-10-22'), 6)
+eq('a stint re-dated after it was written: every calendar day', daysSold(JSON.stringify({ calendarDays: 28, heldStart: '2026-10-16', heldEnd: '2026-10-22', heldWorkDays: 6 }), '2026-10-16', '2026-10-25'), 10)
 eq('re-dated after the quote: every calendar day', daysSold(JSON.stringify({ activationDays: 12, calendarDays: 14 }), '2026-10-19', '2026-11-15'), 28)
 eq('quoted for these dates: the activation days', daysSold(JSON.stringify({ activationDays: 12, calendarDays: 14 }), '2026-10-19', '2026-11-01'), 12)
 
@@ -128,3 +130,16 @@ eq('the kept tail is still a job on the timeline', (groupDaysIntoJobs(dropOwnPro
 eq('another truck\'s days of the job stay (a separate hold covers those)', dropOwnProgramDays([dday('2026-10-05', '26-0439-300', '1261')], [wonPhx]).length, 1)
 eq('another job on the hold\'s truck stays', dropOwnProgramDays([dday('2026-10-05', '26-0387-300')], [wonPhx]).length, 1)
 eq('a hold with no linked job drops nothing', dropOwnProgramDays(straddle, [{ ...wonPhx, job_number: null }]).length, 5)
+
+section('multi-market bookings share a job number: another state is another market')
+eq('same job, same dates, another state: not its own', isOwnLedProgram({ ...wonHold, state: 'IA' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', state: 'CO' }), false)
+eq('same job, same state: its own', isOwnLedProgram({ ...wonHold, state: 'KS' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', state: 'ks' }), true)
+eq('state unknown on one side: job and dates decide', isOwnLedProgram({ ...wonHold, state: 'KS' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', state: '' }), true)
+eq('a sibling market\'s days on the hold\'s truck stay on the timeline', dropOwnProgramDays([{ ...dday('2026-10-05', '26-0439-300'), state: 'NM' }], [{ ...wonPhx, state: 'AZ' }]).length, 1)
+
+section('ledMarketMatches (swap picker, another truck): confirmed or the truck stays taken')
+eq('same city and state', ledMarketMatches({ market: 'Phoenix, AZ', state: 'AZ' }, { market: 'Phoenix', state: 'AZ', standard_market_name: 'Phoenix, AZ' }), true)
+eq('by the standard market', ledMarketMatches({ market: 'Cedar Rapids, IA', state: 'IA' }, { market: 'Cedar Rapids Downtown', state: 'IA', standard_market_name: 'Cedar Rapids, IA' }), true)
+eq('a sibling market in the same state', ledMarketMatches({ market: 'Wichita, KS', state: 'KS' }, { market: 'Lawrence', state: 'KS', standard_market_name: 'Kansas City, MO' }), false)
+eq('a misspelt city can\'t be confirmed: taken', ledMarketMatches({ market: 'Manhattan, KS', state: 'KS' }, { market: 'Manhatten', state: 'KS', standard_market_name: 'Kansas City, MO' }), false)
+eq('another state', ledMarketMatches({ market: 'Phoenix, AZ', state: 'AZ' }, { market: 'Phoenix', state: 'NM' }), false)

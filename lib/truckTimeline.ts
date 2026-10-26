@@ -140,7 +140,7 @@ export type HoldLike = {
  */
 export function dropOwnProgramDays(
   days: DayRow[],
-  holds: { truck_number: string; start_date: string; end_date: string; job_number: string | null }[],
+  holds: { truck_number: string; start_date: string; end_date: string; job_number: string | null; state?: string | null }[],
 ): DayRow[] {
   const byTruck = new Map<string, typeof holds>()
   for (const h of holds) {
@@ -149,7 +149,7 @@ export function dropOwnProgramDays(
   }
   if (!byTruck.size) return days
   return days.filter(d => !(byTruck.get(d.truckNumber) ?? []).some(h =>
-    isOwnLedProgram(h, { start: d.date, end: d.date, job_number: d.jobNumber })))
+    isOwnLedProgram(h, { start: d.date, end: d.date, job_number: d.jobNumber, state: d.state })))
 }
 
 export function buildTruckTimelines(

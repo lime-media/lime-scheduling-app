@@ -38,14 +38,33 @@ export type JobShift = { truck_number: string; job_number: string; shift_date: s
  * every calendar day (bookings made in Salesforce have no quote on file).
  * A quote priced for a different span (the hold was re-dated after it) no
  * longer says what was sold on these dates, so every calendar day counts.
- * Never more than the calendar span. Pure.
+ * A planner hold records its own sold days (heldWorkDays: a rotating truck's
+ * weekly stint works only some of its line's days), used while its dates
+ * still match. Never more than the calendar span. Pure.
  */
 export function daysSold(features: string | null, start: string, end: string): number {
   const span = countCalendarDays(start, end)
+  // What this hold itself sells, when it was written per hold (a planner stint
+  // of a rotating truck) and its dates haven't moved since.
+  const held = heldDays(features)
+  if (held && held.start === start && held.end === end) return Math.min(held.work, span)
   const quoted = quotedSpan(features)
   if (quoted !== null && quoted !== span) return span
   const sold = activationDaysOf(features)
   return sold !== null && Number.isInteger(sold) && sold > 0 ? Math.min(sold, span) : span
+}
+
+/** The days a planner hold was written to sell (heldStart/heldEnd/heldWorkDays), or null. */
+function heldDays(features: string | null): { start: string; end: string; work: number } | null {
+  if (!features) return null
+  try {
+    const f = JSON.parse(features) as { heldStart?: unknown; heldEnd?: unknown; heldWorkDays?: unknown }
+    return typeof f.heldStart === 'string' && typeof f.heldEnd === 'string' && typeof f.heldWorkDays === 'number' && Number.isInteger(f.heldWorkDays) && f.heldWorkDays >= 0
+      ? { start: f.heldStart, end: f.heldEnd, work: f.heldWorkDays }
+      : null
+  } catch {
+    return null
+  }
 }
 
 /** The calendar span the quote was priced for, or null when it doesn't say. */
@@ -57,6 +76,27 @@ function quotedSpan(features: string | null): number | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Whether an LED program's market is the hold's market, for a program on
+ * another truck (the swap picker). LED's market names are typed by hand
+ * ("Manhatten", or a standard market a city sits under), so this asks for the
+ * same state and the same city, by LED's own name or its standard market's.
+ * When it can't be confirmed the answer is no: the truck stays taken, the safe
+ * side. Pure.
+ */
+export function ledMarketMatches(
+  hold: { market: string; state: string },
+  led: { market: string; state: string; standard_market_name?: string },
+): boolean {
+  const city = (m: string) => m.split(',')[0].trim().toLowerCase().replace(/\s+/g, ' ')
+  const stateOf = (m: string, s: string) => (s || m.split(',')[1] || '').trim().toUpperCase()
+  const std = led.standard_market_name ?? ''
+  const holdState = stateOf(hold.market, hold.state)
+  if (!holdState || holdState !== stateOf(led.market, led.state)) return false
+  const want = city(hold.market)
+  return !!want && (want === city(led.market) || (!!std && stateOf(std, '') === holdState && want === city(std)))
 }
 
 /** How a hold stands in LED: the days its job runs on its truck within its dates, of the days sold. */

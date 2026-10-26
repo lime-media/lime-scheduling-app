@@ -380,7 +380,9 @@ async function handlePost(req: NextRequest) {
         pricing_tier: tier,
         quoted_total: lq.total,
         daily_rate: lq.effectiveDailyRate,
-        features: JSON.stringify(withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct))),
+        // The line's quote, plus what this hold itself sells: a rotating truck's
+        // weekly stint works only some of the line's days (lib/ledJobs.ts daysSold).
+        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct)), heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(stint.lineId)!,
         expires_at: expiresAt,

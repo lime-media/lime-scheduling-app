@@ -43,6 +43,9 @@ const SOQL_ID_CHUNK = 200
 // this: committed holds count as active, so their deal is never closed by us.
 const RECONCILABLE_STATUSES = ['HOLD', 'EXTENSION_REQUESTED', 'COMMITTED']
 
+// app_holds.sfdc_job_number is NVARCHAR(50) (migration 20261026120000).
+const JOB_NUMBER_MAX = 50
+
 // Salesforce ids are 15- or 18-character alphanumerics. Anything else is not
 // interpolated into SOQL.
 const SFDC_ID = /^[a-zA-Z0-9]{15,18}$/
@@ -189,10 +192,16 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
     // a corrected job number in Salesforce follows through.
     // Only when this opportunity was read with the field: a row read without
     // it says nothing about the job number, so the stored one stands.
+    // Best-effort, like the read: a job number that can't be stored (longer
+    // than the column, or a failed write) is logged and skipped, and this
+    // opportunity's holds are still committed or released below.
     const jobNumber = realJobNumber(stage.Job_Number__c)
     const staleJob = readWithJob.has(key) ? group.filter(h => h.sfdc_job_number !== jobNumber).map(h => h.id) : []
-    if (staleJob.length) {
+    if (staleJob.length && jobNumber && jobNumber.length > JOB_NUMBER_MAX) {
+      console.warn(`[sfdc-reconcile] job number on ${key} is over ${JOB_NUMBER_MAX} characters; not linking its holds to LED`)
+    } else if (staleJob.length) {
       await prisma.hold.updateMany({ where: { id: { in: staleJob } }, data: { sfdc_job_number: jobNumber } })
+        .catch((err) => console.error(`[sfdc-reconcile] job number write failed for ${key}; carrying on:`, err))
     }
 
     for (const hold of group) {

@@ -20,6 +20,7 @@ import { placeCoords } from '@/lib/geo/places'
 import { getLiveVehicleLocations, type SamsaraVehicleLocation } from '@/lib/samsaraService'
 import { buildTruckTimelines, dropOwnProgramDays, type DayRow, type TruckJob } from '@/lib/truckTimeline'
 import { isOwnLedProgram, linkedJob } from '@/lib/jobNumber'
+import { ledMarketMatches } from '@/lib/ledJobs'
 
 export type FleetHold = {
   id: string
@@ -68,7 +69,7 @@ export async function loadFleetTimelines(opts: {
    * put it on look taken (the swap picker; lib/jobNumber.ts isOwnLedProgram).
    * The same job on other dates is other work and stays.
    */
-  ownProgramOf?: { start_date: string; end_date: string; job_number: string | null }
+  ownProgramOf?: { start_date: string; end_date: string; job_number: string | null; market: string; state: string }
   /**
    * Explicit schedule window (YYYY-MM-DD, inclusive) instead of the rolling
    * -30/+63 days. For planning programs that run past the rolling window; the
@@ -105,7 +106,10 @@ export async function loadFleetTimelines(opts: {
     if (!truckNumber || hidden.has(truckNumber)) continue
     const day = toDateStr(row.shift_start)
     if (!day) continue
-    if (own && isOwnLedProgram(own, { start: day, end: day, job_number: String(row.job_number ?? '') })) continue
+    // Every market of a booking shares its job number, so on another truck the
+    // program must also be in the hold's market to be the hold's own.
+    if (own && isOwnLedProgram(own, { start: day, end: day, job_number: String(row.job_number ?? ''), state: String(row.state ?? '') })
+      && ledMarketMatches(own, { market: String(row.market ?? ''), state: String(row.state ?? ''), standard_market_name: String(row.standard_market_name ?? '') })) continue
     const lat = Number(row.market_lat)
     const lng = Number(row.market_lng)
     scheduleDays.push({

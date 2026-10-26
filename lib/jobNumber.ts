@@ -29,16 +29,22 @@ export function linkedJob(hold: { status: string; sfdc_job_number?: string | nul
 /**
  * Whether an LED program (or one day of it) is a won hold's own booking being
  * scheduled rather than something else on the truck: it carries the hold's
- * job number and falls within the hold's dates. Callers pass a program on the
- * truck they're asking about; outside the hold's dates the same job is other
- * work (another market of the booking) and still occupies the truck. The one
- * rule behind the conflict sweep, the infeasible audit and the swap picker.
- * Dates YYYY-MM-DD, inclusive. Pure.
+ * job number, falls within the hold's dates, and isn't in another state.
+ * Every market of a multi-market booking shares one job number, so a program
+ * in a different state is another market of the booking, and the hold's own
+ * market still has no truck there. (Same-state markets can't be told apart:
+ * LED's city names are typed by hand.) Outside the hold's dates the same job
+ * is other work and still occupies the truck. The one rule behind the
+ * conflict sweep, the fleet timelines and the swap picker. Dates YYYY-MM-DD,
+ * inclusive; states two-letter, compared only when both are known. Pure.
  */
 export function isOwnLedProgram(
-  hold: { start_date: string; end_date: string; job_number?: string | null },
-  program: { start: string; end: string; job_number?: string | null },
+  hold: { start_date: string; end_date: string; job_number?: string | null; state?: string | null },
+  program: { start: string; end: string; job_number?: string | null; state?: string | null },
 ): boolean {
   const job = jobKey(hold.job_number)
+  const hs = (hold.state ?? '').trim().toUpperCase()
+  const ps = (program.state ?? '').trim().toUpperCase()
   return !!job && jobKey(program.job_number) === job && program.start <= hold.end_date && program.end >= hold.start_date
+    && !(hs && ps && hs !== ps)
 }

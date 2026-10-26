@@ -114,6 +114,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     shift_start:  toDateStr(r.shift_start),
     shift_end:    toDateStr(r.shift_end),
     job_number:   String(r.job_number   ?? ''),
+    state:        String(r.state        ?? ''),
   }))
 
   // Deduplicate by truck_number + program + job_number + shift_start before conflict
@@ -140,6 +141,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     end_date:            h.end_date.toISOString().split('T')[0],
     sfdc_opportunity_id: h.sfdc_opportunity_id,
     job_number:          linkedJob(h),
+    state:               h.state,
   }))
 
   // Before detection: a conflict whose window merely shifted is closed here and re-raised
@@ -333,6 +335,8 @@ export interface ConflictHold {
   sfdc_opportunity_id?: string | null
   /** The opportunity's job number (lib/ledJobs.ts); its own LED program isn't a conflict. */
   job_number?:         string | null
+  /** Two-letter state: a program of the same job in another state is another market. */
+  state?:              string | null
 }
 
 export interface ConflictSchedule {
@@ -343,6 +347,8 @@ export interface ConflictSchedule {
   shift_end:    string  // YYYY-MM-DD
   /** The LED program's job number; blocks merge only within one job number. */
   job_number?:  string
+  /** The market's state; blocks merge only within one state. */
+  state?:       string
 }
 
 // ── Conflict detection ────────────────────────────────────────────────────────
@@ -381,14 +387,17 @@ const nextDay = (d: string) => new Date(Date.parse(d + 'T00:00:00Z') + 864e5).to
 export function mergeScheduleBlocks(schedules: ConflictSchedule[]): ConflictSchedule[] {
   const sorted = [...schedules].sort((a, b) =>
     a.truck_number.localeCompare(b.truck_number) || a.program.localeCompare(b.program)
-    || (jobKey(a.job_number) ?? '').localeCompare(jobKey(b.job_number) ?? '') || a.shift_start.localeCompare(b.shift_start))
+    || (jobKey(a.job_number) ?? '').localeCompare(jobKey(b.job_number) ?? '') || (a.state ?? '').localeCompare(b.state ?? '')
+    || a.shift_start.localeCompare(b.shift_start))
   const out: ConflictSchedule[] = []
   for (const s of sorted) {
     const last = out[out.length - 1]
-    // Same-named programs with different job numbers stay apart, so a block
-    // never carries one program's job number over another's days.
+    // Same-named programs with different job numbers stay apart, and so do a
+    // program's markets in different states, so a block never carries one
+    // program's job number or state over another's days.
     if (last && last.truck_number === s.truck_number && last.program === s.program
-      && jobKey(last.job_number) === jobKey(s.job_number) && s.shift_start <= nextDay(last.shift_end)) {
+      && jobKey(last.job_number) === jobKey(s.job_number) && (last.state ?? '') === (s.state ?? '')
+      && s.shift_start <= nextDay(last.shift_end)) {
       if (s.shift_end > last.shift_end) last.shift_end = s.shift_end
     } else {
       out.push({ ...s })
@@ -418,7 +427,7 @@ export function findConflicts(
     const overlapping = blocks.filter(
       (s) =>
         s.truck_number === hold.truck_number &&
-        !isOwnLedProgram(hold, { start: s.shift_start, end: s.shift_end, job_number: s.job_number }) &&
+        !isOwnLedProgram(hold, { start: s.shift_start, end: s.shift_end, job_number: s.job_number, state: s.state }) &&
         s.shift_start  <= hold.end_date &&
         s.shift_end    >= hold.start_date
     )

@@ -169,7 +169,7 @@ export type AvailabilityInput = {
    * dates) is that booking scheduled, not something occupying a truck, so a
    * swap can move the hold onto the truck LED put it on (lib/fleetTimelines.ts).
    */
-  ownProgramOf?: { start_date: string; end_date: string; job_number: string | null }
+  ownProgramOf?: { start_date: string; end_date: string; job_number: string | null; market: string; state: string }
   /**
    * Staff quotes: a booking that would leave a LATER AT&T soft hold short of
    * travel time is allowed, with a warning (AvailableTruck.softHoldWarning).

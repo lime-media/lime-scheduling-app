@@ -20,6 +20,7 @@
 import { query } from '@/lib/mssql'
 import { realJobNumber } from '@/lib/jobNumber'
 import { activationDaysOf } from '@/lib/transportMetrics'
+import { countCalendarDays } from '@/lib/pricing/schedule'
 
 /**
  * A hold as the LED match needs it. Dates are YYYY-MM-DD, inclusive.
@@ -30,22 +31,32 @@ export type JobHold = { id: string; truck_number: string; start_date: string; en
 /** One LED shift of a job on a truck, by its start day. */
 export type JobShift = { truck_number: string; job_number: string; shift_date: string }
 
-/** Days from start to end, inclusive (YYYY-MM-DD). */
-export function calendarDays(start: string, end: string): number {
-  return Math.round((Date.parse(end + 'T00:00:00Z') - Date.parse(start + 'T00:00:00Z')) / 864e5) + 1
-}
-
 /**
  * How many days LED must run a hold's job on its truck for the hold to count
  * as scheduled: the days sold on it, from its quote (`activationDays`, per
  * truck: a 6-days-a-week flight sells fewer days than its calendar span), else
  * every calendar day (bookings made in Salesforce have no quote on file).
+ * A quote priced for a different span (the hold was re-dated after it) no
+ * longer says what was sold on these dates, so every calendar day counts.
  * Never more than the calendar span. Pure.
  */
 export function daysSold(features: string | null, start: string, end: string): number {
-  const span = calendarDays(start, end)
+  const span = countCalendarDays(start, end)
+  const quoted = quotedSpan(features)
+  if (quoted !== null && quoted !== span) return span
   const sold = activationDaysOf(features)
   return sold !== null && Number.isInteger(sold) && sold > 0 ? Math.min(sold, span) : span
+}
+
+/** The calendar span the quote was priced for, or null when it doesn't say. */
+function quotedSpan(features: string | null): number | null {
+  if (!features) return null
+  try {
+    const n = (JSON.parse(features) as { calendarDays?: unknown }).calendarDays
+    return typeof n === 'number' && Number.isFinite(n) ? n : null
+  } catch {
+    return null
+  }
 }
 
 /** How a hold stands in LED: the days its job runs on its truck within its dates, of the days sold. */
@@ -74,7 +85,7 @@ export function ledStandings(holds: JobHold[], shifts: JobShift[]): Map<string, 
     if (!job) continue
     const all = byTruckJob.get(`${h.truck_number}|${job}`) ?? new Set<string>()
     const days = [...all].filter(d => d >= h.start_date && d <= h.end_date).length
-    out.set(h.id, { days, of: h.days_sold, scheduled: days >= h.days_sold })
+    out.set(h.id, { days, of: h.days_sold, scheduled: days > 0 && days >= h.days_sold })
   }
   return out
 }

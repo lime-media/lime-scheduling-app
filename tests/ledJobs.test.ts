@@ -27,6 +27,8 @@ eq('the quote\'s activation days (6 days a week over 56)', daysSold(JSON.stringi
 eq('no quote on file: every calendar day', daysSold(null, '2026-10-30', '2026-11-01'), 3)
 eq('unreadable features: every calendar day', daysSold('{oops', '2026-10-30', '2026-11-01'), 3)
 eq('never more than the span', daysSold(JSON.stringify({ activationDays: 9 }), '2026-10-30', '2026-11-01'), 3)
+eq('re-dated after the quote: every calendar day', daysSold(JSON.stringify({ activationDays: 12, calendarDays: 14 }), '2026-10-19', '2026-11-15'), 28)
+eq('quoted for these dates: the activation days', daysSold(JSON.stringify({ activationDays: 12, calendarDays: 14 }), '2026-10-19', '2026-11-01'), 12)
 
 section('ledStandings')
 const run = (truck: string, job: string, days: string[]) => days.map(d => shift(truck, job, d))
@@ -36,6 +38,7 @@ eq('a day short: not scheduled, shows the shortfall', ledStandings([h()], all3.s
 eq('one day of a 30-day booking is not enough', ledStandings([h({ end_date: '2026-11-28', days_sold: 30 })], all3.slice(0, 1)).get('h1')?.scheduled, false)
 eq('6 days a week: the sold days are enough', ledStandings([h({ start_date: '2026-11-02', end_date: '2026-11-08', days_sold: 6 })],
   run('6907', '26-0439-300', ['2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06', '2026-11-07'])).get('h1')?.scheduled, true)
+eq('nothing sold (bad dates) is never scheduled', ledStandings([h({ days_sold: 0 })], []).get('h1')?.scheduled, false)
 eq('a day counts once however many shifts', ledStandings([h()], [...all3, ...all3]).get('h1')?.days, 3)
 eq('its job on another truck does not count', ledStandings([h()], run('1261', '26-0439-300', ['2026-10-30', '2026-10-31', '2026-11-01'])).get('h1')?.days, 0)
 eq('another job on its truck does not count', ledStandings([h()], run('6907', '26-0387-300', ['2026-10-30', '2026-10-31', '2026-11-01'])).get('h1')?.days, 0)

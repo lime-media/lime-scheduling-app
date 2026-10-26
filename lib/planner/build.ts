@@ -16,6 +16,8 @@
  * Pure: the API route loads the data and passes it in.
  */
 
+import { realJobNumber } from '@/lib/jobNumber'
+
 export type EntryKind = 'SCHEDULED' | 'MAINTENANCE' | 'COMMITTED' | 'RESERVATION' | 'ATT_SOFT' | 'OPEN'
 
 export type PlannerShift = {
@@ -137,10 +139,7 @@ function reservationCampaign(h: PlannerHold): string {
  * days). A truck-day with nothing on it is OPEN.
  */
 /** Placeholder job numbers ("00-0000-000", test and maintenance programs) are no job number. */
-export function realJobNumber(v: string | null | undefined): string | null {
-  const t = (v ?? '').trim()
-  return t && !/^[0\-\s]+$/.test(t) ? t : null
-}
+export { realJobNumber }
 
 /** A drive day: the truck is travelling, not running a program — shown as D. */
 export const isDriveDay = (e: Pick<Entry, 'kind' | 'campaign'>) => e.kind === 'SCHEDULED' && /\bdrive\s*day\b/i.test(e.campaign)

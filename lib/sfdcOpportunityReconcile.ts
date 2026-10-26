@@ -4,6 +4,7 @@ import { SFDC_SERVICE_USER_EMAIL, reconcileTarget } from '@/lib/sfdcIntegration'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry } from '@/lib/holdExpiry'
 import { centralDate } from '@/lib/dateOnly'
 import { recordWon, winsToRecord } from '@/lib/transportMetricsRecord'
+import { realJobNumber } from '@/lib/jobNumber'
 
 /**
  * Opportunity stage reconcile.
@@ -53,6 +54,8 @@ interface OpportunityStage {
   IsWon:     boolean
   /** Deal-value metrics (lib/transportMetricsRecord.ts recordWon). */
   Amount?:   number | null
+  /** Links the holds to their LED program (lib/ledJobs.ts). */
+  Job_Number__c?: string | null
 }
 
 export interface SfdcReconcileSummary {
@@ -128,7 +131,7 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
   for (const batch of chunk(uniqueIds, SOQL_ID_CHUNK)) {
     const list = batch.map((id) => `'${id}'`).join(',')
     const rows = await sfdcQuery<OpportunityStage>(
-      `SELECT Id, StageName, IsClosed, IsWon, Amount FROM Opportunity WHERE Id IN (${list})`
+      `SELECT Id, StageName, IsClosed, IsWon, Amount, Job_Number__c FROM Opportunity WHERE Id IN (${list})`
     )
     for (const row of rows) stages.set(normalizeId(row.Id), row)
   }
@@ -171,6 +174,15 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
     // recordWon) as soon as its holds are committed, so a failure on a later
     // opportunity can't lose it (the next pass sees them committed already).
     let wonHold: (typeof group)[number] | null = null
+
+    // The job number, on every hold of the opportunity: a won deal gets one,
+    // and its LED program carries the same (lib/ledJobs.ts). Kept current, so
+    // a corrected job number in Salesforce follows through.
+    const jobNumber = realJobNumber(stage.Job_Number__c)
+    const staleJob = group.filter(h => h.sfdc_job_number !== jobNumber).map(h => h.id)
+    if (staleJob.length) {
+      await prisma.hold.updateMany({ where: { id: { in: staleJob } }, data: { sfdc_job_number: jobNumber } })
+    }
 
     for (const hold of group) {
       const target = reconcileTarget(hold.status, { isClosed: stage.IsClosed, isWon: stage.IsWon })

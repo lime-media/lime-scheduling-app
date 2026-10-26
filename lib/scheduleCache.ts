@@ -17,6 +17,7 @@ import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 import { syncAttSoftHolds } from '@/lib/attSoftHolds'
 import { freeRanges } from '@/lib/ranges'
+import { realJobNumber } from '@/lib/jobNumber'
 import { recordAmountChanges, recordExecuted, recordPrestart, sharedOriginMeasurer } from '@/lib/transportMetricsRecord'
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────
@@ -112,6 +113,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     market:       String(r.market       ?? ''),
     shift_start:  toDateStr(r.shift_start),
     shift_end:    toDateStr(r.shift_end),
+    job_number:   String(r.job_number   ?? ''),
   }))
 
   // Deduplicate by truck_number + program + shift_start before conflict detection.
@@ -133,6 +135,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     start_date:          h.start_date.toISOString().split('T')[0],
     end_date:            h.end_date.toISOString().split('T')[0],
     sfdc_opportunity_id: h.sfdc_opportunity_id,
+    job_number:          h.sfdc_job_number,
   }))
 
   // Before detection: a conflict whose window merely shifted is closed here and re-raised
@@ -324,6 +327,8 @@ export interface ConflictHold {
   start_date:          string  // YYYY-MM-DD
   end_date:            string  // YYYY-MM-DD
   sfdc_opportunity_id?: string | null
+  /** The opportunity's job number (lib/ledJobs.ts); its own LED program isn't a conflict. */
+  job_number?:         string | null
 }
 
 export interface ConflictSchedule {
@@ -332,6 +337,8 @@ export interface ConflictSchedule {
   market:       string
   shift_start:  string  // YYYY-MM-DD
   shift_end:    string  // YYYY-MM-DD
+  /** The LED program's job number; one per program, so merged blocks keep it. */
+  job_number?:  string
 }
 
 // ── Conflict detection ────────────────────────────────────────────────────────
@@ -398,9 +405,13 @@ export function findConflicts(
   const blocks = mergeScheduleBlocks(schedules)
 
   for (const hold of holds) {
+    // A program carrying the hold's own job number is this booking scheduled
+    // in LED, not a clash with it (lib/ledJobs.ts).
+    const ownJob = realJobNumber(hold.job_number)
     const overlapping = blocks.filter(
       (s) =>
         s.truck_number === hold.truck_number &&
+        !(ownJob && realJobNumber(s.job_number) === ownJob) &&
         s.shift_start  <= hold.end_date &&
         s.shift_end    >= hold.start_date
     )

@@ -15,7 +15,7 @@ import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
-import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingKey, closedWonRefusal, bookingStatus, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
+import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingInLed, bookingKey, closedWonRefusal, bookingStatus, ledProgress, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
 import { ownedBy, ownerOptions, runsBetween, wholeBookings, type OwnerFilter } from '@/lib/reservationFilters'
 import { useSession } from 'next-auth/react'
@@ -43,11 +43,17 @@ type HoldRequest = {
   truck_count: number | null
   campaign_group_id: string | null
   sfdc_opportunity_id: string | null
+  /** The opportunity's job number, and whether LED has it on this truck (lib/ledJobs.ts). */
+  job_number: string | null
+  led_scheduled: boolean
   expires_at: string | null
   extension_reason: string | null
   extension_until: string | null
   created_at: string
 }
+
+/** The filter for won bookings LED has fully scheduled; every other filter leaves them out. */
+const LED_SCHEDULED = 'LED_SCHEDULED'
 
 const STATUS_BADGE: Record<string, string> = {
   HOLD:                 'bg-yellow-100 text-yellow-800 border border-yellow-200',
@@ -63,6 +69,7 @@ const STATUS_LABEL: Record<string, string> = {
   ATT_SOFT: 'AT&T Soft',
   EXPIRED: 'Expired',
   EXTENSION_REQUESTED: 'Extension Requested',
+  [LED_SCHEDULED]: 'Scheduled in LED',
 }
 
 const SOURCE_BADGE: Record<string, string> = {
@@ -139,6 +146,22 @@ function ReviseLink({ rows, booking }: { rows: HoldRequest[]; booking?: HoldRequ
       Revise
     </a>
   )
+}
+
+/** Where a won booking stands in LED: matched by its job number on each truck (lib/ledJobs.ts). */
+function LedBadge({ progress }: { progress: { scheduled: number; of: number } | null }) {
+  if (!progress) return null
+  if (progress.scheduled === progress.of) {
+    return <span className="text-xs text-green-700 font-medium" title="LED has this job on every truck of the booking">Scheduled in LED</span>
+  }
+  if (progress.scheduled > 0) {
+    return (
+      <span className="text-xs text-amber-700 font-medium" title="LED has this job on some of the booking's trucks; the rest aren't scheduled, or are scheduled on another truck">
+        In LED: {progress.scheduled} of {progress.of} trucks
+      </span>
+    )
+  }
+  return <span className="text-xs text-gray-500" title="No LED program with this deal's job number on these trucks yet">Not in LED yet</span>
 }
 
 function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; status: string }) {
@@ -525,12 +548,23 @@ export default function HoldRequestsPage() {
     return key ? bookingStatus(rowsByBooking.get(key) ?? [r]) : { status: r.status, odd: [] }
   }, [rowsByBooking])
 
+  // A won booking LED has fully scheduled: listed only under its own filter.
+  const inLedOf = useCallback((r: HoldRequest) => {
+    const key = bookingKey(r)
+    return bookingInLed(key ? rowsByBooking.get(key) ?? [r] : [r])
+  }, [rowsByBooking])
+
   const filtered = useMemo(
     () => {
       // A filter picks whole bookings by the booking's status, never part of one.
-      const shown = (status: string) => !filterStatus
-        || (filterStatus === 'HOLD' ? status === 'HOLD' || status === 'COMMITTED' : status === filterStatus)
-      let result = requests.filter(r => shown(statusOf(r).status))
+      const shown = (r: HoldRequest) => {
+        if (filterStatus === LED_SCHEDULED) return inLedOf(r)
+        if (inLedOf(r)) return false
+        const { status } = statusOf(r)
+        return !filterStatus
+          || (filterStatus === 'HOLD' ? status === 'HOLD' || status === 'COMMITTED' : status === filterStatus)
+      }
+      let result = requests.filter(shown)
       // Owner, dates and search pick whole bookings: a booking shows if any of
       // it matches, so a card, its total and its Edit always cover the same
       // reservations and a multi-market card never loses a market.
@@ -545,7 +579,7 @@ export default function HoldRequestsPage() {
       }
       return result
     },
-    [requests, filterStatus, search, statusOf, ownerShown, meId, dateFrom, dateTo]
+    [requests, filterStatus, search, statusOf, inLedOf, ownerShown, meId, dateFrom, dateTo]
   )
 
   // The last date the card being edited can be held to: a booking has one
@@ -687,7 +721,7 @@ export default function HoldRequestsPage() {
             )}
           </div>
           <div className="flex gap-2 flex-shrink-0 flex-wrap">
-            {(['', 'HOLD', 'ATT_SOFT', 'EXTENSION_REQUESTED', 'EXPIRED'] as const).map((s) => (
+            {(['', 'HOLD', 'ATT_SOFT', 'EXTENSION_REQUESTED', 'EXPIRED', LED_SCHEDULED] as const).map((s) => (
               <button
                 key={s}
                 onClick={() => setFilterStatus(s)}
@@ -803,6 +837,7 @@ export default function HoldRequestsPage() {
                       )}
                       {/* The earliest expiry in the booking is the one to act on. */}
                       <ExpirationBadge expiresAt={expiry} status={status} />
+                      <LedBadge progress={ledProgress(groupItems)} />
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.HOLD}`}>
                         {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[status] ?? status)}
                       </span>

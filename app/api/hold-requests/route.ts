@@ -5,6 +5,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { reservationOwners } from '@/lib/reservationOwners'
+import { ledScheduledHoldIds, ledShiftsForJobs, type JobHold } from '@/lib/ledJobs'
 
 // EXPIRED holds accumulate forever — every lapsed hold and every Closed Lost
 // Opportunity lands here and never leaves. Ops only care about the recent tail,
@@ -49,6 +50,19 @@ export async function GET() {
 
   // Who owns each booking (the opportunity owner, else the creator), for the Owner filter.
   const owners = await reservationOwners(holds.map(h => ({ id: h.id, created_by: h.created_by, created_by_name: h.user?.name ?? null, sfdc_opportunity_id: h.sfdc_opportunity_id })))
+
+  // Committed holds LED has scheduled (lib/ledJobs.ts): the page stops listing
+  // a booking once all of it is. If the LED database can't be read, none
+  // count as scheduled, so a booking is listed rather than hidden.
+  const committed: JobHold[] = holds
+    .filter(h => h.status === 'COMMITTED' && h.sfdc_job_number)
+    .map(h => ({ id: h.id, truck_number: h.truck_number, start_date: h.start_date.toISOString().slice(0, 10), end_date: h.end_date.toISOString().slice(0, 10), job_number: h.sfdc_job_number }))
+  const inLed = await ledShiftsForJobs(committed)
+    .then(shifts => ledScheduledHoldIds(committed, shifts))
+    .catch((err) => {
+      console.error('[hold-requests] LED schedule match failed:', err)
+      return new Set<string>()
+    })
   return NextResponse.json({
     expired_window_days: EXPIRED_WINDOW_DAYS,
     holdRequests: holds.map((h) => ({
@@ -73,6 +87,8 @@ export async function GET() {
       truck_count:       h.truck_count ?? null,
       campaign_group_id: h.campaign_group_id ?? null,
       sfdc_opportunity_id: h.sfdc_opportunity_id ?? null,
+      job_number:        h.sfdc_job_number ?? null,
+      led_scheduled:     inLed.has(h.id),
       expires_at:        h.expires_at?.toISOString() ?? null,
       extension_reason:  h.extension_reason ?? null,
       extension_until:   h.extension_until?.toISOString() ?? null,

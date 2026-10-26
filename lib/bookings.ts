@@ -47,6 +47,26 @@ export function bookingStatus(rows: { status: string; market: string }[]): { sta
   return { status, odd }
 }
 
+/**
+ * How much of a booking's committed (won) part LED has scheduled: holds whose
+ * job runs on their truck in LED (lib/ledJobs.ts), of its committed holds.
+ * Null when nothing in it is committed. Pure.
+ */
+export function ledProgress(rows: { status: string; led_scheduled?: boolean }[]): { scheduled: number; of: number } | null {
+  const committed = rows.filter(r => r.status === 'COMMITTED')
+  return committed.length ? { scheduled: committed.filter(r => r.led_scheduled).length, of: committed.length } : null
+}
+
+/**
+ * A booking LED has fully taken over: every live hold is committed and
+ * scheduled in LED. Reservations stops listing it (outside its own filter);
+ * the LED schedule blocks the trucks from then on. Pure.
+ */
+export function bookingInLed(rows: { status: string; led_scheduled?: boolean }[]): boolean {
+  const live = rows.filter(r => r.status === 'HOLD' || r.status === 'EXTENSION_REQUESTED' || r.status === 'COMMITTED')
+  return live.length > 0 && live.every(r => r.status === 'COMMITTED' && r.led_scheduled)
+}
+
 /** What staff are told when a change would touch a won deal. */
 export const CLOSED_WON_READ_ONLY = 'This deal is Closed Won in Salesforce; change it there first.'
 

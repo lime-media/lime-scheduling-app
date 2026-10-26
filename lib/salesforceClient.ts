@@ -266,12 +266,15 @@ export function fieldUnreadable(err: unknown, field: string): boolean {
  * A query with an optional field: if Salesforce refuses that field, the query
  * runs again without it, so what doesn't depend on the field still works. Any
  * other failure (an outage, another field) throws as before. `withField` says
- * which ran; rows read without it don't carry the field's key at all.
+ * which ran. A caller querying in chunks passes the last `withField` back as
+ * `tryField`, so a refused field is asked for once per run, not per chunk.
  */
 export async function sfdcQueryOptionalField<T = Record<string, unknown>>(
   field: string,
   build: (withField: boolean) => string,
+  tryField = true,
 ): Promise<{ rows: T[]; withField: boolean }> {
+  if (!tryField) return { rows: await sfdcQuery<T>(build(false)), withField: false }
   try {
     return { rows: await sfdcQuery<T>(build(true)), withField: true }
   } catch (err) {

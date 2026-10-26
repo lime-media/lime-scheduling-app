@@ -17,7 +17,7 @@ import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 import { syncAttSoftHolds } from '@/lib/attSoftHolds'
 import { freeRanges } from '@/lib/ranges'
-import { isOwnLedProgram, linkedJob } from '@/lib/jobNumber'
+import { isOwnLedProgram, jobKey, linkedJob } from '@/lib/jobNumber'
 import { recordAmountChanges, recordExecuted, recordPrestart, sharedOriginMeasurer } from '@/lib/transportMetricsRecord'
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────
@@ -125,7 +125,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     index === self.findIndex((t) =>
       t.truck_number === s.truck_number &&
       t.program      === s.program &&
-      (t.job_number ?? '') === (s.job_number ?? '') &&
+      jobKey(t.job_number) === jobKey(s.job_number) &&
       t.shift_start  === s.shift_start
     )
   )
@@ -381,14 +381,14 @@ const nextDay = (d: string) => new Date(Date.parse(d + 'T00:00:00Z') + 864e5).to
 export function mergeScheduleBlocks(schedules: ConflictSchedule[]): ConflictSchedule[] {
   const sorted = [...schedules].sort((a, b) =>
     a.truck_number.localeCompare(b.truck_number) || a.program.localeCompare(b.program)
-    || (a.job_number ?? '').localeCompare(b.job_number ?? '') || a.shift_start.localeCompare(b.shift_start))
+    || (jobKey(a.job_number) ?? '').localeCompare(jobKey(b.job_number) ?? '') || a.shift_start.localeCompare(b.shift_start))
   const out: ConflictSchedule[] = []
   for (const s of sorted) {
     const last = out[out.length - 1]
     // Same-named programs with different job numbers stay apart, so a block
     // never carries one program's job number over another's days.
     if (last && last.truck_number === s.truck_number && last.program === s.program
-      && (last.job_number ?? '') === (s.job_number ?? '') && s.shift_start <= nextDay(last.shift_end)) {
+      && jobKey(last.job_number) === jobKey(s.job_number) && s.shift_start <= nextDay(last.shift_end)) {
       if (s.shift_end > last.shift_end) last.shift_end = s.shift_end
     } else {
       out.push({ ...s })

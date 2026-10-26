@@ -18,7 +18,7 @@ import { scheduledWithMarketQuery } from '@/lib/scheduleQuery'
 import { hasMarketBounds, loadStandardMarketCoords, normalizeMarketKey } from '@/lib/marketBounds'
 import { placeCoords } from '@/lib/geo/places'
 import { getLiveVehicleLocations, type SamsaraVehicleLocation } from '@/lib/samsaraService'
-import { buildTruckTimelines, type DayRow, type TruckJob } from '@/lib/truckTimeline'
+import { buildTruckTimelines, dropOwnProgramDays, type DayRow, type TruckJob } from '@/lib/truckTimeline'
 import { isOwnLedProgram, linkedJob } from '@/lib/jobNumber'
 
 export type FleetHold = {
@@ -152,8 +152,9 @@ export async function loadFleetTimelines(opts: {
       }
     })
 
+  // A won hold's own LED program days are the hold itself (dropOwnProgramDays).
   const timelines = buildTruckTimelines(
-    scheduleDays,
+    dropOwnProgramDays(scheduleDays, fleetHolds),
     fleetHolds.filter(h => h.id !== opts.excludeHoldId && !opts.excludeHoldIds?.has(h.id)),
   )
 

@@ -131,11 +131,18 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
   // Job_Number__c only links holds to LED (lib/ledJobs.ts). If this org or the
   // integration user can't read it, the stages are still read without it:
   // losing the LED link must never stop deals being committed or released.
+  // Opportunities read with Job_Number__c: only their holds' job numbers are updated.
+  const readWithJob = new Set<string>()
+  let tryJob = true
   for (const batch of chunk(uniqueIds, SOQL_ID_CHUNK)) {
     const list = batch.map((id) => `'${id}'`).join(',')
-    const { rows } = await sfdcQueryOptionalField<OpportunityStage>('Job_Number__c', (job) =>
-      `SELECT Id, StageName, IsClosed, IsWon, Amount${job ? ', Job_Number__c' : ''} FROM Opportunity WHERE Id IN (${list})`)
-    for (const row of rows) stages.set(normalizeId(row.Id), row)
+    const { rows, withField }: { rows: OpportunityStage[]; withField: boolean } = await sfdcQueryOptionalField<OpportunityStage>('Job_Number__c', (job) =>
+      `SELECT Id, StageName, IsClosed, IsWon, Amount${job ? ', Job_Number__c' : ''} FROM Opportunity WHERE Id IN (${list})`, tryJob)
+    tryJob = withField
+    for (const row of rows) {
+      stages.set(normalizeId(row.Id), row)
+      if (withField) readWithJob.add(normalizeId(row.Id))
+    }
   }
 
   summary.checked = byOpportunity.size
@@ -183,7 +190,7 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
     // Only when this opportunity was read with the field: a row read without
     // it says nothing about the job number, so the stored one stands.
     const jobNumber = realJobNumber(stage.Job_Number__c)
-    const staleJob = stage.Job_Number__c !== undefined ? group.filter(h => h.sfdc_job_number !== jobNumber).map(h => h.id) : []
+    const staleJob = readWithJob.has(key) ? group.filter(h => h.sfdc_job_number !== jobNumber).map(h => h.id) : []
     if (staleJob.length) {
       await prisma.hold.updateMany({ where: { id: { in: staleJob } }, data: { sfdc_job_number: jobNumber } })
     }

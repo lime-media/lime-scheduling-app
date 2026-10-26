@@ -16,7 +16,7 @@
  */
 
 import { carve } from '@/lib/attSoftRules'
-import { jobKey } from '@/lib/jobNumber'
+import { isOwnLedProgram, jobKey } from '@/lib/jobNumber'
 
 /** A hold in this status is a placeholder that may be voided, not a commitment. */
 export const YIELDABLE_HOLD_STATUSES = new Set(['ATT_SOFT'])
@@ -128,6 +128,30 @@ export type HoldLike = {
 /**
  * Merge grouped schedule jobs with holds into one ordered timeline per truck.
  */
+/**
+ * The schedule days left once each won hold's own LED program is taken out:
+ * on the hold's truck, its job, within its dates (lib/jobNumber.ts
+ * isOwnLedProgram). Those days are the booking scheduled, and the hold
+ * already occupies them, so keeping both shows one booking as two. Done per
+ * day, before grouping, so a block running past the hold keeps its other days
+ * (other work, which still occupies the truck), and every consumer of the
+ * timelines (availability, the infeasible audit, the swap picker) sees the
+ * same days. Pure.
+ */
+export function dropOwnProgramDays(
+  days: DayRow[],
+  holds: { truck_number: string; start_date: string; end_date: string; job_number: string | null }[],
+): DayRow[] {
+  const byTruck = new Map<string, typeof holds>()
+  for (const h of holds) {
+    if (!jobKey(h.job_number)) continue
+    byTruck.set(h.truck_number, [...(byTruck.get(h.truck_number) ?? []), h])
+  }
+  if (!byTruck.size) return days
+  return days.filter(d => !(byTruck.get(d.truckNumber) ?? []).some(h =>
+    isOwnLedProgram(h, { start: d.date, end: d.date, job_number: d.jobNumber })))
+}
+
 export function buildTruckTimelines(
   scheduleDays: DayRow[],
   holds: HoldLike[],

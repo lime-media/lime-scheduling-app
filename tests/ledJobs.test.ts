@@ -11,7 +11,7 @@ import { isOwnLedProgram, jobKey, linkedJob, realJobNumber } from '@/lib/jobNumb
 import { fieldUnreadable } from '@/lib/salesforceClient'
 import { bookingInLed, ledProgress } from '@/lib/bookings'
 import { findConflicts, type ConflictHold, type ConflictSchedule } from '@/lib/scheduleCache'
-import { groupDaysIntoJobs } from '@/lib/truckTimeline'
+import { dropOwnProgramDays, groupDaysIntoJobs } from '@/lib/truckTimeline'
 
 const h = (over: Partial<JobHold> = {}): JobHold => ({
   id: 'h1', truck_number: '6907', start_date: '2026-10-30', end_date: '2026-11-01', job_number: '26-0439-300', days_sold: 3, ...over,
@@ -118,3 +118,13 @@ eq('committed', linkedJob({ status: 'COMMITTED', sfdc_job_number: '26-0500-300' 
 eq('a reservation with a job number does not', linkedJob({ status: 'HOLD', sfdc_job_number: '26-0500-300' }), null)
 eq('a reopened deal (back to HOLD) does not', linkedJob({ status: 'EXTENSION_REQUESTED', sfdc_job_number: '26-0500-300' }), null)
 
+
+section('dropOwnProgramDays: a won hold\'s own program days, and only those, leave the timeline')
+const dday = (date: string, jobNumber: string, truckNumber = '6907') => ({ truckNumber, date, market: 'Phoenix', state: 'AZ', program: 'PHX', jobNumber })
+const wonPhx = { truck_number: '6907', start_date: '2026-10-01', end_date: '2026-10-10', job_number: '26-0439-300' }
+const straddle = ['2026-10-08', '2026-10-09', '2026-10-10', '2026-10-11', '2026-10-12'].map(d => dday(d, '26-0439-300'))
+eq('a block running past the hold keeps its days after the hold', dropOwnProgramDays(straddle, [wonPhx]).map(d => d.date), ['2026-10-11', '2026-10-12'])
+eq('the kept tail is still a job on the timeline', (groupDaysIntoJobs(dropOwnProgramDays(straddle, [wonPhx])).get('6907') ?? []).map(j => [j.start, j.end]), [['2026-10-11', '2026-10-12']])
+eq('another truck\'s days of the job stay (a separate hold covers those)', dropOwnProgramDays([dday('2026-10-05', '26-0439-300', '1261')], [wonPhx]).length, 1)
+eq('another job on the hold\'s truck stays', dropOwnProgramDays([dday('2026-10-05', '26-0387-300')], [wonPhx]).length, 1)
+eq('a hold with no linked job drops nothing', dropOwnProgramDays(straddle, [{ ...wonPhx, job_number: null }]).length, 5)

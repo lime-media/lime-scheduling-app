@@ -17,7 +17,7 @@ import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 import { syncAttSoftHolds } from '@/lib/attSoftHolds'
 import { freeRanges } from '@/lib/ranges'
-import { jobKey } from '@/lib/jobNumber'
+import { isOwnLedProgram, linkedJob } from '@/lib/jobNumber'
 import { recordAmountChanges, recordExecuted, recordPrestart, sharedOriginMeasurer } from '@/lib/transportMetricsRecord'
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────
@@ -139,9 +139,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     start_date:          h.start_date.toISOString().split('T')[0],
     end_date:            h.end_date.toISOString().split('T')[0],
     sfdc_opportunity_id: h.sfdc_opportunity_id,
-    // Only a won booking is linked to its LED program: a tentative or
-    // reopened reservation still conflicts with a program sharing its job.
-    job_number:          h.status === 'COMMITTED' ? h.sfdc_job_number : null,
+    job_number:          linkedJob(h),
   }))
 
   // Before detection: a conflict whose window merely shifted is closed here and re-raised
@@ -415,13 +413,12 @@ export function findConflicts(
   const blocks = mergeScheduleBlocks(schedules)
 
   for (const hold of holds) {
-    // A program carrying the hold's own job number is this booking scheduled
-    // in LED, not a clash with it (lib/ledJobs.ts).
-    const ownJob = jobKey(hold.job_number)
+    // A won hold's own program is this booking scheduled in LED, not a clash
+    // with it (lib/jobNumber.ts isOwnLedProgram).
     const overlapping = blocks.filter(
       (s) =>
         s.truck_number === hold.truck_number &&
-        !(ownJob && jobKey(s.job_number) === ownJob) &&
+        !isOwnLedProgram(hold, { start: s.shift_start, end: s.shift_end, job_number: s.job_number }) &&
         s.shift_start  <= hold.end_date &&
         s.shift_end    >= hold.start_date
     )

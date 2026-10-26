@@ -252,6 +252,36 @@ export async function sfdcQuery<T = Record<string, unknown>>(soql: string): Prom
 }
 
 /**
+ * Whether a failed query was Salesforce refusing `field` itself: missing in
+ * this org, or hidden from the integration user ("INVALID_FIELD ... No such
+ * column '<field>'"). The message repeats the whole query, so the column it
+ * names is what's matched, not any mention of the field. Pure.
+ */
+export function fieldUnreadable(err: unknown, field: string): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /INVALID_FIELD/.test(msg) && msg.toLowerCase().includes(`no such column '${field.toLowerCase()}'`)
+}
+
+/**
+ * A query with an optional field: if Salesforce refuses that field, the query
+ * runs again without it, so what doesn't depend on the field still works. Any
+ * other failure (an outage, another field) throws as before. `withField` says
+ * which ran; rows read without it don't carry the field's key at all.
+ */
+export async function sfdcQueryOptionalField<T = Record<string, unknown>>(
+  field: string,
+  build: (withField: boolean) => string,
+): Promise<{ rows: T[]; withField: boolean }> {
+  try {
+    return { rows: await sfdcQuery<T>(build(true)), withField: true }
+  } catch (err) {
+    if (!fieldUnreadable(err, field)) throw err
+    console.error(`[sfdc] ${field} not readable; querying without it:`, err)
+    return { rows: await sfdcQuery<T>(build(false)), withField: false }
+  }
+}
+
+/**
  * Check if SFDC credentials are configured.
  */
 export function isSfdcConfigured(): boolean {

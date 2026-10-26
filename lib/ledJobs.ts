@@ -101,8 +101,8 @@ SELECT
     LTRIM(RTRIM(cp.job_number)) AS job_number,
     CONVERT(varchar(10), CAST(ps.start_time AS DATE), 120) AS shift_date
 FROM OPENJSON(@holds) WITH (
-    truck NVARCHAR(20) '$.truck',
-    job   NVARCHAR(50) '$.job',
+    truck NVARCHAR(4000) '$.truck',
+    job   NVARCHAR(4000) '$.job',
     s     DATE         '$.start',
     e     DATE         '$.end'
 ) h
@@ -111,7 +111,7 @@ JOIN dbo.program_schedule ps ON ps.truck_uid = t.truck_uid
                             AND ps.start_time >= h.s AND ps.start_time < DATEADD(day, 1, h.e)
 JOIN dbo.client_programs cp ON cp.client_program_uid = ps.client_program_uid
 WHERE COALESCE(cp.is_deleted, 0) = 0
-  AND UPPER(LTRIM(RTRIM(cp.job_number))) = h.job
+  AND LTRIM(RTRIM(cp.job_number)) = h.job  -- the LED column's collation is case-insensitive
 `
 
 /** The LED shifts of each hold's job on its truck within its dates. Reads the LED database; throws if it can't. */

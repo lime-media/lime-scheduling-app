@@ -19,7 +19,7 @@ import { hasMarketBounds, loadStandardMarketCoords, normalizeMarketKey } from '@
 import { placeCoords } from '@/lib/geo/places'
 import { getLiveVehicleLocations, type SamsaraVehicleLocation } from '@/lib/samsaraService'
 import { buildTruckTimelines, type DayRow, type TruckJob } from '@/lib/truckTimeline'
-import { jobKey } from '@/lib/jobNumber'
+import { isOwnLedProgram, linkedJob } from '@/lib/jobNumber'
 
 export type FleetHold = {
   id: string
@@ -63,11 +63,12 @@ export async function loadFleetTimelines(opts: {
   /** Omit these holds — a booking being revised, so its own trucks are free to it. */
   excludeHoldIds?: Set<string>
   /**
-   * Omit LED programs with this job number: a won hold's own program is that
-   * booking scheduled, so it mustn't make a truck look taken to it (the swap
-   * picker lining a won hold up with LED; lib/ledJobs.ts).
+   * A won hold whose own LED program (its job, within its dates, on any truck)
+   * is left out: it's that booking scheduled, so it mustn't make the truck LED
+   * put it on look taken (the swap picker; lib/jobNumber.ts isOwnLedProgram).
+   * The same job on other dates is other work and stays.
    */
-  ownJobNumber?: string | null
+  ownProgramOf?: { start_date: string; end_date: string; job_number: string | null }
   /**
    * Explicit schedule window (YYYY-MM-DD, inclusive) instead of the rolling
    * -30/+63 days. For planning programs that run past the rolling window; the
@@ -97,14 +98,14 @@ export async function loadFleetTimelines(opts: {
     ] as const),
   ])
 
-  const ownJob = jobKey(opts.ownJobNumber)
+  const own = opts.ownProgramOf
   const scheduleDays: DayRow[] = []
   for (const row of scheduleRows) {
     const truckNumber = String(row.truck_number ?? '')
     if (!truckNumber || hidden.has(truckNumber)) continue
-    if (ownJob && jobKey(String(row.job_number ?? '')) === ownJob) continue
     const day = toDateStr(row.shift_start)
     if (!day) continue
+    if (own && isOwnLedProgram(own, { start: day, end: day, job_number: String(row.job_number ?? '') })) continue
     const lat = Number(row.market_lat)
     const lng = Number(row.market_lng)
     scheduleDays.push({
@@ -145,7 +146,7 @@ export async function loadFleetTimelines(opts: {
         client_name: h.client_name,
         origination: h.origination,
         source: h.source,
-        job_number: h.status === 'COMMITTED' ? h.sfdc_job_number : null,
+        job_number: linkedJob(h),
         lat: coords?.lat,
         lng: coords?.lng,
       }

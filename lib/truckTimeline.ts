@@ -16,6 +16,7 @@
  */
 
 import { carve } from '@/lib/attSoftRules'
+import { jobKey } from '@/lib/jobNumber'
 
 /** A hold in this status is a placeholder that may be voided, not a commitment. */
 export const YIELDABLE_HOLD_STATUSES = new Set(['ATT_SOFT'])
@@ -88,7 +89,7 @@ export function groupDaysIntoJobs(rows: DayRow[]): Map<string, TruckJob[]> {
         last !== undefined
         && last.market === day.market
         && last.program === day.program
-        && last.jobNumber === day.jobNumber
+        && jobKey(last.jobNumber) === jobKey(day.jobNumber)
         && (last.end === day.date || nextDayStr(last.end) === day.date)
       if (contiguous) {
         last.end = day.date > last.end ? day.date : last.end

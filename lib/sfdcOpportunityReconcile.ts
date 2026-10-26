@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/prisma'
-import { sfdcQuery, updateOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
+import { sfdcQuery, sfdcQueryOptionalField, updateOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { SFDC_SERVICE_USER_EMAIL, reconcileTarget } from '@/lib/sfdcIntegration'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry } from '@/lib/holdExpiry'
 import { centralDate } from '@/lib/dateOnly'
@@ -74,16 +74,6 @@ export interface SfdcReconcileSummary {
   changedOpportunities: string[]
 }
 
-/**
- * Whether a failed stage query was Salesforce refusing the Job_Number__c field
- * (missing in the org, or hidden from the integration user), as opposed to an
- * outage, which must still stop the reconcile. Pure.
- */
-export function jobNumberUnreadable(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err)
-  return /INVALID_FIELD/.test(msg) && /Job_Number__c/i.test(msg)
-}
-
 /** Salesforce treats 15- and 18-char ids interchangeably; the API always returns 18. */
 function normalizeId(id: string): string {
   return id.slice(0, 15)
@@ -141,21 +131,10 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
   // Job_Number__c only links holds to LED (lib/ledJobs.ts). If this org or the
   // integration user can't read it, the stages are still read without it:
   // losing the LED link must never stop deals being committed or released.
-  let withJobNumber = true
   for (const batch of chunk(uniqueIds, SOQL_ID_CHUNK)) {
     const list = batch.map((id) => `'${id}'`).join(',')
-    const stageQuery = (job: boolean) => sfdcQuery<OpportunityStage>(
-      `SELECT Id, StageName, IsClosed, IsWon, Amount${job ? ', Job_Number__c' : ''} FROM Opportunity WHERE Id IN (${list})`
-    )
-    let rows: OpportunityStage[]
-    try {
-      rows = await stageQuery(withJobNumber)
-    } catch (err) {
-      if (!withJobNumber || !jobNumberUnreadable(err)) throw err
-      console.error('[sfdc-reconcile] Job_Number__c not readable; reading stages without it (LED links not updated):', err)
-      withJobNumber = false
-      rows = await stageQuery(false)
-    }
+    const { rows } = await sfdcQueryOptionalField<OpportunityStage>('Job_Number__c', (job) =>
+      `SELECT Id, StageName, IsClosed, IsWon, Amount${job ? ', Job_Number__c' : ''} FROM Opportunity WHERE Id IN (${list})`)
     for (const row of rows) stages.set(normalizeId(row.Id), row)
   }
 
@@ -201,8 +180,10 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
     // The job number, on every hold of the opportunity: a won deal gets one,
     // and its LED program carries the same (lib/ledJobs.ts). Kept current, so
     // a corrected job number in Salesforce follows through.
+    // Only when this opportunity was read with the field: a row read without
+    // it says nothing about the job number, so the stored one stands.
     const jobNumber = realJobNumber(stage.Job_Number__c)
-    const staleJob = withJobNumber ? group.filter(h => h.sfdc_job_number !== jobNumber).map(h => h.id) : []
+    const staleJob = stage.Job_Number__c !== undefined ? group.filter(h => h.sfdc_job_number !== jobNumber).map(h => h.id) : []
     if (staleJob.length) {
       await prisma.hold.updateMany({ where: { id: { in: staleJob } }, data: { sfdc_job_number: jobNumber } })
     }

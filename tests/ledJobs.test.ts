@@ -7,8 +7,8 @@
  */
 import { eq, section } from './harness'
 import { daysSold, ledStandings, type JobHold } from '@/lib/ledJobs'
-import { jobKey, realJobNumber } from '@/lib/jobNumber'
-import { jobNumberUnreadable } from '@/lib/sfdcOpportunityReconcile'
+import { isOwnLedProgram, jobKey, linkedJob, realJobNumber } from '@/lib/jobNumber'
+import { fieldUnreadable } from '@/lib/salesforceClient'
 import { bookingInLed, ledProgress } from '@/lib/bookings'
 import { findConflicts, type ConflictHold, type ConflictSchedule } from '@/lib/scheduleCache'
 import { groupDaysIntoJobs } from '@/lib/truckTimeline'
@@ -91,12 +91,30 @@ const tl = groupDaysIntoJobs([day('2026-10-30', '26-0439-300'), day('2026-10-31'
 eq('one job, its job number kept', tl.map(j => [j.start, j.end, j.jobNumber]), [['2026-10-30', '2026-10-31', '26-0439-300']])
 eq('same program name, different job: two jobs', (groupDaysIntoJobs([day('2026-10-30', '26-0439-300'), day('2026-10-31', '26-0387-300')]).get('6907') ?? []).length, 2)
 
-section('reconcile: an unreadable Job_Number__c only drops the LED link')
-eq('INVALID_FIELD on Job_Number__c is the field', jobNumberUnreadable(new Error("Salesforce SOQL query failed — INVALID_FIELD: No such column 'Job_Number__c' on entity 'Opportunity'")), true)
-eq('an outage is not', jobNumberUnreadable(new Error('Salesforce SOQL query failed — HTTP 503')), false)
-eq('another bad field is not', jobNumberUnreadable(new Error("Salesforce SOQL query failed — INVALID_FIELD: No such column 'Amount'")), false)
+section('Salesforce: an unreadable Job_Number__c only drops the LED link')
+// Salesforce's INVALID_FIELD message repeats the whole query, so every one mentions Job_Number__c.
+const invalid = (col: string) => new Error(`Salesforce SOQL query failed — INVALID_FIELD: \nSELECT Id, StageName, IsClosed, IsWon, Amount, Job_Number__c FROM Opportunity\n ^\nERROR at Row:1:Column:44\nNo such column '${col}' on entity 'Opportunity'. If you are attempting to use a custom field, be sure to append the '__c' after the custom field name.`)
+eq('Job_Number__c refused: that field', fieldUnreadable(invalid('Job_Number__c'), 'Job_Number__c'), true)
+eq('Amount refused (query still names Job_Number__c): not that field', fieldUnreadable(invalid('Amount'), 'Job_Number__c'), false)
+eq('an outage is not', fieldUnreadable(new Error('Salesforce SOQL query failed — HTTP 503'), 'Job_Number__c'), false)
 
 section('job numbers match whatever their case')
 eq('jobKey folds case', jobKey(' 26-0439-300a '), '26-0439-300A')
 eq('jobKey: placeholder is none', jobKey('00-0000-000'), null)
 eq('standings match across case', ledStandings([h({ job_number: '26-0439-300a' })], [shift('6907', '26-0439-300A', '2026-10-30')]).get('h1')?.days, 1)
+
+section('isOwnLedProgram: a won hold\'s own program, within its dates')
+const wonHold = { start_date: '2026-10-01', end_date: '2026-10-10', job_number: '26-0500-300' }
+eq('its job within its dates', isOwnLedProgram(wonHold, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300' }), true)
+eq('its job, case differs', isOwnLedProgram(wonHold, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300'.toLowerCase() }), true)
+eq('a block overlapping its dates', isOwnLedProgram(wonHold, { start: '2026-09-28', end: '2026-10-02', job_number: '26-0500-300' }), true)
+eq('its job on other dates (another market of the booking) is other work', isOwnLedProgram(wonHold, { start: '2026-10-12', end: '2026-10-20', job_number: '26-0500-300' }), false)
+eq('another job is not', isOwnLedProgram(wonHold, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0387-300' }), false)
+eq('no job on the hold: never', isOwnLedProgram({ ...wonHold, job_number: null }, { start: '2026-10-05', end: '2026-10-05', job_number: '' }), false)
+eq('placeholder jobs never link', isOwnLedProgram({ ...wonHold, job_number: '00-0000-000' }, { start: '2026-10-05', end: '2026-10-05', job_number: '00-0000-000' }), false)
+
+section('linkedJob: only a won hold links to LED')
+eq('committed', linkedJob({ status: 'COMMITTED', sfdc_job_number: '26-0500-300' }), '26-0500-300')
+eq('a reservation with a job number does not', linkedJob({ status: 'HOLD', sfdc_job_number: '26-0500-300' }), null)
+eq('a reopened deal (back to HOLD) does not', linkedJob({ status: 'EXTENSION_REQUESTED', sfdc_job_number: '26-0500-300' }), null)
+

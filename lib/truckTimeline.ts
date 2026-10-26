@@ -35,6 +35,8 @@ export type TruckJob = {
   lat?: number
   lng?: number
   program?: string
+  /** The LED program's job number (lib/ledJobs.ts); schedule jobs only. */
+  jobNumber?: string
   /** Booking client, when the loader was asked for it (windowed loads only). */
   client?: string
   source: TruckJobSource
@@ -49,6 +51,7 @@ export type DayRow = {
   market: string
   state: string
   program?: string
+  jobNumber?: string
   client?: string
   lat?: number
   lng?: number
@@ -85,6 +88,7 @@ export function groupDaysIntoJobs(rows: DayRow[]): Map<string, TruckJob[]> {
         last !== undefined
         && last.market === day.market
         && last.program === day.program
+        && last.jobNumber === day.jobNumber
         && (last.end === day.date || nextDayStr(last.end) === day.date)
       if (contiguous) {
         last.end = day.date > last.end ? day.date : last.end
@@ -95,6 +99,7 @@ export function groupDaysIntoJobs(rows: DayRow[]): Map<string, TruckJob[]> {
           market: day.market,
           state: day.state,
           program: day.program,
+          jobNumber: day.jobNumber,
           client: day.client,
           lat: day.lat,
           lng: day.lng,

@@ -31,6 +31,8 @@ export type FleetHold = {
   client_name: string
   origination: string
   source: string
+  /** A won hold's job number: its own LED program is no clash (lib/ledJobs.ts). Null otherwise. */
+  job_number: string | null
   lat?: number
   lng?: number
 }
@@ -102,6 +104,7 @@ export async function loadFleetTimelines(opts: {
       market: normalizeMarket(row.standard_market_name || row.market),
       state: String(row.state ?? ''),
       program: String(row.program ?? ''),
+      jobNumber: String(row.job_number ?? ''),
       client: window ? String(row.client ?? '') : undefined,
       // Only when the database supplied them AND they are real numbers; a
       // market row with null bounds behaves exactly like the columns being absent.
@@ -133,6 +136,7 @@ export async function loadFleetTimelines(opts: {
         client_name: h.client_name,
         origination: h.origination,
         source: h.source,
+        job_number: h.status === 'COMMITTED' ? h.sfdc_job_number : null,
         lat: coords?.lat,
         lng: coords?.lng,
       }

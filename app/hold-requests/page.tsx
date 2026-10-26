@@ -151,10 +151,13 @@ function ReviseLink({ rows, booking }: { rows: HoldRequest[]; booking?: HoldRequ
 }
 
 /** Where a won booking stands in LED: matched by its job number on each truck (lib/ledJobs.ts). */
-function LedBadge({ progress, inLed }: { progress: { days: number; of: number; known: boolean } | null; inLed: boolean }) {
+function LedBadge({ progress, inLed, unavailable }: { progress: { days: number; of: number; known: boolean } | null; inLed: boolean; unavailable: boolean }) {
   if (!progress) return null
   if (inLed) {
     return <span className="text-xs text-green-700 font-medium" title="LED runs this job on every truck for all the days sold">Scheduled in LED</span>
+  }
+  if (unavailable) {
+    return <span className="text-xs text-gray-500" title="The LED schedule couldn't be read, so this booking's LED status is unknown">LED status unavailable</span>
   }
   if (!progress.known) {
     return <span className="text-xs text-gray-500" title="This deal has no job number yet, so it can't be matched to an LED program">No job number yet</span>
@@ -278,6 +281,8 @@ export default function HoldRequestsPage() {
   // Whether staff changed the expiry field (it opens on the soonest expiry).
   const [expiryEdited, setExpiryEdited] = useState(false)
   const [expiredWindowDays, setExpiredWindowDays] = useState<number | null>(null)
+  // The LED schedule couldn't be read: won bookings' LED badges say so.
+  const [ledUnavailable, setLedUnavailable] = useState(false)
   const [saving, setSaving] = useState(false)
 
   // A change to the AT&T truck list being drafted (components/AttRosterPanel.tsx).
@@ -327,6 +332,7 @@ export default function HoldRequestsPage() {
       const data = await res.json()
       setRequests(data.holdRequests || [])
       setExpiredWindowDays(typeof data.expired_window_days === 'number' ? data.expired_window_days : null)
+      setLedUnavailable(data.led_unavailable === true)
     } catch (err) {
       toast.error('Failed to load hold requests')
       console.error(err)
@@ -842,7 +848,7 @@ export default function HoldRequestsPage() {
                       )}
                       {/* The earliest expiry in the booking is the one to act on. */}
                       <ExpirationBadge expiresAt={expiry} status={status} />
-                      <LedBadge progress={ledProgress(groupItems)} inLed={bookingInLed(groupItems)} />
+                      <LedBadge progress={ledProgress(groupItems)} inLed={bookingInLed(groupItems)} unavailable={ledUnavailable} />
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.HOLD}`}>
                         {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[status] ?? status)}
                       </span>

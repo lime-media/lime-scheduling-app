@@ -10,6 +10,7 @@ import { daysSold, ledStandings, type JobHold } from '@/lib/ledJobs'
 import { realJobNumber } from '@/lib/jobNumber'
 import { bookingInLed, ledProgress } from '@/lib/bookings'
 import { findConflicts, type ConflictHold, type ConflictSchedule } from '@/lib/scheduleCache'
+import { groupDaysIntoJobs } from '@/lib/truckTimeline'
 
 const h = (over: Partial<JobHold> = {}): JobHold => ({
   id: 'h1', truck_number: '6907', start_date: '2026-10-30', end_date: '2026-11-01', job_number: '26-0439-300', days_sold: 3, ...over,
@@ -59,6 +60,10 @@ eq('extra LED days don\'t cover another truck\'s shortfall', ledProgress([
   { status: 'COMMITTED', led_days: 0, led_days_sold: 3 },
 ]), { days: 3, of: 6, known: true })
 eq('a committed hold with no job number: not known', ledProgress([{ status: 'COMMITTED', led_days: 0, led_days_sold: null }])?.known, false)
+eq('a hold with no job number doesn\'t hide the others\' progress', ledProgress([
+  { status: 'COMMITTED', led_days: 2, led_days_sold: 2 },
+  { status: 'COMMITTED', led_days: 0, led_days_sold: null },
+]), { days: 2, of: 2, known: true })
 eq('no committed holds: no progress', ledProgress([{ status: 'HOLD' }]), null)
 
 section('findConflicts: a booking against its own LED program')
@@ -75,3 +80,9 @@ eq('maintenance (placeholder job) still is', findConflicts([block({ program: 'Tr
 eq('a hold with no job number conflicts as before', findConflicts([block()], [ch({ job_number: null })]).length, 1)
 eq('own job skipped, other program on the same days kept', findConflicts([block(), block({ program: 'ATT FIBER', job_number: '26-0387-300' })], [ch()]).map(c => c.program), ['ATT FIBER'])
 eq('a same-named program with another job still conflicts', findConflicts([block(), block({ shift_start: '2026-10-31', shift_end: '2026-10-31', job_number: '26-0387-300' })], [ch()]).length, 1)
+
+section('truck timelines carry the job number (the infeasible audit skips a won hold\'s own program)')
+const day = (date: string, jobNumber: string) => ({ truckNumber: '6907', date, market: 'Phoenix', state: 'AZ', program: 'PHX', jobNumber })
+const tl = groupDaysIntoJobs([day('2026-10-30', '26-0439-300'), day('2026-10-31', '26-0439-300')]).get('6907') ?? []
+eq('one job, its job number kept', tl.map(j => [j.start, j.end, j.jobNumber]), [['2026-10-30', '2026-10-31', '26-0439-300']])
+eq('same program name, different job: two jobs', (groupDaysIntoJobs([day('2026-10-30', '26-0439-300'), day('2026-10-31', '26-0387-300')]).get('6907') ?? []).length, 2)

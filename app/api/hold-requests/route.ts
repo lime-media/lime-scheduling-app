@@ -61,17 +61,22 @@ export async function GET() {
       return { id: h.id, truck_number: h.truck_number, start_date: start, end_date: end, job_number: h.sfdc_job_number, days_sold: daysSold(h.features, start, end) }
     })
   // Who owns each booking (the opportunity owner, else the creator), for the Owner filter.
+  // `ledUnavailable` tells the page the LED read failed, so a badge says so
+  // instead of "No job number yet" on every won booking.
+  let ledUnavailable = false
   const [owners, inLed] = await Promise.all([
     reservationOwners(holds.map(h => ({ id: h.id, created_by: h.created_by, created_by_name: h.user?.name ?? null, sfdc_opportunity_id: h.sfdc_opportunity_id }))),
     ledShiftsForJobs(committed)
       .then(shifts => ledStandings(committed, shifts))
       .catch((err) => {
         console.error('[hold-requests] LED schedule match failed:', err)
+        ledUnavailable = true
         return new Map<string, LedStanding>()
       }),
   ])
   return NextResponse.json({
     expired_window_days: EXPIRED_WINDOW_DAYS,
+    led_unavailable: ledUnavailable,
     holdRequests: holds.map((h) => ({
       id:                h.id,
       truck_number:      h.truck_number,

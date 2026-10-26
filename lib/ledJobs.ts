@@ -19,6 +19,7 @@
 
 import { query } from '@/lib/mssql'
 import { realJobNumber } from '@/lib/jobNumber'
+import { activationDaysOf } from '@/lib/transportMetrics'
 
 /**
  * A hold as the LED match needs it. Dates are YYYY-MM-DD, inclusive.
@@ -43,11 +44,8 @@ export function calendarDays(start: string, end: string): number {
  */
 export function daysSold(features: string | null, start: string, end: string): number {
   const span = calendarDays(start, end)
-  try {
-    const sold = features ? (JSON.parse(features) as { activationDays?: unknown }).activationDays : undefined
-    if (typeof sold === 'number' && Number.isInteger(sold) && sold > 0) return Math.min(sold, span)
-  } catch { /* unreadable features: fall back to the span */ }
-  return span
+  const sold = activationDaysOf(features)
+  return sold !== null && Number.isInteger(sold) && sold > 0 ? Math.min(sold, span) : span
 }
 
 /** How a hold stands in LED: the days its job runs on its truck within its dates, of the days sold. */
@@ -81,10 +79,13 @@ export function ledStandings(holds: JobHold[], shifts: JobShift[]): Map<string, 
   return out
 }
 
-// Every LED shift of the given jobs, by truck and day. The job list arrives as
-// one JSON parameter, so it never reaches the SQL text.
+// Every LED shift of the given jobs, by truck and day, within the holds' dates
+// (a hold only counts days inside its own range, so older shifts are never
+// needed). The job list arrives as one JSON parameter, so it never reaches the
+// SQL text. A day with several shifts comes back more than once; ledStandings
+// counts each day once.
 const JOB_SHIFTS_QUERY = `
-SELECT DISTINCT
+SELECT
     t.truck_number,
     LTRIM(RTRIM(cp.job_number)) AS job_number,
     CONVERT(varchar(10), CAST(ps.start_time AS DATE), 120) AS shift_date
@@ -93,11 +94,14 @@ JOIN dbo.trucks t           ON t.truck_uid = ps.truck_uid
 JOIN dbo.client_programs cp ON cp.client_program_uid = ps.client_program_uid
 WHERE COALESCE(cp.is_deleted, 0) = 0
   AND LTRIM(RTRIM(cp.job_number)) IN (SELECT value FROM OPENJSON(@jobs))
+  AND ps.start_time >= CAST(@from AS DATE) AND ps.start_time < DATEADD(day, 1, CAST(@to AS DATE))
 `
 
 /** The LED shifts of these holds' jobs. Reads the LED database; throws if it can't. */
 export async function ledShiftsForJobs(holds: JobHold[]): Promise<JobShift[]> {
   const jobs = [...new Set(holds.map(h => realJobNumber(h.job_number)).filter((j): j is string => !!j))]
   if (!jobs.length) return []
-  return query<JobShift[]>(JOB_SHIFTS_QUERY, { jobs: JSON.stringify(jobs) })
+  const from = holds.reduce((m, h) => (h.start_date < m ? h.start_date : m), holds[0].start_date)
+  const to = holds.reduce((m, h) => (h.end_date > m ? h.end_date : m), holds[0].end_date)
+  return query<JobShift[]>(JOB_SHIFTS_QUERY, { jobs: JSON.stringify(jobs), from, to })
 }

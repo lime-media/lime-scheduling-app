@@ -17,7 +17,7 @@ import { loadFleetTimelines } from '@/lib/fleetTimelines'
 import { checkChainFeasibility } from '@/lib/chainFeasibility'
 import { findWindowClash } from '@/lib/truckTimeline'
 import type { TruckJob } from '@/lib/truckTimeline'
-import { realJobNumber } from '@/lib/jobNumber'
+import { jobKey } from '@/lib/jobNumber'
 
 export type InfeasibleHold = {
   holdId: string
@@ -90,11 +90,11 @@ export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
     // The hold under test must not appear in its own chain, and a won hold's
     // own LED program (its job number) is the booking scheduled, not a clash
     // with it, as in the conflict sweep (lib/scheduleCache.ts findConflicts).
-    const ownJob = realJobNumber(h.job_number)
+    const ownJob = jobKey(h.job_number)
     const jobs: TruckJob[] = (timelines.get(h.truck_number) ?? []).filter(
       j => !(j.source === 'HOLD' && j.start === h.start_date && j.end === h.end_date
              && j.market === h.market && j.status === h.status)
-        && !(ownJob && j.source === 'SCHEDULE' && realJobNumber(j.jobNumber) === ownJob),
+        && !(ownJob && j.source === 'SCHEDULE' && jobKey(j.jobNumber) === ownJob),
     )
 
     checked++

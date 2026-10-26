@@ -5,7 +5,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { reservationOwners } from '@/lib/reservationOwners'
-import { daysSold, ledShiftsForJobs, ledStandings, type JobHold, type LedStanding } from '@/lib/ledJobs'
+import { daysSold, ledShiftsForHolds, ledStandings, type JobHold, type LedStanding } from '@/lib/ledJobs'
 
 // EXPIRED holds accumulate forever — every lapsed hold and every Closed Lost
 // Opportunity lands here and never leaves. Ops only care about the recent tail,
@@ -66,7 +66,7 @@ export async function GET() {
   let ledUnavailable = false
   const [owners, inLed] = await Promise.all([
     reservationOwners(holds.map(h => ({ id: h.id, created_by: h.created_by, created_by_name: h.user?.name ?? null, sfdc_opportunity_id: h.sfdc_opportunity_id }))),
-    ledShiftsForJobs(committed)
+    ledShiftsForHolds(committed)
       .then(shifts => ledStandings(committed, shifts))
       .catch((err) => {
         console.error('[hold-requests] LED schedule match failed:', err)

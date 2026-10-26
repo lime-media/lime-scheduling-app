@@ -7,7 +7,8 @@
  */
 import { eq, section } from './harness'
 import { daysSold, ledStandings, type JobHold } from '@/lib/ledJobs'
-import { realJobNumber } from '@/lib/jobNumber'
+import { jobKey, realJobNumber } from '@/lib/jobNumber'
+import { jobNumberUnreadable } from '@/lib/sfdcOpportunityReconcile'
 import { bookingInLed, ledProgress } from '@/lib/bookings'
 import { findConflicts, type ConflictHold, type ConflictSchedule } from '@/lib/scheduleCache'
 import { groupDaysIntoJobs } from '@/lib/truckTimeline'
@@ -89,3 +90,13 @@ const day = (date: string, jobNumber: string) => ({ truckNumber: '6907', date, m
 const tl = groupDaysIntoJobs([day('2026-10-30', '26-0439-300'), day('2026-10-31', '26-0439-300')]).get('6907') ?? []
 eq('one job, its job number kept', tl.map(j => [j.start, j.end, j.jobNumber]), [['2026-10-30', '2026-10-31', '26-0439-300']])
 eq('same program name, different job: two jobs', (groupDaysIntoJobs([day('2026-10-30', '26-0439-300'), day('2026-10-31', '26-0387-300')]).get('6907') ?? []).length, 2)
+
+section('reconcile: an unreadable Job_Number__c only drops the LED link')
+eq('INVALID_FIELD on Job_Number__c is the field', jobNumberUnreadable(new Error("Salesforce SOQL query failed — INVALID_FIELD: No such column 'Job_Number__c' on entity 'Opportunity'")), true)
+eq('an outage is not', jobNumberUnreadable(new Error('Salesforce SOQL query failed — HTTP 503')), false)
+eq('another bad field is not', jobNumberUnreadable(new Error("Salesforce SOQL query failed — INVALID_FIELD: No such column 'Amount'")), false)
+
+section('job numbers match whatever their case')
+eq('jobKey folds case', jobKey(' 26-0439-300a '), '26-0439-300A')
+eq('jobKey: placeholder is none', jobKey('00-0000-000'), null)
+eq('standings match across case', ledStandings([h({ job_number: '26-0439-300a' })], [shift('6907', '26-0439-300A', '2026-10-30')]).get('h1')?.days, 1)

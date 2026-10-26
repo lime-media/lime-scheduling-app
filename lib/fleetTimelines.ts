@@ -19,6 +19,7 @@ import { hasMarketBounds, loadStandardMarketCoords, normalizeMarketKey } from '@
 import { placeCoords } from '@/lib/geo/places'
 import { getLiveVehicleLocations, type SamsaraVehicleLocation } from '@/lib/samsaraService'
 import { buildTruckTimelines, type DayRow, type TruckJob } from '@/lib/truckTimeline'
+import { jobKey } from '@/lib/jobNumber'
 
 export type FleetHold = {
   id: string
@@ -62,6 +63,12 @@ export async function loadFleetTimelines(opts: {
   /** Omit these holds — a booking being revised, so its own trucks are free to it. */
   excludeHoldIds?: Set<string>
   /**
+   * Omit LED programs with this job number: a won hold's own program is that
+   * booking scheduled, so it mustn't make a truck look taken to it (the swap
+   * picker lining a won hold up with LED; lib/ledJobs.ts).
+   */
+  ownJobNumber?: string | null
+  /**
    * Explicit schedule window (YYYY-MM-DD, inclusive) instead of the rolling
    * -30/+63 days. For planning programs that run past the rolling window; the
    * windowed load also carries each job's booking client.
@@ -90,10 +97,12 @@ export async function loadFleetTimelines(opts: {
     ] as const),
   ])
 
+  const ownJob = jobKey(opts.ownJobNumber)
   const scheduleDays: DayRow[] = []
   for (const row of scheduleRows) {
     const truckNumber = String(row.truck_number ?? '')
     if (!truckNumber || hidden.has(truckNumber)) continue
+    if (ownJob && jobKey(String(row.job_number ?? '')) === ownJob) continue
     const day = toDateStr(row.shift_start)
     if (!day) continue
     const lat = Number(row.market_lat)

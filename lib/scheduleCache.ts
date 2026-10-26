@@ -17,7 +17,7 @@ import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 import { syncAttSoftHolds } from '@/lib/attSoftHolds'
 import { freeRanges } from '@/lib/ranges'
-import { realJobNumber } from '@/lib/jobNumber'
+import { jobKey } from '@/lib/jobNumber'
 import { recordAmountChanges, recordExecuted, recordPrestart, sharedOriginMeasurer } from '@/lib/transportMetricsRecord'
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────
@@ -417,11 +417,11 @@ export function findConflicts(
   for (const hold of holds) {
     // A program carrying the hold's own job number is this booking scheduled
     // in LED, not a clash with it (lib/ledJobs.ts).
-    const ownJob = realJobNumber(hold.job_number)
+    const ownJob = jobKey(hold.job_number)
     const overlapping = blocks.filter(
       (s) =>
         s.truck_number === hold.truck_number &&
-        !(ownJob && realJobNumber(s.job_number) === ownJob) &&
+        !(ownJob && jobKey(s.job_number) === ownJob) &&
         s.shift_start  <= hold.end_date &&
         s.shift_end    >= hold.start_date
     )

@@ -40,6 +40,9 @@ export async function GET(
     endDate,
     truckCount: 1,
     excludeHoldId: hold.id,
+    // A won hold's own LED program doesn't make the truck LED put it on look
+    // taken, so the swap can line the hold up with LED (lib/ledJobs.ts).
+    ownJobNumber: hold.status === 'COMMITTED' ? hold.sfdc_job_number : null,
     // Staff swap: leaving a later AT&T soft hold short is a warning, as in the quote.
     softHoldStrandIsWarning: true,
   })

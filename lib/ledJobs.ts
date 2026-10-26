@@ -18,7 +18,7 @@
  */
 
 import { query } from '@/lib/mssql'
-import { realJobNumber } from '@/lib/jobNumber'
+import { jobKey } from '@/lib/jobNumber'
 import { activationDaysOf } from '@/lib/transportMetrics'
 import { countCalendarDays } from '@/lib/pricing/schedule'
 
@@ -72,7 +72,7 @@ export type LedStanding = { days: number; of: number; scheduled: boolean }
 export function ledStandings(holds: JobHold[], shifts: JobShift[]): Map<string, LedStanding> {
   const byTruckJob = new Map<string, Set<string>>()
   for (const s of shifts) {
-    const job = realJobNumber(s.job_number)
+    const job = jobKey(s.job_number)
     if (!job) continue
     const key = `${s.truck_number}|${job}`
     const days = byTruckJob.get(key)
@@ -81,7 +81,7 @@ export function ledStandings(holds: JobHold[], shifts: JobShift[]): Map<string, 
   }
   const out = new Map<string, LedStanding>()
   for (const h of holds) {
-    const job = realJobNumber(h.job_number)
+    const job = jobKey(h.job_number)
     if (!job) continue
     const all = byTruckJob.get(`${h.truck_number}|${job}`) ?? new Set<string>()
     const days = [...all].filter(d => d >= h.start_date && d <= h.end_date).length
@@ -90,29 +90,36 @@ export function ledStandings(holds: JobHold[], shifts: JobShift[]): Map<string, 
   return out
 }
 
-// Every LED shift of the given jobs, by truck and day, within the holds' dates
-// (a hold only counts days inside its own range, so older shifts are never
-// needed). The job list arrives as one JSON parameter, so it never reaches the
-// SQL text. A day with several shifts comes back more than once; ledStandings
-// counts each day once.
-const JOB_SHIFTS_QUERY = `
+// Each hold's own job on its own truck within its own dates: the only shifts
+// ledStandings can count. Driven by the holds (one JSON parameter, so nothing
+// reaches the SQL text) through each truck's schedule, so the read grows with
+// the number of holds, not with how far apart their dates are. A day with
+// several shifts comes back more than once; ledStandings counts each day once.
+const HOLD_SHIFTS_QUERY = `
 SELECT
     t.truck_number,
     LTRIM(RTRIM(cp.job_number)) AS job_number,
     CONVERT(varchar(10), CAST(ps.start_time AS DATE), 120) AS shift_date
-FROM dbo.program_schedule ps
-JOIN dbo.trucks t           ON t.truck_uid = ps.truck_uid
+FROM OPENJSON(@holds) WITH (
+    truck NVARCHAR(20) '$.truck',
+    job   NVARCHAR(50) '$.job',
+    s     DATE         '$.start',
+    e     DATE         '$.end'
+) h
+JOIN dbo.trucks t           ON t.truck_number = h.truck
+JOIN dbo.program_schedule ps ON ps.truck_uid = t.truck_uid
+                            AND ps.start_time >= h.s AND ps.start_time < DATEADD(day, 1, h.e)
 JOIN dbo.client_programs cp ON cp.client_program_uid = ps.client_program_uid
 WHERE COALESCE(cp.is_deleted, 0) = 0
-  AND LTRIM(RTRIM(cp.job_number)) IN (SELECT value FROM OPENJSON(@jobs))
-  AND ps.start_time >= CAST(@from AS DATE) AND ps.start_time < DATEADD(day, 1, CAST(@to AS DATE))
+  AND UPPER(LTRIM(RTRIM(cp.job_number))) = h.job
 `
 
-/** The LED shifts of these holds' jobs. Reads the LED database; throws if it can't. */
-export async function ledShiftsForJobs(holds: JobHold[]): Promise<JobShift[]> {
-  const jobs = [...new Set(holds.map(h => realJobNumber(h.job_number)).filter((j): j is string => !!j))]
-  if (!jobs.length) return []
-  const from = holds.reduce((m, h) => (h.start_date < m ? h.start_date : m), holds[0].start_date)
-  const to = holds.reduce((m, h) => (h.end_date > m ? h.end_date : m), holds[0].end_date)
-  return query<JobShift[]>(JOB_SHIFTS_QUERY, { jobs: JSON.stringify(jobs), from, to })
+/** The LED shifts of each hold's job on its truck within its dates. Reads the LED database; throws if it can't. */
+export async function ledShiftsForHolds(holds: JobHold[]): Promise<JobShift[]> {
+  const rows = holds.flatMap(h => {
+    const job = jobKey(h.job_number)
+    return job ? [{ truck: h.truck_number, job, start: h.start_date, end: h.end_date }] : []
+  })
+  if (!rows.length) return []
+  return query<JobShift[]>(HOLD_SHIFTS_QUERY, { holds: JSON.stringify(rows) })
 }

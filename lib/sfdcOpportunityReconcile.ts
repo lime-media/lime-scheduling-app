@@ -74,6 +74,16 @@ export interface SfdcReconcileSummary {
   changedOpportunities: string[]
 }
 
+/**
+ * Whether a failed stage query was Salesforce refusing the Job_Number__c field
+ * (missing in the org, or hidden from the integration user), as opposed to an
+ * outage, which must still stop the reconcile. Pure.
+ */
+export function jobNumberUnreadable(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /INVALID_FIELD/.test(msg) && /Job_Number__c/i.test(msg)
+}
+
 /** Salesforce treats 15- and 18-char ids interchangeably; the API always returns 18. */
 function normalizeId(id: string): string {
   return id.slice(0, 15)
@@ -128,11 +138,24 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
   const uniqueIds = Array.from(new Set(ids))
 
   const stages = new Map<string, OpportunityStage>()
+  // Job_Number__c only links holds to LED (lib/ledJobs.ts). If this org or the
+  // integration user can't read it, the stages are still read without it:
+  // losing the LED link must never stop deals being committed or released.
+  let withJobNumber = true
   for (const batch of chunk(uniqueIds, SOQL_ID_CHUNK)) {
     const list = batch.map((id) => `'${id}'`).join(',')
-    const rows = await sfdcQuery<OpportunityStage>(
-      `SELECT Id, StageName, IsClosed, IsWon, Amount, Job_Number__c FROM Opportunity WHERE Id IN (${list})`
+    const stageQuery = (job: boolean) => sfdcQuery<OpportunityStage>(
+      `SELECT Id, StageName, IsClosed, IsWon, Amount${job ? ', Job_Number__c' : ''} FROM Opportunity WHERE Id IN (${list})`
     )
+    let rows: OpportunityStage[]
+    try {
+      rows = await stageQuery(withJobNumber)
+    } catch (err) {
+      if (!withJobNumber || !jobNumberUnreadable(err)) throw err
+      console.error('[sfdc-reconcile] Job_Number__c not readable; reading stages without it (LED links not updated):', err)
+      withJobNumber = false
+      rows = await stageQuery(false)
+    }
     for (const row of rows) stages.set(normalizeId(row.Id), row)
   }
 
@@ -179,7 +202,7 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
     // and its LED program carries the same (lib/ledJobs.ts). Kept current, so
     // a corrected job number in Salesforce follows through.
     const jobNumber = realJobNumber(stage.Job_Number__c)
-    const staleJob = group.filter(h => h.sfdc_job_number !== jobNumber).map(h => h.id)
+    const staleJob = withJobNumber ? group.filter(h => h.sfdc_job_number !== jobNumber).map(h => h.id) : []
     if (staleJob.length) {
       await prisma.hold.updateMany({ where: { id: { in: staleJob } }, data: { sfdc_job_number: jobNumber } })
     }

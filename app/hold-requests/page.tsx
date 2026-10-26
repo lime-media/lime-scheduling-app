@@ -43,9 +43,11 @@ type HoldRequest = {
   truck_count: number | null
   campaign_group_id: string | null
   sfdc_opportunity_id: string | null
-  /** The opportunity's job number, and whether LED has it on this truck (lib/ledJobs.ts). */
+  /** The opportunity's job number, and how LED stands on it for this truck: days run of days sold (lib/ledJobs.ts). */
   job_number: string | null
   led_scheduled: boolean
+  led_days: number
+  led_days_sold: number | null
   expires_at: string | null
   extension_reason: string | null
   extension_until: string | null
@@ -149,15 +151,18 @@ function ReviseLink({ rows, booking }: { rows: HoldRequest[]; booking?: HoldRequ
 }
 
 /** Where a won booking stands in LED: matched by its job number on each truck (lib/ledJobs.ts). */
-function LedBadge({ progress }: { progress: { scheduled: number; of: number } | null }) {
+function LedBadge({ progress, inLed }: { progress: { days: number; of: number; known: boolean } | null; inLed: boolean }) {
   if (!progress) return null
-  if (progress.scheduled === progress.of) {
-    return <span className="text-xs text-green-700 font-medium" title="LED has this job on every truck of the booking">Scheduled in LED</span>
+  if (inLed) {
+    return <span className="text-xs text-green-700 font-medium" title="LED runs this job on every truck for all the days sold">Scheduled in LED</span>
   }
-  if (progress.scheduled > 0) {
+  if (!progress.known) {
+    return <span className="text-xs text-gray-500" title="This deal has no job number yet, so it can't be matched to an LED program">No job number yet</span>
+  }
+  if (progress.days > 0) {
     return (
-      <span className="text-xs text-amber-700 font-medium" title="LED has this job on some of the booking's trucks; the rest aren't scheduled, or are scheduled on another truck">
-        In LED: {progress.scheduled} of {progress.of} trucks
+      <span className="text-xs text-amber-700 font-medium" title="Truck-days LED runs this job on the booking's trucks, of the days sold. The rest aren't scheduled, or are on another truck. The trucks stay held for every day either way.">
+        In LED: {progress.days} of {progress.of} days
       </span>
     )
   }
@@ -837,7 +842,7 @@ export default function HoldRequestsPage() {
                       )}
                       {/* The earliest expiry in the booking is the one to act on. */}
                       <ExpirationBadge expiresAt={expiry} status={status} />
-                      <LedBadge progress={ledProgress(groupItems)} />
+                      <LedBadge progress={ledProgress(groupItems)} inLed={bookingInLed(groupItems)} />
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.HOLD}`}>
                         {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[status] ?? status)}
                       </span>

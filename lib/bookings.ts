@@ -48,13 +48,19 @@ export function bookingStatus(rows: { status: string; market: string }[]): { sta
 }
 
 /**
- * How much of a booking's committed (won) part LED has scheduled: holds whose
- * job runs on their truck in LED (lib/ledJobs.ts), of its committed holds.
- * Null when nothing in it is committed. Pure.
+ * How much of a booking's committed (won) part LED has scheduled, in truck-days:
+ * the days each hold's job runs on its truck in LED, of the days sold on it
+ * (lib/ledJobs.ts). `known` is false when some committed hold has no job
+ * number to match on yet. Null when nothing in it is committed. Pure.
  */
-export function ledProgress(rows: { status: string; led_scheduled?: boolean }[]): { scheduled: number; of: number } | null {
+export function ledProgress(rows: { status: string; led_days?: number; led_days_sold?: number | null }[]): { days: number; of: number; known: boolean } | null {
   const committed = rows.filter(r => r.status === 'COMMITTED')
-  return committed.length ? { scheduled: committed.filter(r => r.led_scheduled).length, of: committed.length } : null
+  if (!committed.length) return null
+  return {
+    days: committed.reduce((n, r) => n + Math.min(r.led_days ?? 0, r.led_days_sold ?? 0), 0),
+    of: committed.reduce((n, r) => n + (r.led_days_sold ?? 0), 0),
+    known: committed.every(r => r.led_days_sold != null),
+  }
 }
 
 /**

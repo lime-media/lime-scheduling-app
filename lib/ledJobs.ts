@@ -8,8 +8,9 @@
  *
  * - An LED program carrying a hold's own job number is that booking being
  *   scheduled, not a clash with it (lib/scheduleCache.ts findConflicts).
- * - A committed hold is scheduled in LED once its job runs on its truck within
- *   its dates; Reservations stops listing a booking once all of it is.
+ * - A committed hold is scheduled in LED once its job runs on its truck, within
+ *   its dates, on as many days as were sold; Reservations stops listing a
+ *   booking once all of it is.
  *
  * LED job numbers aren't unique to one program (a job can span several), and
  * placeholders like 00-0000-000 mark maintenance and internal programs, so
@@ -19,33 +20,63 @@
 import { query } from '@/lib/mssql'
 import { realJobNumber } from '@/lib/jobNumber'
 
-/** A hold as the LED match needs it. Dates are YYYY-MM-DD, inclusive. */
-export type JobHold = { id: string; truck_number: string; start_date: string; end_date: string; job_number: string | null }
+/**
+ * A hold as the LED match needs it. Dates are YYYY-MM-DD, inclusive.
+ * `days_sold`: how many days were sold on this truck (see daysSold).
+ */
+export type JobHold = { id: string; truck_number: string; start_date: string; end_date: string; job_number: string | null; days_sold: number }
 
 /** One LED shift of a job on a truck, by its start day. */
 export type JobShift = { truck_number: string; job_number: string; shift_date: string }
 
+/** Days from start to end, inclusive (YYYY-MM-DD). */
+export function calendarDays(start: string, end: string): number {
+  return Math.round((Date.parse(end + 'T00:00:00Z') - Date.parse(start + 'T00:00:00Z')) / 864e5) + 1
+}
+
 /**
- * The holds LED has scheduled: its job runs on the hold's truck on at least one
- * day of the hold. Not every day: LED schedules only the days a truck works
- * (weekday flights, days off), so requiring each day would never match. Pure.
+ * How many days LED must run a hold's job on its truck for the hold to count
+ * as scheduled: the days sold on it, from its quote (`activationDays`, per
+ * truck: a 6-days-a-week flight sells fewer days than its calendar span), else
+ * every calendar day (bookings made in Salesforce have no quote on file).
+ * Never more than the calendar span. Pure.
  */
-export function ledScheduledHoldIds(holds: JobHold[], shifts: JobShift[]): Set<string> {
-  const byTruckJob = new Map<string, string[]>()
+export function daysSold(features: string | null, start: string, end: string): number {
+  const span = calendarDays(start, end)
+  try {
+    const sold = features ? (JSON.parse(features) as { activationDays?: unknown }).activationDays : undefined
+    if (typeof sold === 'number' && Number.isInteger(sold) && sold > 0) return Math.min(sold, span)
+  } catch { /* unreadable features: fall back to the span */ }
+  return span
+}
+
+/** How a hold stands in LED: the days its job runs on its truck within its dates, of the days sold. */
+export type LedStanding = { days: number; of: number; scheduled: boolean }
+
+/**
+ * Each hold's standing in LED. A hold is scheduled only when LED runs its job
+ * on its truck, within its dates, on at least as many days as were sold, so a
+ * booking LED has only partly scheduled stays listed and shows the shortfall.
+ * A count can't tell which weekday was meant as the day off; the hold keeps
+ * blocking every day of its range either way. Pure.
+ */
+export function ledStandings(holds: JobHold[], shifts: JobShift[]): Map<string, LedStanding> {
+  const byTruckJob = new Map<string, Set<string>>()
   for (const s of shifts) {
     const job = realJobNumber(s.job_number)
     if (!job) continue
     const key = `${s.truck_number}|${job}`
     const days = byTruckJob.get(key)
-    if (days) days.push(s.shift_date)
-    else byTruckJob.set(key, [s.shift_date])
+    if (days) days.add(s.shift_date)
+    else byTruckJob.set(key, new Set([s.shift_date]))
   }
-  const out = new Set<string>()
+  const out = new Map<string, LedStanding>()
   for (const h of holds) {
     const job = realJobNumber(h.job_number)
     if (!job) continue
-    const days = byTruckJob.get(`${h.truck_number}|${job}`) ?? []
-    if (days.some(d => d >= h.start_date && d <= h.end_date)) out.add(h.id)
+    const all = byTruckJob.get(`${h.truck_number}|${job}`) ?? new Set<string>()
+    const days = [...all].filter(d => d >= h.start_date && d <= h.end_date).length
+    out.set(h.id, { days, of: h.days_sold, scheduled: days >= h.days_sold })
   }
   return out
 }

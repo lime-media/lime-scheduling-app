@@ -138,9 +138,6 @@ function reservationCampaign(h: PlannerHold): string {
  * only where nothing else is booked (the grid shows the real shift on those
  * days). A truck-day with nothing on it is OPEN.
  */
-/** Placeholder job numbers ("00-0000-000", test and maintenance programs) are no job number. */
-export { realJobNumber }
-
 /** A drive day: the truck is travelling, not running a program — shown as D. */
 export const isDriveDay = (e: Pick<Entry, 'kind' | 'campaign'>) => e.kind === 'SCHEDULED' && /\bdrive\s*day\b/i.test(e.campaign)
 

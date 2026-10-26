@@ -116,12 +116,16 @@ export async function refreshCache(): Promise<RefreshSummary> {
     job_number:   String(r.job_number   ?? ''),
   }))
 
-  // Deduplicate by truck_number + program + shift_start before conflict detection.
-  // The source query can return multiple rows per program/date (one per market row).
+  // Deduplicate by truck_number + program + job_number + shift_start before conflict
+  // detection. The source query can return multiple rows per program/date (one per
+  // market row). The job number is part of the key: two LED programs can share a
+  // name, and dropping one's row would lose the job number that tells a booking's
+  // own program from a clash (findConflicts).
   const schedules = schedulesAll.filter((s, index, self) =>
     index === self.findIndex((t) =>
       t.truck_number === s.truck_number &&
       t.program      === s.program &&
+      (t.job_number ?? '') === (s.job_number ?? '') &&
       t.shift_start  === s.shift_start
     )
   )
@@ -135,7 +139,9 @@ export async function refreshCache(): Promise<RefreshSummary> {
     start_date:          h.start_date.toISOString().split('T')[0],
     end_date:            h.end_date.toISOString().split('T')[0],
     sfdc_opportunity_id: h.sfdc_opportunity_id,
-    job_number:          h.sfdc_job_number,
+    // Only a won booking is linked to its LED program: a tentative or
+    // reopened reservation still conflicts with a program sharing its job.
+    job_number:          h.status === 'COMMITTED' ? h.sfdc_job_number : null,
   }))
 
   // Before detection: a conflict whose window merely shifted is closed here and re-raised
@@ -337,7 +343,7 @@ export interface ConflictSchedule {
   market:       string
   shift_start:  string  // YYYY-MM-DD
   shift_end:    string  // YYYY-MM-DD
-  /** The LED program's job number; one per program, so merged blocks keep it. */
+  /** The LED program's job number; blocks merge only within one job number. */
   job_number?:  string
 }
 
@@ -376,11 +382,15 @@ const nextDay = (d: string) => new Date(Date.parse(d + 'T00:00:00Z') + 864e5).to
  */
 export function mergeScheduleBlocks(schedules: ConflictSchedule[]): ConflictSchedule[] {
   const sorted = [...schedules].sort((a, b) =>
-    a.truck_number.localeCompare(b.truck_number) || a.program.localeCompare(b.program) || a.shift_start.localeCompare(b.shift_start))
+    a.truck_number.localeCompare(b.truck_number) || a.program.localeCompare(b.program)
+    || (a.job_number ?? '').localeCompare(b.job_number ?? '') || a.shift_start.localeCompare(b.shift_start))
   const out: ConflictSchedule[] = []
   for (const s of sorted) {
     const last = out[out.length - 1]
-    if (last && last.truck_number === s.truck_number && last.program === s.program && s.shift_start <= nextDay(last.shift_end)) {
+    // Same-named programs with different job numbers stay apart, so a block
+    // never carries one program's job number over another's days.
+    if (last && last.truck_number === s.truck_number && last.program === s.program
+      && (last.job_number ?? '') === (s.job_number ?? '') && s.shift_start <= nextDay(last.shift_end)) {
       if (s.shift_end > last.shift_end) last.shift_end = s.shift_end
     } else {
       out.push({ ...s })

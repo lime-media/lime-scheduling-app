@@ -19,6 +19,7 @@
 
 import { query } from '@/lib/mssql'
 import { jobKey } from '@/lib/jobNumber'
+import { stateCode } from '@/lib/usStates'
 import { activationDaysOf } from '@/lib/transportMetrics'
 import { countCalendarDays } from '@/lib/pricing/schedule'
 
@@ -46,6 +47,7 @@ export function daysSold(features: string | null, start: string, end: string): n
   const span = countCalendarDays(start, end)
   // What this hold itself sells, when it was written per hold (a planner stint
   // of a rotating truck) and its dates haven't moved since.
+  if (span < 1) return -1  // end before start: nothing can match, never scheduled
   const held = heldDays(features)
   if (held && held.start === start && held.end === end) return Math.min(held.work, span)
   const quoted = quotedSpan(features)
@@ -91,10 +93,12 @@ export function ledMarketMatches(
   led: { market: string; state: string; standard_market_name?: string },
 ): boolean {
   const city = (m: string) => m.split(',')[0].trim().toLowerCase().replace(/\s+/g, ' ')
-  const stateOf = (m: string, s: string) => (s || m.split(',')[1] || '').trim().toUpperCase()
+  // The state field, else what follows the comma ("Phoenix, AZ").
+  const stateOf = (m: string, s: string) => stateCode(s) || stateCode(m.split(',')[1])
   const std = led.standard_market_name ?? ''
   const holdState = stateOf(hold.market, hold.state)
-  if (!holdState || holdState !== stateOf(led.market, led.state)) return false
+  const ledState = stateOf(led.market, led.state) || stateOf(std, '')
+  if (!holdState || holdState !== ledState) return false
   const want = city(hold.market)
   return !!want && (want === city(led.market) || (!!std && stateOf(std, '') === holdState && want === city(std)))
 }
@@ -125,7 +129,9 @@ export function ledStandings(holds: JobHold[], shifts: JobShift[]): Map<string, 
     if (!job) continue
     const all = byTruckJob.get(`${h.truck_number}|${job}`) ?? new Set<string>()
     const days = [...all].filter(d => d >= h.start_date && d <= h.end_date).length
-    out.set(h.id, { days, of: h.days_sold, scheduled: days > 0 && days >= h.days_sold })
+    // A hold that sells no days (a planner stint of only travel or idle days)
+    // has nothing for LED to run, so it's scheduled; bad dates (-1) never are.
+    out.set(h.id, { days, of: Math.max(h.days_sold, 0), scheduled: h.days_sold >= 0 && days >= h.days_sold })
   }
   return out
 }

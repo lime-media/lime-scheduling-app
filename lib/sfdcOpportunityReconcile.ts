@@ -196,11 +196,14 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
     // than the column, or a failed write) is logged and skipped, and this
     // opportunity's holds are still committed or released below.
     const jobNumber = realJobNumber(stage.Job_Number__c)
-    const staleJob = readWithJob.has(key) ? group.filter(h => h.sfdc_job_number !== jobNumber).map(h => h.id) : []
-    if (staleJob.length && jobNumber && jobNumber.length > JOB_NUMBER_MAX) {
-      console.warn(`[sfdc-reconcile] job number on ${key} is over ${JOB_NUMBER_MAX} characters; not linking its holds to LED`)
-    } else if (staleJob.length) {
-      await prisma.hold.updateMany({ where: { id: { in: staleJob } }, data: { sfdc_job_number: jobNumber } })
+    // One that won't fit the column clears the link rather than keeping an old
+    // job number, so the holds are never tied to an LED program that isn't theirs.
+    const tooLong = !!jobNumber && jobNumber.length > JOB_NUMBER_MAX
+    if (tooLong) console.warn(`[sfdc-reconcile] job number on ${key} is over ${JOB_NUMBER_MAX} characters; not linking its holds to LED`)
+    const storedJob = tooLong ? null : jobNumber
+    const staleJob = readWithJob.has(key) ? group.filter(h => h.sfdc_job_number !== storedJob).map(h => h.id) : []
+    if (staleJob.length) {
+      await prisma.hold.updateMany({ where: { id: { in: staleJob } }, data: { sfdc_job_number: storedJob } })
         .catch((err) => console.error(`[sfdc-reconcile] job number write failed for ${key}; carrying on:`, err))
     }
 

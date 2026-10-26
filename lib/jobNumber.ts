@@ -1,3 +1,5 @@
+import { stateCode } from '@/lib/usStates'
+
 /**
  * A job number worth matching on, or null: blank, or a placeholder like
  * 00-0000-000 (maintenance and internal programs in LED). Pure; shared by the
@@ -36,15 +38,16 @@ export function linkedJob(hold: { status: string; sfdc_job_number?: string | nul
  * LED's city names are typed by hand.) Outside the hold's dates the same job
  * is other work and still occupies the truck. The one rule behind the
  * conflict sweep, the fleet timelines and the swap picker. Dates YYYY-MM-DD,
- * inclusive; states two-letter, compared only when both are known. Pure.
+ * inclusive; states compared as codes ("Kansas" = "KS"), and only when both
+ * are known. Pure.
  */
 export function isOwnLedProgram(
   hold: { start_date: string; end_date: string; job_number?: string | null; state?: string | null },
   program: { start: string; end: string; job_number?: string | null; state?: string | null },
 ): boolean {
   const job = jobKey(hold.job_number)
-  const hs = (hold.state ?? '').trim().toUpperCase()
-  const ps = (program.state ?? '').trim().toUpperCase()
+  const hs = stateCode(hold.state)
+  const ps = stateCode(program.state)
   return !!job && jobKey(program.job_number) === job && program.start <= hold.end_date && program.end >= hold.start_date
     && !(hs && ps && hs !== ps)
 }

@@ -117,7 +117,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     state:        String(r.state        ?? ''),
   }))
 
-  // Deduplicate by truck_number + program + job_number + shift_start before conflict
+  // Deduplicate by truck_number + program + job_number + state + shift_start before conflict
   // detection. The source query can return multiple rows per program/date (one per
   // market row). The job number is part of the key: two LED programs can share a
   // name, and dropping one's row would lose the job number that tells a booking's
@@ -127,6 +127,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
       t.truck_number === s.truck_number &&
       t.program      === s.program &&
       jobKey(t.job_number) === jobKey(s.job_number) &&
+      (t.state ?? '') === (s.state ?? '') &&
       t.shift_start  === s.shift_start
     )
   )

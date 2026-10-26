@@ -9,6 +9,7 @@ import { eq, section } from './harness'
 import { daysSold, ledMarketMatches, ledStandings, type JobHold } from '@/lib/ledJobs'
 import { isOwnLedProgram, jobKey, linkedJob, realJobNumber } from '@/lib/jobNumber'
 import { fieldUnreadable } from '@/lib/salesforceClient'
+import { stateCode } from '@/lib/usStates'
 import { bookingInLed, ledProgress } from '@/lib/bookings'
 import { findConflicts, type ConflictHold, type ConflictSchedule } from '@/lib/scheduleCache'
 import { dropOwnProgramDays, groupDaysIntoJobs } from '@/lib/truckTimeline'
@@ -41,7 +42,8 @@ eq('a day short: not scheduled, shows the shortfall', ledStandings([h()], all3.s
 eq('one day of a 30-day booking is not enough', ledStandings([h({ end_date: '2026-11-28', days_sold: 30 })], all3.slice(0, 1)).get('h1')?.scheduled, false)
 eq('6 days a week: the sold days are enough', ledStandings([h({ start_date: '2026-11-02', end_date: '2026-11-08', days_sold: 6 })],
   run('6907', '26-0439-300', ['2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06', '2026-11-07'])).get('h1')?.scheduled, true)
-eq('nothing sold (bad dates) is never scheduled', ledStandings([h({ days_sold: 0 })], []).get('h1')?.scheduled, false)
+eq('bad dates (end before start) are never scheduled', ledStandings([h({ days_sold: daysSold(null, '2026-11-02', '2026-11-01') })], []).get('h1')?.scheduled, false)
+eq('a stint that sells no days (travel or idle only) has nothing for LED to run', ledStandings([h({ days_sold: 0 })], []).get('h1'), { days: 0, of: 0, scheduled: true })
 eq('a day counts once however many shifts', ledStandings([h()], [...all3, ...all3]).get('h1')?.days, 3)
 eq('its job on another truck does not count', ledStandings([h()], run('1261', '26-0439-300', ['2026-10-30', '2026-10-31', '2026-11-01'])).get('h1')?.days, 0)
 eq('another job on its truck does not count', ledStandings([h()], run('6907', '26-0387-300', ['2026-10-30', '2026-10-31', '2026-11-01'])).get('h1')?.days, 0)
@@ -143,3 +145,9 @@ eq('by the standard market', ledMarketMatches({ market: 'Cedar Rapids, IA', stat
 eq('a sibling market in the same state', ledMarketMatches({ market: 'Wichita, KS', state: 'KS' }, { market: 'Lawrence', state: 'KS', standard_market_name: 'Kansas City, MO' }), false)
 eq('a misspelt city can\'t be confirmed: taken', ledMarketMatches({ market: 'Manhattan, KS', state: 'KS' }, { market: 'Manhatten', state: 'KS', standard_market_name: 'Kansas City, MO' }), false)
 eq('another state', ledMarketMatches({ market: 'Phoenix, AZ', state: 'AZ' }, { market: 'Phoenix', state: 'NM' }), false)
+
+section('states compare as codes')
+eq('stateCode: name, code, junk', [stateCode('Kansas'), stateCode(' ks '), stateCode('Los Angeles'), stateCode('')], ['KS', 'KS', '', ''])
+eq('a hold typed "Kansas" still matches its own KS program', isOwnLedProgram({ ...wonHold, state: 'Kansas' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', state: 'KS' }), true)
+eq('LED row with no state uses its standard market\'s', ledMarketMatches({ market: 'Phoenix, AZ', state: 'AZ' }, { market: 'Phoenix', state: '', standard_market_name: 'Phoenix, AZ' }), true)
+eq('a Salesforce multi-market hold (no state) can\'t be confirmed: taken', ledMarketMatches({ market: 'Multi-market: Detroit, Los Angeles, CA', state: '' }, { market: 'Detroit', state: 'MI' }), false)

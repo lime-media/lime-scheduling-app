@@ -64,10 +64,11 @@ export async function loadFleetTimelines(opts: {
   /** Omit these holds — a booking being revised, so its own trucks are free to it. */
   excludeHoldIds?: Set<string>
   /**
-   * A won hold whose own LED program (its job, within its dates, on any truck)
-   * is left out: it's that booking scheduled, so it mustn't make the truck LED
-   * put it on look taken (the swap picker; lib/jobNumber.ts isOwnLedProgram).
-   * The same job on other dates is other work and stays.
+   * A won hold whose own LED program is left out: its job, within its dates,
+   * in its market (lib/ledJobs.ts ledMarketMatches; unconfirmed markets stay),
+   * on any truck. It's that booking scheduled, so it mustn't make the truck LED
+   * put it on look taken (the swap picker). The same job on other dates, or in
+   * another market of the booking, is other work and stays.
    */
   ownProgramOf?: { start_date: string; end_date: string; job_number: string | null; market: string; state: string }
   /**
@@ -108,7 +109,7 @@ export async function loadFleetTimelines(opts: {
     if (!day) continue
     // Every market of a booking shares its job number, so on another truck the
     // program must also be in the hold's market to be the hold's own.
-    if (own && isOwnLedProgram(own, { start: day, end: day, job_number: String(row.job_number ?? ''), state: String(row.state ?? '') })
+    if (own && isOwnLedProgram(own, { start: day, end: day, job_number: String(row.job_number ?? '') })
       && ledMarketMatches(own, { market: String(row.market ?? ''), state: String(row.state ?? ''), standard_market_name: String(row.standard_market_name ?? '') })) continue
     const lat = Number(row.market_lat)
     const lng = Number(row.market_lng)

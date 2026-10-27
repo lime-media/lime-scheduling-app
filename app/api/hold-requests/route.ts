@@ -5,6 +5,8 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { reservationOwners } from '@/lib/reservationOwners'
+import { bookingEnded, bookingKey } from '@/lib/bookings'
+import { centralDate } from '@/lib/dateOnly'
 import { daysSold, ledShiftsForHolds, ledStandings, type JobHold, type LedStanding } from '@/lib/ledJobs'
 
 // EXPIRED holds accumulate forever — every lapsed hold and every Closed Lost
@@ -29,7 +31,7 @@ export async function GET() {
 
   const expiredCutoff = new Date(Date.now() - EXPIRED_WINDOW_DAYS * 24 * 60 * 60 * 1000)
 
-  const holds = await prisma.hold.findMany({
+  const fetched = await prisma.hold.findMany({
     where: {
       OR: [
         { status: { not: 'EXPIRED' } },
@@ -46,6 +48,20 @@ export async function GET() {
       client_user: { select: { company_name: true } },
       user: { select: { name: true } },
     },
+  })
+
+  // Committed holds are never retired, so a won booking stays listed (under its
+  // own filter) only for the same window after it ends, then drops off whole.
+  const endedCutoff = centralDate(new Date(Date.now() - EXPIRED_WINDOW_DAYS * 864e5))
+  const byBooking = new Map<string, typeof fetched>()
+  for (const h of fetched) {
+    const key = bookingKey(h)
+    if (key) byBooking.set(key, [...(byBooking.get(key) ?? []), h])
+  }
+  const day = (h: (typeof fetched)[number]) => ({ status: h.status, end_date: h.end_date.toISOString() })
+  const holds = fetched.filter(h => {
+    const key = bookingKey(h)
+    return !bookingEnded((key ? byBooking.get(key)! : [h]).map(day), endedCutoff)
   })
 
   // How each committed hold stands in LED (lib/ledJobs.ts): the days its job

@@ -15,7 +15,7 @@ import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
-import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingInLed, bookingKey, closedWonRefusal, bookingStatus, ledProgress, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
+import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingEnded, bookingInLed, bookingKey, closedWonRefusal, bookingStatus, ledProgress, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
 import { ownedBy, ownerOptions, runsBetween, wholeBookings, type OwnerFilter } from '@/lib/reservationFilters'
 import { useSession } from 'next-auth/react'
@@ -56,6 +56,8 @@ type HoldRequest = {
 
 /** The filter for won bookings LED has fully scheduled; every other filter leaves them out. */
 const LED_SCHEDULED = 'LED_SCHEDULED'
+/** The filter for won bookings whose dates have all passed; every other filter leaves them out. */
+const WON_ENDED = 'WON_ENDED'
 
 const STATUS_BADGE: Record<string, string> = {
   HOLD:                 'bg-yellow-100 text-yellow-800 border border-yellow-200',
@@ -72,6 +74,7 @@ const STATUS_LABEL: Record<string, string> = {
   EXPIRED: 'Expired',
   EXTENSION_REQUESTED: 'Extension Requested',
   [LED_SCHEDULED]: 'Scheduled in LED',
+  [WON_ENDED]: 'Won, ended',
 }
 
 const SOURCE_BADGE: Record<string, string> = {
@@ -568,12 +571,19 @@ export default function HoldRequestsPage() {
     return bookingInLed(key ? rowsByBooking.get(key) ?? [r] : [r])
   }, [rowsByBooking])
 
+  // A won booking whose dates have all passed: listed only under its own filter.
+  const endedOf = useCallback((r: HoldRequest) => {
+    const key = bookingKey(r)
+    return bookingEnded(key ? rowsByBooking.get(key) ?? [r] : [r], centralDate(new Date()))
+  }, [rowsByBooking])
+
   const filtered = useMemo(
     () => {
       // A filter picks whole bookings by the booking's status, never part of one.
       const shown = (r: HoldRequest) => {
         if (filterStatus === LED_SCHEDULED) return inLedOf(r)
-        if (inLedOf(r)) return false
+        if (filterStatus === WON_ENDED) return endedOf(r)
+        if (inLedOf(r) || endedOf(r)) return false
         const { status } = statusOf(r)
         return !filterStatus
           || (filterStatus === 'HOLD' ? status === 'HOLD' || status === 'COMMITTED' : status === filterStatus)
@@ -593,7 +603,7 @@ export default function HoldRequestsPage() {
       }
       return result
     },
-    [requests, filterStatus, search, statusOf, inLedOf, ownerShown, meId, dateFrom, dateTo]
+    [requests, filterStatus, search, statusOf, inLedOf, endedOf, ownerShown, meId, dateFrom, dateTo]
   )
 
   // The last date the card being edited can be held to: a booking has one
@@ -733,9 +743,14 @@ export default function HoldRequestsPage() {
                 Showing expired reservations from the last {expiredWindowDays} days. Older ones are kept but not listed here.
               </p>
             )}
+            {expiredWindowDays !== null && filterStatus === WON_ENDED && (
+              <p className="text-xs text-gray-400 mt-1">
+                Showing won bookings that ended in the last {expiredWindowDays} days. Older ones are kept but not listed here.
+              </p>
+            )}
           </div>
           <div className="flex gap-2 flex-shrink-0 flex-wrap">
-            {(['', 'HOLD', 'ATT_SOFT', 'EXTENSION_REQUESTED', 'EXPIRED', LED_SCHEDULED] as const).map((s) => (
+            {(['', 'HOLD', 'ATT_SOFT', 'EXTENSION_REQUESTED', 'EXPIRED', LED_SCHEDULED, WON_ENDED] as const).map((s) => (
               <button
                 key={s}
                 onClick={() => setFilterStatus(s)}
@@ -745,7 +760,7 @@ export default function HoldRequestsPage() {
                     : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
                 }`}
               >
-                {s ? (STATUS_LABEL[s] ?? s) : 'All not in LED'}
+                {s ? (STATUS_LABEL[s] ?? s) : 'All (not in LED or ended)'}
               </button>
             ))}
           </div>

@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingKey, bookingStatus, clientExtendRefusal, closedWonRefusal, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, reviseRefusal, summarizeBooking } from '@/lib/bookings'
+import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingEnded, bookingKey, bookingStatus, clientExtendRefusal, closedWonRefusal, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, reviseRefusal, summarizeBooking } from '@/lib/bookings'
 
 const h = (campaign_group_id: string | null, truck_number: string, market: string, quoted_total: number | null, extra: Partial<{ sfdc: string; start: string; end: string; exp: string }> = {}) => ({
   campaign_group_id, sfdc_opportunity_id: extra.sfdc ?? null, truck_number, market, quoted_total,
@@ -143,4 +143,17 @@ section('bookings: a client asks to extend the whole booking, or not at all')
   eq('a request already waiting', clientExtendRefusal(s('EXTENSION_REQUESTED', 'EXTENSION_REQUESTED')), 'An extension has already been requested for this booking.')
   eq('all expired: lapsed', clientExtendRefusal(s('EXPIRED')), 'This booking has expired and can no longer be extended.')
   eq('an AT&T soft hold is never a client\'s', clientExtendRefusal(s('ATT_SOFT')), 'This booking cannot be extended.')
+}
+
+section('bookingEnded: a won booking whose dates have all passed')
+{
+  const r = (status: string, end_date: string) => ({ status, end_date })
+  const today = '2026-10-27'
+  eq('every market won and ended: ended', bookingEnded([r('COMMITTED', '2026-10-20'), r('COMMITTED', '2026-10-26')], today), true)
+  eq('ends today: still running', bookingEnded([r('COMMITTED', '2026-10-27')], today), false)
+  eq('one market still running: not ended', bookingEnded([r('COMMITTED', '2026-10-20'), r('COMMITTED', '2026-11-03')], today), false)
+  eq('an ended hold not yet won: not this filter (expiry handles it)', bookingEnded([r('HOLD', '2026-10-20')], today), false)
+  eq('a lapsed market beside ended won ones is ignored', bookingEnded([r('COMMITTED', '2026-10-20'), r('EXPIRED', '2026-11-30')], today), true)
+  eq('nothing live: not ended', bookingEnded([r('EXPIRED', '2026-10-20')], today), false)
+  eq('a full timestamp compares by its date', bookingEnded([r('COMMITTED', '2026-10-26T00:00:00.000Z')], today), true)
 }

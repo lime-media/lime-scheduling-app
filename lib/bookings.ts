@@ -78,6 +78,17 @@ export function bookingInLed(rows: { status: string; led_scheduled?: boolean; le
   return live.length > 0 && live.every(r => r.status === 'COMMITTED' && r.led_scheduled) && live.some(r => (r.led_days_sold ?? 0) > 0)
 }
 
+/**
+ * A won booking that is over: every live hold is committed and ended before
+ * `today` (a Central date, lib/dateOnly.ts). Nothing retires a committed hold,
+ * so Reservations lists such a booking only under its own filter, and the list
+ * stops carrying it a week after it ends. Pure.
+ */
+export function bookingEnded(rows: { status: string; end_date: string }[], today: string): boolean {
+  const live = rows.filter(r => r.status === 'HOLD' || r.status === 'EXTENSION_REQUESTED' || r.status === 'COMMITTED')
+  return live.length > 0 && live.every(r => r.status === 'COMMITTED' && r.end_date.slice(0, 10) < today)
+}
+
 /** What staff are told when a change would touch a won deal. */
 export const CLOSED_WON_READ_ONLY = 'This deal is Closed Won in Salesforce; change it there first.'
 

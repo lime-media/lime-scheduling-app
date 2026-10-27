@@ -4,7 +4,7 @@ import { validateInternalApiKey } from '@/lib/internalAuth'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
-import { ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
+import { ALL_TRUCKS_QUERY, shiftDay } from '@/lib/scheduleQuery'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { loadFleetTimelines } from '@/lib/fleetTimelines'
 import { checkChainFeasibility } from '@/lib/chainFeasibility'
@@ -34,15 +34,15 @@ SELECT
     t.truck_number,
     COALESCE(cpm.market,               '') AS market,
     COALESCE(cpm.standard_market_name, '') AS standard_market_name,
-    CAST(ps.start_time AS DATE) AS shift_start,
-    CAST(ps.start_time AS DATE) AS shift_end
+    ${shiftDay('ps.start_time')} AS shift_start,
+    ${shiftDay('ps.start_time')} AS shift_end
 FROM dbo.program_schedule ps
 JOIN dbo.trucks t
     ON  t.truck_uid = ps.truck_uid
 LEFT JOIN dbo.client_program_markets cpm
     ON  cpm.client_program_market_uid = ps.client_program_market_uid
-WHERE CAST(ps.start_time AS DATE) <= @endDate
-  AND CAST(ps.end_time   AS DATE) >= @startDate
+WHERE ${shiftDay('ps.start_time')} <= @endDate
+  AND ${shiftDay('ps.end_time')} >= @startDate
 ORDER BY t.truck_number, ps.start_time
 `
 

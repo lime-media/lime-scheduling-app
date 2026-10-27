@@ -47,6 +47,7 @@
 import { ATT_RELEASE_ORIGINATION } from '@/lib/attSoftRules'
 import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
+import { shiftDay } from '@/lib/scheduleQuery'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
 import { ATT_CLIENT, ATT_MIN_DAYS, PRIOR_MONTH_GRACE_DAY, attLookback, isAttClient, isAttTruck, normalizeClient, planMarketBackfill, planPremiseRelease, planReleaseCuts, planSoftHoldFill, rosterPlan, type MassReleaseApproval, softHoldWindow, type RosterOverride } from '@/lib/attSoftRules'
@@ -164,13 +165,14 @@ const ATT_CLIENT_SQL = `LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(cl.client,
 async function attDaysByTruck(from: string, to: string): Promise<Map<string, number>> {
   const rows = await query<{ truck_number: string; days: number }[]>(
     `
-    SELECT t.truck_number, COUNT(DISTINCT CAST(ps.start_time AS DATE)) AS days
+    SELECT t.truck_number, COUNT(DISTINCT ${shiftDay('ps.start_time')}) AS days
     FROM dbo.program_schedule ps
     JOIN dbo.trucks          t  ON t.truck_uid           = ps.truck_uid
     JOIN dbo.client_programs cp ON cp.client_program_uid = ps.client_program_uid
     JOIN dbo.clients         cl ON cl.client_uid         = cp.client_uid
+    LEFT JOIN dbo.client_program_markets cpm ON cpm.client_program_market_uid = ps.client_program_market_uid
     WHERE COALESCE(t.is_deleted, 0) = 0
-      AND CAST(ps.start_time AS DATE) BETWEEN @from AND @to
+      AND ${shiftDay('ps.start_time')} BETWEEN @from AND @to
       AND ${ATT_CLIENT_SQL}
     GROUP BY t.truck_number
     `,
@@ -200,7 +202,7 @@ async function attLastMarketByTruck(asOf: string): Promise<Map<string, { market:
       JOIN dbo.clients         cl  ON cl.client_uid         = cp.client_uid
       LEFT JOIN dbo.client_program_markets cpm ON cpm.client_program_market_uid = ps.client_program_market_uid
       WHERE COALESCE(t.is_deleted, 0) = 0
-        AND CAST(ps.start_time AS DATE) <= @asOf
+        AND ${shiftDay('ps.start_time')} <= @asOf
         AND ${ATT_CLIENT_SQL}
     )
     SELECT truck_number, market, state FROM last WHERE rn = 1

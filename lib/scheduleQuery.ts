@@ -10,6 +10,29 @@
 //                                standard_market_name, market_timezone
 //  GPS data is sourced from the Samsara API (lib/samsaraService.ts), not the DB.
 
+// ── A shift's day ─────────────────────────────────────────────────────────────
+// LED stores program_schedule.start_time / end_time in UTC, so CAST(... AS DATE)
+// put an evening shift (from 7pm Central, 8pm Eastern) on the next day. A
+// shift's day is its date in its market's time zone. LED keeps four zones on
+// each market (Mountain as America/Creston, which has no DST); a shift with no
+// market counts as Central. `market` is the alias of a joined
+// dbo.client_program_markets.
+const SQL_ZONE = (market: string) => `CASE ${market}.market_timezone
+        WHEN 'America/New_York'    THEN 'Eastern Standard Time'
+        WHEN 'America/Los_Angeles' THEN 'Pacific Standard Time'
+        WHEN 'America/Creston'     THEN 'US Mountain Standard Time'
+        WHEN 'America/Phoenix'     THEN 'US Mountain Standard Time'
+        WHEN 'America/Denver'      THEN 'Mountain Standard Time'
+        ELSE 'Central Standard Time' END`
+
+/** SQL for today's date in Central time, the app's day (REVIEW.md); GETDATE() is UTC on Azure. */
+const TODAY = `CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Central Standard Time' AS DATE)`
+
+/** SQL for the local date of a shift time column (`ps.start_time`), in its market's zone. */
+export function shiftDay(time: string, market = 'cpm'): string {
+  return `CAST(${time} AT TIME ZONE 'UTC' AT TIME ZONE ${SQL_ZONE(market)} AS DATE)`
+}
+
 // ── Query A: scheduled blocks in the display window ──────────────────────────
 // Verified fast (155 ms). No GPS join — GPS fetched separately via Query C.
 export const SCHEDULED_QUERY = `
@@ -21,8 +44,8 @@ SELECT
     COALESCE(cp.program,  '') AS program,
     COALESCE(cl.client,   '') AS client,  -- internal only; client routes must not pass it on
     COALESCE(cp.job_number, '') AS job_number,
-    CAST(ps.start_time AS DATE) AS shift_start,
-    CAST(ps.start_time AS DATE) AS shift_end  -- use start date; end_time bleeds into next day for overnight shifts
+    ${shiftDay('ps.start_time')} AS shift_start,
+    ${shiftDay('ps.start_time')} AS shift_end  -- use start date; end_time bleeds into next day for overnight shifts
 FROM dbo.program_schedule ps
 JOIN dbo.trucks t
     ON  t.truck_uid = ps.truck_uid
@@ -32,8 +55,8 @@ LEFT JOIN dbo.client_programs cp
     ON  cp.client_program_uid = ps.client_program_uid
 LEFT JOIN dbo.clients cl
     ON  cl.client_uid = cp.client_uid
-WHERE CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
-  AND CAST(ps.start_time AS DATE) <= DATEADD(day,  63, CAST(GETDATE() AS DATE))
+WHERE ${shiftDay('ps.end_time')} >= DATEADD(day, -30, ${TODAY})
+  AND ${shiftDay('ps.start_time')} <= DATEADD(day,  63, ${TODAY})
 ORDER BY t.truck_number, ps.start_time
 `
 
@@ -60,26 +83,28 @@ SELECT
     END AS today_status,
     COALESCE(pm.market,  '') AS market,
     COALESCE(p.program,  '') AS program,
-    CAST(ps.start_time AS DATE) AS schedule_start,
-    CAST(ps.start_time AS DATE) AS schedule_end,
+    ${shiftDay('ps.start_time', 'pm')} AS schedule_start,
+    ${shiftDay('ps.start_time', 'pm')} AS schedule_end,
     '' AS gps_address,
     COALESCE(lkm.last_known_market, '') AS last_known_market
 FROM dbo.trucks t
-LEFT JOIN dbo.program_schedule ps
+LEFT JOIN (
+    dbo.program_schedule ps
+    LEFT JOIN dbo.client_program_markets pm
+        ON  pm.client_program_market_uid = ps.client_program_market_uid
+)
     ON  ps.truck_uid = t.truck_uid
-    AND CAST(GETDATE() AS DATE)
-            BETWEEN CAST(ps.start_time AS DATE) AND CAST(ps.end_time AS DATE)
+    AND ${TODAY}
+            BETWEEN ${shiftDay('ps.start_time', 'pm')} AND ${shiftDay('ps.end_time', 'pm')}
 LEFT JOIN dbo.client_programs p
     ON  p.client_program_uid = ps.client_program_uid
-LEFT JOIN dbo.client_program_markets pm
-    ON  pm.client_program_market_uid = ps.client_program_market_uid
 OUTER APPLY (
     SELECT TOP 1 COALESCE(pm_lk.standard_market_name, pm_lk.market) AS last_known_market
     FROM dbo.program_schedule ps_lk
     JOIN dbo.client_program_markets pm_lk
         ON  pm_lk.client_program_market_uid = ps_lk.client_program_market_uid
     WHERE ps_lk.truck_uid = t.truck_uid
-      AND CAST(ps_lk.start_time AS DATE) <= CAST(GETDATE() AS DATE)
+      AND ${shiftDay('ps_lk.start_time', 'pm_lk')} <= ${TODAY}
       AND pm_lk.market IS NOT NULL
     ORDER BY ps_lk.start_time DESC
 ) lkm
@@ -98,7 +123,7 @@ ORDER BY t.truck_number
 export const CHAT_SCHEDULE_WINDOW_QUERY = `
 SELECT
     t.truck_number,
-    CAST(ps.start_time AS DATE) AS shift_date,
+    ${shiftDay('ps.start_time')} AS shift_date,
     COALESCE(cpm.market, '') AS market,
     COALESCE(cpm.state,  '') AS state,
     COALESCE(cp.program, '') AS program
@@ -110,8 +135,8 @@ LEFT JOIN dbo.client_program_markets cpm
 LEFT JOIN dbo.client_programs cp
     ON  cp.client_program_uid = ps.client_program_uid
 WHERE COALESCE(t.is_deleted, 0) = 0
-  AND CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
-  AND CAST(ps.start_time AS DATE) <= DATEADD(day,  60, CAST(GETDATE() AS DATE))
+  AND ${shiftDay('ps.end_time')} >= DATEADD(day, -30, ${TODAY})
+  AND ${shiftDay('ps.start_time')} <= DATEADD(day,  60, ${TODAY})
 ORDER BY t.truck_number, ps.start_time
 `
 
@@ -119,12 +144,16 @@ export const SCHEDULE_SUMMARY_QUERY = `
 SELECT
     t.truck_number,
     COUNT(DISTINCT ps.client_program_uid) AS active_programs,
-    MIN(CAST(ps.start_time AS DATE))      AS next_schedule_start,
-    MAX(CAST(ps.end_time   AS DATE))      AS schedule_end
+    MIN(${shiftDay('ps.start_time')})      AS next_schedule_start,
+    MAX(${shiftDay('ps.end_time')})      AS schedule_end
 FROM dbo.trucks t
-LEFT JOIN dbo.program_schedule ps
+LEFT JOIN (
+    dbo.program_schedule ps
+    LEFT JOIN dbo.client_program_markets cpm
+        ON  cpm.client_program_market_uid = ps.client_program_market_uid
+)
     ON  t.truck_uid = ps.truck_uid
-    AND CAST(ps.end_time AS DATE) >= CAST(GETDATE() AS DATE)
+    AND ${shiftDay('ps.end_time')} >= ${TODAY}
 WHERE COALESCE(t.is_deleted, 0) = 0
 GROUP BY t.truck_number
 ORDER BY t.truck_number
@@ -154,10 +183,10 @@ ORDER BY t.truck_number
 // rolling-window query every existing caller runs is unchanged.
 export function scheduledWithMarketQuery(withBounds: boolean, windowed = false): string {
   const windowClause = windowed
-    ? `WHERE CAST(ps.end_time   AS DATE) >= @windowStart
-  AND CAST(ps.start_time AS DATE) <= @windowEnd`
-    : `WHERE CAST(ps.end_time   AS DATE) >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
-  AND CAST(ps.start_time AS DATE) <= DATEADD(day,  63, CAST(GETDATE() AS DATE))`
+    ? `WHERE ${shiftDay('ps.end_time')} >= @windowStart
+  AND ${shiftDay('ps.start_time')} <= @windowEnd`
+    : `WHERE ${shiftDay('ps.end_time')} >= DATEADD(day, -30, ${TODAY})
+  AND ${shiftDay('ps.start_time')} <= DATEADD(day,  63, ${TODAY})`
   return `
 SELECT
     t.truck_number,
@@ -167,8 +196,8 @@ SELECT
     COALESCE(cp.program,  '') AS program,
     COALESCE(cp.job_number, '') AS job_number,${windowed ? `
     COALESCE(cl.client,   '') AS client,` : ''}
-    CAST(ps.start_time AS DATE) AS shift_start,
-    CAST(ps.start_time AS DATE) AS shift_end${withBounds ? ',' : ''}${withBounds ? `
+    ${shiftDay('ps.start_time')} AS shift_start,
+    ${shiftDay('ps.start_time')} AS shift_end${withBounds ? ',' : ''}${withBounds ? `
     CASE WHEN sml.bounds_ne_lat IS NOT NULL AND sml.bounds_sw_lat IS NOT NULL
          THEN (sml.bounds_ne_lat + sml.bounds_sw_lat) / 2.0 END AS market_lat,
     CASE WHEN sml.bounds_ne_lng IS NOT NULL AND sml.bounds_sw_lng IS NOT NULL

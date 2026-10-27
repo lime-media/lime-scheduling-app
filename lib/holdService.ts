@@ -1,7 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { query } from '@/lib/mssql'
-import { shiftDay } from '@/lib/scheduleQuery'
+import { shiftDayIn } from '@/lib/scheduleQuery'
 import { checkTruckFeasibility } from '@/lib/availabilityEngine'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { staffBookingRefusal } from '@/lib/bookingRefusals'
@@ -71,8 +71,7 @@ export async function createHold(params: CreateHoldParams): Promise<CreateHoldRe
       JOIN dbo.client_programs cp ON cp.client_program_uid = ps.client_program_uid
       LEFT JOIN dbo.client_program_markets cpm ON cpm.client_program_market_uid = ps.client_program_market_uid
       WHERE t.truck_number                   = @truck_number
-        AND ${shiftDay('ps.end_time')} >= CAST(@start_date AS DATE)
-        AND ${shiftDay('ps.start_time')} <= CAST(@end_date   AS DATE)
+        AND ${shiftDayIn({ from: 'CAST(@start_date AS DATE)', to: 'CAST(@end_date AS DATE)' })}
         AND COALESCE(t.is_deleted, 0) = 0
     `, { truck_number, start_date, end_date })
 

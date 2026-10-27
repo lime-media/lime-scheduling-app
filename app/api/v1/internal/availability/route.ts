@@ -4,7 +4,8 @@ import { validateInternalApiKey } from '@/lib/internalAuth'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
-import { ALL_TRUCKS_QUERY, shiftDay } from '@/lib/scheduleQuery'
+import { ALL_TRUCKS_QUERY, shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
+import { centralDate } from '@/lib/dateOnly'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { loadFleetTimelines } from '@/lib/fleetTimelines'
 import { checkChainFeasibility } from '@/lib/chainFeasibility'
@@ -41,8 +42,7 @@ JOIN dbo.trucks t
     ON  t.truck_uid = ps.truck_uid
 LEFT JOIN dbo.client_program_markets cpm
     ON  cpm.client_program_market_uid = ps.client_program_market_uid
-WHERE ${shiftDay('ps.start_time')} <= @endDate
-  AND ${shiftDay('ps.end_time')} >= @startDate
+WHERE ${shiftDayIn({ from: '@startDate', to: '@endDate' })}
 ORDER BY t.truck_number, ps.start_time
 `
 
@@ -135,7 +135,7 @@ export async function GET(request: Request) {
       // Continue without GPS
     }
 
-    const todayStr = now.toISOString().split('T')[0]
+    const todayStr = centralDate(now)  // shift days are local dates (lib/scheduleQuery.ts shiftDay)
     const scheduleMarkets: Record<string, { market: string; shift_start: string }> = {}
     for (const row of schedulesRaw) {
       const num = String(row.truck_number ?? '')
@@ -201,7 +201,7 @@ export async function GET(request: Request) {
       if (campaignCoords) {
         marketResolved = true
         const { timelines, gpsMap: fleetGps } = await loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS })
-        const today = new Date().toISOString().split('T')[0]
+        const today = centralDate(new Date())
 
         for (const num of trucksRaw.map(r => String(r.truck_number ?? ''))) {
           if (!num || HIDDEN_TRUCKS.has(num)) continue

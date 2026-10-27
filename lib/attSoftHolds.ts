@@ -47,7 +47,7 @@
 import { ATT_RELEASE_ORIGINATION } from '@/lib/attSoftRules'
 import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
-import { shiftDay } from '@/lib/scheduleQuery'
+import { shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
 import { ATT_CLIENT, ATT_MIN_DAYS, PRIOR_MONTH_GRACE_DAY, attLookback, isAttClient, isAttTruck, normalizeClient, planMarketBackfill, planPremiseRelease, planReleaseCuts, planSoftHoldFill, rosterPlan, type MassReleaseApproval, softHoldWindow, type RosterOverride } from '@/lib/attSoftRules'
@@ -172,7 +172,7 @@ async function attDaysByTruck(from: string, to: string): Promise<Map<string, num
     JOIN dbo.clients         cl ON cl.client_uid         = cp.client_uid
     LEFT JOIN dbo.client_program_markets cpm ON cpm.client_program_market_uid = ps.client_program_market_uid
     WHERE COALESCE(t.is_deleted, 0) = 0
-      AND ${shiftDay('ps.start_time')} BETWEEN @from AND @to
+      AND ${shiftDayIn({ from: '@from', to: '@to' })}
       AND ${ATT_CLIENT_SQL}
     GROUP BY t.truck_number
     `,
@@ -202,7 +202,7 @@ async function attLastMarketByTruck(asOf: string): Promise<Map<string, { market:
       JOIN dbo.clients         cl  ON cl.client_uid         = cp.client_uid
       LEFT JOIN dbo.client_program_markets cpm ON cpm.client_program_market_uid = ps.client_program_market_uid
       WHERE COALESCE(t.is_deleted, 0) = 0
-        AND ${shiftDay('ps.start_time')} <= @asOf
+        AND ${shiftDayIn({ to: '@asOf' })}
         AND ${ATT_CLIENT_SQL}
     )
     SELECT truck_number, market, state FROM last WHERE rn = 1

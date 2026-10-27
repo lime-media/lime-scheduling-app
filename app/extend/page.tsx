@@ -8,7 +8,8 @@
 import Image from 'next/image'
 import { prisma } from '@/lib/prisma'
 import { centralDate, parseDateOnly } from '@/lib/dateOnly'
-import { loadBooking } from '@/lib/bookingExpiry'
+import { capStarts, loadBooking } from '@/lib/bookingExpiry'
+import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
 import { EXTEND_DAYS, addDays, readExtendToken } from '@/lib/extendLink'
 import { ExtendConfirm } from './ExtendConfirm'
 
@@ -34,11 +35,13 @@ export default async function ExtendPage({ searchParams }: { searchParams: { t?:
   if (!claims || !hold || hold.created_by !== claims.userId) {
     return <Shell><p className="text-sm text-gray-700">This link has expired or isn&apos;t valid. You can still extend the reservation on <a className="text-green-700 underline" href="/hold-requests">Reservations</a>.</p></Shell>
   }
-  if (hold.expires_at?.toISOString() !== claims.expiresAt) {
+  // A hold that's no longer live (e.g. the deal went Closed Lost) keeps its expires_at.
+  if (hold.expires_at?.toISOString() !== claims.expiresAt || (hold.status !== 'HOLD' && hold.status !== 'EXTENSION_REQUESTED')) {
     return <Shell><p className="text-sm text-gray-700">This reservation has already been extended or changed. The next reminder will have a new link, or you can change it on <a className="text-green-700 underline" href="/hold-requests">Reservations</a>.</p></Shell>
   }
 
-  const booking = (await loadBooking(hold)).filter(h => h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED')
+  const whole = await loadBooking(hold)
+  const booking = whole.filter(h => h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED')
   const day = (d: Date) => d.toISOString().slice(0, 10)
   const markets = [...new Set(booking.map(h => h.market))]
   const trucks = [...new Set(booking.map(h => h.truck_number))]
@@ -46,7 +49,12 @@ export default async function ExtendPage({ searchParams }: { searchParams: { t?:
   const end = booking.map(h => day(h.end_date)).sort().reverse()[0]
   const expiresOn = centralDate(new Date(claims.expiresAt))
   const picked = Number(searchParams.d) === 2 ? 2 : 1
-  const options = EXTEND_DAYS.map(days => ({ days, date: addDays(expiresOn, days), label: longDate(addDays(expiresOn, days)) }))
+  // Only the days the server would accept: the booking's limit, as on Reservations (lib/bookingExpiry.ts).
+  const lastDate = lastExpiryDate([...capStarts(whole)].sort()[0], new Date(), STAFF_MIN_DAYS_BEFORE_START)
+  const options = EXTEND_DAYS.map(days => ({ days, date: addDays(expiresOn, days), label: longDate(addDays(expiresOn, days)) })).filter(o => o.date <= lastDate)
+  if (!options.length) {
+    return <Shell><p className="text-sm text-gray-700">This reservation can&apos;t be held any later: its first market starts too soon. Commit it or change it on <a className="text-green-700 underline" href="/hold-requests">Reservations</a>.</p></Shell>
+  }
 
   return (
     <Shell>
@@ -60,7 +68,7 @@ export default async function ExtendPage({ searchParams }: { searchParams: { t?:
         <dt className="text-gray-500">Dates</dt><dd className="text-gray-900">{longDate(start)} – {longDate(end)}</dd>
         <dt className="text-gray-500">Expires</dt><dd className="text-gray-900">{longDate(expiresOn)}, end of day (Central)</dd>
       </dl>
-      <ExtendConfirm token={searchParams.t!} options={options} picked={picked} />
+      <ExtendConfirm token={searchParams.t!} options={options} picked={options.some(o => o.days === picked) ? picked : options[0].days} />
     </Shell>
   )
 }

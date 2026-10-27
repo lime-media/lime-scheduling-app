@@ -36,6 +36,6 @@ export async function POST(request: Request) {
   }
 
   const date = addDays(centralDate(new Date(claims.expiresAt)), body!.days as number)
-  const r = await setBookingExpiry({ hold, date, userId: user.id, via: 'expiry_email' })
+  const r = await setBookingExpiry({ hold, date, userId: user.id, via: 'expiry_email', expectExpiresAt: claims.expiresAt })
   return NextResponse.json(r.status === 200 ? { ...r.body, date } : r.body, { status: r.status })
 }

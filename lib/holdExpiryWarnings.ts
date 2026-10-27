@@ -25,7 +25,7 @@ import type { Hold } from '@prisma/client'
 import { sendExpiringHoldsEmail } from '@/lib/email'
 import type { ExpiringBooking } from '@/lib/emailTemplates'
 import { APP_TIME_ZONE, centralDate } from '@/lib/dateOnly'
-import { bookingKey } from '@/lib/bookings'
+import { bookingCapStarts, bookingKey } from '@/lib/bookings'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
 import { EXTEND_DAYS, addDays, signExtendToken } from '@/lib/extendLink'
 
@@ -82,8 +82,9 @@ export function expiringBookings(holds: Hold[], now: Date, secret: string | unde
     // The booking's one expiry: the earliest, should older bookings differ.
     const first = [...group].sort((a, b) => (a.expires_at?.getTime() ?? 0) - (b.expires_at?.getTime() ?? 0))[0]
     const starts = group.map(h => toDateStr(h.start_date))
-    const upcoming = starts.filter(d => d >= today).sort()
-    const lastDate = lastExpiryDate(upcoming[0] ?? starts.sort()[0], now, STAFF_MIN_DAYS_BEFORE_START)
+    // The server's cap rule (lib/bookingExpiry.ts capStarts), over the holds this email covers.
+    const capFrom = bookingCapStarts(group.map(h => ({ start_date: toDateStr(h.start_date), status: h.status })), today).sort()[0]
+    const lastDate = lastExpiryDate(capFrom, now, STAFF_MIN_DAYS_BEFORE_START)
     const expiresOn = first.expires_at ? centralDate(first.expires_at) : null
     const extend = secret && first.expires_at && expiresOn
       ? EXTEND_DAYS.flatMap(days => {

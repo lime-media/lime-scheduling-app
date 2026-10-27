@@ -46,6 +46,9 @@ model Hold {
   // the existing hold instead of creating duplicates.
   sfdc_opportunity_id String?
   sfdc_hold_exp       DateTime? // DEPRECATED — use expires_at instead
+  // Opportunity.Job_Number__c, copied by the reconcile; matches the LED program's
+  // client_programs.job_number (lib/ledJobs.ts).
+  sfdc_job_number     String?
   // Client user link (nullable — only set for CLIENT-sourced holds)
   client_user_id      String?
   // Pricing snapshot — locked at hold creation from the quote engine

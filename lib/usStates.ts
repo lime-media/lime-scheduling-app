@@ -54,3 +54,12 @@ export const US_STATE_NAMES: Record<string, string> = {
 }
 
 export const US_STATE_ABBREVIATIONS = Object.keys(US_STATE_NAMES).sort()
+
+const CODE_BY_NAME = new Map(Object.entries(US_STATE_NAMES).map(([code, name]) => [name.toLowerCase(), code]))
+
+/** A state as its two-letter code ("ks", "Kansas" → "KS"), or '' when it isn't one. Pure. */
+export function stateCode(v: string | null | undefined): string {
+  const t = (v ?? '').trim()
+  if (/^[a-z]{2}$/i.test(t) && US_STATE_NAMES[t.toUpperCase()]) return t.toUpperCase()
+  return CODE_BY_NAME.get(t.toLowerCase().replace(/\s+/g, ' ')) ?? ''
+}

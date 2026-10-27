@@ -47,6 +47,37 @@ export function bookingStatus(rows: { status: string; market: string }[]): { sta
   return { status, odd }
 }
 
+/**
+ * How much of a booking's committed (won) part LED has scheduled, in truck-days:
+ * the days each hold's job runs on its truck in LED, of the days sold on it
+ * (lib/ledJobs.ts), over the committed holds that have a job number to match
+ * on. `known` is false when none has one yet. Null when nothing in it is
+ * committed. Pure.
+ */
+export function ledProgress(rows: { status: string; led_days?: number; led_days_sold?: number | null }[]): { days: number; of: number; known: boolean } | null {
+  const committed = rows.filter(r => r.status === 'COMMITTED')
+  if (!committed.length) return null
+  const matched = committed.filter(r => r.led_days_sold != null)
+  return {
+    days: matched.reduce((n, r) => n + Math.min(r.led_days ?? 0, r.led_days_sold ?? 0), 0),
+    of: matched.reduce((n, r) => n + (r.led_days_sold ?? 0), 0),
+    known: matched.length > 0,
+  }
+}
+
+/**
+ * A booking LED has fully taken over: every live hold is committed and
+ * scheduled in LED, and LED runs at least one day of it. Reservations stops
+ * listing it (outside its own filter); the LED schedule blocks the trucks from
+ * then on. A hold that sells no days (a planner stint of only travel or idle
+ * days) doesn't hold the booking back, but a booking of only such holds has
+ * nothing in LED, so it stays listed. Pure.
+ */
+export function bookingInLed(rows: { status: string; led_scheduled?: boolean; led_days_sold?: number | null }[]): boolean {
+  const live = rows.filter(r => r.status === 'HOLD' || r.status === 'EXTENSION_REQUESTED' || r.status === 'COMMITTED')
+  return live.length > 0 && live.every(r => r.status === 'COMMITTED' && r.led_scheduled) && live.some(r => (r.led_days_sold ?? 0) > 0)
+}
+
 /** What staff are told when a change would touch a won deal. */
 export const CLOSED_WON_READ_ONLY = 'This deal is Closed Won in Salesforce; change it there first.'
 

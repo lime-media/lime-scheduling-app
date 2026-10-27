@@ -15,7 +15,7 @@ import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
-import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingKey, closedWonRefusal, bookingStatus, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
+import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingInLed, bookingKey, closedWonRefusal, bookingStatus, ledProgress, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
 import { ownedBy, ownerOptions, runsBetween, wholeBookings, type OwnerFilter } from '@/lib/reservationFilters'
 import { useSession } from 'next-auth/react'
@@ -43,11 +43,19 @@ type HoldRequest = {
   truck_count: number | null
   campaign_group_id: string | null
   sfdc_opportunity_id: string | null
+  /** The opportunity's job number, and how LED stands on it for this truck: days run of days sold (lib/ledJobs.ts). */
+  job_number: string | null
+  led_scheduled: boolean
+  led_days: number
+  led_days_sold: number | null
   expires_at: string | null
   extension_reason: string | null
   extension_until: string | null
   created_at: string
 }
+
+/** The filter for won bookings LED has fully scheduled; every other filter leaves them out. */
+const LED_SCHEDULED = 'LED_SCHEDULED'
 
 const STATUS_BADGE: Record<string, string> = {
   HOLD:                 'bg-yellow-100 text-yellow-800 border border-yellow-200',
@@ -63,6 +71,7 @@ const STATUS_LABEL: Record<string, string> = {
   ATT_SOFT: 'AT&T Soft',
   EXPIRED: 'Expired',
   EXTENSION_REQUESTED: 'Extension Requested',
+  [LED_SCHEDULED]: 'Scheduled in LED',
 }
 
 const SOURCE_BADGE: Record<string, string> = {
@@ -139,6 +148,31 @@ function ReviseLink({ rows, booking }: { rows: HoldRequest[]; booking?: HoldRequ
       Revise
     </a>
   )
+}
+
+/** Where a won booking stands in LED: matched by its job number on each truck (lib/ledJobs.ts). */
+function LedBadge({ progress, inLed, unavailable }: { progress: { days: number; of: number; known: boolean } | null; inLed: boolean; unavailable: boolean }) {
+  if (!progress) return null
+  if (inLed) {
+    return <span className="text-xs text-green-700 font-medium" title="LED runs this job on every truck for all the days sold">Scheduled in LED</span>
+  }
+  if (unavailable) {
+    return <span className="text-xs text-gray-500" title="The LED schedule couldn't be read, so this booking's LED status is unknown">LED status unavailable</span>
+  }
+  if (!progress.known) {
+    return <span className="text-xs text-gray-500" title="This deal has no job number yet, so it can't be matched to an LED program">No job number yet</span>
+  }
+  if (progress.of === 0) {
+    return <span className="text-xs text-gray-500" title="These holds sell no days for LED to run (travel or idle days only)">No LED days sold</span>
+  }
+  if (progress.days > 0) {
+    return (
+      <span className="text-xs text-amber-700 font-medium" title="Truck-days LED runs this job on the booking's trucks, of the days sold. The rest aren't scheduled, or are on another truck. The trucks stay held for every day either way.">
+        In LED: {progress.days} of {progress.of} days
+      </span>
+    )
+  }
+  return <span className="text-xs text-gray-500" title="No LED program with this deal's job number on these trucks yet">Not in LED yet</span>
 }
 
 function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; status: string }) {
@@ -250,6 +284,8 @@ export default function HoldRequestsPage() {
   // Whether staff changed the expiry field (it opens on the soonest expiry).
   const [expiryEdited, setExpiryEdited] = useState(false)
   const [expiredWindowDays, setExpiredWindowDays] = useState<number | null>(null)
+  // The LED schedule couldn't be read: won bookings' LED badges say so.
+  const [ledUnavailable, setLedUnavailable] = useState(false)
   const [saving, setSaving] = useState(false)
 
   // A change to the AT&T truck list being drafted (components/AttRosterPanel.tsx).
@@ -299,6 +335,7 @@ export default function HoldRequestsPage() {
       const data = await res.json()
       setRequests(data.holdRequests || [])
       setExpiredWindowDays(typeof data.expired_window_days === 'number' ? data.expired_window_days : null)
+      setLedUnavailable(data.led_unavailable === true)
     } catch (err) {
       toast.error('Failed to load hold requests')
       console.error(err)
@@ -525,12 +562,23 @@ export default function HoldRequestsPage() {
     return key ? bookingStatus(rowsByBooking.get(key) ?? [r]) : { status: r.status, odd: [] }
   }, [rowsByBooking])
 
+  // A won booking LED has fully scheduled: listed only under its own filter.
+  const inLedOf = useCallback((r: HoldRequest) => {
+    const key = bookingKey(r)
+    return bookingInLed(key ? rowsByBooking.get(key) ?? [r] : [r])
+  }, [rowsByBooking])
+
   const filtered = useMemo(
     () => {
       // A filter picks whole bookings by the booking's status, never part of one.
-      const shown = (status: string) => !filterStatus
-        || (filterStatus === 'HOLD' ? status === 'HOLD' || status === 'COMMITTED' : status === filterStatus)
-      let result = requests.filter(r => shown(statusOf(r).status))
+      const shown = (r: HoldRequest) => {
+        if (filterStatus === LED_SCHEDULED) return inLedOf(r)
+        if (inLedOf(r)) return false
+        const { status } = statusOf(r)
+        return !filterStatus
+          || (filterStatus === 'HOLD' ? status === 'HOLD' || status === 'COMMITTED' : status === filterStatus)
+      }
+      let result = requests.filter(shown)
       // Owner, dates and search pick whole bookings: a booking shows if any of
       // it matches, so a card, its total and its Edit always cover the same
       // reservations and a multi-market card never loses a market.
@@ -545,7 +593,7 @@ export default function HoldRequestsPage() {
       }
       return result
     },
-    [requests, filterStatus, search, statusOf, ownerShown, meId, dateFrom, dateTo]
+    [requests, filterStatus, search, statusOf, inLedOf, ownerShown, meId, dateFrom, dateTo]
   )
 
   // The last date the card being edited can be held to: a booking has one
@@ -687,7 +735,7 @@ export default function HoldRequestsPage() {
             )}
           </div>
           <div className="flex gap-2 flex-shrink-0 flex-wrap">
-            {(['', 'HOLD', 'ATT_SOFT', 'EXTENSION_REQUESTED', 'EXPIRED'] as const).map((s) => (
+            {(['', 'HOLD', 'ATT_SOFT', 'EXTENSION_REQUESTED', 'EXPIRED', LED_SCHEDULED] as const).map((s) => (
               <button
                 key={s}
                 onClick={() => setFilterStatus(s)}
@@ -697,7 +745,7 @@ export default function HoldRequestsPage() {
                     : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
                 }`}
               >
-                {s ? (STATUS_LABEL[s] ?? s) : 'All'}
+                {s ? (STATUS_LABEL[s] ?? s) : 'All not in LED'}
               </button>
             ))}
           </div>
@@ -803,6 +851,7 @@ export default function HoldRequestsPage() {
                       )}
                       {/* The earliest expiry in the booking is the one to act on. */}
                       <ExpirationBadge expiresAt={expiry} status={status} />
+                      <LedBadge progress={ledProgress(groupItems)} inLed={bookingInLed(groupItems)} unavailable={ledUnavailable} />
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.HOLD}`}>
                         {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[status] ?? status)}
                       </span>

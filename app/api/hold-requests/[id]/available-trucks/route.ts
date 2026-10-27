@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { checkAvailability } from '@/lib/availabilityEngine'
+import { linkedJob } from '@/lib/jobNumber'
 
 /**
  * GET /api/hold-requests/[id]/available-trucks
@@ -40,6 +41,9 @@ export async function GET(
     endDate,
     truckCount: 1,
     excludeHoldId: hold.id,
+    // A won hold's own LED program doesn't make the truck LED put it on look
+    // taken, so the swap can line the hold up with LED (lib/jobNumber.ts).
+    ownProgramOf: { start_date: startDate, end_date: endDate, job_number: linkedJob(hold), market: hold.market, state: hold.state },
     // Staff swap: leaving a later AT&T soft hold short is a warning, as in the quote.
     softHoldStrandIsWarning: true,
   })

@@ -20,6 +20,7 @@ SELECT
     COALESCE(cpm.state,   '') AS state,
     COALESCE(cp.program,  '') AS program,
     COALESCE(cl.client,   '') AS client,  -- internal only; client routes must not pass it on
+    COALESCE(cp.job_number, '') AS job_number,
     CAST(ps.start_time AS DATE) AS shift_start,
     CAST(ps.start_time AS DATE) AS shift_end  -- use start date; end_time bleeds into next day for overnight shifts
 FROM dbo.program_schedule ps
@@ -163,7 +164,8 @@ SELECT
     COALESCE(cpm.market,               '') AS market,
     COALESCE(cpm.standard_market_name, '') AS standard_market_name,
     COALESCE(cpm.state,   '') AS state,
-    COALESCE(cp.program,  '') AS program,${windowed ? `
+    COALESCE(cp.program,  '') AS program,
+    COALESCE(cp.job_number, '') AS job_number,${windowed ? `
     COALESCE(cl.client,   '') AS client,` : ''}
     CAST(ps.start_time AS DATE) AS shift_start,
     CAST(ps.start_time AS DATE) AS shift_end${withBounds ? ',' : ''}${withBounds ? `

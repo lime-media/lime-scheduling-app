@@ -16,7 +16,7 @@ import { query } from '@/lib/mssql'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
 import { HIDDEN_TRUCKS } from '@/lib/availabilityEngine'
-import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
+import { isSfdcConfigured, sfdcQueryOptionalField } from '@/lib/salesforceClient'
 import { parseQuoteFeatures } from '@/lib/quoteFeatures'
 import { buildEntries, plannerRange, plannerWindow, weekStart, type PlannerHold, type PlannerShift } from '@/lib/planner/build'
 
@@ -101,11 +101,16 @@ async function opportunityNames(ids: string[]): Promise<Map<string, { name: stri
   if (ids.length === 0 || !isSfdcConfigured()) return new Map()
   const out = new Map<string, { name: string; jobNumber: string | null }>()
   // Per chunk, so one failed query never discards the names already found.
+  // A refused Job_Number__c is asked for once, not per chunk.
+  let tryJob = true
   for (let i = 0; i < ids.length; i += 200) {
     const chunk = ids.slice(i, i + 200).filter(id => /^[A-Za-z0-9]{15,18}$/.test(id))
     if (chunk.length === 0) continue
     try {
-      const rows = await sfdcQuery<{ Id: string; Name: string; Job_Number__c: string | null }>(`SELECT Id, Name, Job_Number__c FROM Opportunity WHERE Id IN (${chunk.map(id => `'${id}'`).join(',')})`)
+      // Names still load if Salesforce refuses Job_Number__c.
+      const { rows, refused }: { rows: { Id: string; Name: string; Job_Number__c?: string | null }[]; refused: boolean } = await sfdcQueryOptionalField<{ Id: string; Name: string; Job_Number__c?: string | null }>('Job_Number__c', (job) =>
+        `SELECT Id, Name${job ? ', Job_Number__c' : ''} FROM Opportunity WHERE Id IN (${chunk.map(id => `'${id}'`).join(',')})`, tryJob)
+      tryJob = !refused
       for (const r of rows) out.set(r.Id, { name: r.Name, jobNumber: r.Job_Number__c?.trim() || null })
     } catch (err) {
       console.error('[planner] opportunity names failed for a chunk:', err)

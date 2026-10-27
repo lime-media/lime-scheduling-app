@@ -86,7 +86,8 @@ export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
       continue
     }
 
-    // The hold under test must not appear in its own chain.
+    // The hold under test must not appear in its own chain. (A won hold's own
+    // LED program days are already out of the timelines: dropOwnProgramDays.)
     const jobs: TruckJob[] = (timelines.get(h.truck_number) ?? []).filter(
       j => !(j.source === 'HOLD' && j.start === h.start_date && j.end === h.end_date
              && j.market === h.market && j.status === h.status),

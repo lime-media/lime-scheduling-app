@@ -252,6 +252,45 @@ export async function sfdcQuery<T = Record<string, unknown>>(soql: string): Prom
 }
 
 /**
+ * Whether a failed query was Salesforce refusing `field` itself: missing in
+ * this org, or hidden from the integration user ("INVALID_FIELD ... No such
+ * column '<field>'"). The message repeats the whole query, so the column it
+ * names is what's matched, not any mention of the field. Pure.
+ */
+export function fieldUnreadable(err: unknown, field: string): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /INVALID_FIELD/.test(msg) && msg.toLowerCase().includes(`no such column '${field.toLowerCase()}'`)
+}
+
+/**
+ * A query with an optional field: if the query with that field fails for any
+ * reason, it runs again without it, so what doesn't depend on the field still
+ * works. Salesforce words a refused field more than one way, so this doesn't
+ * rely on the wording (fieldUnreadable only picks the log line). A real outage
+ * fails the second query too and throws as before. `withField` says which
+ * ran; `refused`, that Salesforce said it can't read the field. A caller
+ * querying in chunks stops asking for the field once it is refused (passing
+ * `tryField` false), so it is asked for once per run, not per chunk, while
+ * a passing failure only costs the chunk it hit.
+ */
+export async function sfdcQueryOptionalField<T = Record<string, unknown>>(
+  field: string,
+  build: (withField: boolean) => string,
+  tryField = true,
+): Promise<{ rows: T[]; withField: boolean; refused: boolean }> {
+  if (!tryField) return { rows: await sfdcQuery<T>(build(false)), withField: false, refused: true }
+  try {
+    return { rows: await sfdcQuery<T>(build(true)), withField: true, refused: false }
+  } catch (err) {
+    const refused = fieldUnreadable(err, field)
+    console.error(refused
+      ? `[sfdc] ${field} not readable; querying without it:`
+      : `[sfdc] query with ${field} failed; trying without it:`, err)
+    return { rows: await sfdcQuery<T>(build(false)), withField: false, refused }
+  }
+}
+
+/**
  * Check if SFDC credentials are configured.
  */
 export function isSfdcConfigured(): boolean {

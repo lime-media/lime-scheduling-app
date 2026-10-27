@@ -8,6 +8,7 @@ import { format, formatDistanceToNow, isPast } from 'date-fns'
 import toast from 'react-hot-toast'
 import { Navbar } from '@/components/Navbar'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
+import { LedClientLink } from '@/components/LedClientLink'
 import { centralDate, parseDateOnly } from '@/lib/dateOnly'
 import { useReopenConfirm, type Reopenable } from '@/components/ReopenOpportunityDialog'
 import { formatMarketState } from '@/lib/format'
@@ -45,6 +46,9 @@ type HoldRequest = {
   sfdc_opportunity_id: string | null
   /** The opportunity's job number, and how LED stands on it for this truck: days run of days sold (lib/ledJobs.ts). */
   job_number: string | null
+  /** The opportunity's account and its LED client, once staff have linked it (lib/ledClients.ts). */
+  sfdc_account_id: string | null
+  led_client: { client_uid: string; client: string | null } | null
   led_scheduled: boolean
   led_days: number
   led_days_sold: number | null
@@ -852,6 +856,9 @@ export default function HoldRequestsPage() {
                       {/* The earliest expiry in the booking is the one to act on. */}
                       <ExpirationBadge expiresAt={expiry} status={status} />
                       <LedBadge progress={ledProgress(groupItems)} inLed={bookingInLed(groupItems)} unavailable={ledUnavailable} />
+                      {status === 'COMMITTED' && first.sfdc_account_id && (
+                        <LedClientLink accountId={first.sfdc_account_id} linked={first.led_client} onSaved={fetchRequests} />
+                      )}
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.HOLD}`}>
                         {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[status] ?? status)}
                       </span>

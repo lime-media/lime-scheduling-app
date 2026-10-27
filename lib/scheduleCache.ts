@@ -18,7 +18,7 @@ import { sendConflictEmail } from '@/lib/emailService'
 import { syncAttSoftHolds } from '@/lib/attSoftHolds'
 import { freeRanges } from '@/lib/ranges'
 import { isOwnLedProgram, jobKey, linkedJob } from '@/lib/jobNumber'
-import { followLedTrucks } from '@/lib/ledTruckFollow'
+import { followLedTrucks, syncFollowedOpportunities } from '@/lib/ledTruckFollow'
 import { daysSold } from '@/lib/ledJobs'
 import { centralDate } from '@/lib/dateOnly'
 import { recordAmountChanges, recordExecuted, recordPrestart, recordSwap, sharedOriginMeasurer } from '@/lib/transportMetricsRecord'
@@ -49,6 +49,8 @@ export interface RefreshSummary {
   conflicts_auto_resolved:    number
   /** Won holds moved onto the truck LED runs them on (lib/ledTruckFollow.ts). */
   led_trucks_followed:        number
+  /** Opportunities whose followed trucks haven't reached Salesforce yet; retried every sweep. */
+  led_follow_sync_pending:    number
 }
 
 /**
@@ -164,7 +166,8 @@ export async function refreshCache(): Promise<RefreshSummary> {
       days_sold: daysSold(h.features, toDateStr(h.start_date), toDateStr(h.end_date)),
       sfdc_opportunity_id: h.sfdc_opportunity_id, created_by: h.created_by,
     })),
-    schedulesRaw.map((r) => ({
+    // A deleted program or an archived truck is never a truck to follow.
+    schedulesRaw.filter((r) => !Number(r.program_deleted) && !Number(r.truck_deleted)).map((r) => ({
       truck_number: String(r.truck_number ?? ''), job_number: String(r.job_number ?? ''), shift_start: toDateStr(r.shift_start),
       market: String(r.market ?? ''), state: String(r.state ?? ''), standard_market_name: String(r.standard_market_name ?? ''),
     })),
@@ -179,7 +182,11 @@ export async function refreshCache(): Promise<RefreshSummary> {
     const hold = holds.find((h) => h.id === m.holdId)
     if (hold) hold.truck_number = m.to
   }
-  await syncOpportunities(ledFollow.opportunities, '[led-follow]')
+  // Retried every sweep until Salesforce takes it (a mark on the moved holds).
+  const ledFollowPending = await syncFollowedOpportunities(ledFollow.opportunities).catch((err) => {
+    console.error('[scheduleCache] LED follow Salesforce sync failed:', err)
+    return ledFollow.opportunities
+  })
 
   // Before detection: a conflict whose window merely shifted is closed here and re-raised
   // against its new dates in the same pass.
@@ -197,11 +204,15 @@ export async function refreshCache(): Promise<RefreshSummary> {
   // Best-effort; never fails the sweep.
   // The two recorders that measure trucks share one fleet and GPS load.
   // Holds the sweep moved onto LED's truck are measured as swaps here too, on
-  // the same fleet load (recordSwap never throws).
+  // the same fleet load (recordSwap never throws), but only before they start:
+  // a running campaign's new truck is already in market, and its leg would
+  // replace the quoted plan with a false LOCAL one.
   const measurer = sharedOriginMeasurer()
   const [metricsPrestart, metricsExecuted, metricsAmounts] = await Promise.all([
     recordPrestart(measurer), recordExecuted(measurer), recordAmountChanges(),
-    ...ledFollow.moved.map((m) => recordSwap(m.holdId, m.by, measurer)),
+    ...ledFollow.moved
+      .filter((m) => (holds.find((h) => h.id === m.holdId)?.start_date ?? '') > today)
+      .map((m) => recordSwap(m.holdId, m.by, measurer)),
   ])
   if (metricsPrestart || metricsExecuted || metricsAmounts) {
     console.log(`[scheduleCache] metrics: ${metricsPrestart} pre-start snapshot(s), ${metricsExecuted} executed leg(s), ${metricsAmounts} amount change(s)`)
@@ -214,7 +225,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     `${sfdc.committed} committed / ${sfdc.uncommitted} back to hold / ${sfdc.released} released from ${sfdc.checked} SFDC opportunit${sfdc.checked === 1 ? 'y' : 'ies'}, ` +
     `${warnings.warned} expiry warning(s) to ${warnings.recipients} user(s), ` +
     `${reconciled.resolved} conflict(s) auto-resolved, ` +
-    `${ledFollow.moved.length} hold(s) moved to LED's truck` +
+    `${ledFollow.moved.length} hold(s) moved to LED's truck, ${ledFollowPending.length} opportunit${ledFollowPending.length === 1 ? 'y' : 'ies'} awaiting its LED Trucks sync` +
     (warnings.skipped_no_email > 0 ? ` (${warnings.skipped_no_email} unwarned — no email)` : '')
   )
 
@@ -233,6 +244,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     expiry_warning_recipients: warnings.recipients,
     conflicts_auto_resolved:   reconciled.resolved,
     led_trucks_followed:       ledFollow.moved.length,
+    led_follow_sync_pending:   ledFollowPending.length,
   }
 }
 

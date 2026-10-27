@@ -29,6 +29,7 @@ import { jobKey } from '@/lib/jobNumber'
 import { ledMarketMatches } from '@/lib/ledJobs'
 import { stateCode } from '@/lib/usStates'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
+import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 
 /** A won hold as following needs it. Dates YYYY-MM-DD, inclusive. `job_number`: its linked job (linkedJob). */
 export type FollowHold = {
@@ -181,7 +182,10 @@ export async function followLedTrucks(
       const done = await prisma.$transaction(async (tx) => {
         const { count } = await tx.hold.updateMany({
           where: { id: m.holdId, truck_number: m.from, status: 'COMMITTED' },
-          data:  { truck_number: m.to },
+          // Marked until its opportunity's LED Trucks reaches Salesforce
+          // (syncFollowedOpportunities): once the hold is on LED's truck the
+          // next sweep has nothing to move, so the mark is what retries the sync.
+          data:  { truck_number: m.to, ...(hold.sfdc_opportunity_id ? { led_follow_sync_pending: new Date() } : {}) },
         })
         if (!count) return false
         await tx.auditLog.create({
@@ -204,4 +208,64 @@ export async function followLedTrucks(
     }
   }
   return { moved, opportunities: [...opportunities] }
+}
+
+/** How long a refused LED Trucks sync is retried before it's left to staff (logged as an error). */
+const FOLLOW_SYNC_RETRY_DAYS = 7
+
+/**
+ * Syncs LED Trucks to Salesforce for the opportunities of holds moved this
+ * sweep, and of committed holds moved earlier whose sync hasn't succeeded yet
+ * (led_follow_sync_pending), and clears the mark once Salesforce has taken
+ * it. A failure stays marked and is retried next sweep, for up to
+ * FOLLOW_SYNC_RETRY_DAYS: an opportunity Salesforce refuses for good (deleted,
+ * a validation rule) is then logged as an error and left. A hold no longer
+ * committed isn't retried here: every release path syncs on its own.
+ * Clearing only touches the marks read just before the sync ran, unchanged,
+ * so a move made meanwhile stays marked. Returns the opportunities still waiting. Never throws.
+ */
+export async function syncFollowedOpportunities(justMoved: string[]): Promise<string[]> {
+  const now = new Date()
+  const cutoff = new Date(now.getTime() - FOLLOW_SYNC_RETRY_DAYS * 864e5)
+  const marked = await prisma.hold.findMany({
+    where:  { led_follow_sync_pending: { not: null }, status: 'COMMITTED', sfdc_opportunity_id: { not: null } },
+    select: { id: true, sfdc_opportunity_id: true, led_follow_sync_pending: true },
+  }).catch((err) => {
+    console.error('[led-follow] reading holds waiting for a Salesforce sync failed:', err)
+    return []
+  })
+  // A hold no longer committed drops its mark: its release synced on its own,
+  // and a mark left behind would be taken for a refused sync if it's won again.
+  await prisma.hold.updateMany({ where: { led_follow_sync_pending: { not: null }, status: { not: 'COMMITTED' } }, data: { led_follow_sync_pending: null } })
+    .catch((err) => console.error('[led-follow] clearing sync marks on holds no longer committed failed:', err))
+  const stale = marked.filter(h => h.led_follow_sync_pending && h.led_follow_sync_pending < cutoff)
+  const retry = marked.filter(h => !stale.includes(h)).map(h => h.sfdc_opportunity_id).filter((id): id is string => !!id)
+  if (stale.length) {
+    // An opportunity another of its holds still retries isn't given up on.
+    const givenUp = [...new Set(stale.map(h => h.sfdc_opportunity_id))].filter(id => id && !retry.includes(id) && !justMoved.includes(id))
+    if (givenUp.length) console.error(`[led-follow] LED Trucks never reached Salesforce after ${FOLLOW_SYNC_RETRY_DAYS} days; set it by hand on: ${givenUp.join(', ')}`)
+    await prisma.hold.updateMany({ where: { id: { in: stale.map(h => h.id) } }, data: { led_follow_sync_pending: null } })
+      .catch((err) => console.error('[led-follow] clearing expired sync marks failed:', err))
+  }
+  const pending: string[] = []
+  for (const opp of new Set([...justMoved, ...retry])) {
+    // The marks this sync covers: read before it runs, and cleared only if
+    // unchanged after, so a move committed meanwhile (another sweep's) keeps
+    // its mark for the next sweep.
+    const covered = await prisma.hold.findMany({
+      where:  { sfdc_opportunity_id: opp, led_follow_sync_pending: { not: null } },
+      select: { id: true, led_follow_sync_pending: true },
+    }).catch(() => [])
+    const warning = await syncOpportunityLedWindow(opp)
+    if (warning) {
+      console.warn(`[led-follow] ${opp}: ${warning} Retrying next sweep.`)
+      pending.push(opp)
+      continue
+    }
+    for (const h of covered) {
+      await prisma.hold.updateMany({ where: { id: h.id, led_follow_sync_pending: h.led_follow_sync_pending }, data: { led_follow_sync_pending: null } })
+        .catch((err) => console.error(`[led-follow] clearing the sync mark on hold ${h.id} failed:`, err))
+    }
+  }
+  return pending
 }

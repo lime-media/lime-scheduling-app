@@ -24,7 +24,11 @@ SELECT
     COALESCE(cl.client,   '') AS client,  -- internal only; client routes must not pass it on
     COALESCE(cp.job_number, '') AS job_number,
     CAST(ps.start_time AS DATE) AS shift_start,
-    CAST(ps.start_time AS DATE) AS shift_end  -- use start date; end_time bleeds into next day for overnight shifts
+    CAST(ps.start_time AS DATE) AS shift_end,  -- use start date; end_time bleeds into next day for overnight shifts
+    -- Flags, not filters: a deleted program or archived truck is never a
+    -- truck for a won hold to follow (lib/ledTruckFollow.ts).
+    CAST(COALESCE(cp.is_deleted, 0) AS INT) AS program_deleted,
+    CAST(COALESCE(t.is_deleted,  0) AS INT) AS truck_deleted
 FROM dbo.program_schedule ps
 JOIN dbo.trucks t
     ON  t.truck_uid = ps.truck_uid

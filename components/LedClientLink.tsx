@@ -106,7 +106,7 @@ export function LedClientLink({ accountId, linked, onSaved }: {
             </div>
             <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-2">
               <button type="button" onClick={() => setOpen(false)} className="px-4 py-2 text-sm rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50">Cancel</button>
-              <button type="button" onClick={save} disabled={!picked || saving || loading}
+              <button type="button" onClick={save} disabled={!picked || picked === linked?.client_uid || saving || loading}
                 className="px-4 py-2 text-sm rounded-lg bg-green-600 text-white font-medium hover:bg-green-700 disabled:opacity-50">
                 {saving ? 'Saving…' : 'Save'}
               </button>

@@ -15,10 +15,11 @@ const LED_CLIENTS_QUERY = `
 SELECT CAST(client_uid AS NVARCHAR(36)) AS client_uid, LTRIM(RTRIM(client)) AS client
 FROM dbo.clients
 WHERE COALESCE(is_deleted, 0) = 0
+  AND NULLIF(LTRIM(RTRIM(client)), '') IS NOT NULL
 ORDER BY client
 `
 
-/** Every live LED client, by name. Reads the LED database; throws if it can't. */
+/** Every live, named LED client, by name. Reads the LED database; throws if it can't. */
 export async function ledClients(): Promise<LedClient[]> {
   const rows = await query<LedClient[]>(LED_CLIENTS_QUERY)
   return rows.map(r => ({ client_uid: r.client_uid.toLowerCase(), client: r.client }))

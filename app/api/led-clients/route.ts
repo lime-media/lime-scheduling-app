@@ -5,8 +5,10 @@ import { prisma } from '@/lib/prisma'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
 import { ledClients, suggestLedClient } from '@/lib/ledClients'
 
-// Salesforce ids are 15- or 18-character alphanumerics; nothing else reaches SOQL.
-const SFDC_ID = /^[a-zA-Z0-9]{15,18}$/
+// The 18-character Salesforce id, as the reconcile copies Opportunity.AccountId
+// onto holds: a 15-character one would make a link no hold ever matches.
+// Nothing else reaches SOQL.
+const SFDC_ID = /^[a-zA-Z0-9]{18}$/
 const UID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** The account's name in Salesforce, or null if it can't be read. */

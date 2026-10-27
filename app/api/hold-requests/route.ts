@@ -68,7 +68,7 @@ export async function GET() {
   // Each won booking's LED client, from its account's link (lib/ledClients.ts):
   // the client's name when LED can be read, else just that it's linked.
   const wonAccounts = [...new Set(holds.flatMap(h => h.status === 'COMMITTED' && h.sfdc_account_id ? [h.sfdc_account_id] : []))]
-  const [owners, inLed, links, clientNames] = await Promise.all([
+  const [owners, inLed, linked] = await Promise.all([
     reservationOwners(holds.map(h => ({ id: h.id, created_by: h.created_by, created_by_name: h.user?.name ?? null, sfdc_opportunity_id: h.sfdc_opportunity_id }))),
     ledShiftsForHolds(committed)
       .then(shifts => ledStandings(committed, shifts))
@@ -77,11 +77,18 @@ export async function GET() {
         ledUnavailable = true
         return new Map<string, LedStanding>()
       }),
-    wonAccounts.length ? prisma.ledClientLink.findMany({ where: { sfdc_account_id: { in: wonAccounts } } }) : [],
-    wonAccounts.length
-      ? ledClients().then(cs => new Map(cs.map(c => [c.client_uid, c.client]))).catch(() => null)
-      : new Map<string, string>(),
+    // LED's client list is read only when some account is linked, to name it.
+    (wonAccounts.length ? prisma.ledClientLink.findMany({ where: { sfdc_account_id: { in: wonAccounts } } }) : Promise.resolve([]))
+      .then(async (found) => ({
+        links: found,
+        clientNames: found.length
+          ? await ledClients()
+            .then(cs => new Map(cs.map(c => [c.client_uid, c.client])))
+            .catch((err) => { console.error('[hold-requests] LED client read failed:', err); return null })
+          : new Map<string, string>(),
+      })),
   ])
+  const { links, clientNames } = linked
   const linkOf = new Map(links.map(l => [l.sfdc_account_id, l.client_uid.toLowerCase()]))
   const ledClientOf = (accountId: string | null) => {
     const uid = accountId ? linkOf.get(accountId) : undefined

@@ -78,6 +78,8 @@ export async function PUT(request: Request) {
   if (!clients) return NextResponse.json({ error: "The LED client list couldn't be read, so the link wasn't saved. Try again shortly." }, { status: 502 })
   const client = clients.find(c => c.client_uid === clientUid)
   if (!client) return NextResponse.json({ error: 'That LED client no longer exists.' }, { status: 404 })
+  // Already linked to it: nothing to save or audit.
+  if (earlier?.client_uid.toLowerCase() === clientUid) return NextResponse.json({ link: client })
 
   const accountLabel = (name ?? earlier?.account_name ?? '').slice(0, 255)
   await prisma.$transaction([

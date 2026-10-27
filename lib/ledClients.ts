@@ -25,6 +25,24 @@ export async function ledClients(): Promise<LedClient[]> {
   return rows.map(r => ({ client_uid: r.client_uid.toLowerCase(), client: r.client }))
 }
 
+const LED_CLIENT_NAMES_QUERY = `
+SELECT CAST(client_uid AS NVARCHAR(36)) AS client_uid, LTRIM(RTRIM(client)) AS client
+FROM dbo.clients
+WHERE client_uid IN (SELECT TRY_CAST(value AS UNIQUEIDENTIFIER) FROM OPENJSON(@uids))
+  AND COALESCE(is_deleted, 0) = 0
+  AND NULLIF(LTRIM(RTRIM(client)), '') IS NOT NULL
+`
+
+/**
+ * The names of just these LED clients, by lower-case id: one missing from the
+ * map is deleted (or unnamed) in LED. Reads the LED database; throws if it can't.
+ */
+export async function ledClientNames(uids: string[]): Promise<Map<string, string>> {
+  if (!uids.length) return new Map()
+  const rows = await query<LedClient[]>(LED_CLIENT_NAMES_QUERY, { uids: JSON.stringify(uids) })
+  return new Map(rows.map(r => [r.client_uid.toLowerCase(), r.client]))
+}
+
 // Company suffixes and filler that differ between the two systems.
 const NOISE = new Set(['inc', 'incorporated', 'llc', 'ltd', 'co', 'corp', 'corporation', 'company', 'the', 'group', 'agency'])
 

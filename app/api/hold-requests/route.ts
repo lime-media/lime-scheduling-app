@@ -5,7 +5,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { reservationOwners } from '@/lib/reservationOwners'
-import { ledClients } from '@/lib/ledClients'
+import { ledClientNames } from '@/lib/ledClients'
 import { daysSold, ledShiftsForHolds, ledStandings, type JobHold, type LedStanding } from '@/lib/ledJobs'
 
 // EXPIRED holds accumulate forever — every lapsed hold and every Closed Lost
@@ -77,15 +77,12 @@ export async function GET() {
         ledUnavailable = true
         return new Map<string, LedStanding>()
       }),
-    // LED's client list is read only when some account is linked, to name it.
+    // LED is read only for the linked clients, to name them.
     (wonAccounts.length ? prisma.ledClientLink.findMany({ where: { sfdc_account_id: { in: wonAccounts } } }) : Promise.resolve([]))
       .then(async (found) => ({
         links: found,
-        clientNames: found.length
-          ? await ledClients()
-            .then(cs => new Map(cs.map(c => [c.client_uid, c.client])))
-            .catch((err) => { console.error('[hold-requests] LED client read failed:', err); return null })
-          : new Map<string, string>(),
+        clientNames: await ledClientNames([...new Set(found.map(l => l.client_uid.toLowerCase()))])
+          .catch((err): Map<string, string> | null => { console.error('[hold-requests] LED client read failed:', err); return null }),
       })),
   ])
   const { links, clientNames } = linked

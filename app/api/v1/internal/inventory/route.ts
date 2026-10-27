@@ -4,6 +4,7 @@ import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { SCHEDULED_QUERY, ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
+import { centralDate } from '@/lib/dateOnly'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 
 const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
@@ -43,7 +44,7 @@ export async function GET(request: Request) {
     }
 
     // Build projected market per truck: schedule → hold → GPS (same logic as /api/schedule)
-    const todayStr = now.toISOString().split('T')[0]
+    const todayStr = centralDate(now)  // shift days are local dates (lib/scheduleQuery.ts shiftDay)
     const scheduleInfo: Record<string, { market: string; shift_start: string }> = {}
     for (const row of schedulesRaw) {
       const num = String(row.truck_number ?? '')

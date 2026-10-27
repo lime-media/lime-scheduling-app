@@ -18,6 +18,7 @@ import { loadFleetTimelines } from '@/lib/fleetTimelines'
 import { HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
 import { windowOccupancy } from '@/lib/truckTimeline'
 import { checkChainFeasibility } from '@/lib/chainFeasibility'
+import { centralDate } from '@/lib/dateOnly'
 import { resolveCampaignCoords, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
 import { SERVICE_AREA_RADIUS_MILES } from '@/lib/pricing/config'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
@@ -135,7 +136,7 @@ async function originMeasurer() {
     resolveDefaultRateOverrides(),
   ])
   const serviceAreaMiles = overrides?.service_area_miles ?? SERVICE_AREA_RADIUS_MILES
-  const today = day(new Date())
+  const today = centralDate(new Date())
   // Many holds share a market: resolve each market once.
   const coordsOf = new Map<string, ReturnType<typeof resolveCampaignCoords>>()
   return {

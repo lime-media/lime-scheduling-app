@@ -49,12 +49,16 @@ export default function OpportunityOriginsPage() {
     ;(async () => {
       try {
         const res = await fetch(`/api/ops/opportunity-origins?${new URLSearchParams({ from, to })}`)
-        const body = await res.json()
+        // A gateway timeout or crash page isn't JSON: show our message, not a parse error.
+        const body = await res.json().catch(() => null)
         if (stale) return
-        if (!res.ok) throw new Error(body.error || 'Opportunity origins could not be loaded.')
+        if (!res.ok || !body) throw new Error(body?.error || 'Opportunity origins could not be loaded.')
         setData(body)
       } catch (e) {
-        if (!stale) setError(e instanceof Error ? e.message : 'Opportunity origins could not be loaded.')
+        if (stale) return
+        // Don't leave the previous range's figures on screen beside the error.
+        setData(null)
+        setError(e instanceof Error ? e.message : 'Opportunity origins could not be loaded.')
       } finally {
         if (!stale) setLoading(false)
       }

@@ -306,6 +306,8 @@ export async function sfdcQueryAll<T = Record<string, unknown>>(soql: string, ma
       const detail = Array.isArray(data) && data[0]?.message ? `${data[0].errorCode}: ${data[0].message}` : `HTTP ${res.status}`
       throw new Error(`Salesforce SOQL query failed — ${detail}`)
     }
+    // An unreadable reply would otherwise read as "no rows, complete".
+    if (!data) throw new Error(`Salesforce SOQL query failed — unreadable reply (HTTP ${res.status})`)
     rows.push(...(data?.records ?? []))
     if (rows.length >= maxRows) return { rows: rows.slice(0, maxRows), truncated: !data?.done || rows.length > maxRows }
     // nextRecordsUrl is absolute from /services/data/<version>; sfdcFetch adds that prefix.

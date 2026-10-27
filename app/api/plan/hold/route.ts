@@ -570,7 +570,7 @@ async function handlePost(req: NextRequest) {
             + (unavailable.length ? ` ${unavailable.length} quoted but no truck available.` : '')
             + ' Breakdown in Description.',
           description,
-        }, { createdBy: (token.id as string | undefined) ?? null, path: 'multi-market' })
+        }, { createdBy, path: 'multi-market' })
         if (result.success && result.id) {
           sfdcOpportunityId = result.id
           sfdcWarnings.push(...(result.warnings ?? []))

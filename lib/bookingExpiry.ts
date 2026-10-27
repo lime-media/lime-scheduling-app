@@ -133,6 +133,7 @@ export async function setBookingExpiry(args: {
   if (closed) return { status: 409, body: { error: `Can't change the expiry: ${closed}` } }
 
   // Every live hold of the booking to the one date.
+  let updated = live.length
   try {
     await reviveBookingExpiry(live, booking, async tx => {
       if (args.expectExpiresAt) {
@@ -141,11 +142,12 @@ export async function setBookingExpiry(args: {
         const moved = await tx.hold.updateMany({ where: { id: hold.id, expires_at: new Date(args.expectExpiresAt), status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } }, data: { expires_at: newExp } })
         if (moved.count === 0) throw new ExpiryChangedError()
       }
-      await tx.hold.updateMany({
+      const written = await tx.hold.updateMany({
         // Only rows still live: one committed (Closed Won) or swept since the read keeps its status.
         where: { id: { in: live.map(h => h.id) }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
         data:  { expires_at: newExp, status: 'HOLD', extension_until: null, extension_reason: null },
       })
+      updated = written.count
       await tx.auditLog.createMany({
         data: live.map(h => ({
           action:       'UPDATE_HOLD_EXPIRATION',
@@ -164,5 +166,5 @@ export async function setBookingExpiry(args: {
   }
 
   const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
-  return { status: 200, body: { ok: true, holds: live.length, expires_at: newExp.toISOString(), sfdcWarning } }
+  return { status: 200, body: { ok: true, holds: updated, expires_at: newExp.toISOString(), sfdcWarning } }
 }

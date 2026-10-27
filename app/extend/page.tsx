@@ -11,6 +11,7 @@ import { centralDate, parseDateOnly } from '@/lib/dateOnly'
 import { capStarts, loadBooking } from '@/lib/bookingExpiry'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
 import { extendOptions, readExtendToken } from '@/lib/extendLink'
+import { closedWonRefusal } from '@/lib/bookings'
 import { ExtendConfirm } from './ExtendConfirm'
 
 export const dynamic = 'force-dynamic'
@@ -57,8 +58,16 @@ export default async function ExtendPage({ searchParams }: { searchParams: { t?:
   if (booking.some(h => h.status === 'EXTENSION_REQUESTED')) {
     return <Shell><p className="text-sm text-gray-700">The client has asked to extend this reservation. Answer the request on <a className="text-green-700 underline" href="/hold-requests">Reservations</a>, which also emails them the decision.</p></Shell>
   }
+  // Part of it is already won (committed): read-only, as the server refuses (lib/bookingExpiry.ts).
+  if (closedWonRefusal(whole)) {
+    return <Shell><p className="text-sm text-gray-700">Part of this reservation is already committed (Closed Won), so its expiry can&apos;t change here. Change it in Salesforce first, or see it on <a className="text-green-700 underline" href="/hold-requests">Reservations</a>.</p></Shell>
+  }
   if (!options.length) {
-    return <Shell><p className="text-sm text-gray-700">This reservation can&apos;t be held any later: its first market starts too soon. Commit it or change it on <a className="text-green-700 underline" href="/hold-requests">Reservations</a>.</p></Shell>
+    // No day fits: either past the booking's limit, or another part already expires later than +2 days.
+    const heldLonger = latestOn && extendOptions(expiresOn, lastDate).length > 0
+    return <Shell><p className="text-sm text-gray-700">{heldLonger
+      ? <>Part of this reservation is already held through {longDate(latestOn)}. Change its expiry on </>
+      : <>This reservation can&apos;t be held any later: its first market starts too soon. Commit it or change it on </>}<a className="text-green-700 underline" href="/hold-requests">Reservations</a>.</p></Shell>
   }
 
   return (

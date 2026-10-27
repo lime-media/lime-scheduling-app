@@ -14,7 +14,9 @@ import { centralDate } from '@/lib/dateOnly'
 import { isSfdcConfigured } from '@/lib/salesforceClient'
 import { opportunityOrigins } from '@/lib/opportunityOrigins'
 
-const isDate = (v: string | null): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v)
+// A real calendar date: 2026-13-01 or 2026-02-30 would otherwise throw (or roll over) further in.
+const isDate = (v: string | null): v is string =>
+  !!v && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v + 'T00:00:00Z')) && new Date(v + 'T00:00:00Z').toISOString().startsWith(v)
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)

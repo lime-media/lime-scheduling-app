@@ -52,17 +52,22 @@ export type Origin = 'app' | 'app_matched' | 'salesforce'
 
 /**
  * Where one opportunity was made. `recorded`: ids the app recorded making.
- * `appHoldTimes`: when each app reservation (staff or client) on it was made. Pure.
+ * `appHoldTimes`: when each app reservation (staff or client) on it was made.
+ * `recordSince`: when the app began recording; an opportunity made since then
+ * that the app didn't record was made in Salesforce, even if a reservation was
+ * attached to it minutes later (the match only covers the time before). Pure.
  */
 export function opportunityOrigin(
   opp: OriginOpportunity,
   recorded: Set<string>,
   appHoldTimes: Map<string, Date[]>,
+  recordSince: Date | null = null,
   matchMinutes = OPPORTUNITY_MATCH_MINUTES,
 ): Origin {
   const id = opp.id.slice(0, 15)
   if (recorded.has(id) || opp.createdInApp) return 'app'
   const made = Date.parse(opp.createdAt)
+  if (recordSince && made >= recordSince.getTime()) return 'salesforce'
   const near = (appHoldTimes.get(id) ?? []).some(t => Math.abs(t.getTime() - made) <= matchMinutes * 60_000)
   return near ? 'app_matched' : 'salesforce'
 }
@@ -153,7 +158,8 @@ export async function opportunityOrigins(from: string, to: string): Promise<Orig
   const hi = new Date(Date.parse(to + 'T00:00:00Z') + 2 * 86_400_000).toISOString().replace(/\.\d+Z$/, 'Z')
   const soql = (marker: boolean) =>
     `SELECT Id, CreatedDate, StageName, CreatedBy.Name, Owner.Name${marker ? `, ${CREATED_IN_APP_FIELD}` : ''} FROM Opportunity`
-    + ` WHERE Asset_Type__c = 'LED' AND CreatedDate >= ${lo} AND CreatedDate < ${hi} ORDER BY CreatedDate`
+    // Newest first, so a range too large to read whole loses its oldest rows, not its latest weeks.
+    + ` WHERE Asset_Type__c = 'LED' AND CreatedDate >= ${lo} AND CreatedDate < ${hi} ORDER BY CreatedDate DESC`
 
   // Created_In_App__c only exists once it's added in Salesforce: read without it until then.
   let markerReadable = true
@@ -186,6 +192,8 @@ export async function opportunityOrigins(from: string, to: string): Promise<Orig
   const ids = opps.map(o => o.id)
   const recorded = new Set<string>()
   const appHoldTimes = new Map<string, Date[]>()
+  // When the app began recording: the reservation-time match only counts before it.
+  const firstRecord = await prisma.createdOpportunity.findFirst({ orderBy: { created_at: 'asc' }, select: { created_at: true } })
   for (let i = 0; i < ids.length; i += IN_CHUNK) {
     const slice = ids.slice(i, i + IN_CHUNK)
     const [made, holds, booked] = await Promise.all([
@@ -204,10 +212,12 @@ export async function opportunityOrigins(from: string, to: string): Promise<Orig
     for (const m of made) recorded.add(m.sfdc_opportunity_id.slice(0, 15))
     for (const [id, at] of [...holds.map(h => [h.sfdc_opportunity_id!, h.created_at] as const), ...booked.map(b => [b.sfdc_opportunity_id!, b.captured_at] as const)]) {
       const key = id.slice(0, 15)
-      appHoldTimes.set(key, [...(appHoldTimes.get(key) ?? []), at])
+      const times = appHoldTimes.get(key)
+      if (times) times.push(at)
+      else appHoldTimes.set(key, [at])
     }
   }
 
-  const rows = opps.map(opp => ({ opp, origin: opportunityOrigin(opp, recorded, appHoldTimes) }))
+  const rows = opps.map(opp => ({ opp, origin: opportunityOrigin(opp, recorded, appHoldTimes, firstRecord?.created_at ?? null) }))
   return { ...summarizeOrigins(rows, fromWeek, centralWeekStart(new Date(to + 'T12:00:00Z'))), from: fromWeek, to, truncated: read.truncated, markerReadable }
 }

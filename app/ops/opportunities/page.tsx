@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from 'react'
 import { Navbar } from '@/components/Navbar'
+import { centralDate } from '@/lib/dateOnly'
 
 type Opp = { id: string; createdAt: string; createdBy: string; owner: string; stage: string; week: string }
 type Data = {
@@ -19,7 +20,8 @@ type Data = {
   direct_opportunities: Opp[]
 }
 
-const iso = (d: Date) => d.toISOString().slice(0, 10)
+// Central days, like the server's default range and its weeks.
+const iso = (d: Date) => centralDate(d)
 const day = (s: string) => new Date(s + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
 const when = (s: string) => new Date(s).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Chicago' })
 

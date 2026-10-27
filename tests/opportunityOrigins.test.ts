@@ -22,6 +22,8 @@ eq('an app reservation 90 seconds before: matched', opportunityOrigin(opp(ID, '2
 eq('exactly 5 minutes apart: matched', opportunityOrigin(opp(ID, '2026-10-20T15:03:30Z'), new Set(), holds), 'app_matched')
 eq('just over 5 minutes: direct', opportunityOrigin(opp(ID, '2026-10-20T15:03:31Z'), new Set(), holds), 'salesforce')
 eq('an app reservation days later (attached to it): direct', opportunityOrigin(opp(ID, '2026-10-10T15:00:00Z'), new Set(), holds), 'salesforce')
+eq('made since the app began recording, unrecorded: direct even with a reservation', opportunityOrigin(opp(ID, '2026-10-20T15:00:00Z'), new Set(), holds, at('2026-10-01T00:00:00Z')), 'salesforce')
+eq('made before the app began recording: still matched', opportunityOrigin(opp(ID, '2026-10-20T15:00:00Z'), new Set(), holds, at('2026-10-28T00:00:00Z')), 'app_matched')
 eq('nothing from the app: direct', opportunityOrigin(opp(ID, '2026-10-20T15:00:00Z'), new Set(), new Map()), 'salesforce')
 
 section('centralWeekStart')

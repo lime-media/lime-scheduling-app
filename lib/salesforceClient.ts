@@ -182,10 +182,18 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
     return { res, data: Array.isArray(json) ? { success: false, errors: json } : (json ?? { success: false }) }
   }
   let { res, data } = await post(createdInAppRefused ? body : { ...body, [CREATED_IN_APP_FIELD]: true })
-  if (!data.success && !createdInAppRefused && fieldRefusedOnWrite(data.errors, CREATED_IN_APP_FIELD)) {
-    createdInAppRefused = true
-    console.warn(`[sfdc] ${CREATED_IN_APP_FIELD} refused; creating opportunities without it:`, JSON.stringify(data.errors))
+  // Any refusal with the mark is tried again without it: Salesforce words a
+  // refused field more than one way (a validation rule, a field of another
+  // type), and a failed create made nothing, so the retry can't duplicate.
+  // It stops sending the mark once the field is known to be the cause.
+  if (!data.success && !createdInAppRefused) {
+    const named = fieldRefusedOnWrite(data.errors, CREATED_IN_APP_FIELD)
+    const first = data.errors
     ;({ res, data } = await post(body))
+    if (data.success || named) {
+      createdInAppRefused = true
+      console.warn(`[sfdc] ${CREATED_IN_APP_FIELD} refused; creating opportunities without it:`, JSON.stringify(first))
+    }
   }
   if (!data.success) {
     console.error('[sfdc] Opportunity creation failed. Status:', res.status, 'Response:', JSON.stringify(data))

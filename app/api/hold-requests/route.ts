@@ -5,7 +5,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { reservationOwners } from '@/lib/reservationOwners'
-import { bookingEnded, bookingKey } from '@/lib/bookings'
+import { bookingEnded, bookingInLed, bookingKey } from '@/lib/bookings'
 import { centralDate } from '@/lib/dateOnly'
 import { daysSold, ledShiftsForHolds, ledStandings, type JobHold, type LedStanding } from '@/lib/ledJobs'
 
@@ -31,7 +31,7 @@ export async function GET() {
 
   const expiredCutoff = new Date(Date.now() - EXPIRED_WINDOW_DAYS * 24 * 60 * 60 * 1000)
 
-  const fetched = await prisma.hold.findMany({
+  const holds = await prisma.hold.findMany({
     where: {
       OR: [
         { status: { not: 'EXPIRED' } },
@@ -48,20 +48,6 @@ export async function GET() {
       client_user: { select: { company_name: true } },
       user: { select: { name: true } },
     },
-  })
-
-  // Committed holds are never retired, so a won booking stays listed (under its
-  // own filter) only for the same window after it ends, then drops off whole.
-  const endedCutoff = centralDate(new Date(Date.now() - EXPIRED_WINDOW_DAYS * 864e5))
-  const byBooking = new Map<string, typeof fetched>()
-  for (const h of fetched) {
-    const key = bookingKey(h)
-    if (key) byBooking.set(key, [...(byBooking.get(key) ?? []), h])
-  }
-  const day = (h: (typeof fetched)[number]) => ({ status: h.status, end_date: h.end_date.toISOString() })
-  const holds = fetched.filter(h => {
-    const key = bookingKey(h)
-    return !bookingEnded((key ? byBooking.get(key)! : [h]).map(day), endedCutoff)
   })
 
   // How each committed hold stands in LED (lib/ledJobs.ts): the days its job
@@ -90,39 +76,59 @@ export async function GET() {
         return new Map<string, LedStanding>()
       }),
   ])
+  const rows = holds.map((h) => ({
+    id:                h.id,
+    truck_number:      h.truck_number,
+    market:            h.market,
+    state:             h.state ?? '',
+    start_date:        h.start_date.toISOString().split('T')[0],
+    end_date:          h.end_date.toISOString().split('T')[0],
+    notes:             h.notes ?? '',
+    status:            h.status,
+    source:            h.source,
+    origination:       h.origination,
+    company_name:      h.client_user?.company_name ?? h.client_name,
+    created_by_name:   h.user?.name ?? null,
+    owner_id:          owners.get(h.id)!.owner_id,
+    owner_name:        owners.get(h.id)!.owner_name,
+    pricing_tier:      h.pricing_tier ?? null,
+    quoted_total:      h.quoted_total ?? null,
+    daily_rate:        h.daily_rate ?? null,
+    features:          h.features ?? null,
+    truck_count:       h.truck_count ?? null,
+    campaign_group_id: h.campaign_group_id ?? null,
+    sfdc_opportunity_id: h.sfdc_opportunity_id ?? null,
+    job_number:        h.sfdc_job_number ?? null,
+    led_scheduled:     inLed.get(h.id)?.scheduled ?? false,
+    led_days:          inLed.get(h.id)?.days ?? 0,
+    led_days_sold:     inLed.get(h.id)?.of ?? null,
+    expires_at:        h.expires_at?.toISOString() ?? null,
+    extension_reason:  h.extension_reason ?? null,
+    extension_until:   h.extension_until?.toISOString() ?? null,
+    created_at:        h.created_at.toISOString(),
+  }))
+
+  // Nothing retires a committed hold, so a won booking that LED has fully
+  // scheduled stops being listed a week after it ends (EXPIRED_WINDOW_DAYS),
+  // whole. One LED never fully scheduled stays (under Won, ended) with its
+  // "In LED: x of y days" or "No job number yet" badge until it is.
+  const endedCutoff = centralDate(new Date(Date.now() - EXPIRED_WINDOW_DAYS * 864e5))
+  const byBooking = new Map<string, typeof rows>()
+  for (const r of rows) {
+    const key = bookingKey(r)
+    if (!key) continue
+    const group = byBooking.get(key)
+    if (group) group.push(r)
+    else byBooking.set(key, [r])
+  }
+  const done = (group: typeof rows) => bookingEnded(group, endedCutoff) && bookingInLed(group)
+  const retired = new Set([...byBooking].filter(([, group]) => done(group)).map(([key]) => key))
   return NextResponse.json({
     expired_window_days: EXPIRED_WINDOW_DAYS,
     led_unavailable: ledUnavailable,
-    holdRequests: holds.map((h) => ({
-      id:                h.id,
-      truck_number:      h.truck_number,
-      market:            h.market,
-      state:             h.state ?? '',
-      start_date:        h.start_date.toISOString().split('T')[0],
-      end_date:          h.end_date.toISOString().split('T')[0],
-      notes:             h.notes ?? '',
-      status:            h.status,
-      source:            h.source,
-      origination:       h.origination,
-      company_name:      h.client_user?.company_name ?? h.client_name,
-      created_by_name:   h.user?.name ?? null,
-      owner_id:          owners.get(h.id)!.owner_id,
-      owner_name:        owners.get(h.id)!.owner_name,
-      pricing_tier:      h.pricing_tier ?? null,
-      quoted_total:      h.quoted_total ?? null,
-      daily_rate:        h.daily_rate ?? null,
-      features:          h.features ?? null,
-      truck_count:       h.truck_count ?? null,
-      campaign_group_id: h.campaign_group_id ?? null,
-      sfdc_opportunity_id: h.sfdc_opportunity_id ?? null,
-      job_number:        h.sfdc_job_number ?? null,
-      led_scheduled:     inLed.get(h.id)?.scheduled ?? false,
-      led_days:          inLed.get(h.id)?.days ?? 0,
-      led_days_sold:     inLed.get(h.id)?.of ?? null,
-      expires_at:        h.expires_at?.toISOString() ?? null,
-      extension_reason:  h.extension_reason ?? null,
-      extension_until:   h.extension_until?.toISOString() ?? null,
-      created_at:        h.created_at.toISOString(),
-    })),
+    holdRequests: rows.filter(r => {
+      const key = bookingKey(r)
+      return key ? !retired.has(key) : !done([r])
+    }),
   })
 }

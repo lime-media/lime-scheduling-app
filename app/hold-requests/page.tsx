@@ -54,9 +54,13 @@ type HoldRequest = {
   created_at: string
 }
 
-/** The filter for won bookings LED has fully scheduled; every other filter leaves them out. */
+/** The filter for running won bookings LED has fully scheduled; every other filter leaves them out. */
 const LED_SCHEDULED = 'LED_SCHEDULED'
-/** The filter for won bookings whose dates have all passed; every other filter leaves them out. */
+/**
+ * The filter for won bookings whose dates have all passed, scheduled in LED or
+ * not; every other filter leaves them out. One LED fully scheduled stops being
+ * listed a week after it ends (app/api/hold-requests).
+ */
 const WON_ENDED = 'WON_ENDED'
 
 const STATUS_BADGE: Record<string, string> = {
@@ -581,7 +585,7 @@ export default function HoldRequestsPage() {
     () => {
       // A filter picks whole bookings by the booking's status, never part of one.
       const shown = (r: HoldRequest) => {
-        if (filterStatus === LED_SCHEDULED) return inLedOf(r)
+        if (filterStatus === LED_SCHEDULED) return inLedOf(r) && !endedOf(r)
         if (filterStatus === WON_ENDED) return endedOf(r)
         if (inLedOf(r) || endedOf(r)) return false
         const { status } = statusOf(r)
@@ -745,7 +749,7 @@ export default function HoldRequestsPage() {
             )}
             {expiredWindowDays !== null && filterStatus === WON_ENDED && (
               <p className="text-xs text-gray-400 mt-1">
-                Showing won bookings that ended in the last {expiredWindowDays} days. Older ones are kept but not listed here.
+                Won bookings scheduled in LED are listed for {expiredWindowDays} days after they end. One LED hasn&apos;t fully scheduled stays listed until it is.
               </p>
             )}
           </div>

@@ -142,14 +142,19 @@ export async function setBookingExpiry(args: {
         const moved = await tx.hold.updateMany({ where: { id: hold.id, expires_at: new Date(args.expectExpiresAt), status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } }, data: { expires_at: newExp } })
         if (moved.count === 0) throw new ExpiryChangedError()
       }
+      // Only rows still live: one committed (Closed Won) or swept since the read
+      // keeps its status, and isn't audited as re-dated.
+      const stillLive = new Set((await tx.hold.findMany({
+        where:  { id: { in: live.map(h => h.id) }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
+        select: { id: true },
+      })).map(h => h.id))
       const written = await tx.hold.updateMany({
-        // Only rows still live: one committed (Closed Won) or swept since the read keeps its status.
-        where: { id: { in: live.map(h => h.id) }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
+        where: { id: { in: [...stillLive] }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
         data:  { expires_at: newExp, status: 'HOLD', extension_until: null, extension_reason: null },
       })
       updated = written.count
       await tx.auditLog.createMany({
-        data: live.map(h => ({
+        data: live.filter(h => stillLive.has(h.id)).map(h => ({
           action:       'UPDATE_HOLD_EXPIRATION',
           truck_number: h.truck_number,
           user_id:      userId,

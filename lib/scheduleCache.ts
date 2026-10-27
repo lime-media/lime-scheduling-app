@@ -13,7 +13,7 @@ import { activeHoldWhere } from '@/lib/holdFilters'
 import { reconcileSfdcOpportunities, closeOpportunityAsLost } from '@/lib/sfdcOpportunityReconcile'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { warnExpiringHolds } from '@/lib/holdExpiryWarnings'
-import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
+import { SCHEDULED_QUERY, SCHEDULED_WINDOW } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 import { syncAttSoftHolds } from '@/lib/attSoftHolds'
 import { freeRanges } from '@/lib/ranges'
@@ -152,7 +152,11 @@ export async function refreshCache(): Promise<RefreshSummary> {
 
   // A won hold follows the truck LED scheduled it on (lib/ledTruckFollow.ts),
   // before conflicts are judged, so they're judged on LED's truck. Salesforce's
-  // LED Trucks follow too. Never fails the sweep.
+  // LED Trucks follow too. Never fails the sweep. Only holds inside the dates
+  // SCHEDULED_QUERY covers (a day in from each edge: its "today" is the
+  // database's) can be judged.
+  const today = centralDate(new Date())
+  const shift = (n: number) => { const d = new Date(`${today}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10) }
   const ledFollow = await followLedTrucks(
     holdsRaw.filter((h) => linkedJob(h)).map((h) => ({
       id: h.id, truck_number: h.truck_number, market: h.market, state: h.state, job_number: linkedJob(h),
@@ -164,11 +168,12 @@ export async function refreshCache(): Promise<RefreshSummary> {
       truck_number: String(r.truck_number ?? ''), job_number: String(r.job_number ?? ''), shift_start: toDateStr(r.shift_start),
       market: String(r.market ?? ''), state: String(r.state ?? ''), standard_market_name: String(r.standard_market_name ?? ''),
     })),
-    centralDate(new Date()),
+    today,
     holds,
+    { from: shift(1 - SCHEDULED_WINDOW.pastDays), to: shift(SCHEDULED_WINDOW.aheadDays - 1) },
   ).catch((err) => {
     console.error('[scheduleCache] LED truck follow failed:', err)
-    return { moved: [], opportunities: [] as string[], serviceUserId: null }
+    return { moved: [], opportunities: [] as string[] }
   })
   for (const m of ledFollow.moved) {
     const hold = holds.find((h) => h.id === m.holdId)
@@ -196,7 +201,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
   const measurer = sharedOriginMeasurer()
   const [metricsPrestart, metricsExecuted, metricsAmounts] = await Promise.all([
     recordPrestart(measurer), recordExecuted(measurer), recordAmountChanges(),
-    ...ledFollow.moved.map((m) => recordSwap(m.holdId, ledFollow.serviceUserId, measurer)),
+    ...ledFollow.moved.map((m) => recordSwap(m.holdId, m.by, measurer)),
   ])
   if (metricsPrestart || metricsExecuted || metricsAmounts) {
     console.log(`[scheduleCache] metrics: ${metricsPrestart} pre-start snapshot(s), ${metricsExecuted} executed leg(s), ${metricsAmounts} amount change(s)`)

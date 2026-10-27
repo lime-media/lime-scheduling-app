@@ -51,6 +51,9 @@ export type FollowRow = {
 /** A hold to move from its truck to the one LED runs its job on. */
 export type TruckMove = { holdId: string; from: string; to: string; job: string }
 
+/** The dates LED's rows cover (YYYY-MM-DD, inclusive): a hold reaching outside them can't be judged. */
+export type SeenWindow = { from: string; to: string }
+
 const MULTI_MARKET = /^\s*multi-market\s*:/i
 const cityOf = (m: string) => m.split(',')[0].trim().toLowerCase().replace(/\s+/g, ' ')
 
@@ -71,9 +74,12 @@ function inHoldMarket(h: FollowHold, r: FollowRow): boolean {
 
 /**
  * The holds to move, and where. Only holds still running (ending today or
- * later) move; a finished booking keeps the truck it was recorded on. Pure.
+ * later) move; a finished booking keeps the truck it was recorded on. With
+ * `seen`, only holds wholly inside the dates LED's rows cover move: a day of
+ * the hold's own truck outside them can't be seen, so a split could look like
+ * a move. Pure.
  */
-export function ledTruckMoves(holds: FollowHold[], rows: FollowRow[], today: string, live: LiveHold[] = []): TruckMove[] {
+export function ledTruckMoves(holds: FollowHold[], rows: FollowRow[], today: string, live: LiveHold[] = [], seen?: SeenWindow): TruckMove[] {
   const byJob = new Map<string, FollowHold[]>()
   for (const h of holds) {
     const job = jobKey(h.job_number)
@@ -100,7 +106,6 @@ export function ledTruckMoves(holds: FollowHold[], rows: FollowRow[], today: str
     // matter: one truck can carry two markets of a booking one after another.
     const overlaps = (a: FollowHold, b: FollowHold) => a.start_date <= b.end_date && b.start_date <= a.end_date
     const within = (h: FollowHold) => jobRows.filter(r => r.shift_start >= h.start_date && r.shift_start <= h.end_date)
-    // Each hold LED isn't running on its own truck, with every other truck it could be on.
     // Another live hold of the same opportunity (a market not yet won, say) on that truck over the same days.
     const takenByBooking = (h: FollowHold, truck: string) => !!h.sfdc_opportunity_id && live.some(o =>
       o.id !== h.id && o.sfdc_opportunity_id === h.sfdc_opportunity_id && o.truck_number === truck && o.start_date <= h.end_date && h.start_date <= o.end_date)
@@ -108,8 +113,10 @@ export function ledTruckMoves(holds: FollowHold[], rows: FollowRow[], today: str
     // (another market of a reused job number on that truck isn't this hold's).
     const daysOn = (h: FollowHold, truck: string) =>
       new Set(within(h).filter(r => r.truck_number === truck && inHoldMarket(h, r)).map(r => r.shift_start)).size
+    // Each hold LED isn't running on its own truck, with every other truck it could be on.
     const unmatched = group
       .filter(h => h.end_date >= today && h.days_sold > 0)
+      .filter(h => !seen || (h.start_date >= seen.from && h.end_date <= seen.to))
       .map(h => ({ hold: h, rows: within(h) }))
       .filter(u => !u.rows.some(r => r.truck_number === u.hold.truck_number))
       .map(({ hold: h, rows: inDates }) => ({
@@ -137,9 +144,9 @@ export function ledTruckMoves(holds: FollowHold[], rows: FollowRow[], today: str
 /**
  * Moves each hold ledTruckMoves names onto LED's truck, as a truck swap made
  * by the sweep: audited (SWAP_HOLD_TRUCK, reason led_truck_follow) in the same
- * transaction as the move. Returns the moves made, the opportunities whose LED
- * Trucks the caller syncs to Salesforce (the app owns them), and the user the
- * swaps are recorded as. The caller measures the swaps (recordSwap) after
+ * transaction as the move. Returns the moves made, each with the user it is
+ * recorded as, and the opportunities whose LED Trucks the caller syncs to
+ * Salesforce (the app owns them). The caller measures the swaps (recordSwap) after
  * conflict detection, so the fleet and GPS loads never delay it.
  *
  * MIRROR PATH — no clash check by design. LED has the job on that truck
@@ -155,16 +162,18 @@ export async function followLedTrucks(
   rows: FollowRow[],
   today: string,
   live: LiveHold[],
-): Promise<{ moved: TruckMove[]; opportunities: string[]; serviceUserId: string | null }> {
-  const moves = ledTruckMoves(holds, rows, today, live)
-  if (!moves.length) return { moved: [], opportunities: [], serviceUserId: null }
+  seen?: SeenWindow,
+): Promise<{ moved: (TruckMove & { by: string })[]; opportunities: string[] }> {
+  const moves = ledTruckMoves(holds, rows, today, live, seen)
+  if (!moves.length) return { moved: [], opportunities: [] }
   const serviceUser = await prisma.user.findUnique({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } })
   const byId = new Map(holds.map(h => [h.id, h]))
-  const moved: TruckMove[] = []
+  const moved: (TruckMove & { by: string })[] = []
   const opportunities = new Set<string>()
   for (const m of moves) {
     const hold = byId.get(m.holdId)
     if (!hold) continue
+    const by = serviceUser?.id ?? hold.created_by
     try {
       // Move and audit together: a move left without its audit row (or
       // reported as failed after it was written) would never reach
@@ -179,7 +188,7 @@ export async function followLedTrucks(
           data: {
             action:       'SWAP_HOLD_TRUCK',
             truck_number: m.to,
-            user_id:      serviceUser?.id ?? hold.created_by,
+            user_id:      by,
             hold_id:      m.holdId,
             details:      JSON.stringify({ old_truck: m.from, new_truck: m.to, reason: 'led_truck_follow', job_number: m.job }),
           },
@@ -187,12 +196,12 @@ export async function followLedTrucks(
         return true
       })
       if (!done) continue
-      moved.push(m)
+      moved.push({ ...m, by })
       if (hold.sfdc_opportunity_id) opportunities.add(hold.sfdc_opportunity_id)
       console.log(`[led-follow] hold ${m.holdId} (job ${m.job}) moved from truck ${m.from} to ${m.to}, where LED runs it`)
     } catch (err) {
       console.error(`[led-follow] moving hold ${m.holdId} to truck ${m.to} failed; carrying on:`, err)
     }
   }
-  return { moved, opportunities: [...opportunities], serviceUserId: serviceUser?.id ?? null }
+  return { moved, opportunities: [...opportunities] }
 }

@@ -83,3 +83,8 @@ eq('a market not yet won holds LED\'s truck: stays',
   ledTruckMoves([hold(opp)], led('1261', DAYS), TODAY, [{ id: 'other', truck_number: '1261', start_date: DAYS[0], end_date: DAYS[2], ...opp }]).length, 0)
 eq('another opportunity\'s hold there: moves (a clash, shown as a conflict)',
   ledTruckMoves([hold(opp)], led('1261', DAYS), TODAY, [{ id: 'other', truck_number: '1261', start_date: DAYS[0], end_date: DAYS[2], sfdc_opportunity_id: '006A000000zzzZZ' }]).length, 1)
+
+section('only holds inside the dates LED\'s rows cover')
+eq('wholly inside: moves', ledTruckMoves([hold()], led('1261', DAYS), TODAY, [], { from: '2026-10-01', to: '2026-11-30' }).length, 1)
+eq('reaching past the last day LED\'s rows cover: stays (its own truck there is unseen)',
+  ledTruckMoves([hold()], led('1261', DAYS), TODAY, [], { from: '2026-10-01', to: '2026-11-03' }).length, 0)

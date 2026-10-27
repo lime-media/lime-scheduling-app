@@ -48,6 +48,7 @@ import { ATT_RELEASE_ORIGINATION } from '@/lib/attSoftRules'
 import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
 import { shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
+import { centralDate } from '@/lib/dateOnly'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
 import { ATT_CLIENT, ATT_MIN_DAYS, PRIOR_MONTH_GRACE_DAY, attLookback, isAttClient, isAttTruck, normalizeClient, planMarketBackfill, planPremiseRelease, planReleaseCuts, planSoftHoldFill, rosterPlan, type MassReleaseApproval, softHoldWindow, type RosterOverride } from '@/lib/attSoftRules'
@@ -235,7 +236,7 @@ export type SoftHoldSyncResult = {
  * Salesforce integration user is used.
  */
 export async function syncAttSoftHolds(opts: { today?: string; createdBy?: string } = {}): Promise<SoftHoldSyncResult> {
-  const today = opts.today ?? iso(new Date())
+  const today = opts.today ?? centralDate(new Date())
   const window = softHoldWindow(today)
   const monthStart = window[0].start.slice(0, 8) + '01'
   const warnings: string[] = []

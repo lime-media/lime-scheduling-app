@@ -124,10 +124,13 @@ export type SfdcOpportunityResult = {
 /** The checkbox that marks an opportunity made in the app (lib/opportunityOrigins.ts). */
 export const CREATED_IN_APP_FIELD = 'Created_In_App__c'
 
-// Set once Salesforce has refused CREATED_IN_APP_FIELD (not in this org yet, or
-// not writable by the integration user): later creates in this process skip it
-// instead of failing once more each.
-let createdInAppRefused = false
+// When Salesforce last refused CREATED_IN_APP_FIELD by name (not in this org
+// yet, or not writable by the integration user): for an hour after, creates
+// skip it instead of failing once more each. Only a refusal that names the
+// field counts, and it lapses, so a passing error can't switch the mark off
+// for good, and the mark comes back within an hour of the field being added.
+const CREATED_IN_APP_RETRY_MS = 3600_000
+let createdInAppRefusedAt = 0
 
 /**
  * Whether a failed write was Salesforce refusing `field` itself: missing, or
@@ -181,20 +184,23 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
     const json = await res.json().catch(() => null)
     return { res, data: Array.isArray(json) ? { success: false, errors: json } : (json ?? { success: false }) }
   }
-  let { res, data } = await post(createdInAppRefused ? body : { ...body, [CREATED_IN_APP_FIELD]: true })
-  // Any refusal of a create with the mark is tried again without it: Salesforce words a
-  // refused field more than one way (a validation rule, a field of another
-  // type), and a failed create made nothing, so the retry can't duplicate.
-  // It stops sending the mark once the field is known to be the cause.
-  // Only a definite refusal (400, an error list) is retried: a 5xx or an
-  // unreadable reply may still have made the opportunity.
-  if (!data.success && !createdInAppRefused && res.status === 400 && Array.isArray(data.errors)) {
-    const named = fieldRefusedOnWrite(data.errors, CREATED_IN_APP_FIELD)
+  const marked = (fields: Record<string, unknown>) => ({ ...fields, [CREATED_IN_APP_FIELD]: true })
+  const withMark = Date.now() - createdInAppRefusedAt >= CREATED_IN_APP_RETRY_MS
+  let { res, data } = await post(withMark ? marked(body) : body)
+  // Any definite refusal (400, an error list) is tried once more the other way:
+  // without the mark (Salesforce words a refused field more than one way), or
+  // with it while it's being skipped (a rule may now require it). A failed
+  // create made nothing, so the retry can't duplicate; a 5xx or an unreadable
+  // reply may still have made the opportunity, so it isn't retried.
+  if (!data.success && res.status === 400 && Array.isArray(data.errors)) {
+    const named = withMark && fieldRefusedOnWrite(data.errors, CREATED_IN_APP_FIELD)
     const first = data.errors
-    ;({ res, data } = await post(body))
-    if (data.success || named) {
-      createdInAppRefused = true
-      console.warn(`[sfdc] ${CREATED_IN_APP_FIELD} refused; creating opportunities without it:`, JSON.stringify(first))
+    ;({ res, data } = await post(withMark ? body : marked(body)))
+    if (named) {
+      createdInAppRefusedAt = Date.now()
+      console.warn(`[sfdc] ${CREATED_IN_APP_FIELD} refused; creating opportunities without it for an hour:`, JSON.stringify(first))
+    } else if (!withMark && data.success) {
+      createdInAppRefusedAt = 0
     }
   }
   if (!data.success) {

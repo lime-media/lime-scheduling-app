@@ -30,6 +30,7 @@ eq('two Extend buttons, to the next two days', multi[0].extend.map(x => [x.days,
 const t = new URL(multi[0].extend[0].url).searchParams.get('t')!
 eq('the link is signed for the rep and the warned expiry', readExtendToken(t, 'secret', NOW.getTime()), { holdId: 'a', userId: 'u1', expiresAt: EXP.toISOString() })
 eq('and names the days', new URL(multi[0].extend[1].url).searchParams.get('d'), '2')
+eq('a client extension request waiting: no buttons', expiringBookings([hold({ status: 'EXTENSION_REQUESTED' })], NOW, 's')[0].extend, [])
 eq('no secret: no buttons', expiringBookings([hold({})], NOW, undefined)[0].extend, [])
 // Starting Nov 2: the latest expiry is Oct 30 (2 days before), so +2 (Oct 30) fits and a later one wouldn't.
 eq('only days within 2 days before the start', expiringBookings([hold({ start_date: new Date('2026-11-01T00:00:00Z') })], NOW, 's')[0].extend.map(x => x.days), [1])

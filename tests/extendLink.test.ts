@@ -5,7 +5,7 @@
  */
 import crypto from 'crypto'
 import { eq, section } from './harness'
-import { addDays, isExtendDays, readExtendToken, signExtendToken } from '@/lib/extendLink'
+import { addDays, extendOptions, isExtendDays, readExtendToken, signExtendToken } from '@/lib/extendLink'
 
 const SECRET = 'test-secret'
 const claims = { holdId: 'h1', userId: 'u1', expiresAt: '2026-10-29T04:59:00.000Z' }
@@ -30,3 +30,8 @@ eq('across a month', addDays('2026-10-31', 2), '2026-11-02')
 eq('across the DST change', addDays('2026-11-01', 1), '2026-11-02')
 eq('1 and 2 are offered', [1, 2].map(isExtendDays), [true, true])
 eq('anything else is not', [0, 3, '1', true, 1.5].map(isExtendDays), [false, false, false, false, false])
+
+section('extendOptions')
+eq('both days within the limit', extendOptions('2026-10-28', '2026-11-05').map(o => [o.days, o.label]), [[1, 'Thu, Oct 29'], [2, 'Fri, Oct 30']])
+eq('none past the limit', extendOptions('2026-10-28', '2026-10-29').map(o => o.days), [1])
+eq('none that would cut short a hold of the booking expiring later', extendOptions('2026-10-28', '2026-11-05', '2026-10-30').map(o => o.days), [2])

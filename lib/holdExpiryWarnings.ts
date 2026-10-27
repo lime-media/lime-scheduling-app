@@ -27,7 +27,7 @@ import type { ExpiringBooking } from '@/lib/emailTemplates'
 import { APP_TIME_ZONE, centralDate } from '@/lib/dateOnly'
 import { bookingCapStarts, bookingKey } from '@/lib/bookings'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
-import { EXTEND_DAYS, addDays, signExtendToken } from '@/lib/extendLink'
+import { extendOptions, signExtendToken } from '@/lib/extendLink'
 
 /** When a hold lapses, as reps read it (Central time). */
 const EXPIRES_AT = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: APP_TIME_ZONE, timeZoneName: 'short' })
@@ -62,7 +62,6 @@ export function appUrl(env: Record<string, string | undefined> = process.env): s
 }
 
 const hoursLeft = (expiresAt: Date, now: Date) => Math.max(0, Math.round((expiresAt.getTime() - now.getTime()) / 3600_000))
-const SHORT_DATE = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' })
 
 /**
  * One reminder card per booking (lib/bookings.ts bookingKey; a hold with none
@@ -86,13 +85,15 @@ export function expiringBookings(holds: Hold[], now: Date, secret: string | unde
     const capFrom = bookingCapStarts(group.map(h => ({ start_date: toDateStr(h.start_date), status: h.status })), today).sort()[0]
     const lastDate = lastExpiryDate(capFrom, now, STAFF_MIN_DAYS_BEFORE_START)
     const expiresOn = first.expires_at ? centralDate(first.expires_at) : null
-    const extend = secret && first.expires_at && expiresOn
-      ? EXTEND_DAYS.flatMap(days => {
-          const date = addDays(expiresOn, days)
-          if (date > lastDate) return []
-          const token = signExtendToken({ holdId: first.id, userId: first.created_by, expiresAt: first.expires_at!.toISOString() }, secret)
-          return [{ days, label: SHORT_DATE.format(new Date(date + 'T00:00:00Z')), url: `${appUrl()}/extend?t=${encodeURIComponent(token)}&d=${days}` }]
-        })
+    // Extending sets every hold to one date: never earlier than a hold already expires.
+    const latestOn = group.map(h => h.expires_at ? centralDate(h.expires_at) : '').sort().reverse()[0]
+    const token = secret && first.expires_at
+      ? signExtendToken({ holdId: first.id, userId: first.created_by, expiresAt: first.expires_at.toISOString() }, secret)
+      : null
+    // A client's pending extension request is answered on Reservations, not from here.
+    const pending = group.some(h => h.status === 'EXTENSION_REQUESTED')
+    const extend = token && expiresOn && !pending
+      ? extendOptions(expiresOn, lastDate, latestOn).map(o => ({ days: o.days, label: o.label, url: `${appUrl()}/extend?t=${encodeURIComponent(token)}&d=${o.days}` }))
       : []
     return {
       clientName: first.client_name,
@@ -181,7 +182,9 @@ export async function warnExpiringHolds(now = new Date()): Promise<ExpiryWarning
       continue
     }
 
-    const bookings = expiringBookings(holds, now)
+    // Extend links act as the rep without sign-in: only in the rep's own inbox,
+    // not the NOTIFY_EMAIL fallback.
+    const bookings = expiringBookings(holds, now, user?.email ? process.env.NEXTAUTH_SECRET : undefined)
 
     try {
       await sendExpiringHoldsEmail({
@@ -197,21 +200,19 @@ export async function warnExpiringHolds(now = new Date()): Promise<ExpiryWarning
     }
 
     // Mark only after a successful send.
-    for (const h of holds) {
-      await prisma.auditLog.create({
-        data: {
-          action:       WARN_ACTION,
-          truck_number: h.truck_number,
-          user_id:      h.created_by,
-          hold_id:      h.id,
-          details:      JSON.stringify({
-            expires_at: h.expires_at,
-            hours_left: h.expires_at ? hoursLeft(h.expires_at, now) : null,
-            sent_to:    to,
-          }),
-        },
-      })
-    }
+    await prisma.auditLog.createMany({
+      data: holds.map(h => ({
+        action:       WARN_ACTION,
+        truck_number: h.truck_number,
+        user_id:      h.created_by,
+        hold_id:      h.id,
+        details:      JSON.stringify({
+          expires_at: h.expires_at,
+          hours_left: h.expires_at ? hoursLeft(h.expires_at, now) : null,
+          sent_to:    to,
+        }),
+      })),
+    })
 
     result.warned += holds.length
     result.recipients += 1

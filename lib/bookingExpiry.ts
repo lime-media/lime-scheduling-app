@@ -21,6 +21,7 @@ import { closedOpportunityBlocksReactivation } from '@/lib/sfdcIntegration'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { centralDate, endOfDayCentral } from '@/lib/dateOnly'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
+import { EXTEND_STALE_MESSAGE } from '@/lib/extendLink'
 
 export type HoldWithClient = Hold & { client_user: { username: string; email: string | null; company_name: string } | null }
 type Stage = Awaited<ReturnType<typeof getOpportunityStage>>
@@ -136,11 +137,13 @@ export async function setBookingExpiry(args: {
     await reviveBookingExpiry(live, booking, async tx => {
       if (args.expectExpiresAt) {
         // Conditional on the expiry the caller checked; the row lock makes a racing write wait and then miss.
-        const moved = await tx.hold.updateMany({ where: { id: hold.id, expires_at: new Date(args.expectExpiresAt) }, data: { expires_at: newExp } })
+        // Still live, too: a hold committed or swept since the caller's read isn't brought back.
+        const moved = await tx.hold.updateMany({ where: { id: hold.id, expires_at: new Date(args.expectExpiresAt), status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } }, data: { expires_at: newExp } })
         if (moved.count === 0) throw new ExpiryChangedError()
       }
       await tx.hold.updateMany({
-        where: { id: { in: live.map(h => h.id) } },
+        // Only rows still live: one committed (Closed Won) or swept since the read keeps its status.
+        where: { id: { in: live.map(h => h.id) }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
         data:  { expires_at: newExp, status: 'HOLD', extension_until: null, extension_reason: null },
       })
       await tx.auditLog.createMany({
@@ -155,7 +158,7 @@ export async function setBookingExpiry(args: {
     })
   } catch (err) {
     if (err instanceof ExpiryChangedError) {
-      return { status: 409, body: { error: 'This reservation has already been extended or changed. The next reminder will have a new link, or change it on Reservations.' } }
+      return { status: 409, body: { error: EXTEND_STALE_MESSAGE } }
     }
     return revivalRefusalBody(err)
   }

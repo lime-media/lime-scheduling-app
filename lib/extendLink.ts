@@ -59,6 +59,25 @@ export function addDays(fromDate: string, days: number): string {
   return d.toISOString().slice(0, 10)
 }
 
+/** The refusal once the warned expiry has moved: each email extends once. */
+export const EXTEND_STALE_MESSAGE = 'This reservation has already been extended or changed. The next reminder will have a new link, or change it on Reservations.'
+
+const SHORT_DATE = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' })
+
+/**
+ * The Extend choices for an expiry on `expiresOn` (YYYY-MM-DD, Central): each
+ * of EXTEND_DAYS whose date stays on or before `lastDate` (the booking's
+ * limit) and doesn't fall before `notBefore` (a later expiry elsewhere in the
+ * booking, which extending must not cut short). The email and the confirm
+ * page offer the same ones. Pure.
+ */
+export function extendOptions(expiresOn: string, lastDate: string, notBefore = ''): { days: number; date: string; label: string }[] {
+  return EXTEND_DAYS
+    .map(days => ({ days: days as number, date: addDays(expiresOn, days) }))
+    .filter(o => o.date <= lastDate && o.date >= notBefore)
+    .map(o => ({ ...o, label: SHORT_DATE.format(new Date(o.date + 'T00:00:00Z')) }))
+}
+
 /** Whether `days` is one the email offers. */
 export function isExtendDays(days: unknown): days is (typeof EXTEND_DAYS)[number] {
   return typeof days === 'number' && (EXTEND_DAYS as readonly number[]).includes(days)

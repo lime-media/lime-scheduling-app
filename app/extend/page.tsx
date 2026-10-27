@@ -10,7 +10,7 @@ import { prisma } from '@/lib/prisma'
 import { centralDate, parseDateOnly } from '@/lib/dateOnly'
 import { capStarts, loadBooking } from '@/lib/bookingExpiry'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
-import { EXTEND_DAYS, addDays, readExtendToken } from '@/lib/extendLink'
+import { extendOptions, readExtendToken } from '@/lib/extendLink'
 import { ExtendConfirm } from './ExtendConfirm'
 
 export const dynamic = 'force-dynamic'
@@ -51,7 +51,12 @@ export default async function ExtendPage({ searchParams }: { searchParams: { t?:
   const picked = Number(searchParams.d) === 2 ? 2 : 1
   // Only the days the server would accept: the booking's limit, as on Reservations (lib/bookingExpiry.ts).
   const lastDate = lastExpiryDate([...capStarts(whole)].sort()[0], new Date(), STAFF_MIN_DAYS_BEFORE_START)
-  const options = EXTEND_DAYS.map(days => ({ days, date: addDays(expiresOn, days), label: longDate(addDays(expiresOn, days)) })).filter(o => o.date <= lastDate)
+  // Extending sets every hold to one date: never earlier than one already expires (app/api/extend refuses the same).
+  const latestOn = booking.map(h => h.expires_at ? centralDate(h.expires_at) : '').sort().reverse()[0]
+  const options = extendOptions(expiresOn, lastDate, latestOn)
+  if (booking.some(h => h.status === 'EXTENSION_REQUESTED')) {
+    return <Shell><p className="text-sm text-gray-700">The client has asked to extend this reservation. Answer the request on <a className="text-green-700 underline" href="/hold-requests">Reservations</a>, which also emails them the decision.</p></Shell>
+  }
   if (!options.length) {
     return <Shell><p className="text-sm text-gray-700">This reservation can&apos;t be held any later: its first market starts too soon. Commit it or change it on <a className="text-green-700 underline" href="/hold-requests">Reservations</a>.</p></Shell>
   }

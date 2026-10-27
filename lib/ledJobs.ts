@@ -20,7 +20,6 @@
 import { query } from '@/lib/mssql'
 import { jobKey } from '@/lib/jobNumber'
 import { stateCode } from '@/lib/usStates'
-import { activationDaysOf } from '@/lib/transportMetrics'
 import { countCalendarDays } from '@/lib/pricing/schedule'
 
 /**
@@ -45,38 +44,26 @@ export type JobShift = { truck_number: string; job_number: string; shift_date: s
  */
 export function daysSold(features: string | null, start: string, end: string): number {
   const span = countCalendarDays(start, end)
+  if (span < 1) return -1  // end before start: nothing can match, never scheduled
+  const f = parseFeatures(features)
   // What this hold itself sells, when it was written per hold (a planner stint
   // of a rotating truck) and its dates haven't moved since.
-  if (span < 1) return -1  // end before start: nothing can match, never scheduled
-  const held = heldDays(features)
-  if (held && held.start === start && held.end === end) return Math.min(held.work, span)
-  const quoted = quotedSpan(features)
-  if (quoted !== null && quoted !== span) return span
-  const sold = activationDaysOf(features)
-  return sold !== null && Number.isInteger(sold) && sold > 0 ? Math.min(sold, span) : span
+  const work = f.heldWorkDays
+  if (f.heldStart === start && f.heldEnd === end && typeof work === 'number' && Number.isInteger(work) && work >= 0) return Math.min(work, span)
+  // A quote priced for another span no longer says what was sold on these dates.
+  if (typeof f.calendarDays === 'number' && Number.isFinite(f.calendarDays) && f.calendarDays !== span) return span
+  const sold = f.activationDays
+  return typeof sold === 'number' && Number.isInteger(sold) && sold > 0 ? Math.min(sold, span) : span
 }
 
-/** The days a planner hold was written to sell (heldStart/heldEnd/heldWorkDays), or null. */
-function heldDays(features: string | null): { start: string; end: string; work: number } | null {
-  if (!features) return null
+/** A hold's features JSON as an object (empty when absent or unreadable). Parsed once per hold. */
+function parseFeatures(features: string | null): Record<string, unknown> {
+  if (!features) return {}
   try {
-    const f = JSON.parse(features) as { heldStart?: unknown; heldEnd?: unknown; heldWorkDays?: unknown }
-    return typeof f.heldStart === 'string' && typeof f.heldEnd === 'string' && typeof f.heldWorkDays === 'number' && Number.isInteger(f.heldWorkDays) && f.heldWorkDays >= 0
-      ? { start: f.heldStart, end: f.heldEnd, work: f.heldWorkDays }
-      : null
+    const f: unknown = JSON.parse(features)
+    return f && typeof f === 'object' ? f as Record<string, unknown> : {}
   } catch {
-    return null
-  }
-}
-
-/** The calendar span the quote was priced for, or null when it doesn't say. */
-function quotedSpan(features: string | null): number | null {
-  if (!features) return null
-  try {
-    const n = (JSON.parse(features) as { calendarDays?: unknown }).calendarDays
-    return typeof n === 'number' && Number.isFinite(n) ? n : null
-  } catch {
-    return null
+    return {}
   }
 }
 

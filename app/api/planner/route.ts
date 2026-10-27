@@ -108,9 +108,9 @@ async function opportunityNames(ids: string[]): Promise<Map<string, { name: stri
     if (chunk.length === 0) continue
     try {
       // Names still load if Salesforce refuses Job_Number__c.
-      const { rows, withField }: { rows: { Id: string; Name: string; Job_Number__c?: string | null }[]; withField: boolean } = await sfdcQueryOptionalField<{ Id: string; Name: string; Job_Number__c?: string | null }>('Job_Number__c', (job) =>
+      const { rows, refused }: { rows: { Id: string; Name: string; Job_Number__c?: string | null }[]; refused: boolean } = await sfdcQueryOptionalField<{ Id: string; Name: string; Job_Number__c?: string | null }>('Job_Number__c', (job) =>
         `SELECT Id, Name${job ? ', Job_Number__c' : ''} FROM Opportunity WHERE Id IN (${chunk.map(id => `'${id}'`).join(',')})`, tryJob)
-      tryJob = withField
+      tryJob = !refused
       for (const r of rows) out.set(r.Id, { name: r.Name, jobNumber: r.Job_Number__c?.trim() || null })
     } catch (err) {
       console.error('[planner] opportunity names failed for a chunk:', err)

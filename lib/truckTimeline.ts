@@ -136,7 +136,9 @@ export type HoldLike = {
  * day, before grouping, so a block running past the hold keeps its other days
  * (other work, which still occupies the truck), and every consumer of the
  * timelines (availability, the infeasible audit, the swap picker) sees the
- * same days. Pure.
+ * same days. A day LED files under markets in two states is the hold's own if
+ * either is the hold's state, and then all of that day's rows of the job go.
+ * Pure.
  */
 export function dropOwnProgramDays(
   days: DayRow[],
@@ -148,8 +150,18 @@ export function dropOwnProgramDays(
     byTruck.set(h.truck_number, [...(byTruck.get(h.truck_number) ?? []), h])
   }
   if (!byTruck.size) return days
+  // Every state each truck runs each job under, per day.
+  const statesOf = new Map<string, string[]>()
+  const dayKey = (d: DayRow) => `${d.truckNumber}|${d.date}|${jobKey(d.jobNumber) ?? ''}`
+  for (const d of days) {
+    if (!byTruck.has(d.truckNumber) || !jobKey(d.jobNumber)) continue
+    const k = dayKey(d)
+    const states = statesOf.get(k)
+    if (states) states.push(d.state ?? '')
+    else statesOf.set(k, [d.state ?? ''])
+  }
   return days.filter(d => !(byTruck.get(d.truckNumber) ?? []).some(h =>
-    isOwnLedProgram(h, { start: d.date, end: d.date, job_number: d.jobNumber, state: d.state })))
+    isOwnLedProgram(h, { start: d.date, end: d.date, job_number: d.jobNumber, state: d.state, states: statesOf.get(dayKey(d)) })))
 }
 
 export function buildTruckTimelines(

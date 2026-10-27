@@ -67,12 +67,15 @@ export function ledProgress(rows: { status: string; led_days?: number; led_days_
 
 /**
  * A booking LED has fully taken over: every live hold is committed and
- * scheduled in LED. Reservations stops listing it (outside its own filter);
- * the LED schedule blocks the trucks from then on. Pure.
+ * scheduled in LED, and LED runs at least one day of it. Reservations stops
+ * listing it (outside its own filter); the LED schedule blocks the trucks from
+ * then on. A hold that sells no days (a planner stint of only travel or idle
+ * days) doesn't hold the booking back, but a booking of only such holds has
+ * nothing in LED, so it stays listed. Pure.
  */
-export function bookingInLed(rows: { status: string; led_scheduled?: boolean }[]): boolean {
+export function bookingInLed(rows: { status: string; led_scheduled?: boolean; led_days_sold?: number | null }[]): boolean {
   const live = rows.filter(r => r.status === 'HOLD' || r.status === 'EXTENSION_REQUESTED' || r.status === 'COMMITTED')
-  return live.length > 0 && live.every(r => r.status === 'COMMITTED' && r.led_scheduled)
+  return live.length > 0 && live.every(r => r.status === 'COMMITTED' && r.led_scheduled) && live.some(r => (r.led_days_sold ?? 0) > 0)
 }
 
 /** What staff are told when a change would touch a won deal. */

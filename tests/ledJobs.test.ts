@@ -52,7 +52,7 @@ eq('a placeholder job never matches', ledStandings([h({ job_number: '00-0000-000
 eq('no job number on the hold never matches', ledStandings([h({ job_number: null })], all3).has('h1'), false)
 
 section('bookingInLed / ledProgress')
-const won = (led_scheduled: boolean) => ({ status: 'COMMITTED', led_scheduled })
+const won = (led_scheduled: boolean) => ({ status: 'COMMITTED', led_scheduled, led_days_sold: 3 })
 eq('every committed hold scheduled: in LED', bookingInLed([won(true), won(true)]), true)
 eq('one not scheduled: still listed', bookingInLed([won(true), won(false)]), false)
 eq('a live reservation in it: still listed', bookingInLed([won(true), { status: 'HOLD', led_scheduled: false }]), false)
@@ -134,9 +134,9 @@ eq('another job on the hold\'s truck stays', dropOwnProgramDays([dday('2026-10-0
 eq('a hold with no linked job drops nothing', dropOwnProgramDays(straddle, [{ ...wonPhx, job_number: null }]).length, 5)
 
 section('multi-market bookings share a job number: another state is another market')
-eq('same job, same dates, another state: not its own', isOwnLedProgram({ ...wonHold, state: 'IA' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', state: 'CO' }), false)
-eq('same job, same state: its own', isOwnLedProgram({ ...wonHold, state: 'KS' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', state: 'ks' }), true)
-eq('state unknown on one side: job and dates decide', isOwnLedProgram({ ...wonHold, state: 'KS' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', state: '' }), true)
+eq('same job, same dates, another state: not its own', isOwnLedProgram({ ...wonHold, state: 'IA' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', states: ['CO'] }), false)
+eq('same job, same state: its own', isOwnLedProgram({ ...wonHold, state: 'KS' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', states: ['ks'] }), true)
+eq('state unknown on one side: job and dates decide', isOwnLedProgram({ ...wonHold, state: 'KS' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', states: [''] }), true)
 eq('a sibling market\'s days on the hold\'s truck stay on the timeline', dropOwnProgramDays([{ ...dday('2026-10-05', '26-0439-300'), state: 'NM' }], [{ ...wonPhx, state: 'AZ' }]).length, 1)
 
 section('ledMarketMatches (swap picker, another truck): confirmed or the truck stays taken')
@@ -148,6 +148,25 @@ eq('another state', ledMarketMatches({ market: 'Phoenix, AZ', state: 'AZ' }, { m
 
 section('states compare as codes')
 eq('stateCode: name, code, junk', [stateCode('Kansas'), stateCode(' ks '), stateCode('Los Angeles'), stateCode('')], ['KS', 'KS', '', ''])
-eq('a hold typed "Kansas" still matches its own KS program', isOwnLedProgram({ ...wonHold, state: 'Kansas' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', state: 'KS' }), true)
+eq('a hold typed "Kansas" still matches its own KS program', isOwnLedProgram({ ...wonHold, state: 'Kansas' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', states: ['KS'] }), true)
 eq('LED row with no state uses its standard market\'s', ledMarketMatches({ market: 'Phoenix, AZ', state: 'AZ' }, { market: 'Phoenix', state: '', standard_market_name: 'Phoenix, AZ' }), true)
 eq('a Salesforce multi-market hold (no state) can\'t be confirmed: taken', ledMarketMatches({ market: 'Multi-market: Detroit, Los Angeles, CA', state: '' }, { market: 'Detroit', state: 'MI' }), false)
+
+section('one day of a job under markets in two states (Sarah\'s review)')
+const azHold = ch({ state: 'AZ' })
+const twoStates = [block({ state: 'AZ' }), block({ state: 'NM' })]
+eq('the hold\'s own day is not a conflict through its other state\'s row', findConflicts(twoStates, [azHold]).length, 0)
+eq('a day only in the other state still is', findConflicts([block({ state: 'NM' })], [azHold]).length, 1)
+eq('timeline: both rows of an own day go', dropOwnProgramDays([dday('2026-10-05', '26-0439-300'), { ...dday('2026-10-05', '26-0439-300'), state: 'NM' }], [{ ...wonPhx, state: 'AZ' }]).length, 0)
+eq('isOwnLedProgram: any of the day\'s states', isOwnLedProgram({ ...wonHold, state: 'AZ' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', states: ['NM', 'AZ'] }), true)
+
+section('conflict identity includes the job number (Sarah\'s review)')
+const sameName = findConflicts([block({ program: 'PHX', job_number: '26-0387-300' }), block({ program: 'PHX', job_number: '26-0388-300' })], [ch({ job_number: null })])
+eq('two same-named programs with different jobs: two conflicts, two keys', [sameName.length, new Set(sameName.map(c => c.key)).size], [2, 2])
+eq('each carries its job number', sameName.map(c => c.jobNumber).sort(), ['26-0387-300', '26-0388-300'])
+
+section('a booking that sells no LED days is not "Scheduled in LED" (Sarah\'s review)')
+eq('only zero-day holds: stays listed', bookingInLed([{ status: 'COMMITTED', led_scheduled: true, led_days_sold: 0 }]), false)
+eq('a zero-day stint beside a scheduled one: in LED', bookingInLed([{ status: 'COMMITTED', led_scheduled: true, led_days_sold: 0 }, { status: 'COMMITTED', led_scheduled: true, led_days_sold: 6 }]), true)
+eq('a row with no state on a day another state shares: judged on job and dates', isOwnLedProgram({ ...wonHold, state: 'AZ' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', state: '', states: ['', 'NM'] }), true)
+eq('the other state\'s row that day stays', isOwnLedProgram({ ...wonHold, state: 'AZ' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', state: 'NM', states: ['', 'NM'] }), false)

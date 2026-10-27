@@ -8,14 +8,27 @@
 -- reconcile fills it in for every live hold on an opportunity, every sweep,
 -- so existing holds are backfilled within 15 minutes of deploy.
 --
+-- Also the LED program's job number on each recorded conflict
+-- (schedule_conflicts.scheduled_job_number): two LED programs can share a name
+-- on one truck, and a conflict with each is its own problem, so the job number
+-- is part of a conflict's identity (lib/scheduleCache.ts conflictKey). Rows
+-- recorded before keep NULL and match on truck, program and dates as before.
+--
 -- Run BEFORE deploying the code: Prisma selects every column of app_holds, so
--- a deploy without it breaks every page that reads holds.
--- Safe to re-run: guarded on the column. Adds a nullable column; no existing
--- data touched.
+-- a deploy without it breaks every page that reads holds, and the conflict
+-- sweep reads the new conflict column.
+-- Safe to re-run (including after running the first version of this file,
+-- which added only sfdc_job_number): guarded on each column. Adds nullable
+-- columns; no existing data touched.
 -- No GO separators: works in sqlcmd, SSMS, Azure Data Studio or the portal.
 
 IF COL_LENGTH('dbo.app_holds', 'sfdc_job_number') IS NULL
     ALTER TABLE [dbo].[app_holds] ADD [sfdc_job_number] NVARCHAR(50) NULL;
 
--- Verify. Expected: column_exists 1.
-SELECT CASE WHEN COL_LENGTH('dbo.app_holds', 'sfdc_job_number') IS NULL THEN 0 ELSE 1 END AS column_exists;
+IF COL_LENGTH('dbo.schedule_conflicts', 'scheduled_job_number') IS NULL
+    ALTER TABLE [dbo].[schedule_conflicts] ADD [scheduled_job_number] NVARCHAR(100) NULL;
+
+-- Verify. Expected: hold_column 1, conflict_column 1.
+SELECT
+    CASE WHEN COL_LENGTH('dbo.app_holds', 'sfdc_job_number') IS NULL THEN 0 ELSE 1 END AS hold_column,
+    CASE WHEN COL_LENGTH('dbo.schedule_conflicts', 'scheduled_job_number') IS NULL THEN 0 ELSE 1 END AS conflict_column;

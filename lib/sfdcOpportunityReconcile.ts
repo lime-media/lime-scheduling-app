@@ -139,9 +139,9 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
   let tryJob = true
   for (const batch of chunk(uniqueIds, SOQL_ID_CHUNK)) {
     const list = batch.map((id) => `'${id}'`).join(',')
-    const { rows, withField }: { rows: OpportunityStage[]; withField: boolean } = await sfdcQueryOptionalField<OpportunityStage>('Job_Number__c', (job) =>
+    const { rows, withField, refused }: { rows: OpportunityStage[]; withField: boolean; refused: boolean } = await sfdcQueryOptionalField<OpportunityStage>('Job_Number__c', (job) =>
       `SELECT Id, StageName, IsClosed, IsWon, Amount${job ? ', Job_Number__c' : ''} FROM Opportunity WHERE Id IN (${list})`, tryJob)
-    tryJob = withField
+    tryJob = !refused
     for (const row of rows) {
       stages.set(normalizeId(row.Id), row)
       if (withField) readWithJob.add(normalizeId(row.Id))

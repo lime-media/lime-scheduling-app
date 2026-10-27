@@ -162,6 +162,9 @@ function LedBadge({ progress, inLed, unavailable }: { progress: { days: number; 
   if (!progress.known) {
     return <span className="text-xs text-gray-500" title="This deal has no job number yet, so it can't be matched to an LED program">No job number yet</span>
   }
+  if (progress.of === 0) {
+    return <span className="text-xs text-gray-500" title="These holds sell no days for LED to run (travel or idle days only)">No LED days sold</span>
+  }
   if (progress.days > 0) {
     return (
       <span className="text-xs text-amber-700 font-medium" title="Truck-days LED runs this job on the booking's trucks, of the days sold. The rest aren't scheduled, or are on another truck. The trucks stay held for every day either way.">
@@ -742,7 +745,7 @@ export default function HoldRequestsPage() {
                     : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
                 }`}
               >
-                {s ? (STATUS_LABEL[s] ?? s) : 'All'}
+                {s ? (STATUS_LABEL[s] ?? s) : 'All not in LED'}
               </button>
             ))}
           </div>

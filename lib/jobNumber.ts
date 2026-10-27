@@ -31,23 +31,32 @@ export function linkedJob(hold: { status: string; sfdc_job_number?: string | nul
 /**
  * Whether an LED program (or one day of it) is a won hold's own booking being
  * scheduled rather than something else on the truck: it carries the hold's
- * job number, falls within the hold's dates, and isn't in another state.
+ * job number, overlaps the hold's dates, and isn't in another state.
  * Every market of a multi-market booking shares one job number, so a program
  * in a different state is another market of the booking, and the hold's own
  * market still has no truck there. (Same-state markets can't be told apart:
- * LED's city names are typed by hand.) Outside the hold's dates the same job
- * is other work and still occupies the truck. The one rule behind the
- * conflict sweep, the fleet timelines and the swap picker. Dates YYYY-MM-DD,
- * inclusive; states compared as codes ("Kansas" = "KS"), and only when both
- * are known. Pure.
+ * LED's city names are typed by hand.) `state`: this row's state; a row with
+ * none is judged on job and dates. `states`: every state the job runs under
+ * on the truck that day: LED can file one day under markets in two states (a
+ * travel day), and the day is the hold's own if any of them is the hold's
+ * state. States compared as codes ("Kansas" = "KS"), and only when known.
+ * Dates YYYY-MM-DD, inclusive.
+ *
+ * This is an any-overlap test: it says nothing about the program's days
+ * outside the hold's dates, which are other work and still occupy the truck.
+ * Callers pass one day at a time, or clip to the hold's dates first. The one
+ * rule behind the conflict sweep, the fleet timelines and the swap picker. Pure.
  */
 export function isOwnLedProgram(
   hold: { start_date: string; end_date: string; job_number?: string | null; state?: string | null },
-  program: { start: string; end: string; job_number?: string | null; state?: string | null },
+  program: { start: string; end: string; job_number?: string | null; state?: string | null; states?: (string | null | undefined)[] },
 ): boolean {
   const job = jobKey(hold.job_number)
+  if (!job || jobKey(program.job_number) !== job || program.start > hold.end_date || program.end < hold.start_date) return false
   const hs = stateCode(hold.state)
-  const ps = stateCode(program.state)
-  return !!job && jobKey(program.job_number) === job && program.start <= hold.end_date && program.end >= hold.start_date
-    && !(hs && ps && hs !== ps)
+  const row = stateCode(program.state)
+  const day = (program.states ?? []).map(s => stateCode(s)).filter(Boolean)
+  // Unknown on either side: job and dates decide.
+  if (!hs || (!row && !day.length) || (program.state != null && !row)) return true
+  return row === hs || day.includes(hs)
 }

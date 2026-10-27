@@ -19,7 +19,7 @@ import { hasMarketBounds, loadStandardMarketCoords, normalizeMarketKey } from '@
 import { placeCoords } from '@/lib/geo/places'
 import { getLiveVehicleLocations, type SamsaraVehicleLocation } from '@/lib/samsaraService'
 import { buildTruckTimelines, dropOwnProgramDays, type DayRow, type TruckJob } from '@/lib/truckTimeline'
-import { isOwnLedProgram, linkedJob } from '@/lib/jobNumber'
+import { isOwnLedProgram, jobKey, linkedJob } from '@/lib/jobNumber'
 import { ledMarketMatches } from '@/lib/ledJobs'
 
 export type FleetHold = {
@@ -101,16 +101,28 @@ export async function loadFleetTimelines(opts: {
   ])
 
   const own = opts.ownProgramOf
+  // Every market of a booking shares its job number, so on another truck the
+  // program must also be in the hold's market to be the hold's own. A truck's
+  // day of the job is the hold's own if any of its rows is (LED can file one
+  // day under markets in two states), and then all of them go.
+  const ownDay = (row: Record<string, unknown>) => `${String(row.truck_number ?? '')}|${toDateStr(row.shift_start)}`
+  const ownDays = new Set<string>()
+  if (own) {
+    for (const row of scheduleRows) {
+      const day = toDateStr(row.shift_start)
+      if (day && isOwnLedProgram(own, { start: day, end: day, job_number: String(row.job_number ?? '') })
+        && ledMarketMatches(own, { market: String(row.market ?? ''), state: String(row.state ?? ''), standard_market_name: String(row.standard_market_name ?? '') })) {
+        ownDays.add(ownDay(row))
+      }
+    }
+  }
   const scheduleDays: DayRow[] = []
   for (const row of scheduleRows) {
     const truckNumber = String(row.truck_number ?? '')
     if (!truckNumber || hidden.has(truckNumber)) continue
     const day = toDateStr(row.shift_start)
     if (!day) continue
-    // Every market of a booking shares its job number, so on another truck the
-    // program must also be in the hold's market to be the hold's own.
-    if (own && isOwnLedProgram(own, { start: day, end: day, job_number: String(row.job_number ?? '') })
-      && ledMarketMatches(own, { market: String(row.market ?? ''), state: String(row.state ?? ''), standard_market_name: String(row.standard_market_name ?? '') })) continue
+    if (own && ownDays.has(ownDay(row)) && jobKey(String(row.job_number ?? '')) === jobKey(own.job_number)) continue
     const lat = Number(row.market_lat)
     const lng = Number(row.market_lng)
     scheduleDays.push({

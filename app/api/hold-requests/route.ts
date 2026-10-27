@@ -79,14 +79,14 @@ export async function GET() {
       }),
     // LED is read only for the linked clients, to name them.
     (wonAccounts.length ? prisma.ledClientLink.findMany({ where: { sfdc_account_id: { in: wonAccounts } } }) : Promise.resolve([]))
-      .then(async (found) => ({
-        links: found,
-        clientNames: await ledClientNames([...new Set(found.map(l => l.client_uid.toLowerCase()))])
-          .catch((err): Map<string, string> | null => { console.error('[hold-requests] LED client read failed:', err); return null }),
-      })),
+      .then(async (found) => {
+        const linkOf = new Map(found.map(l => [l.sfdc_account_id, l.client_uid.toLowerCase()]))
+        const clientNames = await ledClientNames([...new Set(linkOf.values())])
+          .catch((err): Map<string, string> | null => { console.error('[hold-requests] LED client read failed:', err); return null })
+        return { linkOf, clientNames }
+      }),
   ])
-  const { links, clientNames } = linked
-  const linkOf = new Map(links.map(l => [l.sfdc_account_id, l.client_uid.toLowerCase()]))
+  const { linkOf, clientNames } = linked
   const ledClientOf = (accountId: string | null) => {
     const uid = accountId ? linkOf.get(accountId) : undefined
     if (!uid) return null

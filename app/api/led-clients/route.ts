@@ -3,12 +3,13 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
+import { isAccountId } from '@/lib/sfdcSearch'
 import { ledClients, suggestLedClient } from '@/lib/ledClients'
 
-// The 18-character Salesforce id, as the reconcile copies Opportunity.AccountId
-// onto holds: a 15-character one would make a link no hold ever matches.
-// Nothing else reaches SOQL.
-const SFDC_ID = /^[a-zA-Z0-9]{18}$/
+// An 18-character Account id, as the reconcile copies Opportunity.AccountId
+// onto holds: a 15-character one (or another object's id) would make a link no
+// hold ever matches. Nothing else reaches SOQL.
+const isLinkableAccount = (id: string) => id.length === 18 && isAccountId(id)
 const UID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** The account's name in Salesforce, or null if it can't be read. */
@@ -34,7 +35,7 @@ export async function GET(request: Request) {
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const account = new URL(request.url).searchParams.get('account') ?? ''
-  if (!SFDC_ID.test(account)) return NextResponse.json({ error: 'account must be a Salesforce Account id' }, { status: 400 })
+  if (!isLinkableAccount(account)) return NextResponse.json({ error: 'account must be a Salesforce Account id' }, { status: 400 })
 
   const [clients, link, name] = await Promise.all([
     ledClients().catch((err) => { console.error('[led-clients] LED client read failed:', err); return null }),
@@ -67,7 +68,7 @@ export async function PUT(request: Request) {
   const body = await request.json().catch(() => null) as { sfdc_account_id?: unknown; client_uid?: unknown } | null
   const account = typeof body?.sfdc_account_id === 'string' ? body.sfdc_account_id : ''
   const clientUid = typeof body?.client_uid === 'string' ? body.client_uid.toLowerCase() : ''
-  if (!SFDC_ID.test(account)) return NextResponse.json({ error: 'sfdc_account_id must be a Salesforce Account id' }, { status: 400 })
+  if (!isLinkableAccount(account)) return NextResponse.json({ error: 'sfdc_account_id must be a Salesforce Account id' }, { status: 400 })
   if (!UID.test(clientUid)) return NextResponse.json({ error: 'client_uid must be an LED client id' }, { status: 400 })
 
   const [clients, name, earlier] = await Promise.all([

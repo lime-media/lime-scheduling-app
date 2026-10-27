@@ -58,8 +58,8 @@ type HoldRequest = {
 const LED_SCHEDULED = 'LED_SCHEDULED'
 /**
  * The filter for won bookings whose dates have all passed, scheduled in LED or
- * not; every other filter leaves them out. One LED fully scheduled stops being
- * listed a week after it ends (app/api/hold-requests).
+ * not; every other filter leaves them out. A booking LED has fully scheduled
+ * stops being listed a week after it ends (app/api/hold-requests).
  */
 const WON_ENDED = 'WON_ENDED'
 
@@ -576,9 +576,13 @@ export default function HoldRequestsPage() {
   }, [rowsByBooking])
 
   // A won booking whose dates have all passed: listed only under its own filter.
-  const endedOf = useCallback((r: HoldRequest) => {
-    const key = bookingKey(r)
-    return bookingEnded(key ? rowsByBooking.get(key) ?? [r] : [r], centralDate(new Date()))
+  // Today (Central) is read once per fetch, not once per row.
+  const endedOf = useMemo(() => {
+    const today = centralDate(new Date())
+    return (r: HoldRequest) => {
+      const key = bookingKey(r)
+      return bookingEnded(key ? rowsByBooking.get(key) ?? [r] : [r], today)
+    }
   }, [rowsByBooking])
 
   const filtered = useMemo(
@@ -749,7 +753,7 @@ export default function HoldRequestsPage() {
             )}
             {expiredWindowDays !== null && filterStatus === WON_ENDED && (
               <p className="text-xs text-gray-400 mt-1">
-                Won bookings scheduled in LED are listed for {expiredWindowDays} days after they end. One LED hasn&apos;t fully scheduled stays listed until it is.
+                Won bookings scheduled in LED are listed for {expiredWindowDays} days after they end. A booking LED hasn&apos;t fully scheduled stays listed until it is.
               </p>
             )}
           </div>

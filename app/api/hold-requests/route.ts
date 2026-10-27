@@ -12,6 +12,8 @@ import { daysSold, ledShiftsForHolds, ledStandings, type JobHold, type LedStandi
 // EXPIRED holds accumulate forever — every lapsed hold and every Closed Lost
 // Opportunity lands here and never leaves. Ops only care about the recent tail,
 // so the list carries a rolling window; everything still-active is unaffected.
+// The same window retires won bookings LED has fully scheduled, a week after
+// they end (below).
 const EXPIRED_WINDOW_DAYS = 7
 
 /**
@@ -110,7 +112,7 @@ export async function GET() {
 
   // Nothing retires a committed hold, so a won booking that LED has fully
   // scheduled stops being listed a week after it ends (EXPIRED_WINDOW_DAYS),
-  // whole. One LED never fully scheduled stays (under Won, ended) with its
+  // whole. A booking LED never fully scheduled stays (under Won, ended) with its
   // "In LED: x of y days" or "No job number yet" badge until it is.
   const endedCutoff = centralDate(new Date(Date.now() - EXPIRED_WINDOW_DAYS * 864e5))
   const byBooking = new Map<string, typeof rows>()
@@ -121,14 +123,14 @@ export async function GET() {
     if (group) group.push(r)
     else byBooking.set(key, [r])
   }
-  const done = (group: typeof rows) => bookingEnded(group, endedCutoff) && bookingInLed(group)
-  const retired = new Set([...byBooking].filter(([, group]) => done(group)).map(([key]) => key))
+  const retired = (r: (typeof rows)[number]) => {
+    const key = bookingKey(r)
+    const group = key ? byBooking.get(key)! : [r]
+    return bookingEnded(group, endedCutoff) && bookingInLed(group)
+  }
   return NextResponse.json({
     expired_window_days: EXPIRED_WINDOW_DAYS,
     led_unavailable: ledUnavailable,
-    holdRequests: rows.filter(r => {
-      const key = bookingKey(r)
-      return key ? !retired.has(key) : !done([r])
-    }),
+    holdRequests: rows.filter(r => !retired(r)),
   })
 }

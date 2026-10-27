@@ -36,7 +36,7 @@ function Tile({ label, value, sub }: { label: string; value: string; sub?: strin
 }
 
 export default function OpportunityOriginsPage() {
-  const [from, setFrom] = useState(iso(new Date(Date.now() - (8 * 7 - 1) * 86_400_000)))
+  const [from, setFrom] = useState(iso(new Date(Date.now() - 7 * 7 * 86_400_000)))
   const [to, setTo] = useState(iso(new Date()))
   const [data, setData] = useState<Data | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -74,7 +74,7 @@ export default function OpportunityOriginsPage() {
           <label className="text-xs text-gray-600">To<input type="date" value={to} min={from} onChange={e => setTo(e.target.value)} className={`${input} block mt-1`} /></label>
         </div>
         <p className="text-xs text-gray-500 mb-4">
-          LED opportunities created in Salesforce, by whole Central weeks (Monday to Sunday). <strong>Made in the app</strong>: the app recorded making it
+          LED opportunities created in Salesforce, by Central week (Monday to Sunday; the last week runs only to the end date). <strong>Made in the app</strong>: the app recorded making it
           {data?.markerReadable ? ', or it is marked Created In App in Salesforce' : ''}, or (before the app kept a record) an app reservation on it was made within 5 minutes of it.
           Everything else was made directly in Salesforce. The app creates opportunities as its integration user, so Salesforce&apos;s Created By can&apos;t tell them apart on its own.
         </p>

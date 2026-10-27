@@ -134,8 +134,9 @@ export function summarizeOrigins(
   }
 }
 
-// SQL Server takes at most 2100 parameters per query.
-const IN_CHUNK = 2000
+// SQL Server takes at most 2100 parameters per query; each id is sent in both
+// its 18- and 15-character forms.
+const IN_CHUNK = 1000
 
 type SoqlOpportunity = {
   Id: string
@@ -161,6 +162,9 @@ export async function opportunityOrigins(from: string, to: string): Promise<Orig
     // Newest first, so a range too large to read whole loses its oldest rows, not its latest weeks.
     + ` WHERE Asset_Type__c = 'LED' AND CreatedDate >= ${lo} AND CreatedDate < ${hi} ORDER BY CreatedDate DESC`
 
+  // When the app began recording: the reservation-time match only counts before it.
+  const firstRecordRead = prisma.createdOpportunity.findFirst({ orderBy: { created_at: 'asc' }, select: { created_at: true } })
+  firstRecordRead.catch(() => {}) // awaited below; this only stops an unhandled rejection if Salesforce throws first
   // Created_In_App__c only exists once it's added in Salesforce: read without it until then.
   let markerReadable = true
   let read: { rows: SoqlOpportunity[]; truncated: boolean }
@@ -192,10 +196,10 @@ export async function opportunityOrigins(from: string, to: string): Promise<Orig
   const ids = opps.map(o => o.id)
   const recorded = new Set<string>()
   const appHoldTimes = new Map<string, Date[]>()
-  // When the app began recording: the reservation-time match only counts before it.
-  const firstRecord = await prisma.createdOpportunity.findFirst({ orderBy: { created_at: 'asc' }, select: { created_at: true } })
+  const firstRecord = await firstRecordRead
   for (let i = 0; i < ids.length; i += IN_CHUNK) {
-    const slice = ids.slice(i, i + IN_CHUNK)
+    // The app may have stored an id in either form (a pasted 15-character id).
+    const slice = ids.slice(i, i + IN_CHUNK).flatMap(id => [id, id.slice(0, 15)])
     const [made, holds, booked] = await Promise.all([
       prisma.createdOpportunity.findMany({ where: { sfdc_opportunity_id: { in: slice } }, select: { sfdc_opportunity_id: true } }),
       prisma.hold.findMany({

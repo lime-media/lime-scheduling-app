@@ -25,13 +25,14 @@ export async function GET(req: NextRequest) {
 
   const sp = req.nextUrl.searchParams
   const to = isDate(sp.get('to')) ? sp.get('to')! : centralDate(new Date())
-  const from = isDate(sp.get('from')) ? sp.get('from')! : new Date(Date.parse(to + 'T00:00:00Z') - (8 * 7 - 1) * 86_400_000).toISOString().slice(0, 10)
+  // Seven weeks back: with the current week, 8 Central weeks.
+  const from = isDate(sp.get('from')) ? sp.get('from')! : new Date(Date.parse(to + 'T00:00:00Z') - 7 * 7 * 86_400_000).toISOString().slice(0, 10)
   if (from > to) return NextResponse.json({ error: '`from` must be on or before `to`.' }, { status: 400 })
 
   try {
     return NextResponse.json(await opportunityOrigins(from, to))
   } catch (err) {
     console.error('[opportunity-origins] read failed:', err)
-    return NextResponse.json({ error: "Salesforce couldn't be read. Try again shortly." }, { status: 502 })
+    return NextResponse.json({ error: "Opportunity origins couldn't be read. Try again shortly." }, { status: 502 })
   }
 }

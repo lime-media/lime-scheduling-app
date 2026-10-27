@@ -57,11 +57,13 @@ const cityOf = (m: string) => m.split(',')[0].trim().toLowerCase().replace(/\s+/
 /**
  * Whether LED's row is in the hold's market. A multi-market label names its
  * cities, so LED's city (its own or its standard market's) must be one of
- * them; any other hold is compared as one market (ledMarketMatches).
+ * them; any other hold is compared as one market (ledMarketMatches). Only a
+ * two-letter token is dropped as a state: "New York" and "Washington" are
+ * cities in a label, though stateCode reads them as states.
  */
 function inHoldMarket(h: FollowHold, r: FollowRow): boolean {
   if (MULTI_MARKET.test(h.market)) {
-    const named = h.market.replace(MULTI_MARKET, '').split(',').map(c => c.trim().toLowerCase().replace(/\s+/g, ' ')).filter(c => c && !stateCode(c))
+    const named = h.market.replace(MULTI_MARKET, '').split(',').map(cityOf).filter(c => c && !(c.length === 2 && stateCode(c)))
     return [cityOf(r.market), cityOf(r.standard_market_name ?? '')].some(c => !!c && named.includes(c))
   }
   return ledMarketMatches({ market: h.market, state: h.state ?? '' }, { market: r.market, state: r.state ?? '', standard_market_name: r.standard_market_name })
@@ -102,9 +104,10 @@ export function ledTruckMoves(holds: FollowHold[], rows: FollowRow[], today: str
     // Another live hold of the same opportunity (a market not yet won, say) on that truck over the same days.
     const takenByBooking = (h: FollowHold, truck: string) => !!h.sfdc_opportunity_id && live.some(o =>
       o.id !== h.id && o.sfdc_opportunity_id === h.sfdc_opportunity_id && o.truck_number === truck && o.start_date <= h.end_date && h.start_date <= o.end_date)
-    // LED days of the job on a truck within the hold's dates.
+    // LED days of the job on a truck within the hold's dates and in its market
+    // (another market of a reused job number on that truck isn't this hold's).
     const daysOn = (h: FollowHold, truck: string) =>
-      new Set(within(h).filter(r => r.truck_number === truck).map(r => r.shift_start)).size
+      new Set(within(h).filter(r => r.truck_number === truck && inHoldMarket(h, r)).map(r => r.shift_start)).size
     const unmatched = group
       .filter(h => h.end_date >= today && h.days_sold > 0)
       .map(h => ({ hold: h, rows: within(h) }))

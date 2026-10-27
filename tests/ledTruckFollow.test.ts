@@ -65,10 +65,15 @@ eq('a hold of the job on that truck in another week doesn\'t claim it',
 eq('a city its label doesn\'t name: stays', moves([multi()], led('1261', DAYS, { market: 'Phoenix', state: 'AZ', standard_market_name: 'Phoenix, AZ' })), [])
 eq('by LED\'s standard market name', moves([multi()], led('1261', DAYS, { market: 'Downtown LA', state: 'CA', standard_market_name: 'Los Angeles, CA' })), [['h1', '6907', '1261']])
 eq('a label with states after each city', moves([multi({ market: 'Multi-market: Los Angeles, CA, Detroit, MI' })], led('1261', DAYS, DET)), [['h1', '6907', '1261']])
+eq('a city that is also a state name ("New York")',
+  moves([multi({ market: 'Multi-market: New York, Detroit' })], led('1261', DAYS, { market: 'New York', state: 'NY', standard_market_name: 'New York, NY' })), [['h1', '6907', '1261']])
+eq('Washington, DC in a label', moves([multi({ market: 'Multi-market: Washington, DC, Detroit, MI' })], led('1261', DAYS, { market: 'Washington', state: 'DC', standard_market_name: 'Washington, DC' })), [['h1', '6907', '1261']])
 
 section('only once LED runs it for every day sold')
 eq('a stand-in truck for one of three days: stays', moves([hold()], led('1261', [DAYS[0]])), [])
 eq('two of three days: stays', moves([hold()], led('1261', DAYS.slice(0, 2))), [])
+eq('the rest of its days on that truck are another market of the job: stays',
+  moves([hold()], [...led('1261', [DAYS[0]]), ...led('1261', DAYS.slice(1), { market: 'Albuquerque', state: 'NM', standard_market_name: 'Albuquerque, NM' })]), [])
 eq('a six-day week sold 6 of 7: six days is enough', moves([hold({ end_date: '2026-11-08', days_sold: 6 })], led('1261', ['2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06', '2026-11-07'])), [['h1', '6907', '1261']])
 eq('a hold that sells no days: nothing to follow', moves([hold({ days_sold: 0 })], led('1261', DAYS)), [])
 

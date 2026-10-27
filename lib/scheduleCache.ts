@@ -191,12 +191,12 @@ export async function refreshCache(): Promise<RefreshSummary> {
   // conflict detection; independent (different holds), so in parallel.
   // Best-effort; never fails the sweep.
   // The two recorders that measure trucks share one fleet and GPS load.
-  // Holds the sweep moved onto LED's truck are measured as swaps here too
-  // (recordSwap never throws).
+  // Holds the sweep moved onto LED's truck are measured as swaps here too, on
+  // the same fleet load (recordSwap never throws).
   const measurer = sharedOriginMeasurer()
   const [metricsPrestart, metricsExecuted, metricsAmounts] = await Promise.all([
     recordPrestart(measurer), recordExecuted(measurer), recordAmountChanges(),
-    ...ledFollow.moved.map((m) => recordSwap(m.holdId, ledFollow.serviceUserId)),
+    ...ledFollow.moved.map((m) => recordSwap(m.holdId, ledFollow.serviceUserId, measurer)),
   ])
   if (metricsPrestart || metricsExecuted || metricsAmounts) {
     console.log(`[scheduleCache] metrics: ${metricsPrestart} pre-start snapshot(s), ${metricsExecuted} executed leg(s), ${metricsAmounts} amount change(s)`)

@@ -31,7 +31,7 @@ export async function GET() {
 
   const expiredCutoff = new Date(Date.now() - EXPIRED_WINDOW_DAYS * 24 * 60 * 60 * 1000)
 
-  const holds = await prisma.hold.findMany({
+  const fetched = await prisma.hold.findMany({
     where: {
       OR: [
         { status: { not: 'EXPIRED' } },
@@ -49,6 +49,19 @@ export async function GET() {
       user: { select: { name: true } },
     },
   })
+
+  // A won booking that ended more than WON_ENDED_LISTED_DAYS.notInLed ago is
+  // retired whatever LED says (lib/bookings.ts stillListed), so it's dropped
+  // before the owner and LED lookups: nothing retires a committed hold, and
+  // that work would otherwise grow with every deal won. With no LED standing
+  // yet, stillListed applies exactly that longer cutoff; the shorter one for
+  // bookings LED has scheduled runs on the response below.
+  const today = centralDate(new Date())
+  const current = new Set(stillListed(fetched.map(h => ({
+    id: h.id, campaign_group_id: h.campaign_group_id, sfdc_opportunity_id: h.sfdc_opportunity_id,
+    status: h.status, end_date: h.end_date.toISOString().slice(0, 10),
+  })), today).map(r => r.id))
+  const holds = fetched.filter(h => current.has(h.id))
 
   // How each committed hold stands in LED (lib/ledJobs.ts): the days its job
   // runs on its truck, of the days sold. The page stops listing a booking once
@@ -113,6 +126,6 @@ export async function GET() {
   return NextResponse.json({
     expired_window_days: EXPIRED_WINDOW_DAYS,
     led_unavailable: ledUnavailable,
-    holdRequests: stillListed(rows, centralDate(new Date())),
+    holdRequests: stillListed(rows, today),
   })
 }

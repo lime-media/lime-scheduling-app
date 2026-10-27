@@ -22,6 +22,7 @@ import {
 import { billedDaysPerWeek, countCalendarDays } from '@/lib/pricing/schedule'
 import { resolveDefaultRateOverrides, resolveRateOverridesBySfdcAccount, resolveMarketInputAll } from '@/lib/pricing/resolvers'
 import type { RateOverrides } from '@/lib/pricing/config'
+import { centralDate } from '@/lib/dateOnly'
 import { canonicalMarketName, loadStandardMarketCoords, titleCaseMarket } from '@/lib/marketBounds'
 import { haversineDistance } from '@/lib/marketCoordinates'
 import { DEFAULT_RULES, loadPlanningFleet, type ReservedTruck } from './fleet'
@@ -98,7 +99,7 @@ export function validateQuoteRequest(body: QuoteRequest): string | null {
     if (!(SCHEDULES as readonly number[]).includes(r.daysPerWeek)) return `Schedule for ${r.market} must be Mon-Fri, Mon-Sat, 7 days or 3 days a week.`
     if (!(r.hours >= 8 && r.hours <= 12)) return `Hours for ${r.market} must be 8 to 12.`
   }
-  const today = new Date().toISOString().split('T')[0]
+  const today = centralDate(new Date())
   if (body.rows.some(r => r.endDate < today)) return 'Every market must end today or later.'
   return null
 }
@@ -380,7 +381,7 @@ export type PreparedQuote = {
 
 export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: OrderLine[], opts: { alternatives?: boolean } = {}): Promise<PreparedQuote> {
   const { lines, excludeHoldIds, kept } = await applyRevision(req, requestedLines)
-  const today = new Date().toISOString().split('T')[0]
+  const today = centralDate(new Date())
   const planThrough = lines.reduce((m, l) => (l.endDate > m ? l.endDate : m), today)
   const rules = {
     ...DEFAULT_RULES,

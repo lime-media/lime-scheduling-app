@@ -570,20 +570,47 @@ export async function reconcileConflicts(
  * - 'new': record and email. Includes a conflict that went away (closed by
  *   an earlier sweep) and has come back: email is the only push, so a
  *   recurrence is news.
- * `justResolved`: ids reconcileConflicts() closed in this same sweep. Pure.
+ * `justResolved`: ids reconcileConflicts() closed in this same sweep.
+ * `utcDatedBefore`: rows detected before this instant were dated by the UTC
+ * day of LED's shifts, before shifts took their market's local day
+ * (lib/scheduleQuery.ts shiftDay). An evening shift's local day is the day
+ * before its UTC day, so such a dismissal also covers the day before it:
+ * otherwise re-dating a dismissed evening program would raise it again. Pure.
  */
 export function priorDecision(
   start: string,
   end: string,
-  prior: { id: string; conflict_start: string; conflict_end: string; status: string; resolved_by: string | null }[],
+  prior: { id: string; conflict_start: string; conflict_end: string; status: string; resolved_by: string | null; detected_at?: string | null }[],
   justResolved: ReadonlySet<string> = new Set(),
+  utcDatedBefore: string | null = null,
 ): 'dismissed' | 'reported' | 'new' {
-  const over = prior.filter(p => p.conflict_start <= end && p.conflict_end >= start)
+  const dayBefore = (d: string) => { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() - 1); return t.toISOString().slice(0, 10) }
+  const utcDated = (p: { detected_at?: string | null }) => !!utcDatedBefore && !!p.detected_at && p.detected_at < utcDatedBefore
+  const over = prior.filter(p => (utcDated(p) ? dayBefore(p.conflict_start) : p.conflict_start) <= end && p.conflict_end >= start)
   const byPerson = over
     .filter(p => p.status === 'RESOLVED' && p.resolved_by)
-    .map(p => ({ start: p.conflict_start, end: p.conflict_end }))
+    .map(p => ({ start: utcDated(p) ? dayBefore(p.conflict_start) : p.conflict_start, end: p.conflict_end }))
   if (byPerson.length && freeRanges(start, end, byPerson).length === 0) return 'dismissed'
   return over.some(p => p.status === 'ACTIVE' || justResolved.has(p.id)) ? 'reported' : 'new'
+}
+
+// When conflicts started being dated by local shift days (#140): the first
+// sweep with this code records it (app_settings), so rows detected before it
+// are known to be UTC-dated (priorDecision). Null if it can't be read or
+// written: then no extra day is covered, the strict rule.
+const LOCAL_DAYS_KEY = 'conflicts_local_shift_days_since'
+let localDaysSince: string | null = null
+async function localShiftDaysSince(): Promise<string | null> {
+  if (localDaysSince) return localDaysSince
+  try {
+    const row = await prisma.appSetting.findUnique({ where: { key: LOCAL_DAYS_KEY } })
+      ?? await prisma.appSetting.create({ data: { key: LOCAL_DAYS_KEY, value: new Date().toISOString(), updated_by: 'conflict sweep' } })
+        .catch(() => prisma.appSetting.findUnique({ where: { key: LOCAL_DAYS_KEY } }))
+    localDaysSince = row?.value ?? null
+  } catch (err) {
+    console.error('[conflicts] local shift days cutoff unreadable:', err)
+  }
+  return localDaysSince
 }
 
 export async function detectConflicts(
@@ -595,6 +622,7 @@ export async function detectConflicts(
   if (holds.length === 0 || schedules.length === 0) return
 
   const pool = await getPool()
+  const utcDatedBefore = await localShiftDaysSince()
 
   for (const conflict of findConflicts(schedules, holds)) {
     const { hold, program, jobNumber, conflictStart, conflictEnd } = conflict
@@ -612,10 +640,11 @@ export async function detectConflicts(
         SELECT id, scheduled_program, scheduled_job_number,
                CONVERT(varchar(10), conflict_start, 120) AS conflict_start,
                CONVERT(varchar(10), conflict_end,   120) AS conflict_end,
-               status, resolved_by
+               status, resolved_by,
+               CONVERT(varchar(30), detected_at, 127) AS detected_at
         FROM dbo.schedule_conflicts
         WHERE hold_id = @holdId AND truck_number = @truckNumber
-          AND conflict_start <= @to AND conflict_end >= @from
+          AND conflict_start <= DATEADD(day, 1, CAST(@to AS DATE)) AND conflict_end >= @from
       `)).recordset.filter((p: { scheduled_program: string | null; scheduled_job_number: string | null }) =>
         programKey(p.scheduled_program ?? '') === programKey(program)
         && [null, jobNumber].includes(recordedJob(p.scheduled_job_number)))
@@ -624,7 +653,7 @@ export async function detectConflicts(
     if (prior.some((p: { status: string; conflict_start: string; conflict_end: string }) =>
       p.status === 'ACTIVE' && p.conflict_start === conflictStart && p.conflict_end === conflictEnd)) continue
 
-    const decision = priorDecision(conflictStart, conflictEnd, prior, justResolved)
+    const decision = priorDecision(conflictStart, conflictEnd, prior, justResolved, utcDatedBefore)
     if (decision === 'dismissed') continue
 
     await pool

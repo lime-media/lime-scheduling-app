@@ -19,8 +19,9 @@ import { syncAttSoftHolds } from '@/lib/attSoftHolds'
 import { freeRanges } from '@/lib/ranges'
 import { isOwnLedProgram, jobKey, linkedJob } from '@/lib/jobNumber'
 import { followLedTrucks } from '@/lib/ledTruckFollow'
+import { daysSold } from '@/lib/ledJobs'
 import { centralDate } from '@/lib/dateOnly'
-import { recordAmountChanges, recordExecuted, recordPrestart, sharedOriginMeasurer } from '@/lib/transportMetricsRecord'
+import { recordAmountChanges, recordExecuted, recordPrestart, recordSwap, sharedOriginMeasurer } from '@/lib/transportMetricsRecord'
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────
 
@@ -156,6 +157,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     holdsRaw.filter((h) => linkedJob(h)).map((h) => ({
       id: h.id, truck_number: h.truck_number, market: h.market, state: h.state, job_number: linkedJob(h),
       start_date: toDateStr(h.start_date), end_date: toDateStr(h.end_date),
+      days_sold: daysSold(h.features, toDateStr(h.start_date), toDateStr(h.end_date)),
       sfdc_opportunity_id: h.sfdc_opportunity_id, created_by: h.created_by,
     })),
     schedulesRaw.map((r) => ({
@@ -163,9 +165,10 @@ export async function refreshCache(): Promise<RefreshSummary> {
       market: String(r.market ?? ''), state: String(r.state ?? ''), standard_market_name: String(r.standard_market_name ?? ''),
     })),
     centralDate(new Date()),
+    holds,
   ).catch((err) => {
     console.error('[scheduleCache] LED truck follow failed:', err)
-    return { moved: [], opportunities: [] as string[] }
+    return { moved: [], opportunities: [] as string[], serviceUserId: null }
   })
   for (const m of ledFollow.moved) {
     const hold = holds.find((h) => h.id === m.holdId)
@@ -188,8 +191,13 @@ export async function refreshCache(): Promise<RefreshSummary> {
   // conflict detection; independent (different holds), so in parallel.
   // Best-effort; never fails the sweep.
   // The two recorders that measure trucks share one fleet and GPS load.
+  // Holds the sweep moved onto LED's truck are measured as swaps here too
+  // (recordSwap never throws).
   const measurer = sharedOriginMeasurer()
-  const [metricsPrestart, metricsExecuted, metricsAmounts] = await Promise.all([recordPrestart(measurer), recordExecuted(measurer), recordAmountChanges()])
+  const [metricsPrestart, metricsExecuted, metricsAmounts] = await Promise.all([
+    recordPrestart(measurer), recordExecuted(measurer), recordAmountChanges(),
+    ...ledFollow.moved.map((m) => recordSwap(m.holdId, ledFollow.serviceUserId)),
+  ])
   if (metricsPrestart || metricsExecuted || metricsAmounts) {
     console.log(`[scheduleCache] metrics: ${metricsPrestart} pre-start snapshot(s), ${metricsExecuted} executed leg(s), ${metricsAmounts} amount change(s)`)
   }

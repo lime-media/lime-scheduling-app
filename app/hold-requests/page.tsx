@@ -15,7 +15,7 @@ import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
-import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingEnded, bookingInLed, bookingKey, closedWonRefusal, bookingStatus, ledProgress, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
+import { CLOSED_WON_READ_ONLY, WON_ENDED_LISTED_DAYS, bookingCapStarts, bookingEnded, bookingInLed, bookingKey, closedWonRefusal, bookingStatus, ledProgress, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
 import { ownedBy, ownerOptions, runsBetween, wholeBookings, type OwnerFilter } from '@/lib/reservationFilters'
 import { useSession } from 'next-auth/react'
@@ -58,8 +58,8 @@ type HoldRequest = {
 const LED_SCHEDULED = 'LED_SCHEDULED'
 /**
  * The filter for won bookings whose dates have all passed, scheduled in LED or
- * not; every other filter leaves them out. A booking LED has fully scheduled
- * stops being listed a week after it ends (app/api/hold-requests).
+ * not; every other filter leaves them out. They drop off a while after they
+ * end (lib/bookings.ts stillListed).
  */
 const WON_ENDED = 'WON_ENDED'
 
@@ -751,9 +751,9 @@ export default function HoldRequestsPage() {
                 Showing expired reservations from the last {expiredWindowDays} days. Older ones are kept but not listed here.
               </p>
             )}
-            {expiredWindowDays !== null && filterStatus === WON_ENDED && (
+            {filterStatus === WON_ENDED && (
               <p className="text-xs text-gray-400 mt-1">
-                Won bookings scheduled in LED are listed for {expiredWindowDays} days after they end. A booking LED hasn&apos;t fully scheduled stays listed until it is.
+                Won bookings are listed for {WON_ENDED_LISTED_DAYS.inLed} days after they end once LED has fully scheduled them, and {WON_ENDED_LISTED_DAYS.notInLed} days if it hasn&apos;t.
               </p>
             )}
           </div>

@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingEnded, bookingKey, bookingStatus, clientExtendRefusal, closedWonRefusal, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, reviseRefusal, summarizeBooking } from '@/lib/bookings'
+import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingEnded, bookingKey, stillListed, bookingStatus, clientExtendRefusal, closedWonRefusal, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, reviseRefusal, summarizeBooking } from '@/lib/bookings'
 
 const h = (campaign_group_id: string | null, truck_number: string, market: string, quoted_total: number | null, extra: Partial<{ sfdc: string; start: string; end: string; exp: string }> = {}) => ({
   campaign_group_id, sfdc_opportunity_id: extra.sfdc ?? null, truck_number, market, quoted_total,
@@ -156,4 +156,21 @@ section('bookingEnded: a won booking whose dates have all passed')
   eq('a lapsed market beside ended won ones is ignored', bookingEnded([r('COMMITTED', '2026-10-20'), r('EXPIRED', '2026-11-30')], today), true)
   eq('nothing live: not ended', bookingEnded([r('EXPIRED', '2026-10-20')], today), false)
   eq('a full timestamp compares by its date', bookingEnded([r('COMMITTED', '2026-10-26T00:00:00.000Z')], today), true)
+}
+
+section('stillListed: a won booking drops off whole a while after it ends')
+{
+  const today = '2026-10-27'
+  const row = (id: string, key: string | null, status: string, end_date: string, inLed = false) =>
+    ({ id, campaign_group_id: key, sfdc_opportunity_id: null, status, end_date, led_scheduled: inLed, led_days_sold: inLed ? 3 : null })
+  const ids = (rows: ReturnType<typeof row>[]) => stillListed(rows, today).map(r => r.id)
+  eq('in LED, ended 7 days ago: still listed', ids([row('a', 'b1', 'COMMITTED', '2026-10-20', true)]), ['a'])
+  eq('in LED, ended 8 days ago: dropped', ids([row('a', 'b1', 'COMMITTED', '2026-10-19', true)]), [])
+  eq('not fully in LED, ended 8 days ago: still listed', ids([row('a', 'b1', 'COMMITTED', '2026-10-19')]), ['a'])
+  eq('not fully in LED, ended 31 days ago: dropped', ids([row('a', 'b1', 'COMMITTED', '2026-09-26')]), [])
+  eq('one market still running keeps every market listed',
+    ids([row('a', 'b1', 'COMMITTED', '2026-09-01', true), row('b', 'b1', 'COMMITTED', '2026-11-30', true)]), ['a', 'b'])
+  eq('dropped whole, with its expired markets', ids([row('a', 'b1', 'COMMITTED', '2026-09-01', true), row('b', 'b1', 'EXPIRED', '2026-09-01')]), [])
+  eq('a row with no booking is its own booking', ids([row('a', null, 'COMMITTED', '2026-10-01', true), row('b', null, 'HOLD', '2026-10-01')]), ['b'])
+  eq('across a DST change: calendar days', stillListed([row('a', 'b1', 'COMMITTED', '2026-03-08', true)], '2026-03-15').length, 1)
 }

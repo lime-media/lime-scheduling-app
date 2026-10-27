@@ -5,15 +5,13 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { reservationOwners } from '@/lib/reservationOwners'
-import { bookingEnded, bookingInLed, bookingKey } from '@/lib/bookings'
+import { stillListed } from '@/lib/bookings'
 import { centralDate } from '@/lib/dateOnly'
 import { daysSold, ledShiftsForHolds, ledStandings, type JobHold, type LedStanding } from '@/lib/ledJobs'
 
 // EXPIRED holds accumulate forever — every lapsed hold and every Closed Lost
 // Opportunity lands here and never leaves. Ops only care about the recent tail,
 // so the list carries a rolling window; everything still-active is unaffected.
-// The same window retires won bookings LED has fully scheduled, a week after
-// they end (below).
 const EXPIRED_WINDOW_DAYS = 7
 
 /**
@@ -110,27 +108,11 @@ export async function GET() {
     created_at:        h.created_at.toISOString(),
   }))
 
-  // Nothing retires a committed hold, so a won booking that LED has fully
-  // scheduled stops being listed a week after it ends (EXPIRED_WINDOW_DAYS),
-  // whole. A booking LED never fully scheduled stays (under Won, ended) with its
-  // "In LED: x of y days" or "No job number yet" badge until it is.
-  const endedCutoff = centralDate(new Date(Date.now() - EXPIRED_WINDOW_DAYS * 864e5))
-  const byBooking = new Map<string, typeof rows>()
-  for (const r of rows) {
-    const key = bookingKey(r)
-    if (!key) continue
-    const group = byBooking.get(key)
-    if (group) group.push(r)
-    else byBooking.set(key, [r])
-  }
-  const retired = (r: (typeof rows)[number]) => {
-    const key = bookingKey(r)
-    const group = key ? byBooking.get(key)! : [r]
-    return bookingEnded(group, endedCutoff) && bookingInLed(group)
-  }
+  // Nothing retires a committed hold, so a won booking drops off a while after
+  // it ends (lib/bookings.ts stillListed).
   return NextResponse.json({
     expired_window_days: EXPIRED_WINDOW_DAYS,
     led_unavailable: ledUnavailable,
-    holdRequests: rows.filter(r => !retired(r)),
+    holdRequests: stillListed(rows, centralDate(new Date())),
   })
 }

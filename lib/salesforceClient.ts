@@ -121,8 +121,33 @@ export type SfdcOpportunityResult = {
   warnings?: string[]
 }
 
+/** The checkbox that marks an opportunity made in the app (lib/opportunityOrigins.ts). */
+export const CREATED_IN_APP_FIELD = 'Created_In_App__c'
+
+// Set once Salesforce has refused CREATED_IN_APP_FIELD (not in this org yet, or
+// not writable by the integration user): later creates in this process skip it
+// instead of failing once more each.
+let createdInAppRefused = false
+
 /**
- * Create a new Opportunity in Salesforce.
+ * Whether a failed write was Salesforce refusing `field` itself: missing, or
+ * not writable by this user (INVALID_FIELD, INVALID_FIELD_FOR_INSERT_UPDATE,
+ * "No such column"), naming the field. Pure.
+ */
+export function fieldRefusedOnWrite(errors: unknown, field: string): boolean {
+  const list = Array.isArray(errors) ? errors : [errors]
+  return list.some(e => {
+    const code = String((e as { errorCode?: unknown })?.errorCode ?? '')
+    const text = `${code} ${String((e as { message?: unknown })?.message ?? '')} ${JSON.stringify((e as { fields?: unknown })?.fields ?? '')}`.toLowerCase()
+    return /invalid_field|no such column/.test(text) && text.includes(field.toLowerCase())
+  })
+}
+
+/**
+ * Create a new Opportunity in Salesforce. It is marked made in the app
+ * (CREATED_IN_APP_FIELD) when this org has the field; if Salesforce refuses
+ * the field, it is created again without it, so the mark can never stop an
+ * opportunity being made.
  */
 export async function createOpportunity(input: CreateOpportunityInput): Promise<SfdcOpportunityResult> {
   const body: Record<string, unknown> = {
@@ -150,12 +175,18 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
   if (input.description) body.Description = input.description.slice(0, 32000)
   // LED_Revenue__c is a read-only field (formula/rollup) — use Amount instead
 
-  const res = await sfdcFetch('/sobjects/Opportunity', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  })
-
-  const data = await res.json()
+  const post = async (fields: Record<string, unknown>) => {
+    const res = await sfdcFetch('/sobjects/Opportunity', { method: 'POST', body: JSON.stringify(fields) })
+    // Salesforce returns errors as [{ message, errorCode, fields }]; success as { id, success, errors }.
+    const json = await res.json().catch(() => null)
+    return { res, data: Array.isArray(json) ? { success: false, errors: json } : (json ?? { success: false }) }
+  }
+  let { res, data } = await post(createdInAppRefused ? body : { ...body, [CREATED_IN_APP_FIELD]: true })
+  if (!data.success && !createdInAppRefused && fieldRefusedOnWrite(data.errors, CREATED_IN_APP_FIELD)) {
+    createdInAppRefused = true
+    console.warn(`[sfdc] ${CREATED_IN_APP_FIELD} refused; creating opportunities without it:`, JSON.stringify(data.errors))
+    ;({ res, data } = await post(body))
+  }
   if (!data.success) {
     console.error('[sfdc] Opportunity creation failed. Status:', res.status, 'Response:', JSON.stringify(data))
   }
@@ -249,6 +280,30 @@ export async function sfdcQuery<T = Record<string, unknown>>(soql: string): Prom
   }
 
   return data?.records ?? []
+}
+
+/**
+ * A SOQL query's every row: follows Salesforce's pages (nextRecordsUrl, 2,000
+ * rows each) up to `maxRows`. `truncated` says rows were left out.
+ */
+export async function sfdcQueryAll<T = Record<string, unknown>>(soql: string, maxRows = 20_000): Promise<{ rows: T[]; truncated: boolean }> {
+  const rows: T[] = []
+  let path: string | null = `/query?q=${encodeURIComponent(soql)}`
+  while (path) {
+    const res = await sfdcFetch(path)
+    const data = await res.json().catch(() => null)
+    if (!res.ok) {
+      const detail = Array.isArray(data) && data[0]?.message ? `${data[0].errorCode}: ${data[0].message}` : `HTTP ${res.status}`
+      throw new Error(`Salesforce SOQL query failed — ${detail}`)
+    }
+    rows.push(...(data?.records ?? []))
+    if (rows.length >= maxRows) return { rows: rows.slice(0, maxRows), truncated: !data?.done || rows.length > maxRows }
+    // nextRecordsUrl is absolute from /services/data/<version>; sfdcFetch adds that prefix.
+    path = data?.done === false && typeof data.nextRecordsUrl === 'string'
+      ? data.nextRecordsUrl.replace(/^\/services\/data\/[^/]+/, '')
+      : null
+  }
+  return { rows, truncated: false }
 }
 
 /**

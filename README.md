@@ -113,6 +113,9 @@ The AI checks both sources and reports conflicts from either. The Schedule Grid 
 | Markets / programs | Azure SQL (`dbo.client_program_markets`) | 5-min cache |
 | GPS locations | Samsara Fleet API | Always live, no cache |
 | Holds / commitments | Prisma (SQL Server) | Always live |
+| Opportunity origins (Ops → Opp Origins) | Salesforce LED opportunities + `app_created_opportunities` | Always live |
+
+**Opportunity origins** (`/ops/opportunities`, `lib/opportunityOrigins.ts`): LED opportunities created in Salesforce each Central week, made in the app vs made directly in Salesforce, with the direct ones by who made them. The app creates opportunities as its integration user (a real person's Salesforce user), so Created By can't tell them apart: the app records each opportunity it makes (`app_created_opportunities`) and sets `Created_In_App__c` once that checkbox exists in Salesforce (best-effort; refused, it creates without it). Opportunities from before the record count as made in the app when an app reservation on them was made within 5 minutes of them ("matched").
 
 ---
 

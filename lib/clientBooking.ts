@@ -15,7 +15,8 @@ import { ClientHoldRefusal, createClientHolds } from '@/lib/holdRequestService'
 import { HoldClashError, HoldLockTimeoutError } from '@/lib/holdWriteLock'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
-import { createOpportunity, isSfdcConfigured, getSfdcAccountInfo } from '@/lib/salesforceClient'
+import { isSfdcConfigured, getSfdcAccountInfo } from '@/lib/salesforceClient'
+import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { legsFromSelectedTrucks } from '@/lib/transportMetrics'
@@ -292,7 +293,7 @@ export async function placeClientBooking(
         : undefined
 
       // A client's own request has no internal rep: the account's owner owns it.
-      const result = await createOpportunity({
+      const result = await createAppOpportunity({
         accountId: sfdcAccountId,
         ownerId: accountInfo?.ownerId ?? undefined,
         clientType: accountInfo?.clientType,
@@ -307,7 +308,7 @@ export async function placeClientBooking(
         holdExp: firstHold?.expires_at ? holdExpDate(firstHold.expires_at) : undefined,
         truckNumbers: created,
         activationNotes,
-      })
+      }, { createdBy: null, path: 'client' })
 
       if (result.success && result.id) {
         await prisma.hold.updateMany({

@@ -45,7 +45,8 @@ import { prisma } from '@/lib/prisma'
 import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { bookingHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
-import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
+import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
+import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, reopenClosedLostOpportunity, type BookingOpportunity } from '@/lib/sfdcBooking'
@@ -545,7 +546,7 @@ async function handlePost(req: NextRequest) {
         // Owned by the rep who booked it (matched by email), else the account owner.
         const accountInfo = await getSfdcAccountInfo(body.sfdcAccountId).catch(() => null)
         const owner = await resolveOpportunityOwner({ creatorEmail: token.email as string | undefined, accountOwnerId: accountInfo?.ownerId })
-        const result = await createOpportunity({
+        const result = await createAppOpportunity({
           accountId: body.sfdcAccountId,
           ownerId: owner.ownerId ?? undefined,
           clientType: accountInfo?.clientType,
@@ -569,7 +570,7 @@ async function handlePost(req: NextRequest) {
             + (unavailable.length ? ` ${unavailable.length} quoted but no truck available.` : '')
             + ' Breakdown in Description.',
           description,
-        })
+        }, { createdBy: (token.id as string | undefined) ?? null, path: 'multi-market' })
         if (result.success && result.id) {
           sfdcOpportunityId = result.id
           sfdcWarnings.push(...(result.warnings ?? []))

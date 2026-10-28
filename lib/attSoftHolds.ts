@@ -204,6 +204,7 @@ async function attLastMarketByTruck(asOf: string): Promise<Map<string, { market:
       JOIN dbo.clients         cl  ON cl.client_uid         = cp.client_uid
       LEFT JOIN dbo.client_program_markets cpm ON cpm.client_program_market_uid = ps.client_program_market_uid
       WHERE COALESCE(t.is_deleted, 0) = 0
+        AND ${liveProgram()}
         AND ${shiftDayIn({ to: '@asOf' })}
         AND ${ATT_CLIENT_SQL}
     )

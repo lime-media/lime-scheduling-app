@@ -46,21 +46,20 @@ for (const [name, q] of Object.entries({ SCHEDULED_QUERY, CHAT_CONTEXT_QUERY, wi
   eq(`${name}: no GETDATE()`, q.includes('GETDATE()'), false)
 }
 
-section('an archived LED program\'s future shifts book no truck')
-// LED's archive leaves a program's shifts in place, so every query that reads
-// program_schedule to decide whether a truck is taken applies liveProgram,
-// one call per read. The exceptions read where a truck last worked (a past
-// shift, which liveProgram keeps anyway): listed here by file.
-const LOCATION_ONLY = new Map([['lib/scheduleQuery.ts', 1], ['lib/attSoftHolds.ts', 1]])
+section('shifts an archived LED program never ran book no truck')
+// LED's archive leaves a program's shifts in place, so every program_schedule
+// read applies liveProgram, or counts live programs only (LED standing).
 for (const file of [...files('lib'), ...files('app')]) {
   const src = readFileSync(file, 'utf8')
-  const reads = (src.match(/(FROM|JOIN)\s+\(?\s*dbo\.program_schedule\b/g) ?? []).length - (LOCATION_ONLY.get(file) ?? 0)
-  if (reads <= 0) continue
-  eq(`${file}: one liveProgram per program_schedule read`, (src.match(/\$\{liveProgram\(/g) ?? []).length, reads)
+  const reads = (src.match(/(FROM|JOIN)\s+\(?\s*dbo\.program_schedule\b/g) ?? []).length
+  if (!reads) continue
+  const filtered = (src.match(/\$\{liveProgram\(/g) ?? []).length + (src.match(/WHERE COALESCE\(cp\.is_deleted, 0\) = 0/g) ?? []).length
+  eq(`${file}: every program_schedule read filters archived programs`, filtered, reads)
 }
 const live = liveProgram('p', 'ps2')
 eq('keeps a live program, or a shift with no program row', live.startsWith('(COALESCE(p.is_deleted, 0) = 0 OR '), true)
-eq('keeps shifts that already started (history), archived or not', live.endsWith('OR ps2.start_time < SYSUTCDATETIME())'), true)
+eq('keeps an archived program\'s shifts that started before the archive', live.endsWith('OR ps2.start_time < p.updated_at)'), true)
 for (const [name, q] of Object.entries({ SCHEDULED_QUERY, CHAT_CONTEXT_QUERY, windowed: scheduledWithMarketQuery(true, true), rolling: scheduledWithMarketQuery(false, false) })) {
-  eq(`${name}: leaves out an archived program's future shifts`, q.includes('.is_deleted, 0) = 0 OR ') && q.includes('.start_time < SYSUTCDATETIME())'), true)
+  eq(`${name}: leaves out shifts an archived program never ran`, /\.is_deleted, 0\) = 0 OR \w+\.start_time < \w+\.updated_at\)/.test(q), true)
 }
+eq('CHAT_CONTEXT: today and the last-known market both filter', (CHAT_CONTEXT_QUERY.match(/start_time < \w+\.updated_at/g) ?? []).length, 2)

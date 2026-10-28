@@ -27,17 +27,19 @@ const SQL_ZONE = (market: string) => `CASE ${market}.market_timezone
         ELSE 'Central Standard Time' END`
 
 /**
- * SQL that drops the shifts an archived LED program will no longer run. LED's
- * archive (is_deleted = 1) leaves its program_schedule rows in place: a lost
- * deal's archived program still has its future shifts, which book nothing.
- * Shifts that already started stay, archived or not: LED also archives
- * finished programs (30 days after they end), and their days are history the
- * AT&T roster, the planner's hours and where a truck last was all rely on.
+ * SQL that drops the shifts an archived LED program never ran. LED's archive
+ * (is_deleted = 1) leaves its program_schedule rows in place: a lost deal's
+ * archived program keeps its future shifts, which book nothing. A shift that
+ * started before the archive did run, and stays: LED also archives finished
+ * programs (30 days after they end), and their days are history the AT&T
+ * roster, the planner's hours and where a truck last was rely on. The archive
+ * time is updated_at, which Core stamps on every save, the archive included
+ * (a later edit to an archived program would move it; Core doesn't edit them).
  * `program` is the alias of a joined dbo.client_programs (a shift with no
  * program row is kept), `shift` of dbo.program_schedule.
  */
 export const liveProgram = (program = 'cp', shift = 'ps') =>
-  `(COALESCE(${program}.is_deleted, 0) = 0 OR ${shift}.start_time < SYSUTCDATETIME())`
+  `(COALESCE(${program}.is_deleted, 0) = 0 OR ${shift}.start_time < ${program}.updated_at)`
 
 /** SQL for today's date in Central time, the app's day (REVIEW.md); GETDATE() is UTC on Azure. */
 const TODAY = `CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Central Standard Time' AS DATE)`
@@ -81,9 +83,10 @@ SELECT
     COALESCE(cp.job_number, '') AS job_number,
     ${shiftDay('ps.start_time')} AS shift_start,
     ${shiftDay('ps.start_time')} AS shift_end,  -- use start date; end_time bleeds into next day for overnight shifts
-    -- A flag, not a filter: an archived truck is never a truck for a won hold
-    -- to follow (lib/ledTruckFollow.ts). Archived programs' future shifts are
-    -- left out below.
+    -- Flags, not filters: an archived program or truck is never a truck for a
+    -- won hold to follow (lib/ledTruckFollow.ts). Shifts an archived program
+    -- never ran are left out below.
+    CAST(COALESCE(cp.is_deleted, 0) AS INT) AS program_deleted,
     CAST(COALESCE(t.is_deleted,  0) AS INT) AS truck_deleted
 FROM dbo.program_schedule ps
 JOIN dbo.trucks t
@@ -142,7 +145,10 @@ OUTER APPLY (
     FROM dbo.program_schedule ps_lk
     JOIN dbo.client_program_markets pm_lk
         ON  pm_lk.client_program_market_uid = ps_lk.client_program_market_uid
+    LEFT JOIN dbo.client_programs p_lk
+        ON  p_lk.client_program_uid = ps_lk.client_program_uid
     WHERE ps_lk.truck_uid = t.truck_uid
+      AND ${liveProgram('p_lk', 'ps_lk')}
       AND ${shiftDayIn({ to: todayIn('pm_lk') }, 'ps_lk', 'pm_lk', TODAY)}
       AND pm_lk.market IS NOT NULL
     ORDER BY ps_lk.start_time DESC

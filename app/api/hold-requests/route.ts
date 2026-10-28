@@ -6,6 +6,8 @@ import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { reservationOwners } from '@/lib/reservationOwners'
 import { ledClientNames } from '@/lib/ledClients'
+import { stillListed } from '@/lib/bookings'
+import { centralDate } from '@/lib/dateOnly'
 import { FOLLOW_SYNC_OVERDUE_MS } from '@/lib/ledTruckFollow'
 import { daysSold, ledShiftsForHolds, ledStandings, type JobHold, type LedStanding } from '@/lib/ledJobs'
 
@@ -34,7 +36,7 @@ export async function GET() {
 
   const expiredCutoff = new Date(Date.now() - EXPIRED_WINDOW_DAYS * 24 * 60 * 60 * 1000)
 
-  const holds = await prisma.hold.findMany({
+  const fetched = await prisma.hold.findMany({
     where: {
       OR: [
         { status: { not: 'EXPIRED' } },
@@ -52,6 +54,19 @@ export async function GET() {
       user: { select: { name: true } },
     },
   })
+
+  // A won booking that ended more than WON_ENDED_LISTED_DAYS.notInLed ago is
+  // retired whatever LED says (lib/bookings.ts stillListed), so it's dropped
+  // before the owner and LED lookups: nothing retires a committed hold, and
+  // that work would otherwise grow with every deal won. With no LED standing
+  // yet, stillListed applies exactly that longer cutoff; the shorter one for
+  // bookings LED has scheduled runs on the response below.
+  const today = centralDate(new Date())
+  const current = new Set(stillListed(fetched.map(h => ({
+    id: h.id, campaign_group_id: h.campaign_group_id, sfdc_opportunity_id: h.sfdc_opportunity_id,
+    status: h.status, end_date: h.end_date.toISOString().slice(0, 10),
+  })), today).map(r => r.id))
+  const holds = fetched.filter(h => current.has(h.id))
 
   // How each committed hold stands in LED (lib/ledJobs.ts): the days its job
   // runs on its truck, of the days sold. The page stops listing a booking once
@@ -131,45 +146,49 @@ export async function GET() {
     if (s.follow && s.to === won.get(id) && s.first !== s.to) followedOf.set(id, { from: s.first, to: s.to, at: s.at })
   }
   const overdueBefore = Date.now() - FOLLOW_SYNC_OVERDUE_MS
+  const rows = holds.map((h) => ({
+    id:                h.id,
+    truck_number:      h.truck_number,
+    market:            h.market,
+    state:             h.state ?? '',
+    start_date:        h.start_date.toISOString().split('T')[0],
+    end_date:          h.end_date.toISOString().split('T')[0],
+    notes:             h.notes ?? '',
+    status:            h.status,
+    source:            h.source,
+    origination:       h.origination,
+    company_name:      h.client_user?.company_name ?? h.client_name,
+    created_by_name:   h.user?.name ?? null,
+    owner_id:          owners.get(h.id)!.owner_id,
+    owner_name:        owners.get(h.id)!.owner_name,
+    pricing_tier:      h.pricing_tier ?? null,
+    quoted_total:      h.quoted_total ?? null,
+    daily_rate:        h.daily_rate ?? null,
+    features:          h.features ?? null,
+    truck_count:       h.truck_count ?? null,
+    campaign_group_id: h.campaign_group_id ?? null,
+    sfdc_opportunity_id: h.sfdc_opportunity_id ?? null,
+    job_number:        h.sfdc_job_number ?? null,
+    sfdc_account_id:   h.sfdc_account_id ?? null,
+    led_client:        ledClientOf(h.sfdc_account_id),
+    led_scheduled:     inLed.get(h.id)?.scheduled ?? false,
+    led_days:          inLed.get(h.id)?.days ?? 0,
+    led_days_sold:     inLed.get(h.id)?.of ?? null,
+    led_followed:      followedOf.get(h.id) ?? null,
+    // Moved to LED's truck but Salesforce's LED Trucks still refuses it (lib/ledTruckFollow.ts).
+    led_trucks_unsynced_since: h.status === 'COMMITTED' && h.sfdc_opportunity_id && h.led_follow_sync_pending && h.led_follow_sync_pending.getTime() < overdueBefore
+      ? h.led_follow_sync_pending.toISOString() : null,
+    expires_at:        h.expires_at?.toISOString() ?? null,
+    extension_reason:  h.extension_reason ?? null,
+    extension_until:   h.extension_until?.toISOString() ?? null,
+    created_at:        h.created_at.toISOString(),
+  }))
+
+  // Nothing retires a committed hold, so a won booking drops off a while after
+  // it ends (lib/bookings.ts stillListed).
   return NextResponse.json({
     expired_window_days: EXPIRED_WINDOW_DAYS,
     led_unavailable: ledUnavailable,
-    holdRequests: holds.map((h) => ({
-      id:                h.id,
-      truck_number:      h.truck_number,
-      market:            h.market,
-      state:             h.state ?? '',
-      start_date:        h.start_date.toISOString().split('T')[0],
-      end_date:          h.end_date.toISOString().split('T')[0],
-      notes:             h.notes ?? '',
-      status:            h.status,
-      source:            h.source,
-      origination:       h.origination,
-      company_name:      h.client_user?.company_name ?? h.client_name,
-      created_by_name:   h.user?.name ?? null,
-      owner_id:          owners.get(h.id)!.owner_id,
-      owner_name:        owners.get(h.id)!.owner_name,
-      pricing_tier:      h.pricing_tier ?? null,
-      quoted_total:      h.quoted_total ?? null,
-      daily_rate:        h.daily_rate ?? null,
-      features:          h.features ?? null,
-      truck_count:       h.truck_count ?? null,
-      campaign_group_id: h.campaign_group_id ?? null,
-      sfdc_opportunity_id: h.sfdc_opportunity_id ?? null,
-      job_number:        h.sfdc_job_number ?? null,
-      sfdc_account_id:   h.sfdc_account_id ?? null,
-      led_client:        ledClientOf(h.sfdc_account_id),
-      led_scheduled:     inLed.get(h.id)?.scheduled ?? false,
-      led_days:          inLed.get(h.id)?.days ?? 0,
-      led_days_sold:     inLed.get(h.id)?.of ?? null,
-      led_followed:      followedOf.get(h.id) ?? null,
-      // Moved to LED's truck but Salesforce's LED Trucks still refuses it (lib/ledTruckFollow.ts).
-      led_trucks_unsynced_since: h.status === 'COMMITTED' && h.sfdc_opportunity_id && h.led_follow_sync_pending && h.led_follow_sync_pending.getTime() < overdueBefore
-        ? h.led_follow_sync_pending.toISOString() : null,
-      expires_at:        h.expires_at?.toISOString() ?? null,
-      extension_reason:  h.extension_reason ?? null,
-      extension_until:   h.extension_until?.toISOString() ?? null,
-      created_at:        h.created_at.toISOString(),
-    })),
+    holdRequests: stillListed(rows, today),
   })
 }

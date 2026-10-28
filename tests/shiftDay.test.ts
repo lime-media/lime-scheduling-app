@@ -46,19 +46,21 @@ for (const [name, q] of Object.entries({ SCHEDULED_QUERY, CHAT_CONTEXT_QUERY, wi
   eq(`${name}: no GETDATE()`, q.includes('GETDATE()'), false)
 }
 
-section('an archived LED program books no truck')
+section('an archived LED program\'s future shifts book no truck')
 // LED's archive leaves a program's shifts in place, so every query that reads
-// program_schedule to decide whether a truck is taken keeps only live programs
-// (liveProgram). The exceptions read where a truck last worked: a location,
-// true whether or not its program was later archived.
+// program_schedule to decide whether a truck is taken applies liveProgram,
+// one call per read. The exceptions read where a truck last worked (a past
+// shift, which liveProgram keeps anyway): listed here by file.
 const LOCATION_ONLY = new Map([['lib/scheduleQuery.ts', 1], ['lib/attSoftHolds.ts', 1]])
 for (const file of [...files('lib'), ...files('app')]) {
   const src = readFileSync(file, 'utf8')
-  const reads = (src.match(/(FROM|JOIN)\s+dbo\.program_schedule\b/g) ?? []).length - (LOCATION_ONLY.get(file) ?? 0)
+  const reads = (src.match(/(FROM|JOIN)\s+\(?\s*dbo\.program_schedule\b/g) ?? []).length - (LOCATION_ONLY.get(file) ?? 0)
   if (reads <= 0) continue
-  eq(`${file}: each program_schedule read keeps live programs only`, (src.match(/\$\{liveProgram\(/g) ?? []).length >= reads, true)
+  eq(`${file}: one liveProgram per program_schedule read`, (src.match(/\$\{liveProgram\(/g) ?? []).length, reads)
 }
-eq('liveProgram keeps a shift with no program row', liveProgram('p'), 'COALESCE(p.is_deleted, 0) = 0')
+const live = liveProgram('p', 'ps2')
+eq('keeps a live program, or a shift with no program row', live.startsWith('(COALESCE(p.is_deleted, 0) = 0 OR '), true)
+eq('keeps shifts that already started (history), archived or not', live.endsWith('OR ps2.start_time < SYSUTCDATETIME())'), true)
 for (const [name, q] of Object.entries({ SCHEDULED_QUERY, CHAT_CONTEXT_QUERY, windowed: scheduledWithMarketQuery(true, true), rolling: scheduledWithMarketQuery(false, false) })) {
-  eq(`${name}: leaves out archived programs`, /COALESCE\(\w+\.is_deleted, 0\) = 0/.test(q.replace(/COALESCE\(t\.is_deleted, 0\) = 0/g, '')), true)
+  eq(`${name}: leaves out an archived program's future shifts`, q.includes('.is_deleted, 0) = 0 OR ') && q.includes('.start_time < SYSUTCDATETIME())'), true)
 }

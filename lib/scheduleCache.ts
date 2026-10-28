@@ -166,7 +166,8 @@ export async function refreshCache(): Promise<RefreshSummary> {
       days_sold: daysSold(h.features, toDateStr(h.start_date), toDateStr(h.end_date)),
       sfdc_opportunity_id: h.sfdc_opportunity_id, created_by: h.created_by,
     })),
-    // An archived truck is never a truck to follow (SCHEDULED_QUERY already leaves out archived programs).
+    // An archived truck is never a truck to follow; SCHEDULED_QUERY already leaves out
+    // an archived program's future shifts, and the follow only looks at days still to run.
     schedulesRaw.filter((r) => !Number(r.truck_deleted)).map((r) => ({
       truck_number: String(r.truck_number ?? ''), job_number: String(r.job_number ?? ''), shift_start: toDateStr(r.shift_start),
       market: String(r.market ?? ''), state: String(r.state ?? ''), standard_market_name: String(r.standard_market_name ?? ''),

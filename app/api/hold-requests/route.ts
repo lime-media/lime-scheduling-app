@@ -7,12 +7,16 @@ import { prisma } from '@/lib/prisma'
 import { reservationOwners } from '@/lib/reservationOwners'
 import { stillListed } from '@/lib/bookings'
 import { centralDate } from '@/lib/dateOnly'
+import { FOLLOW_SYNC_OVERDUE_MS } from '@/lib/ledTruckFollow'
 import { daysSold, ledShiftsForHolds, ledStandings, type JobHold, type LedStanding } from '@/lib/ledJobs'
 
 // EXPIRED holds accumulate forever — every lapsed hold and every Closed Lost
 // Opportunity lands here and never leaves. Ops only care about the recent tail,
 // so the list carries a rolling window; everything still-active is unaffected.
 const EXPIRED_WINDOW_DAYS = 7
+
+// How long a won hold's card says its truck moved to follow LED.
+const LED_FOLLOW_SHOWN_DAYS = 7
 
 /**
  * GET /api/hold-requests
@@ -79,7 +83,10 @@ export async function GET() {
   // `ledUnavailable` tells the page the LED read failed, so a badge says so
   // instead of "No job number yet" on every won booking.
   let ledUnavailable = false
-  const [owners, inLed] = await Promise.all([
+  // Won holds the sweep moved onto LED's truck in the last week (lib/ledTruckFollow.ts),
+  // so the card says the truck changed: from the audit rows the move wrote.
+  const anyWon = holds.some(h => h.status === 'COMMITTED')
+  const [owners, inLed, followed] = await Promise.all([
     reservationOwners(holds.map(h => ({ id: h.id, created_by: h.created_by, created_by_name: h.user?.name ?? null, sfdc_opportunity_id: h.sfdc_opportunity_id }))),
     ledShiftsForHolds(committed)
       .then(shifts => ledStandings(committed, shifts))
@@ -88,7 +95,37 @@ export async function GET() {
         ledUnavailable = true
         return new Map<string, LedStanding>()
       }),
+    anyWon
+      ? prisma.auditLog.findMany({
+          // Not by hold id: won holds are never retired, and one parameter each
+          // would pass SQL Server's limit. The week's swaps are few.
+          where:   { action: 'SWAP_HOLD_TRUCK', created_at: { gte: new Date(Date.now() - LED_FOLLOW_SHOWN_DAYS * 864e5) } },
+          select:  { hold_id: true, details: true, created_at: true },
+          orderBy: { created_at: 'asc' },
+        }).catch((err) => { console.error('[hold-requests] LED follow read failed:', err); return [] })
+      : [],
   ])
+  // A won hold's truck changes this week, in order; the card says "moved to
+  // match LED" only while its last change was a follow onto the truck it's on
+  // now (a staff swap since, or a follow back, says nothing).
+  const won = new Map(holds.filter(h => h.status === 'COMMITTED').map(h => [h.id, h.truck_number]))
+  const lastSwap = new Map<string, { to: string; at: string; follow: boolean; first: string }>()
+  for (const row of followed) {
+    if (!row.hold_id || !won.has(row.hold_id)) continue
+    let d: { old_truck?: string; new_truck?: string; reason?: string } = {}
+    try { d = JSON.parse(row.details ?? '{}') } catch { continue }
+    if (!d.old_truck || !d.new_truck) continue
+    const earlier = lastSwap.get(row.hold_id)
+    const follow = d.reason === 'led_truck_follow'
+    // The truck it was on before this run of follows.
+    const first = follow && earlier?.follow ? earlier.first : d.old_truck
+    lastSwap.set(row.hold_id, { to: d.new_truck, at: row.created_at.toISOString(), follow, first })
+  }
+  const followedOf = new Map<string, { from: string; to: string; at: string }>()
+  for (const [id, s] of lastSwap) {
+    if (s.follow && s.to === won.get(id) && s.first !== s.to) followedOf.set(id, { from: s.first, to: s.to, at: s.at })
+  }
+  const overdueBefore = Date.now() - FOLLOW_SYNC_OVERDUE_MS
   const rows = holds.map((h) => ({
     id:                h.id,
     truck_number:      h.truck_number,
@@ -115,6 +152,10 @@ export async function GET() {
     led_scheduled:     inLed.get(h.id)?.scheduled ?? false,
     led_days:          inLed.get(h.id)?.days ?? 0,
     led_days_sold:     inLed.get(h.id)?.of ?? null,
+    led_followed:      followedOf.get(h.id) ?? null,
+    // Moved to LED's truck but Salesforce's LED Trucks still refuses it (lib/ledTruckFollow.ts).
+    led_trucks_unsynced_since: h.status === 'COMMITTED' && h.sfdc_opportunity_id && h.led_follow_sync_pending && h.led_follow_sync_pending.getTime() < overdueBefore
+      ? h.led_follow_sync_pending.toISOString() : null,
     expires_at:        h.expires_at?.toISOString() ?? null,
     extension_reason:  h.extension_reason ?? null,
     extension_until:   h.extension_until?.toISOString() ?? null,

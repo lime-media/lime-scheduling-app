@@ -221,7 +221,6 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
   // An unknown market is never placed near some other city: with no
   // coordinates, no truck has a distance to it, so none is offered and the
   // quote says the market couldn't be located (marketResolved).
-  const effectiveCampaignCoords = campaignCoords
 
   // Get all known truck numbers
   const allTruckNumbers = new Set<string>()
@@ -274,7 +273,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
 
     // Without campaign coordinates there is nothing to measure against — the
     // quote will fall back to a manual transport quote.
-    if (!effectiveCampaignCoords) continue
+    if (!campaignCoords) continue
 
     // Rule 2: the campaign window itself must be free — of everything but an
     // AT&T soft hold, which a rep may release for these dates.
@@ -282,7 +281,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     // Other dates this truck could do, for when there are not enough trucks.
     const fit = {
       jobs: timelines.get(truckNumber) ?? [], start: startDate, end: endDate,
-      campaignCoords: effectiveCampaignCoords, currentCoords, today, serviceAreaMiles, softHoldStrandIsWarning,
+      campaignCoords: campaignCoords, currentCoords, today, serviceAreaMiles, softHoldStrandIsWarning,
     }
 
     if (window.blocked) {
@@ -303,7 +302,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     const chain = checkChainFeasibility({
       campaignStart: startDate,
       campaignEnd: endDate,
-      campaignCoords: effectiveCampaignCoords,
+      campaignCoords: campaignCoords,
       jobs: window.jobs,
       currentCoords,
       today,

@@ -19,7 +19,7 @@ export const DMA_RADIUS_MILES = 40
 /** The nearest DMA within the radius, or null. Pure. */
 export function dmaForPoint<T extends { lat: number; lng: number }>(
   point: { lat: number; lng: number },
-  dmas: T[],
+  dmas: readonly T[],
   radiusMiles = DMA_RADIUS_MILES,
 ): T | null {
   let best: { dma: T; miles: number } | null = null

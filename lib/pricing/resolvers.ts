@@ -26,14 +26,19 @@ import { liveClientLinks } from '@/lib/clientLinks'
  */
 export async function resolveMarketSizeTierId(market: string, knownCoords?: { lat: number; lng: number } | null): Promise<number> {
   if (!market) return NON_DMA_MARKET_TIER
-  // A top-50 DMA city by name, then by location: a suburb in a top-50 DMA's
-  // ring takes that DMA's tier (lib/pricing/dmaArea.ts).
-  const named = matchTopDma(market, TOP_DMAS)
-  if (named) return marketSizeTierFromDmaCode(named.dma_code)
-  // Callers that already located the market pass its coordinates.
-  const coords = knownCoords ?? await resolveCampaignCoords(market)
-  const around = coords ? dmaForPoint(coords, [...TOP_DMAS]) : null
-  return around ? marketSizeTierFromDmaCode(around.dma_code) : NON_DMA_MARKET_TIER
+  try {
+    // A top-50 DMA city by name, then by location: a suburb in a top-50 DMA's
+    // ring takes that DMA's tier (lib/pricing/dmaArea.ts).
+    const named = matchTopDma(market, TOP_DMAS)
+    if (named) return marketSizeTierFromDmaCode(named.dma_code)
+    // Callers that already located the market pass its coordinates.
+    const coords = knownCoords ?? await resolveCampaignCoords(market)
+    const around = coords ? dmaForPoint(coords, TOP_DMAS) : null
+    return around ? marketSizeTierFromDmaCode(around.dma_code) : NON_DMA_MARKET_TIER
+  } catch (err) {
+    console.error('[resolvers] market size tier lookup failed, using the small-metro tier:', err)
+    return NON_DMA_MARKET_TIER
+  }
 }
 
 /**

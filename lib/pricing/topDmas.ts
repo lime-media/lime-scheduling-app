@@ -3,8 +3,8 @@
  * (lib/pricing/config.ts marketSizeTierFromDmaCode), never a list of markets.
  * Markets are LED's standard markets (dbo.standard_market_lookup); a market
  * takes the tier of the top-50 DMA it is named for or sits in
- * (lib/pricing/dmaArea.ts). Copied from app_accepted_markets, which this
- * replaces. The ranks change rarely, and only here.
+ * (lib/pricing/dmaArea.ts); the tier of each code is in lib/pricing/config.ts.
+ * Copied from app_accepted_markets (all 50 rows active), which this replaces.
  */
 export type TopDma = { dma_code: string; dma_name: string; lat: number; lng: number }
 

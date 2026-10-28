@@ -63,12 +63,7 @@ eq('comma spacing normalized', normalizeMarketKey('Boston,MA'), 'boston, ma')
 eq('inner whitespace collapsed', normalizeMarketKey('  North   Palm Beach ,  FL '), 'north palm beach, fl')
 
 section('top-50 DMA matching (market size tier)')
-const DMAS = [
-  { dma_code: 'DMA-501', dma_name: 'New York, NY' },
-  { dma_code: 'DMA-803', dma_name: 'Los Angeles, CA' },
-  { dma_code: 'DMA-602', dma_name: 'Chicago, IL' },
-  { dma_code: 'DMA-524', dma_name: 'Atlanta, GA' },
-]
+const DMAS = TOP_DMAS
 eq('exact city + state', matchTopDma('Chicago, IL', DMAS)?.dma_code, 'DMA-602')
 eq('city without a state still matches', matchTopDma('Chicago', DMAS)?.dma_code, 'DMA-602')
 eq('case and spacing ignored', matchTopDma('  chicago ,il ', DMAS)?.dma_code, 'DMA-602')

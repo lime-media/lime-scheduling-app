@@ -4,6 +4,7 @@ import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
+import { centralDate } from '@/lib/dateOnly'
 import type { TruckLocation } from '@/app/api/trucks/locations/route'
 
 function toDateStr(val: unknown): string {
@@ -18,7 +19,7 @@ const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
 
 export async function GET() {
   try {
-    const today = new Date().toISOString().split('T')[0]
+    const today = centralDate(new Date())
     const now   = new Date()
 
     const [gpsMap, schedulesRaw, holds] = await Promise.all([

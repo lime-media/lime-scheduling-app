@@ -9,6 +9,7 @@ import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { CHAT_CONTEXT_QUERY, CHAT_SCHEDULE_WINDOW_QUERY } from '@/lib/scheduleQuery'
+import { centralDate } from '@/lib/dateOnly'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { formatMarketState } from '@/lib/format'
 import { HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
@@ -160,7 +161,7 @@ async function executeReleaseHold(
 // ── Context builder ───────────────────────────────────────────────────────────
 
 async function buildScheduleContext(): Promise<string> {
-  const today = new Date().toISOString().split('T')[0]
+  const today = centralDate(new Date())
 
   const [truckRows, windowRows, holds, gpsMap] = await Promise.all([
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),

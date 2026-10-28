@@ -18,6 +18,7 @@
  */
 
 import { query } from '@/lib/mssql'
+import { shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
 import { jobKey } from '@/lib/jobNumber'
 import { stateCode } from '@/lib/usStates'
 import { countCalendarDays } from '@/lib/pricing/schedule'
@@ -132,7 +133,7 @@ const HOLD_SHIFTS_QUERY = `
 SELECT
     t.truck_number,
     LTRIM(RTRIM(cp.job_number)) AS job_number,
-    CONVERT(varchar(10), CAST(ps.start_time AS DATE), 120) AS shift_date
+    CONVERT(varchar(10), ${shiftDay('ps.start_time')}, 120) AS shift_date
 FROM OPENJSON(@holds) WITH (
     truck NVARCHAR(4000) '$.truck',
     job   NVARCHAR(4000) '$.job',
@@ -141,9 +142,10 @@ FROM OPENJSON(@holds) WITH (
 ) h
 JOIN dbo.trucks t           ON t.truck_number = h.truck
 JOIN dbo.program_schedule ps ON ps.truck_uid = t.truck_uid
-                            AND ps.start_time >= h.s AND ps.start_time < DATEADD(day, 1, h.e)
 JOIN dbo.client_programs cp ON cp.client_program_uid = ps.client_program_uid
+LEFT JOIN dbo.client_program_markets cpm ON cpm.client_program_market_uid = ps.client_program_market_uid
 WHERE COALESCE(cp.is_deleted, 0) = 0
+  AND ${shiftDayIn({ from: 'h.s', to: 'h.e' })}
   AND LTRIM(RTRIM(cp.job_number)) = h.job  -- the LED column's collation is case-insensitive
 `
 

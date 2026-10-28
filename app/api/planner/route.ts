@@ -14,7 +14,8 @@ import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
 import { activeHoldWhere } from '@/lib/holdFilters'
-import { ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
+import { ALL_TRUCKS_QUERY, shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
+import { centralDate } from '@/lib/dateOnly'
 import { HIDDEN_TRUCKS } from '@/lib/availabilityEngine'
 import { isSfdcConfigured, sfdcQueryOptionalField } from '@/lib/salesforceClient'
 import { parseQuoteFeatures } from '@/lib/quoteFeatures'
@@ -28,7 +29,7 @@ const iso = (d: Date) => d.toISOString().slice(0, 10)
 const SHIFTS_QUERY = `
 SELECT
     t.truck_number,
-    CAST(ps.start_time AS DATE) AS shift_date,
+    ${shiftDay('ps.start_time')} AS shift_date,
     COALESCE(ps.shift_duration_in_mins, DATEDIFF(MINUTE, ps.start_time, ps.end_time)) AS minutes,
     CAST(ps.driver_uid AS NVARCHAR(64)) AS driver_uid,
     COALESCE(cl.client,  '') AS client,
@@ -45,7 +46,7 @@ LEFT JOIN dbo.clients cl
 LEFT JOIN dbo.client_program_markets cpm
     ON  cpm.client_program_market_uid = ps.client_program_market_uid
 WHERE COALESCE(t.is_deleted, 0) = 0
-  AND CAST(ps.start_time AS DATE) BETWEEN @from AND @to
+  AND ${shiftDayIn({ from: '@from', to: '@to' })}
 `
 
 /**
@@ -131,7 +132,7 @@ export async function GET(req: NextRequest) {
   const toParam = req.nextUrl.searchParams.get('to')
   const window = isDate(fromParam)
     ? plannerRange(fromParam, isDate(toParam) ? toParam : iso(new Date(Date.parse(weekStart(fromParam) + 'T00:00:00Z') + (8 * 7 - 1) * 864e5)))
-    : plannerWindow(iso(new Date()))
+    : plannerWindow(centralDate(new Date()))
 
   try {
     const [trucksRaw, shiftsRaw, holds] = await Promise.all([

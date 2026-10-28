@@ -21,6 +21,7 @@ import { query } from '@/lib/mssql'
 import { HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
 import { prisma } from '@/lib/prisma'
 import { CHAT_CONTEXT_QUERY } from '@/lib/scheduleQuery'
+import { centralDate } from '@/lib/dateOnly'
 import { getMarketCoords } from '@/lib/marketCoordinates'
 import {
   resolveNearestAcceptedMarket,
@@ -273,7 +274,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
   // actually need repositioning — not here on the total request count.
 
   // Check each truck: campaign window free, can arrive, does not strand its next job
-  const today = new Date().toISOString().split('T')[0]
+  const today = centralDate(new Date())
   const availableTrucks: AvailableTruck[] = []
   const infeasible: InfeasibleTruck[] = []
   // Excluded trucks whose other dates are worth searching — only searched when
@@ -574,7 +575,7 @@ export async function checkTruckFeasibility(params: {
     campaignCoords,
     jobs,
     currentCoords,
-    today: new Date().toISOString().split('T')[0],
+    today: centralDate(new Date()),
     serviceAreaMiles,
   })
 

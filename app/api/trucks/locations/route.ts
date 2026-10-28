@@ -6,6 +6,7 @@ import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
+import { centralDate } from '@/lib/dateOnly'
 
 export interface TruckLocation {
   truck_number:      string
@@ -35,7 +36,7 @@ export async function GET() {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const today = new Date().toISOString().split('T')[0]
+  const today = centralDate(new Date())
   const now   = new Date()
 
   const [gpsMap, schedulesRaw, holds] = await Promise.all([

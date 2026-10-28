@@ -84,9 +84,8 @@ export const MARKET_SIZE_TIERS: MarketSizeTier[] = [
  * Rank 1-2 → Tier 1 (mega-DMA), 3-10 → Tier 2 (major-metro),
  * 11-50 → Tier 3 (mid/large), everything else → Tier 4 (small metro).
  *
- * DMA codes are ordered by rank in the accepted markets seed — the rank
- * is implicit in the DMA code list order. This lookup uses the DMA code
- * directly since rank isn't stored in the database.
+ * The two sets below are the whole ranking: every other top-50 DMA
+ * (lib/pricing/topDmas.ts) is tier 3, and a market in none of them tier 4.
  */
 const MEGA_DMA_CODES = new Set(['DMA-501', 'DMA-803'])                          // NY, LA
 const MAJOR_METRO_DMA_CODES = new Set([
@@ -101,7 +100,7 @@ export function marketSizeTierFromDmaCode(dmaCode: string): number {
 }
 
 /**
- * Tier for a market that is NOT one of the accepted top-50 DMAs.
+ * Tier for a market that is NOT in one of the top-50 DMAs.
  *
  * Tier 4 exists for exactly this — "Sub-DMA / small metro" — but nothing ever
  * returned it: unmatched markets fell back to tier 3, which carries DOUBLE the

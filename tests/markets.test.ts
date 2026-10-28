@@ -8,9 +8,10 @@
  *
  * Run with: npm test
  */
-import { eq, section } from './harness'
+import { defer, eq, section } from './harness'
 import { matchMarketKey, titleCaseMarket, normalizeMarketKey } from '@/lib/marketBounds'
-import { matchAcceptedDma } from '@/lib/pricing/resolvers'
+import { matchTopDma, resolveMarketSizeTierId } from '@/lib/pricing/resolvers'
+import { TOP_DMAS } from '@/lib/pricing/topDmas'
 import { validateEmailList } from '@/lib/appSettings'
 import { marketSizeTierFromDmaCode, NON_DMA_MARKET_TIER, MARKET_SIZE_TIERS } from '@/lib/pricing/config'
 
@@ -61,21 +62,15 @@ eq('leading space stripped', normalizeMarketKey(' Boston, MA'), 'boston, ma')
 eq('comma spacing normalized', normalizeMarketKey('Boston,MA'), 'boston, ma')
 eq('inner whitespace collapsed', normalizeMarketKey('  North   Palm Beach ,  FL '), 'north palm beach, fl')
 
-section('accepted-DMA matching (market size tier)')
-const DMAS = [
-  { dma_code: 'DMA-501', dma_name: 'New York, NY' },
-  { dma_code: 'DMA-803', dma_name: 'Los Angeles, CA' },
-  { dma_code: 'DMA-602', dma_name: 'Chicago, IL' },
-  { dma_code: 'DMA-524', dma_name: 'Atlanta, GA' },
-]
-eq('exact city + state', matchAcceptedDma('Chicago, IL', DMAS)?.dma_code, 'DMA-602')
-eq('city without a state still matches', matchAcceptedDma('Chicago', DMAS)?.dma_code, 'DMA-602')
-eq('case and spacing ignored', matchAcceptedDma('  chicago ,il ', DMAS)?.dma_code, 'DMA-602')
+section('top-50 DMA matching (market size tier)')
+eq('exact city + state', matchTopDma('Chicago, IL', TOP_DMAS)?.dma_code, 'DMA-602')
+eq('city without a state still matches', matchTopDma('Chicago', TOP_DMAS)?.dma_code, 'DMA-602')
+eq('case and spacing ignored', matchTopDma('  chicago ,il ', TOP_DMAS)?.dma_code, 'DMA-602')
 // The substring test this replaces matched BOTH directions, so "York, PA"
 // matched the New York DMA — tier 1 instead of tier 4, a 4.5x reach error.
-eq('substring no longer matches a different city', matchAcceptedDma('York, PA', DMAS), undefined)
-eq('wrong state rules out the DMA', matchAcceptedDma('Chicago, IN', DMAS), undefined)
-eq('unknown market does not match', matchAcceptedDma('Allentown, PA', DMAS), undefined)
+eq('substring no longer matches a different city', matchTopDma('York, PA', TOP_DMAS), undefined)
+eq('wrong state rules out the DMA', matchTopDma('Chicago, IN', TOP_DMAS), undefined)
+eq('unknown market does not match', matchTopDma('Allentown, PA', TOP_DMAS), undefined)
 
 section('tier assignment')
 eq('mega DMA', marketSizeTierFromDmaCode('DMA-501'), 1)
@@ -96,3 +91,18 @@ eq('commas only is rejected', validateEmailList(' , , '), 'At least one email ad
 eq('names one bad address', validateEmailList('a@lime-media.com, nope'), 'Not a valid email address: nope')
 eq('rejects a missing domain', validateEmailList('andrew@'), 'Not a valid email address: andrew@')
 eq('rejects whitespace inside an address', validateEmailList('an drew@lime-media.com'), 'Not a valid email address: an drew@lime-media.com')
+
+section('market size tier from the top-50 DMA reference data')
+eq('50 DMAs, codes unique', [TOP_DMAS.length, new Set(TOP_DMAS.map(d => d.dma_code)).size], [50, 50])
+eq('NY and LA are mega-DMAs', ['DMA-501', 'DMA-803'].map(marketSizeTierFromDmaCode), [1, 1])
+// The tier-1 and tier-2 codes live in config.ts: each must be in the list, or that metro silently drops to tier 4.
+eq('every tier 1-2 DMA is in the list', ['DMA-501', 'DMA-803', 'DMA-602', 'DMA-623', 'DMA-504', 'DMA-618', 'DMA-524', 'DMA-511', 'DMA-807', 'DMA-506'].every(c => TOP_DMAS.some(d => d.dma_code === c) && marketSizeTierFromDmaCode(c) <= 2), true)
+eq('the rest of the list is tier 3', TOP_DMAS.filter(d => marketSizeTierFromDmaCode(d.dma_code) === 3).length, 40)
+defer((async () => eq('tier by name, then by location, else small metro', [
+  await resolveMarketSizeTierId('New York, NY', { lat: 40.7128, lng: -74.006 }),
+  // LED's "Dallas, TX" isn't the DMA's name ("Dallas-Fort Worth"): its location places it.
+  await resolveMarketSizeTierId('Dallas, TX', { lat: 32.7767, lng: -96.797 }),
+  await resolveMarketSizeTierId('Plano, TX', { lat: 33.0198, lng: -96.6989 }),
+  await resolveMarketSizeTierId('Ames, IA', { lat: 42.0308, lng: -93.6319 }),
+  await resolveMarketSizeTierId(''),
+], [1, 2, 2, 4, 4]))())

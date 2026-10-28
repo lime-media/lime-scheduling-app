@@ -10,7 +10,7 @@
  * per scheduled day, and Hold rows carry market/state. This module merges them
  * into one ordered timeline per truck.
  *
- * Schedule rows arrive as one row per day (ps.start_time cast to DATE), so
+ * Schedule rows arrive as one row per day (its local date, scheduleQuery shiftDay), so
  * consecutive days of the same program in the same market are merged back into
  * a single job — the same grouping the schedule grid and chat context perform.
  */

@@ -12,6 +12,7 @@
  * not written into the calendar. Recomputing is always current.
  */
 
+import { centralDate } from '@/lib/dateOnly'
 import { resolveCampaignCoords } from '@/lib/pricing/resolvers'
 import { loadFleetTimelines } from '@/lib/fleetTimelines'
 import { checkChainFeasibility } from '@/lib/chainFeasibility'
@@ -59,7 +60,7 @@ export type HoldAuditResult = {
  * Each hold is checked against its truck's other jobs, excluding itself.
  */
 export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
-  const today = new Date().toISOString().split('T')[0]
+  const today = centralDate(new Date())
   const { timelines, gpsMap, holds } = await loadFleetTimelines()
 
   const coordCache = new Map<string, Awaited<ReturnType<typeof resolveCampaignCoords>>>()

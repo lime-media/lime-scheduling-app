@@ -6,6 +6,7 @@ import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { SCHEDULED_QUERY, ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
+import { centralDate } from '@/lib/dateOnly'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 
 // Cache Azure SQL results for 5 min; holds + GPS always fetched fresh.
@@ -72,7 +73,7 @@ export async function GET(request: Request) {
 
     // Schedule market/state per truck: most recent block with shift_start ≤ today.
     // Future schedules are excluded — GPS is more current for grouping purposes.
-    const todayStr = new Date().toISOString().split('T')[0]
+    const todayStr = centralDate(new Date())
     const scheduleInfo: Record<string, { market: string; state: string; shift_start: string }> = {}
     for (const row of schedulesRaw) {
       const num        = String(row.truck_number ?? '')

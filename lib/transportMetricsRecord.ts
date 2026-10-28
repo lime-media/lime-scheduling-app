@@ -226,7 +226,7 @@ const PRESTART_BATCH = 200
  */
 export async function recordPrestart(measurerOf: () => Promise<OriginMeasurer> = sharedOriginMeasurer()): Promise<number> {
   try {
-    const today = day(new Date())
+    const today = centralDate(new Date())  // the app's day, as the chain check uses
     const until = new Date(today + 'T23:59:59Z')
     until.setUTCDate(until.getUTCDate() + 3)
     const window = { status: { in: LIVE_HOLD_STATUSES }, origination: { not: QUOTE_ONLY_ORIGINATION }, start_date: { gt: new Date(today + 'T23:59:59Z'), lte: until } }
@@ -267,7 +267,7 @@ export async function recordPrestart(measurerOf: () => Promise<OriginMeasurer> =
  */
 export async function recordExecuted(measurerOf: () => Promise<OriginMeasurer> = sharedOriginMeasurer()): Promise<number> {
   try {
-    const today = day(new Date())
+    const today = centralDate(new Date())  // the app's day, as the chain check uses
     const from = new Date(today + 'T00:00:00Z')
     from.setUTCDate(from.getUTCDate() - 3)
     // Every candidate in the window (ids only), so the batch below is taken

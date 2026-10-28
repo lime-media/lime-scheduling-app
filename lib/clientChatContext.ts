@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { centralDate } from '@/lib/dateOnly'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import type { ClientSession } from '@/lib/clientAuth'
 
@@ -21,7 +22,8 @@ export interface ClientChatContext {
  * before adding it.
  */
 export async function buildClientChatContext(session: ClientSession): Promise<ClientChatContext> {
-  const today = new Date().toISOString().split('T')[0]
+  // The app's day is Central (REVIEW.md); after 7pm Central, UTC's date is already tomorrow.
+  const today = centralDate(new Date())
 
   // Released holds (status EXPIRED, or expires_at already passed) are not live.
   const myRequests = await prisma.hold.findMany({

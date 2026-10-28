@@ -157,25 +157,6 @@ WHERE COALESCE(t.is_deleted, 0) = 0
 ORDER BY t.truck_number, ps.start_time
 `
 
-export const SCHEDULE_SUMMARY_QUERY = `
-SELECT
-    t.truck_number,
-    COUNT(DISTINCT ps.client_program_uid) AS active_programs,
-    MIN(${shiftDay('ps.start_time')})      AS next_schedule_start,
-    MAX(${shiftDay('ps.start_time')})      AS schedule_end
-FROM dbo.trucks t
-LEFT JOIN (
-    dbo.program_schedule ps
-    LEFT JOIN dbo.client_program_markets cpm
-        ON  cpm.client_program_market_uid = ps.client_program_market_uid
-)
-    ON  t.truck_uid = ps.truck_uid
-    AND ${shiftDayIn({ from: TODAY })}
-WHERE COALESCE(t.is_deleted, 0) = 0
-GROUP BY t.truck_number
-ORDER BY t.truck_number
-`
-
 // ── Query A2: scheduled blocks WITH market geography ─────────────────────────
 // Same rows as SCHEDULED_QUERY, plus the market's centroid when this database
 // carries bounding boxes on standard_market_lookup.

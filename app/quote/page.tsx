@@ -17,6 +17,7 @@ import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
 import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
 import { OpportunityPicker, type OpenOpportunity } from '@/components/OpportunityPicker'
 import { SalesforceFailureModal } from '@/components/SalesforceFailureModal'
+import { centralDate } from '@/lib/dateOnly'
 
 // ---------------------------------------------------------------------------
 // Types (mirrors client-side QuoteResponse)
@@ -71,7 +72,8 @@ const EXCLUSION_LABELS: Record<string, string> = {
 }
 
 function fmtMoney(n: number): string { return '$' + Math.round(n).toLocaleString('en-US') }
-function todayStr(): string { return new Date().toISOString().split('T')[0] }
+/** Today in Central, the day the server validates against (lib/dateOnly.ts). */
+function todayStr(): string { return centralDate(new Date()) }
 
 // ---------------------------------------------------------------------------
 // Main Page

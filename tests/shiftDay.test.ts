@@ -7,7 +7,7 @@
 import { readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { eq, section } from './harness'
-import { CHAT_CONTEXT_QUERY, SCHEDULED_QUERY, SCHEDULE_SUMMARY_QUERY, scheduledWithMarketQuery, shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
+import { CHAT_CONTEXT_QUERY, SCHEDULED_QUERY, scheduledWithMarketQuery, shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
 
 section('shiftDay: UTC to the market\'s local date')
 const sql = shiftDay('ps.start_time')
@@ -28,6 +28,10 @@ eq('a column bound takes its raw range from `near`, a day wider', shiftDayIn({ t
 eq('other aliases', shiftDayIn({ from: 'x' }, 'ps_lk', 'pm_lk').startsWith('ps_lk.start_time >= DATEADD(day, -1, x)'), true)
 
 section('no LED query reads a UTC date any more')
+// A guard against the known regression, not a proof: it matches the one
+// spelling the bug had (CAST(x.start_time AS DATE)), in files that name
+// program_schedule, from the repo root. A CONVERT, other whitespace, or a query
+// assembled elsewhere would slip past.
 // Every file that reads program_schedule: a CAST of a shift time to DATE is the
 // UTC date, and filtering on shiftDay alone can't use the start_time index.
 const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(e =>
@@ -38,6 +42,6 @@ for (const file of [...files('lib'), ...files('app')].filter(f => readFileSync(f
   eq(`${file}: no shiftDay of end_time`, /shiftDay\('\w+\.end_time'/.test(src), false)
   eq(`${file}: no shiftDay filter without its UTC range`, /\$\{shiftDay\('[^}]*\)\}\s*(>=|<=|<|>|BETWEEN)/.test(src), false)
 }
-for (const [name, q] of Object.entries({ SCHEDULED_QUERY, CHAT_CONTEXT_QUERY, SCHEDULE_SUMMARY_QUERY, windowed: scheduledWithMarketQuery(true, true), rolling: scheduledWithMarketQuery(false, false) })) {
+for (const [name, q] of Object.entries({ SCHEDULED_QUERY, CHAT_CONTEXT_QUERY, windowed: scheduledWithMarketQuery(true, true), rolling: scheduledWithMarketQuery(false, false) })) {
   eq(`${name}: no GETDATE()`, q.includes('GETDATE()'), false)
 }

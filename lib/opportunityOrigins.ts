@@ -134,9 +134,10 @@ export function summarizeOrigins(
   }
 }
 
-// SQL Server takes at most 2100 parameters per query; each id is sent in both
-// its 18- and 15-character forms.
-const IN_CHUNK = 1000
+// SQL Server takes at most 2100 parameters per query. Each id is sent in both
+// its 18- and 15-character forms (1,800), leaving room for the queries' other
+// where values.
+const IN_CHUNK = 900
 
 type SoqlOpportunity = {
   Id: string
@@ -207,7 +208,7 @@ export async function opportunityOrigins(from: string, to: string): Promise<Orig
         select: { sfdc_opportunity_id: true, created_at: true },
       }),
       // A revision replaces a booking's holds (new creation times), but its
-      // first BOOKED deal value keeps when it was booked.
+      // BOOKED deal values keep when it was booked.
       prisma.dealValue.findMany({
         where: { sfdc_opportunity_id: { in: slice }, event: 'BOOKED' },
         select: { sfdc_opportunity_id: true, captured_at: true },

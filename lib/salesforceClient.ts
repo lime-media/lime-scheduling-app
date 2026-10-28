@@ -147,6 +147,16 @@ export function fieldRefusedOnWrite(errors: unknown, field: string): boolean {
 }
 
 /**
+ * When a create failed both with and without CREATED_IN_APP_FIELD, whether
+ * the first attempt's error is the one to report. The marked attempt's is,
+ * unless it was the field itself refused. `firstMarked` says which went first. Pure.
+ */
+export function reportFirstFailure(firstMarked: boolean, firstErrors: unknown, secondErrors: unknown): boolean {
+  const markedErrors = firstMarked ? firstErrors : secondErrors
+  return fieldRefusedOnWrite(markedErrors, CREATED_IN_APP_FIELD) !== firstMarked
+}
+
+/**
  * Create a new Opportunity in Salesforce. It is marked made in the app
  * (CREATED_IN_APP_FIELD) when this org has the field; if Salesforce refuses
  * the field, it is created again without it, so the mark can never stop an
@@ -194,13 +204,21 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
   // reply may still have made the opportunity, so it isn't retried.
   if (!data.success && res.status === 400 && Array.isArray(data.errors)) {
     const named = withMark && fieldRefusedOnWrite(data.errors, CREATED_IN_APP_FIELD)
-    const first = data.errors
+    const first = { res, data }
     ;({ res, data } = await post(withMark ? body : marked(body)))
     if (named) {
       createdInAppRefusedAt = Date.now()
-      console.warn(`[sfdc] ${CREATED_IN_APP_FIELD} refused; creating opportunities without it for an hour:`, JSON.stringify(first))
+      console.warn(`[sfdc] ${CREATED_IN_APP_FIELD} refused; creating opportunities without it for an hour:`, JSON.stringify(first.data.errors))
     } else if (!withMark && data.success) {
       createdInAppRefusedAt = 0
+    }
+    // Both failed: report the marked attempt's error, unless it was the field
+    // itself refused. The unmarked one may have failed only for lacking the
+    // mark (a rule requiring it), which would tell a rep booking in the app
+    // to make the opportunity in the app.
+    if (!data.success) {
+      console.warn('[sfdc] Opportunity creation refused both with and without the mark; first attempt:', JSON.stringify(first.data.errors))
+      if (reportFirstFailure(withMark, first.data.errors, data.errors)) ({ res, data } = first)
     }
   }
   if (!data.success) {
@@ -305,7 +323,11 @@ export async function sfdcQuery<T = Record<string, unknown>>(soql: string): Prom
 export async function sfdcQueryAll<T = Record<string, unknown>>(soql: string, maxRows = 20_000): Promise<{ rows: T[]; truncated: boolean }> {
   const rows: T[] = []
   let path: string | null = `/query?q=${encodeURIComponent(soql)}`
-  while (path) {
+  // Salesforce pages hold at least 200 rows, so more pages than this means a
+  // reply that isn't advancing; stop rather than loop.
+  const maxPages = Math.ceil(maxRows / 200) + 1
+  for (let page = 0; path; page++) {
+    if (page >= maxPages) return { rows, truncated: true }
     const res = await sfdcFetch(path)
     const data = await res.json().catch(() => null)
     if (!res.ok) {

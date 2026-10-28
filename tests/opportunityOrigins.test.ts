@@ -6,7 +6,7 @@
  */
 import { eq, section } from './harness'
 import { centralWeekStart, opportunityOrigin, summarizeOrigins, type OriginOpportunity } from '@/lib/opportunityOrigins'
-import { fieldRefusedOnWrite } from '@/lib/salesforceClient'
+import { fieldRefusedOnWrite, reportFirstFailure } from '@/lib/salesforceClient'
 
 const opp = (id: string, createdAt: string, over: Partial<OriginOpportunity> = {}): OriginOpportunity =>
   ({ id, createdAt, createdBy: 'Rep A', owner: 'Rep A', stage: 'WARM', ...over })
@@ -62,3 +62,14 @@ eq('not writable by this user', fieldRefusedOnWrite([{ errorCode: 'INVALID_FIELD
 eq('another field refused', fieldRefusedOnWrite([{ errorCode: 'INVALID_FIELD', message: "No such column 'Brand_Job_Name__c'" }], F), false)
 eq('a different error naming nothing', fieldRefusedOnWrite([{ errorCode: 'REQUIRED_FIELD_MISSING', message: 'Required fields are missing: [CloseDate]' }], F), false)
 eq('no errors', fieldRefusedOnWrite(undefined, F), false)
+
+section('reportFirstFailure: which error the rep sees when both creates fail')
+{
+  const missing = [{ errorCode: 'REQUIRED_FIELD_MISSING', message: 'Required fields are missing: [CloseDate]' }]
+  const ban = [{ errorCode: 'FIELD_CUSTOM_VALIDATION_EXCEPTION', message: 'LED opportunities must be made in the scheduling app.' }]
+  const refused = [{ errorCode: 'INVALID_FIELD', message: "No such column 'Created_In_App__c' on sobject of type Opportunity" }]
+  eq('marked first, unrelated failure: the first (not the ban the unmarked retry hits)', reportFirstFailure(true, missing, ban), true)
+  eq('marked first, field refused: the unmarked retry\'s', reportFirstFailure(true, refused, missing), false)
+  eq('unmarked first (mark skipped), marked retry fails otherwise: the marked retry\'s', reportFirstFailure(false, ban, missing), false)
+  eq('unmarked first, marked retry refuses the field: the first', reportFirstFailure(false, missing, refused), true)
+}

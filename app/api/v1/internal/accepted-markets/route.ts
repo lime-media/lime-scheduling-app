@@ -21,17 +21,15 @@ export async function GET(request: Request) {
   const authError = validateInternalApiKey(request)
   if (authError) return authError
 
-  const defaults = await resolveDefaultRateOverrides().catch((err) => {
-    console.error('[v1/internal/accepted-markets] default rate card unavailable, using the configured radius:', err)
-    return null
-  })
+  // Never throws: no default rate card, or a failed read, gives the configured radius.
+  const defaults = await resolveDefaultRateOverrides()
   const radius = defaults?.service_area_miles ?? SERVICE_AREA_RADIUS_MILES
 
   return NextResponse.json({
     service_area: 'contiguous_48_states',
     description: 'Lime serves campaigns in any city, town or ZIP in the contiguous 48 US states (not Alaska or Hawaii). There is no list of markets to pick from.',
     service_area_radius_miles: radius,
-    transport: `By default, trucks within ${radius} miles of the market need no transport; from further away, transport is shown on the quote. A client's rate agreement can set its own radius or include transport, so the quote is the answer for a given market.`,
+    transport: `By default, trucks within ${radius} miles of the market need no transport; from further away, transport is shown on the quote, billed or, for a campaign of 10+ activation days booked 10+ business days ahead, absorbed by Lime. A client's rate agreement can set its own radius or include transport, so the quote is the answer for a given market.`,
     how_to_check_a_market: 'Quote it: get_rate_quote places the market, applies your rate agreement, and says if it cannot serve it.',
   })
 }

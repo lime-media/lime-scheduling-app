@@ -95,7 +95,7 @@ export function LedClientLink({ accountId, linked, onSaved }: {
               ) : (
                 <>
                   {linkDeleted && (
-                    <p className="text-xs text-amber-700">The LED client this account was linked to is no longer in LED&apos;s client list (deleted, or its name was cleared). Pick its client again.</p>
+                    <p className="text-xs text-amber-700">The LED client this account was linked to is no longer in LED&apos;s client list (deleted, or its name was cleared). Pick the right client, or check it in LED first.</p>
                   )}
                   <select value={picked} onChange={e => setPicked(e.target.value)} className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm">
                     <option value="">Choose an LED client…</option>
@@ -103,7 +103,7 @@ export function LedClientLink({ accountId, linked, onSaved }: {
                       <option key={c.client_uid} value={c.client_uid}>{label(c)}{c.client_uid === suggested ? ' (suggested)' : ''}</option>
                     ))}
                   </select>
-                  {suggested && picked === suggested && !linked && (
+                  {suggested && picked === suggested && (!linked || linkDeleted) && (
                     <p className="text-xs text-gray-500">Suggested from the names. Check it&apos;s the right client before saving.</p>
                   )}
                 </>

@@ -4,7 +4,9 @@
 //  dbo.program_schedule        program_schedule_id, truck_uid, client_program_uid,
 //                                client_program_market_uid, start_time, end_time
 //  dbo.client_programs         client_program_id, client_program_uid, client_uid, program,
-//                                description, program_color, start_date, end_date, is_deleted
+//                                description, program_color, start_date, end_date, is_deleted,
+//                                updated_at (UTC; CampaignIQ Core stamps it on every save, the
+//                                archive included: liveProgram depends on it)
 //  dbo.client_program_markets  client_program_market_id, client_program_market_uid,
 //                                client_program_uid, market, state, standard_market_uid,
 //                                standard_market_name, market_timezone

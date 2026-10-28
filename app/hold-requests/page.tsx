@@ -48,6 +48,10 @@ type HoldRequest = {
   led_scheduled: boolean
   led_days: number
   led_days_sold: number | null
+  /** The sweep moved this won hold onto the truck LED runs its job on, this week (lib/ledTruckFollow.ts). */
+  led_followed: { from: string; to: string; at: string } | null
+  /** Salesforce's LED Trucks has refused the moved truck for over an hour (still retried every sweep). */
+  led_trucks_unsynced_since: string | null
   expires_at: string | null
   extension_reason: string | null
   extension_until: string | null
@@ -173,6 +177,32 @@ function LedBadge({ progress, inLed, unavailable }: { progress: { days: number; 
     )
   }
   return <span className="text-xs text-gray-500" title="No LED program with this deal's job number on these trucks yet">Not in LED yet</span>
+}
+
+/**
+ * A won booking whose truck the sweep moved to match LED this week, and any
+ * whose new truck Salesforce's LED Trucks still refuses (lib/ledTruckFollow.ts).
+ */
+function LedFollowBadge({ rows }: { rows: HoldRequest[] }) {
+  const moved = rows.filter(r => r.led_followed)
+  const unsynced = rows.some(r => r.led_trucks_unsynced_since)
+  if (!moved.length && !unsynced) return null
+  return (
+    <>
+      {moved.length > 0 && (
+        <span className="text-xs text-blue-700 font-medium"
+          title="LED scheduled this job on another truck, so the reservation moved to it (the trucks are kept in step with LED). Salesforce's LED Trucks is updated to match.">
+          Truck moved to match LED: {moved.map(r => `${r.led_followed!.from} → ${r.led_followed!.to} (${format(new Date(r.led_followed!.at), 'MMM d')})`).join(', ')}
+        </span>
+      )}
+      {unsynced && (
+        <span className="text-xs text-red-700 font-medium"
+          title="The reservation moved to LED's truck, but Salesforce keeps refusing the new LED Trucks (a validation rule, or the opportunity is gone). It's retried every 15 minutes; fix the opportunity in Salesforce so it can go through.">
+          LED Trucks not updated in Salesforce
+        </span>
+      )}
+    </>
+  )
 }
 
 function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; status: string }) {
@@ -852,6 +882,7 @@ export default function HoldRequestsPage() {
                       {/* The earliest expiry in the booking is the one to act on. */}
                       <ExpirationBadge expiresAt={expiry} status={status} />
                       <LedBadge progress={ledProgress(groupItems)} inLed={bookingInLed(groupItems)} unavailable={ledUnavailable} />
+                      <LedFollowBadge rows={groupItems} />
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.HOLD}`}>
                         {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[status] ?? status)}
                       </span>

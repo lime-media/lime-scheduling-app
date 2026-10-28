@@ -59,16 +59,35 @@ const MULTI_MARKET = /^\s*multi-market\s*:/i
 const cityOf = (m: string) => m.split(',')[0].trim().toLowerCase().replace(/\s+/g, ' ')
 
 /**
+ * The cities a Salesforce multi-market label names, each with its state when
+ * the label gives one ("Multi-market: Detroit, Los Angeles, CA": Detroit, and
+ * Los Angeles in CA). A two-letter state code belongs to the city before it.
+ * Pure; exported for tests.
+ */
+export function labelCities(label: string): { city: string; state: string | null }[] {
+  const out: { city: string; state: string | null }[] = []
+  for (const part of label.replace(MULTI_MARKET, '').split(',').map(cityOf).filter(Boolean)) {
+    const code = part.length === 2 ? stateCode(part) : null
+    if (code && out.length && !out[out.length - 1].state) out[out.length - 1].state = code
+    else if (!code) out.push({ city: part, state: null })
+  }
+  return out
+}
+
+/**
  * Whether LED's row is in the hold's market. A multi-market label names its
  * cities, so LED's city (its own or its standard market's) must be one of
- * them; any other hold is compared as one market (ledMarketMatches). Only a
- * two-letter token is dropped as a state: "New York" and "Washington" are
- * cities in a label, though stateCode reads them as states.
+ * them, in the state the label gives with it, if any; any other hold is
+ * compared as one market (ledMarketMatches). Only a two-letter token is read
+ * as a state: "New York" and "Washington" are cities in a label, though
+ * stateCode reads them as states.
  */
 function inHoldMarket(h: FollowHold, r: FollowRow): boolean {
   if (MULTI_MARKET.test(h.market)) {
-    const named = h.market.replace(MULTI_MARKET, '').split(',').map(cityOf).filter(c => c && !(c.length === 2 && stateCode(c)))
-    return [cityOf(r.market), cityOf(r.standard_market_name ?? '')].some(c => !!c && named.includes(c))
+    // A city the label names, in the state it names with it (when it does).
+    const rowState = stateCode(r.state ?? '')
+    return labelCities(h.market).some(n =>
+      [cityOf(r.market), cityOf(r.standard_market_name ?? '')].includes(n.city) && (!n.state || n.state === rowState))
   }
   return ledMarketMatches({ market: h.market, state: h.state ?? '' }, { market: r.market, state: r.state ?? '', standard_market_name: r.standard_market_name })
 }
@@ -210,23 +229,27 @@ export async function followLedTrucks(
   return { moved, opportunities: [...opportunities] }
 }
 
-/** How long a refused LED Trucks sync is retried before it's left to staff (logged as an error). */
-const FOLLOW_SYNC_RETRY_DAYS = 7
+/**
+ * How long a refused LED Trucks sync waits before Reservations flags the
+ * booking (app/hold-requests): a few sweeps' grace for a passing error.
+ */
+export const FOLLOW_SYNC_OVERDUE_MS = 3600_000
 
 /**
  * Syncs LED Trucks to Salesforce for the opportunities of holds moved this
  * sweep, and of committed holds moved earlier whose sync hasn't succeeded yet
  * (led_follow_sync_pending), and clears the mark once Salesforce has taken
- * it. A failure stays marked and is retried next sweep, for up to
- * FOLLOW_SYNC_RETRY_DAYS: an opportunity Salesforce refuses for good (deleted,
- * a validation rule) is then logged as an error and left. A hold no longer
- * committed isn't retried here: every release path syncs on its own.
+ * it. A failure stays marked and is retried every sweep for as long as the
+ * hold is committed: one Salesforce refuses for good (deleted, a validation
+ * rule) is never dropped silently. Past FOLLOW_SYNC_OVERDUE_MS, Reservations
+ * shows it on the booking's card, so staff fix it in Salesforce. A hold no
+ * longer committed isn't retried here: every release path syncs on its own.
  * Clearing only touches the marks read just before the sync ran, unchanged,
  * so a move made meanwhile stays marked. Returns the opportunities still waiting. Never throws.
  */
 export async function syncFollowedOpportunities(justMoved: string[]): Promise<string[]> {
   const now = new Date()
-  const cutoff = new Date(now.getTime() - FOLLOW_SYNC_RETRY_DAYS * 864e5)
+  const overdueBefore = new Date(now.getTime() - FOLLOW_SYNC_OVERDUE_MS)
   const marked = await prisma.hold.findMany({
     where:  { led_follow_sync_pending: { not: null }, status: 'COMMITTED', sfdc_opportunity_id: { not: null } },
     select: { id: true, sfdc_opportunity_id: true, led_follow_sync_pending: true },
@@ -238,15 +261,9 @@ export async function syncFollowedOpportunities(justMoved: string[]): Promise<st
   // and a mark left behind would be taken for a refused sync if it's won again.
   await prisma.hold.updateMany({ where: { led_follow_sync_pending: { not: null }, status: { not: 'COMMITTED' } }, data: { led_follow_sync_pending: null } })
     .catch((err) => console.error('[led-follow] clearing sync marks on holds no longer committed failed:', err))
-  const stale = marked.filter(h => h.led_follow_sync_pending && h.led_follow_sync_pending < cutoff)
-  const retry = marked.filter(h => !stale.includes(h)).map(h => h.sfdc_opportunity_id).filter((id): id is string => !!id)
-  if (stale.length) {
-    // An opportunity another of its holds still retries isn't given up on.
-    const givenUp = [...new Set(stale.map(h => h.sfdc_opportunity_id))].filter(id => id && !retry.includes(id) && !justMoved.includes(id))
-    if (givenUp.length) console.error(`[led-follow] LED Trucks never reached Salesforce after ${FOLLOW_SYNC_RETRY_DAYS} days; set it by hand on: ${givenUp.join(', ')}`)
-    await prisma.hold.updateMany({ where: { id: { in: stale.map(h => h.id) } }, data: { led_follow_sync_pending: null } })
-      .catch((err) => console.error('[led-follow] clearing expired sync marks failed:', err))
-  }
+  const retry = marked.map(h => h.sfdc_opportunity_id).filter((id): id is string => !!id)
+  const overdue = [...new Set(marked.filter(h => h.led_follow_sync_pending! < overdueBefore).map(h => h.sfdc_opportunity_id))]
+  if (overdue.length) console.error(`[led-follow] LED Trucks still not in Salesforce after an hour (shown on Reservations): ${overdue.join(', ')}`)
   const pending: string[] = []
   for (const opp of new Set([...justMoved, ...retry])) {
     // The marks this sync covers: read before it runs, and cleared only if

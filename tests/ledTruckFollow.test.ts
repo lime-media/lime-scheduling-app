@@ -5,7 +5,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { ledTruckMoves, type FollowHold, type FollowRow } from '@/lib/ledTruckFollow'
+import { labelCities, ledTruckMoves, type FollowHold, type FollowRow } from '@/lib/ledTruckFollow'
 
 const JOB = '26-0500-300'
 const TODAY = '2026-10-27'
@@ -67,6 +67,11 @@ eq('by LED\'s standard market name', moves([multi()], led('1261', DAYS, { market
 eq('a label with states after each city', moves([multi({ market: 'Multi-market: Los Angeles, CA, Detroit, MI' })], led('1261', DAYS, DET)), [['h1', '6907', '1261']])
 eq('a city that is also a state name ("New York")',
   moves([multi({ market: 'Multi-market: New York, Detroit' })], led('1261', DAYS, { market: 'New York', state: 'NY', standard_market_name: 'New York, NY' })), [['h1', '6907', '1261']])
+// Sarah's review: a label's state counts, so Detroit, TX isn't Detroit, MI.
+eq('a city in another state than the label gives: stays',
+  moves([multi({ market: 'Multi-market: Detroit, MI, Los Angeles, CA' })], led('1261', DAYS, { market: 'Detroit', state: 'TX', standard_market_name: 'Detroit, TX' })), [])
+eq('a city the label names without a state: any state', moves([multi({ market: 'Multi-market: Detroit, Los Angeles, CA' })], led('1261', DAYS, DET)), [['h1', '6907', '1261']])
+eq('labelCities: a state belongs to the city before it', labelCities('Multi-market: Detroit, Los Angeles, CA'), [{ city: 'detroit', state: null }, { city: 'los angeles', state: 'CA' }])
 eq('Washington, DC in a label', moves([multi({ market: 'Multi-market: Washington, DC, Detroit, MI' })], led('1261', DAYS, { market: 'Washington', state: 'DC', standard_market_name: 'Washington, DC' })), [['h1', '6907', '1261']])
 
 section('only once LED runs it for every day sold')

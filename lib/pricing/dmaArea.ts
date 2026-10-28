@@ -7,7 +7,7 @@
  * nearest active top-50 DMA whose centre is within DMA_RADIUS_MILES.
  *
  * Nielsen's DMA boundaries are proprietary, so this is a radius around each
- * DMA's centre (app_accepted_markets.lat/lng): it catches the suburban ring
+ * DMA's centre (lib/pricing/topDmas.ts): it catches the suburban ring
  * of every top-50 metro and leaves separate towns — Ames, an hour from Des
  * Moines, which is not a top-50 DMA anyway — on the small-metro tier.
  */

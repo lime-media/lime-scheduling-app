@@ -19,15 +19,12 @@
 
 import { query } from '@/lib/mssql'
 import { HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
-import { prisma } from '@/lib/prisma'
 import { CHAT_CONTEXT_QUERY } from '@/lib/scheduleQuery'
 import { centralDate } from '@/lib/dateOnly'
 import { getMarketCoords } from '@/lib/marketCoordinates'
 import {
-  resolveNearestAcceptedMarket,
   resolveCampaignCoords,
   businessDaysBetween,
-  type NearestMarketResult,
 } from '@/lib/pricing/resolvers'
 import { TRANSPORT_CONFIG } from '@/lib/pricing/config'
 import {
@@ -129,8 +126,6 @@ export type AvailabilityResult = {
   }
   /** Whether enough trucks are available to fill the request */
   sufficient: boolean
-  /** Nearest accepted market to the campaign location */
-  nearestAcceptedMarket: NearestMarketResult | null
   /**
    * False when the campaign market could not be placed on a map at all — the
    * only genuine "we cannot serve this" case besides having no reachable truck.
@@ -218,39 +213,15 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
 
   // Fetch all data sources in parallel. Timelines come from the shared loader —
   // this module does not build its own, or the duplication starts again.
-  const [fleet, contextRows, resolvedNearestMarket] = await Promise.all([
+  const [fleet, contextRows] = await Promise.all([
     loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS, excludeHoldId, ownProgramOf }),
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
-    campaignCoords
-      ? resolveNearestAcceptedMarket(campaignCoords.lat, campaignCoords.lng)
-      : Promise.resolve(null),
   ])
   const { timelines, gpsMap } = fleet
-
-  // Fallback for unknown markets — conservative 1000mi distance.
-  // Also use the nearest accepted market's coords as a proxy for the campaign
-  // location when exact coords aren't available, so truck distances can still
-  // be computed (relative to the nearest DMA — a reasonable approximation).
-  let nearestAcceptedMarket = resolvedNearestMarket
+  // An unknown market is never placed near some other city: with no
+  // coordinates, no truck has a distance to it, so none is offered and the
+  // quote says the market couldn't be located (marketResolved).
   const effectiveCampaignCoords = campaignCoords
-  if (!nearestAcceptedMarket) {
-    const fallbackMarket = await prisma.acceptedMarket.findFirst({ where: { is_active: true } })
-    if (fallbackMarket) {
-      nearestAcceptedMarket = {
-        dma_name: fallbackMarket.dma_name,
-        dma_code: fallbackMarket.dma_code,
-        distanceMiles: 1000,
-        baseConcurrency: fallbackMarket.base_concurrency,
-        lat: fallbackMarket.lat,
-        lng: fallbackMarket.lng,
-      }
-      // NOTE: we intentionally do NOT set effectiveCampaignCoords here.
-      // Using a random DMA's coords as a proxy for an unknown city (e.g. Fairbanks)
-      // would produce misleading truck distances. Instead, trucks will be skipped
-      // (no location relative to campaign) and the quote will show the market as
-      // unresolvable, requiring a manual quote for transport.
-    }
-  }
 
   // Get all known truck numbers
   const allTruckNumbers = new Set<string>()
@@ -448,7 +419,6 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     counts,
     sufficient: free.length >= truckCount,
     dateOptions: free.length >= truckCount ? {} : dateOptions({ freeNow: free.length, needed: truckCount, alternatives: infeasible }),
-    nearestAcceptedMarket,
     marketResolved: campaignCoords !== null,
     campaignFlags: { shortFlight, rush, leadBusinessDays },
   }

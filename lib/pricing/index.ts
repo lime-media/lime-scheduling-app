@@ -31,5 +31,5 @@ export { billedDaysPerWeek, countActivationDays, countCalendarDays, defaultDaysP
 export { RATE_CARD, TRANSPORT_CONFIG, MIN_CLIENT_LEAD_DAYS, SERVICE_AREA_RADIUS_MILES, MARKET_SIZE_TIERS, VALID_STUDIES, SHADOW_FENCING_CPM, STUDY_PRICE, STUDY_MIN_IMPRESSIONS, marketSizeTierFromDmaCode } from './config'
 export type { RateOverrides, StudyType, MarketSizeTier } from './config'
 
-export { resolveMarketSizeTierId, resolveRateOverrides, resolveNearestAcceptedMarket, resolveCampaignCoords, businessDaysBetween } from './resolvers'
-export type { NearestMarketResult, CampaignCoords } from './resolvers'
+export { resolveMarketSizeTierId, resolveRateOverrides, resolveCampaignCoords, businessDaysBetween } from './resolvers'
+export type { CampaignCoords } from './resolvers'

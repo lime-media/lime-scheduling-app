@@ -1,15 +1,16 @@
 /**
- * Shared resolver functions for market tier, rate agreements, and nearest
- * accepted market lookups. Extracted from app/api/client/chat/route.ts so
+ * Shared resolver functions for market tier, rate agreements and campaign
+ * coordinates. Extracted from app/api/client/chat/route.ts so
  * they can be reused by the direct quote API and availability engine.
  */
 
 import { prisma } from '@/lib/prisma'
-import { haversineDistance, getMarketCoords, resolveMarketInput, type MarketMatch } from '@/lib/marketCoordinates'
+import { getMarketCoords, resolveMarketInput, type MarketMatch } from '@/lib/marketCoordinates'
 import { marketSizeTierFromDmaCode, NON_DMA_MARKET_TIER, type RateOverrides } from './config'
 import { loadStandardMarketCoords, normalizeMarketKey, titleCaseMarket } from '@/lib/marketBounds'
 import { findPlaces, placeCoords, withStateComma } from '@/lib/geo/places'
 import { dmaForPoint } from '@/lib/pricing/dmaArea'
+import { TOP_DMAS } from '@/lib/pricing/topDmas'
 import type { ClientSession } from '@/lib/clientAuth'
 import { liveClientLinks } from '@/lib/clientLinks'
 
@@ -25,27 +26,18 @@ import { liveClientLinks } from '@/lib/clientLinks'
  */
 export async function resolveMarketSizeTierId(market: string, knownCoords?: { lat: number; lng: number } | null): Promise<number> {
   if (!market) return NON_DMA_MARKET_TIER
-  try {
-    const acceptedMarkets = await prisma.acceptedMarket.findMany({
-      where: { is_active: true },
-      select: { dma_code: true, dma_name: true, lat: true, lng: true },
-    })
-    // A top-50 DMA city by name, then by location: a suburb in a top-50 DMA's
-    // ring takes that DMA's tier (lib/pricing/dmaArea.ts).
-    const named = matchAcceptedDma(market, acceptedMarkets)
-    if (named) return marketSizeTierFromDmaCode(named.dma_code)
-    // Callers that already located the market pass its coordinates.
-    const coords = knownCoords ?? await resolveCampaignCoords(market)
-    const around = coords ? dmaForPoint(coords, acceptedMarkets) : null
-    return around ? marketSizeTierFromDmaCode(around.dma_code) : NON_DMA_MARKET_TIER
-  } catch (err) {
-    console.error('[resolvers] market size tier lookup failed, using the small-metro tier:', err)
-    return NON_DMA_MARKET_TIER
-  }
+  // A top-50 DMA city by name, then by location: a suburb in a top-50 DMA's
+  // ring takes that DMA's tier (lib/pricing/dmaArea.ts).
+  const named = matchTopDma(market, TOP_DMAS)
+  if (named) return marketSizeTierFromDmaCode(named.dma_code)
+  // Callers that already located the market pass its coordinates.
+  const coords = knownCoords ?? await resolveCampaignCoords(market)
+  const around = coords ? dmaForPoint(coords, [...TOP_DMAS]) : null
+  return around ? marketSizeTierFromDmaCode(around.dma_code) : NON_DMA_MARKET_TIER
 }
 
 /**
- * Match a market against the accepted top-50 DMAs.
+ * Match a market against the top-50 DMAs (lib/pricing/topDmas.ts).
  *
  * Deliberately stricter than the old substring test, which matched in BOTH
  * directions (`market.includes(dmaCity) || dmaCity.includes(reqCity)`). That
@@ -53,16 +45,16 @@ export async function resolveMarketSizeTierId(market: string, knownCoords?: { la
  * a 4.5x impressions error from a substring. Now: same city, and same state
  * when both state it.
  */
-export function matchAcceptedDma<T extends { dma_code: string; dma_name: string }>(
+export function matchTopDma<T extends { dma_code: string; dma_name: string }>(
   market: string,
-  acceptedMarkets: T[],
+  dmas: readonly T[],
 ): T | undefined {
   const key = normalizeMarketKey(market)
   const city = key.split(',')[0].trim()
   const state = key.split(',')[1]?.trim()
   if (!city) return undefined
 
-  return acceptedMarkets.find((am) => {
+  return dmas.find((am) => {
     const dmaKey = normalizeMarketKey(am.dma_name)
     const dmaCity = dmaKey.split(',')[0].trim()
     const dmaState = dmaKey.split(',')[1]?.trim()
@@ -179,7 +171,7 @@ export async function resolveRateOverridesBySfdcAccount(sfdcAccountId: string): 
 // Campaign coordinate resolution
 // ---------------------------------------------------------------------------
 
-export type CampaignCoords = { lat: number; lng: number; source: 'coords_map' | 'standard_market' | 'us_place' | 'accepted_market' }
+export type CampaignCoords = { lat: number; lng: number; source: 'coords_map' | 'standard_market' | 'us_place' | 'top_dma' }
 
 /**
  * Resolve a campaign market string to lat/lng coordinates.
@@ -189,7 +181,8 @@ export type CampaignCoords = { lat: number; lng: number; source: 'coords_map' | 
  * 2. standard_market_lookup (356 markets) — the list the team maintains, and
  *    the only one that covers what they can actually schedule. The hardcoded
  *    map covers 61% of it.
- * 3. AcceptedMarket table (50 DMAs) — fuzzy city-name match
+ * 3. Any US city, town or ZIP (lib/geo/places.ts)
+ * 4. A top-50 DMA's own name (lib/pricing/topDmas.ts)
  *
  * Returns null only if no source recognizes the market.
  */
@@ -224,79 +217,12 @@ export async function resolveCampaignCoords(market: string): Promise<CampaignCoo
   const place = placeCoords(market)
   if (place) return { lat: place.lat, lng: place.lng, source: 'us_place' }
 
-  // Fall back to accepted markets table (fuzzy city match)
-  try {
-    const acceptedMarkets = await prisma.acceptedMarket.findMany({
-      where: { is_active: true },
-      select: { dma_name: true, lat: true, lng: true },
-    })
-    const marketLower = market.toLowerCase()
-    const reqCity = marketLower.split(',')[0].trim()
-
-    const matched = acceptedMarkets.find((am) => {
-      const dmaCity = am.dma_name.split(',')[0].trim().toLowerCase()
-      return dmaCity === reqCity || marketLower.includes(dmaCity) || dmaCity.includes(reqCity)
-    })
-
-    if (matched) return { lat: matched.lat, lng: matched.lng, source: 'accepted_market' }
-  } catch (err) {
-    console.error('[resolvers] accepted market coord fallback failed:', err)
-  }
+  // Last, a top-50 DMA's own name ("Dallas-Fort Worth, TX"), matched strictly.
+  const dma = matchTopDma(market, TOP_DMAS)
+  if (dma) return { lat: dma.lat, lng: dma.lng, source: 'top_dma' }
 
   console.warn('[resolvers] could not resolve coordinates for market:', market)
   return null
-}
-
-// ---------------------------------------------------------------------------
-// Nearest accepted market
-// ---------------------------------------------------------------------------
-
-export type NearestMarketResult = {
-  dma_name: string
-  dma_code: string
-  distanceMiles: number
-  baseConcurrency: number
-  lat: number
-  lng: number
-}
-
-/**
- * Find the nearest active AcceptedMarket to a given lat/lng.
- * Uses haversine distance, matching the internal quote route's logic.
- */
-export async function resolveNearestAcceptedMarket(
-  campaignLat: number,
-  campaignLng: number,
-): Promise<NearestMarketResult | null> {
-  try {
-    const acceptedMarkets = await prisma.acceptedMarket.findMany({
-      where: { is_active: true },
-    })
-    if (acceptedMarkets.length === 0) return null
-
-    let nearest = acceptedMarkets[0]
-    let nearestDist = Infinity
-
-    for (const market of acceptedMarkets) {
-      const dist = haversineDistance(campaignLat, campaignLng, market.lat, market.lng)
-      if (dist < nearestDist) {
-        nearestDist = dist
-        nearest = market
-      }
-    }
-
-    return {
-      dma_name: nearest.dma_name,
-      dma_code: nearest.dma_code,
-      distanceMiles: Math.round(nearestDist * 10) / 10,
-      baseConcurrency: nearest.base_concurrency,
-      lat: nearest.lat,
-      lng: nearest.lng,
-    }
-  } catch (err) {
-    console.error('[resolvers] nearest accepted market lookup failed:', err)
-    return null
-  }
 }
 
 // ---------------------------------------------------------------------------

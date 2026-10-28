@@ -7,7 +7,7 @@
 import { readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { eq, section } from './harness'
-import { CHAT_CONTEXT_QUERY, SCHEDULED_QUERY, scheduledWithMarketQuery, shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
+import { CHAT_CONTEXT_QUERY, SCHEDULED_QUERY, liveProgram, scheduledWithMarketQuery, shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
 
 section('shiftDay: UTC to the market\'s local date')
 const sql = shiftDay('ps.start_time')
@@ -44,4 +44,21 @@ for (const file of [...files('lib'), ...files('app')].filter(f => readFileSync(f
 }
 for (const [name, q] of Object.entries({ SCHEDULED_QUERY, CHAT_CONTEXT_QUERY, windowed: scheduledWithMarketQuery(true, true), rolling: scheduledWithMarketQuery(false, false) })) {
   eq(`${name}: no GETDATE()`, q.includes('GETDATE()'), false)
+}
+
+section('an archived LED program books no truck')
+// LED's archive leaves a program's shifts in place, so every query that reads
+// program_schedule to decide whether a truck is taken keeps only live programs
+// (liveProgram). The exceptions read where a truck last worked: a location,
+// true whether or not its program was later archived.
+const LOCATION_ONLY = new Map([['lib/scheduleQuery.ts', 1], ['lib/attSoftHolds.ts', 1]])
+for (const file of [...files('lib'), ...files('app')]) {
+  const src = readFileSync(file, 'utf8')
+  const reads = (src.match(/(FROM|JOIN)\s+dbo\.program_schedule\b/g) ?? []).length - (LOCATION_ONLY.get(file) ?? 0)
+  if (reads <= 0) continue
+  eq(`${file}: each program_schedule read keeps live programs only`, (src.match(/\$\{liveProgram\(/g) ?? []).length >= reads, true)
+}
+eq('liveProgram keeps a shift with no program row', liveProgram('p'), 'COALESCE(p.is_deleted, 0) = 0')
+for (const [name, q] of Object.entries({ SCHEDULED_QUERY, CHAT_CONTEXT_QUERY, windowed: scheduledWithMarketQuery(true, true), rolling: scheduledWithMarketQuery(false, false) })) {
+  eq(`${name}: leaves out archived programs`, /COALESCE\(\w+\.is_deleted, 0\) = 0/.test(q.replace(/COALESCE\(t\.is_deleted, 0\) = 0/g, '')), true)
 }

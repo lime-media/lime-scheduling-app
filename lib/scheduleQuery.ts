@@ -26,6 +26,15 @@ const SQL_ZONE = (market: string) => `CASE ${market}.market_timezone
         WHEN 'America/Denver'      THEN 'Mountain Standard Time'
         ELSE 'Central Standard Time' END`
 
+/**
+ * SQL that keeps only shifts of live LED programs: an archived program
+ * (is_deleted = 1, LED's archive) books no truck, whatever shifts it still has.
+ * LED's archive leaves its program_schedule rows in place, so every query that
+ * decides whether a truck is taken applies this. `program` is the alias of a
+ * joined dbo.client_programs; a shift with no program row (LEFT JOIN) is kept.
+ */
+export const liveProgram = (program = 'cp') => `COALESCE(${program}.is_deleted, 0) = 0`
+
 /** SQL for today's date in Central time, the app's day (REVIEW.md); GETDATE() is UTC on Azure. */
 const TODAY = `CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Central Standard Time' AS DATE)`
 
@@ -68,9 +77,8 @@ SELECT
     COALESCE(cp.job_number, '') AS job_number,
     ${shiftDay('ps.start_time')} AS shift_start,
     ${shiftDay('ps.start_time')} AS shift_end,  -- use start date; end_time bleeds into next day for overnight shifts
-    -- Flags, not filters: a deleted program or archived truck is never a
-    -- truck for a won hold to follow (lib/ledTruckFollow.ts).
-    CAST(COALESCE(cp.is_deleted, 0) AS INT) AS program_deleted,
+    -- A flag, not a filter: an archived truck is never a truck for a won hold
+    -- to follow (lib/ledTruckFollow.ts). Archived programs are left out below.
     CAST(COALESCE(t.is_deleted,  0) AS INT) AS truck_deleted
 FROM dbo.program_schedule ps
 JOIN dbo.trucks t
@@ -82,6 +90,7 @@ LEFT JOIN dbo.client_programs cp
 LEFT JOIN dbo.clients cl
     ON  cl.client_uid = cp.client_uid
 WHERE ${shiftDayIn({ from: `DATEADD(day, -${SCHEDULED_WINDOW.pastDays}, ${TODAY})`, to: `DATEADD(day, ${SCHEDULED_WINDOW.aheadDays}, ${TODAY})` })}
+  AND ${liveProgram()}
 ORDER BY t.truck_number, ps.start_time
 `
 
@@ -117,11 +126,13 @@ LEFT JOIN (
     dbo.program_schedule ps
     LEFT JOIN dbo.client_program_markets pm
         ON  pm.client_program_market_uid = ps.client_program_market_uid
+    LEFT JOIN dbo.client_programs p
+        ON  p.client_program_uid = ps.client_program_uid
 )
     ON  ps.truck_uid = t.truck_uid
     AND ${shiftDayIn({ from: todayIn('pm'), to: todayIn('pm') }, 'ps', 'pm', TODAY)}
-LEFT JOIN dbo.client_programs p
-    ON  p.client_program_uid = ps.client_program_uid
+    AND ${liveProgram('p')}
+-- Where the truck last worked, archived program or not: a location, not a booking.
 OUTER APPLY (
     SELECT TOP 1 COALESCE(pm_lk.standard_market_name, pm_lk.market) AS last_known_market
     FROM dbo.program_schedule ps_lk
@@ -159,6 +170,7 @@ LEFT JOIN dbo.client_program_markets cpm
 LEFT JOIN dbo.client_programs cp
     ON  cp.client_program_uid = ps.client_program_uid
 WHERE COALESCE(t.is_deleted, 0) = 0
+  AND ${liveProgram()}
   AND ${shiftDayIn({ from: `DATEADD(day, -30, ${TODAY})`, to: `DATEADD(day, 60, ${TODAY})` })}
 ORDER BY t.truck_number, ps.start_time
 `
@@ -187,8 +199,8 @@ ORDER BY t.truck_number, ps.start_time
 // rolling-window query every existing caller runs is unchanged.
 export function scheduledWithMarketQuery(withBounds: boolean, windowed = false): string {
   const windowClause = windowed
-    ? `WHERE ${shiftDayIn({ from: '@windowStart', to: '@windowEnd' })}`
-    : `WHERE ${shiftDayIn({ from: `DATEADD(day, -30, ${TODAY})`, to: `DATEADD(day, 63, ${TODAY})` })}`
+    ? `WHERE ${shiftDayIn({ from: '@windowStart', to: '@windowEnd' })}\n  AND ${liveProgram()}`
+    : `WHERE ${shiftDayIn({ from: `DATEADD(day, -30, ${TODAY})`, to: `DATEADD(day, 63, ${TODAY})` })}\n  AND ${liveProgram()}`
   return `
 SELECT
     t.truck_number,

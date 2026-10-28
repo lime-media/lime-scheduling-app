@@ -23,6 +23,14 @@ export async function searchAccounts(q: string) {
 export const isAccountId = (id: string) => /^001[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/.test(id)
 
 /**
+ * An account id an LED client link is made for, and the reconcile stores on
+ * holds (lib/ledClients.ts): 18 characters, as SOQL returns
+ * Opportunity.AccountId. A 15-character one (or another object's id) would
+ * make a link no hold ever matches. Pure.
+ */
+export const isLinkableAccount = (id: string) => id.length === 18 && isAccountId(id)
+
+/**
  * The account's contacts by name (some agencies have close to a hundred); with
  * q, those whose name or email contains it. Up to 50. accountId must pass isAccountId.
  */

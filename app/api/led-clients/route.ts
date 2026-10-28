@@ -3,12 +3,12 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
-import { isLinkableAccount, ledClients, suggestLedClient } from '@/lib/ledClients'
+import { isLinkableAccount } from '@/lib/sfdcSearch'
+import { ledClients, suggestLedClient } from '@/lib/ledClients'
 
-// Only an isLinkableAccount id reaches SOQL.
 const UID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-/** The account's name in Salesforce, or null if it can't be read. */
+/** The account's name in Salesforce, or null if it can't be read. Callers pass only an isLinkableAccount id, which is what makes the SOQL safe. */
 async function accountName(id: string): Promise<string | null> {
   if (!isSfdcConfigured()) return null
   try {
@@ -24,10 +24,10 @@ async function accountName(id: string): Promise<string | null> {
  * Keep a link's stored account name current: it's saved blank when Salesforce
  * can't be read at link time, and accounts get renamed. Best-effort.
  */
-async function refreshAccountName(account: string, stored: string | undefined, name: string | null) {
+async function refreshAccountName(link: { sfdc_account_id: string; account_name: string }, name: string | null) {
   const label = name?.slice(0, 255)
-  if (stored === undefined || !label || label === stored) return
-  await prisma.ledClientLink.update({ where: { sfdc_account_id: account }, data: { account_name: label } })
+  if (!label || label === link.account_name) return
+  await prisma.ledClientLink.update({ where: { sfdc_account_id: link.sfdc_account_id }, data: { account_name: label } })
     .catch((err) => console.error('[led-clients] account name refresh failed:', err))
 }
 
@@ -49,15 +49,17 @@ export async function GET(request: Request) {
     prisma.ledClientLink.findUnique({ where: { sfdc_account_id: account } }),
     accountName(account),
   ])
+  // Before the LED check: Salesforce answering is enough to fix the name.
+  if (link) await refreshAccountName(link, name)
   if (!clients) return NextResponse.json({ error: "The LED client list couldn't be read. Try again shortly." }, { status: 502 })
 
-  await refreshAccountName(account, link?.account_name, name)
   const linked = link ? clients.find(c => c.client_uid === link.client_uid.toLowerCase()) ?? null : null
   const accountLabel = name ?? (link?.account_name || null)
   return NextResponse.json({
     account_name: accountLabel,
     clients,
-    // A link to an LED client since deleted in LED shows as unlinked, and says so.
+    // A link to an LED client no longer in LED's list (deleted, or its name
+    // cleared) shows as unlinked, and says so.
     link: linked,
     link_deleted: !!link && !linked,
     suggestion: linked || !accountLabel ? null : suggestLedClient(accountLabel, clients),
@@ -90,7 +92,7 @@ export async function PUT(request: Request) {
   if (!client) return NextResponse.json({ error: 'That LED client no longer exists.' }, { status: 404 })
   // Already linked to it: nothing to save or audit.
   if (earlier?.client_uid.toLowerCase() === clientUid) {
-    await refreshAccountName(account, earlier.account_name, name)
+    await refreshAccountName(earlier, name)
     return NextResponse.json({ link: client })
   }
 

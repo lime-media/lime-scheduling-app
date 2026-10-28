@@ -95,7 +95,7 @@ export function LedClientLink({ accountId, linked, onSaved }: {
               ) : (
                 <>
                   {linkDeleted && (
-                    <p className="text-xs text-amber-700">The LED client this account was linked to has been deleted in LED. Pick its client again.</p>
+                    <p className="text-xs text-amber-700">The LED client this account was linked to is no longer in LED&apos;s client list (deleted, or its name was cleared). Pick its client again.</p>
                   )}
                   <select value={picked} onChange={e => setPicked(e.target.value)} className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm">
                     <option value="">Choose an LED client…</option>

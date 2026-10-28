@@ -5,6 +5,7 @@
  */
 import { eq, section } from './harness'
 import { clientNameKey, suggestLedClient, type LedClient } from '@/lib/ledClients'
+import { isLinkableAccount } from '@/lib/sfdcSearch'
 
 const c = (client: string, client_uid = client): LedClient => ({ client, client_uid })
 const LED = [c('Acme Outdoor'), c('Blue River Brewing Co.'), c('North & South Media'), c('Lime Media'), c('Lime Media Maintenance')]
@@ -26,3 +27,9 @@ eq('a word inside a word does not count', pick('Acm'), null)
 eq('nothing like it', pick('Zephyr Foods'), null)
 eq('two LED clients with the same name: no suggestion', pick('Acme Outdoor', [...LED, c('ACME OUTDOOR', 'dup')]), null)
 eq('an empty account name', pick(''), null)
+
+section('isLinkableAccount: the one account-id rule for links and the reconcile')
+eq('an 18-character Account id', isLinkableAccount('001Hs00002abcDEFGH'), true)
+eq('the 15-character form', isLinkableAccount('001Hs00002abcDE'), false)
+eq('an Opportunity id', isLinkableAccount('006Hs00002abcDEFGH'), false)
+eq('injection', isLinkableAccount("001Hs00002a' OR '1"), false)

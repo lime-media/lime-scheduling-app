@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { sfdcQuery, sfdcQueryOptionalField, updateOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
-import { isLinkableAccount } from '@/lib/ledClients'
+import { isLinkableAccount } from '@/lib/sfdcSearch'
 import { SFDC_SERVICE_USER_EMAIL, reconcileTarget } from '@/lib/sfdcIntegration'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry } from '@/lib/holdExpiry'
 import { centralDate } from '@/lib/dateOnly'

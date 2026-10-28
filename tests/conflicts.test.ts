@@ -113,6 +113,18 @@ eq('a person dismissed every day: stays dismissed',
 eq('dismissed only some days, rest never shown: new',
   priorDecision('2026-09-05', '2026-09-25', [row('2026-09-05', '2026-09-06', 'RESOLVED', 'u1')]), 'new')
 eq('rows for other dates do not count', priorDecision('2026-09-05', '2026-09-07', [row('2026-08-01', '2026-08-03', 'RESOLVED', 'u1')]), 'new')
+// Paid review #140: shifts now take their market's local day, so an evening
+// program dismissed as Nov 2–6 (its UTC days) is found as Nov 1–5.
+const CUT = '2026-10-28T00:00:00.000Z'
+const utcRow = (start: string, end: string, detected_at: string) => ({ ...row(start, end, 'RESOLVED', 'u1'), detected_at })
+eq('a dismissal recorded with UTC days also covers the day before it',
+  priorDecision('2026-11-01', '2026-11-05', [utcRow('2026-11-02', '2026-11-06', '2026-10-20T10:00:00.000Z')], new Set(), CUT), 'dismissed')
+eq('not two days before',
+  priorDecision('2026-10-31', '2026-11-05', [utcRow('2026-11-02', '2026-11-06', '2026-10-20T10:00:00.000Z')], new Set(), CUT), 'new')
+eq('a dismissal recorded with local days covers only its own days',
+  priorDecision('2026-11-01', '2026-11-05', [utcRow('2026-11-02', '2026-11-06', '2026-10-29T10:00:00.000Z')], new Set(), CUT), 'new')
+eq('no cutoff known: the strict rule',
+  priorDecision('2026-11-01', '2026-11-05', [utcRow('2026-11-02', '2026-11-06', '2026-10-20T10:00:00.000Z')]), 'new')
 
 section('Conflict identity includes the program')
 // Sarah's review: dismissing reservation R against ATT FIBER must not hide a

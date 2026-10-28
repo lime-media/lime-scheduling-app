@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { sfdcQuery, sfdcQueryOptionalField, updateOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
+import { isLinkableAccount } from '@/lib/sfdcSearch'
 import { SFDC_SERVICE_USER_EMAIL, reconcileTarget } from '@/lib/sfdcIntegration'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry } from '@/lib/holdExpiry'
 import { centralDate } from '@/lib/dateOnly'
@@ -59,6 +60,8 @@ interface OpportunityStage {
   Amount?:   number | null
   /** Links the holds to their LED program (lib/ledJobs.ts). */
   Job_Number__c?: string | null
+  /** Whose LED client the program belongs to (lib/ledClients.ts). */
+  AccountId?: string | null
 }
 
 export interface SfdcReconcileSummary {
@@ -134,13 +137,16 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
   // Job_Number__c only links holds to LED (lib/ledJobs.ts). If this org or the
   // integration user can't read it, the stages are still read without it:
   // losing the LED link must never stop deals being committed or released.
+  // AccountId (a standard field) is in both forms of the query, so it has no
+  // such fallback: a field added here that might be unreadable belongs in the
+  // optional part, or an unreadable one fails the whole reconcile.
   // Opportunities read with Job_Number__c: only their holds' job numbers are updated.
   const readWithJob = new Set<string>()
   let tryJob = true
   for (const batch of chunk(uniqueIds, SOQL_ID_CHUNK)) {
     const list = batch.map((id) => `'${id}'`).join(',')
     const { rows, withField, refused }: { rows: OpportunityStage[]; withField: boolean; refused: boolean } = await sfdcQueryOptionalField<OpportunityStage>('Job_Number__c', (job) =>
-      `SELECT Id, StageName, IsClosed, IsWon, Amount${job ? ', Job_Number__c' : ''} FROM Opportunity WHERE Id IN (${list})`, tryJob)
+      `SELECT Id, StageName, IsClosed, IsWon, Amount, AccountId${job ? ', Job_Number__c' : ''} FROM Opportunity WHERE Id IN (${list})`, tryJob)
     tryJob = !refused
     for (const row of rows) {
       stages.set(normalizeId(row.Id), row)
@@ -205,6 +211,14 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
     if (staleJob.length) {
       await prisma.hold.updateMany({ where: { id: { in: staleJob } }, data: { sfdc_job_number: storedJob } })
         .catch((err) => console.error(`[sfdc-reconcile] job number write failed for ${key}; carrying on:`, err))
+    }
+    // The account, the same way: it finds the deal's LED client (lib/ledClients.ts).
+    // Stored only in the form a link is made for, so the two can't drift.
+    const accountId = stage.AccountId && isLinkableAccount(stage.AccountId) ? stage.AccountId : null
+    const staleAccount = group.filter(h => h.sfdc_account_id !== accountId).map(h => h.id)
+    if (staleAccount.length) {
+      await prisma.hold.updateMany({ where: { id: { in: staleAccount } }, data: { sfdc_account_id: accountId } })
+        .catch((err) => console.error(`[sfdc-reconcile] account write failed for ${key}; carrying on:`, err))
     }
 
     for (const hold of group) {

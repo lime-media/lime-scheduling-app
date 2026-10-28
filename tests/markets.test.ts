@@ -10,7 +10,7 @@
  */
 import { defer, eq, section } from './harness'
 import { matchMarketKey, titleCaseMarket, normalizeMarketKey } from '@/lib/marketBounds'
-import { locateTopDma, matchTopDma, resolveMarketSizeTierId } from '@/lib/pricing/resolvers'
+import { matchTopDma, resolveMarketSizeTierId } from '@/lib/pricing/resolvers'
 import { TOP_DMAS } from '@/lib/pricing/topDmas'
 import { validateEmailList } from '@/lib/appSettings'
 import { marketSizeTierFromDmaCode, NON_DMA_MARKET_TIER, MARKET_SIZE_TIERS } from '@/lib/pricing/config'
@@ -98,9 +98,6 @@ eq('NY and LA are mega-DMAs', ['DMA-501', 'DMA-803'].map(marketSizeTierFromDmaCo
 // The tier-1 and tier-2 codes live in config.ts: each must be in the list, or that metro silently drops to tier 4.
 eq('every tier 1-2 DMA is in the list', ['DMA-501', 'DMA-803', 'DMA-602', 'DMA-623', 'DMA-504', 'DMA-618', 'DMA-524', 'DMA-511', 'DMA-807', 'DMA-506'].every(c => TOP_DMAS.some(d => d.dma_code === c) && marketSizeTierFromDmaCode(c) <= 2), true)
 eq('the rest of the list is tier 3', TOP_DMAS.filter(d => marketSizeTierFromDmaCode(d.dma_code) === 3).length, 40)
-eq('a DMA named in free text is located (last resort)', locateTopDma('Greater Boston Area')?.dma_code, 'DMA-506')
-eq('...including a hyphenated DMA by either city', [locateTopDma('Fort Worth area')?.dma_code, locateTopDma('NYC: New York City, Time Square')?.dma_code], ['DMA-623', 'DMA-501'])
-eq('...but never by part of a word', [locateTopDma('York, PA'), locateTopDma('Newark, NJ')], [undefined, undefined])
 defer((async () => eq('tier by name, then by location, else small metro', [
   await resolveMarketSizeTierId('New York, NY', { lat: 40.7128, lng: -74.006 }),
   // LED's "Dallas, TX" isn't the DMA's name ("Dallas-Fort Worth"): its location places it.

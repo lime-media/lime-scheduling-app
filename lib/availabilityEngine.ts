@@ -280,7 +280,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     // Other dates this truck could do, for when there are not enough trucks.
     const fit = {
       jobs: timelines.get(truckNumber) ?? [], start: startDate, end: endDate,
-      campaignCoords: campaignCoords, currentCoords, today, serviceAreaMiles, softHoldStrandIsWarning,
+      campaignCoords, currentCoords, today, serviceAreaMiles, softHoldStrandIsWarning,
     }
 
     if (window.blocked) {
@@ -301,7 +301,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
     const chain = checkChainFeasibility({
       campaignStart: startDate,
       campaignEnd: endDate,
-      campaignCoords: campaignCoords,
+      campaignCoords,
       jobs: window.jobs,
       currentCoords,
       today,

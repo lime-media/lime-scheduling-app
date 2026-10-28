@@ -184,11 +184,11 @@ async function plannedLegs(holdIds: string[]): Promise<Map<string, { charge: num
 }
 
 /** A truck swapped onto a hold: where the new truck comes from, measured now. */
-export async function recordSwap(holdId: string, createdBy: string | null): Promise<void> {
+export async function recordSwap(holdId: string, createdBy: string | null, shared?: () => Promise<OriginMeasurer>): Promise<void> {
   try {
     const hold = await prisma.hold.findUnique({ where: { id: holdId } })
     if (!hold || hold.origination === QUOTE_ONLY_ORIGINATION) return
-    const [measurer, planned] = await Promise.all([originMeasurer(), plannedLegs([hold.id])])
+    const [measurer, planned] = await Promise.all([shared ? shared() : originMeasurer(), plannedLegs([hold.id])])
     const was = planned.get(hold.id)
     const leg = await measurer.measure(hold, was?.charge ?? 0)
     if (leg) await prisma.transportLeg.create({ data: legRow('SWAPPED', hold, leg, createdBy, was?.bookingKey) })

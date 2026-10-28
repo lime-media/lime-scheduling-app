@@ -55,6 +55,8 @@ export function shiftDayIn(range: { from?: string; to?: string }, ps = 'ps', mar
 
 // ── Query A: scheduled blocks in the display window ──────────────────────────
 // Verified fast (155 ms). No GPS join — GPS fetched separately via Query C.
+/** SCHEDULED_QUERY's rolling window, in days before and after today: LED rows outside it aren't seen. */
+export const SCHEDULED_WINDOW = { pastDays: 30, aheadDays: 63 } as const
 export const SCHEDULED_QUERY = `
 SELECT
     t.truck_number,
@@ -65,7 +67,11 @@ SELECT
     COALESCE(cl.client,   '') AS client,  -- internal only; client routes must not pass it on
     COALESCE(cp.job_number, '') AS job_number,
     ${shiftDay('ps.start_time')} AS shift_start,
-    ${shiftDay('ps.start_time')} AS shift_end  -- use start date; end_time bleeds into next day for overnight shifts
+    ${shiftDay('ps.start_time')} AS shift_end,  -- use start date; end_time bleeds into next day for overnight shifts
+    -- Flags, not filters: a deleted program or archived truck is never a
+    -- truck for a won hold to follow (lib/ledTruckFollow.ts).
+    CAST(COALESCE(cp.is_deleted, 0) AS INT) AS program_deleted,
+    CAST(COALESCE(t.is_deleted,  0) AS INT) AS truck_deleted
 FROM dbo.program_schedule ps
 JOIN dbo.trucks t
     ON  t.truck_uid = ps.truck_uid
@@ -75,7 +81,7 @@ LEFT JOIN dbo.client_programs cp
     ON  cp.client_program_uid = ps.client_program_uid
 LEFT JOIN dbo.clients cl
     ON  cl.client_uid = cp.client_uid
-WHERE ${shiftDayIn({ from: `DATEADD(day, -30, ${TODAY})`, to: `DATEADD(day, 63, ${TODAY})` })}
+WHERE ${shiftDayIn({ from: `DATEADD(day, -${SCHEDULED_WINDOW.pastDays}, ${TODAY})`, to: `DATEADD(day, ${SCHEDULED_WINDOW.aheadDays}, ${TODAY})` })}
 ORDER BY t.truck_number, ps.start_time
 `
 

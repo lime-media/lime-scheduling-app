@@ -4,7 +4,9 @@
 //  dbo.program_schedule        program_schedule_id, truck_uid, client_program_uid,
 //                                client_program_market_uid, start_time, end_time
 //  dbo.client_programs         client_program_id, client_program_uid, client_uid, program,
-//                                description, program_color, start_date, end_date, is_deleted
+//                                description, program_color, start_date, end_date, is_deleted,
+//                                updated_at (UTC; CampaignIQ Core stamps it on every save, the
+//                                archive included: liveProgram depends on it)
 //  dbo.client_program_markets  client_program_market_id, client_program_market_uid,
 //                                client_program_uid, market, state, standard_market_uid,
 //                                standard_market_name, market_timezone
@@ -25,6 +27,21 @@ const SQL_ZONE = (market: string) => `CASE ${market}.market_timezone
         WHEN 'America/Phoenix'     THEN 'US Mountain Standard Time'
         WHEN 'America/Denver'      THEN 'Mountain Standard Time'
         ELSE 'Central Standard Time' END`
+
+/**
+ * SQL that drops the shifts an archived LED program never ran. LED's archive
+ * (is_deleted = 1) leaves its program_schedule rows in place: a lost deal's
+ * archived program keeps its future shifts, which book nothing. A shift that
+ * started before the archive did run, and stays: LED also archives finished
+ * programs (30 days after they end), and their days are history the AT&T
+ * roster, the planner's hours and where a truck last was rely on. The archive
+ * time is updated_at, which Core stamps on every save, the archive included
+ * (a later edit to an archived program would move it; Core doesn't edit them).
+ * `program` is the alias of a joined dbo.client_programs (a shift with no
+ * program row is kept), `shift` of dbo.program_schedule.
+ */
+export const liveProgram = (program = 'cp', shift = 'ps') =>
+  `(COALESCE(${program}.is_deleted, 0) = 0 OR ${shift}.start_time < ${program}.updated_at)`
 
 /** SQL for today's date in Central time, the app's day (REVIEW.md); GETDATE() is UTC on Azure. */
 const TODAY = `CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Central Standard Time' AS DATE)`
@@ -68,8 +85,9 @@ SELECT
     COALESCE(cp.job_number, '') AS job_number,
     ${shiftDay('ps.start_time')} AS shift_start,
     ${shiftDay('ps.start_time')} AS shift_end,  -- use start date; end_time bleeds into next day for overnight shifts
-    -- Flags, not filters: a deleted program or archived truck is never a
-    -- truck for a won hold to follow (lib/ledTruckFollow.ts).
+    -- Flags, not filters: an archived program or truck is never a truck for a
+    -- won hold to follow (lib/ledTruckFollow.ts). Shifts an archived program
+    -- never ran are left out below.
     CAST(COALESCE(cp.is_deleted, 0) AS INT) AS program_deleted,
     CAST(COALESCE(t.is_deleted,  0) AS INT) AS truck_deleted
 FROM dbo.program_schedule ps
@@ -82,6 +100,7 @@ LEFT JOIN dbo.client_programs cp
 LEFT JOIN dbo.clients cl
     ON  cl.client_uid = cp.client_uid
 WHERE ${shiftDayIn({ from: `DATEADD(day, -${SCHEDULED_WINDOW.pastDays}, ${TODAY})`, to: `DATEADD(day, ${SCHEDULED_WINDOW.aheadDays}, ${TODAY})` })}
+  AND ${liveProgram()}
 ORDER BY t.truck_number, ps.start_time
 `
 
@@ -117,17 +136,21 @@ LEFT JOIN (
     dbo.program_schedule ps
     LEFT JOIN dbo.client_program_markets pm
         ON  pm.client_program_market_uid = ps.client_program_market_uid
+    LEFT JOIN dbo.client_programs p
+        ON  p.client_program_uid = ps.client_program_uid
 )
     ON  ps.truck_uid = t.truck_uid
     AND ${shiftDayIn({ from: todayIn('pm'), to: todayIn('pm') }, 'ps', 'pm', TODAY)}
-LEFT JOIN dbo.client_programs p
-    ON  p.client_program_uid = ps.client_program_uid
+    AND ${liveProgram('p')}
 OUTER APPLY (
     SELECT TOP 1 COALESCE(pm_lk.standard_market_name, pm_lk.market) AS last_known_market
     FROM dbo.program_schedule ps_lk
     JOIN dbo.client_program_markets pm_lk
         ON  pm_lk.client_program_market_uid = ps_lk.client_program_market_uid
+    LEFT JOIN dbo.client_programs p_lk
+        ON  p_lk.client_program_uid = ps_lk.client_program_uid
     WHERE ps_lk.truck_uid = t.truck_uid
+      AND ${liveProgram('p_lk', 'ps_lk')}
       AND ${shiftDayIn({ to: todayIn('pm_lk') }, 'ps_lk', 'pm_lk', TODAY)}
       AND pm_lk.market IS NOT NULL
     ORDER BY ps_lk.start_time DESC
@@ -159,6 +182,7 @@ LEFT JOIN dbo.client_program_markets cpm
 LEFT JOIN dbo.client_programs cp
     ON  cp.client_program_uid = ps.client_program_uid
 WHERE COALESCE(t.is_deleted, 0) = 0
+  AND ${liveProgram()}
   AND ${shiftDayIn({ from: `DATEADD(day, -30, ${TODAY})`, to: `DATEADD(day, 60, ${TODAY})` })}
 ORDER BY t.truck_number, ps.start_time
 `
@@ -186,9 +210,10 @@ ORDER BY t.truck_number, ps.start_time
 // booked under 160over90). Only the windowed form joins dbo.clients, so the
 // rolling-window query every existing caller runs is unchanged.
 export function scheduledWithMarketQuery(withBounds: boolean, windowed = false): string {
-  const windowClause = windowed
-    ? `WHERE ${shiftDayIn({ from: '@windowStart', to: '@windowEnd' })}`
-    : `WHERE ${shiftDayIn({ from: `DATEADD(day, -30, ${TODAY})`, to: `DATEADD(day, 63, ${TODAY})` })}`
+  const range = windowed
+    ? { from: '@windowStart', to: '@windowEnd' }
+    : { from: `DATEADD(day, -30, ${TODAY})`, to: `DATEADD(day, 63, ${TODAY})` }
+  const windowClause = `WHERE ${shiftDayIn(range)}\n  AND ${liveProgram()}`
   return `
 SELECT
     t.truck_number,

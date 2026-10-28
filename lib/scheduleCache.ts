@@ -166,7 +166,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
       days_sold: daysSold(h.features, toDateStr(h.start_date), toDateStr(h.end_date)),
       sfdc_opportunity_id: h.sfdc_opportunity_id, created_by: h.created_by,
     })),
-    // A deleted program or an archived truck is never a truck to follow.
+    // An archived program or truck is never a truck to follow.
     schedulesRaw.filter((r) => !Number(r.program_deleted) && !Number(r.truck_deleted)).map((r) => ({
       truck_number: String(r.truck_number ?? ''), job_number: String(r.job_number ?? ''), shift_start: toDateStr(r.shift_start),
       market: String(r.market ?? ''), state: String(r.state ?? ''), standard_market_name: String(r.standard_market_name ?? ''),

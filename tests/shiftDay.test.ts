@@ -7,7 +7,7 @@
 import { readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { eq, section } from './harness'
-import { CHAT_CONTEXT_QUERY, SCHEDULED_QUERY, scheduledWithMarketQuery, shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
+import { CHAT_CONTEXT_QUERY, SCHEDULED_QUERY, liveProgram, scheduledWithMarketQuery, shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
 
 section('shiftDay: UTC to the market\'s local date')
 const sql = shiftDay('ps.start_time')
@@ -45,3 +45,21 @@ for (const file of [...files('lib'), ...files('app')].filter(f => readFileSync(f
 for (const [name, q] of Object.entries({ SCHEDULED_QUERY, CHAT_CONTEXT_QUERY, windowed: scheduledWithMarketQuery(true, true), rolling: scheduledWithMarketQuery(false, false) })) {
   eq(`${name}: no GETDATE()`, q.includes('GETDATE()'), false)
 }
+
+section('shifts an archived LED program never ran book no truck')
+// LED's archive leaves a program's shifts in place, so every program_schedule
+// read applies liveProgram, or counts live programs only (LED standing).
+for (const file of [...files('lib'), ...files('app')]) {
+  const src = readFileSync(file, 'utf8')
+  const reads = (src.match(/(FROM|JOIN)\s+\(?\s*dbo\.program_schedule\b/g) ?? []).length
+  if (!reads) continue
+  const filtered = (src.match(/\$\{liveProgram\(/g) ?? []).length + (src.match(/WHERE COALESCE\(cp\.is_deleted, 0\) = 0/g) ?? []).length
+  eq(`${file}: every program_schedule read filters archived programs`, filtered, reads)
+}
+const live = liveProgram('p', 'ps2')
+eq('keeps a live program, or a shift with no program row', live.startsWith('(COALESCE(p.is_deleted, 0) = 0 OR '), true)
+eq('keeps an archived program\'s shifts that started before the archive', live.endsWith('OR ps2.start_time < p.updated_at)'), true)
+for (const [name, q] of Object.entries({ SCHEDULED_QUERY, CHAT_CONTEXT_QUERY, windowed: scheduledWithMarketQuery(true, true), rolling: scheduledWithMarketQuery(false, false) })) {
+  eq(`${name}: leaves out shifts an archived program never ran`, /\.is_deleted, 0\) = 0 OR \w+\.start_time < \w+\.updated_at\)/.test(q), true)
+}
+eq('CHAT_CONTEXT: today and the last-known market both filter', (CHAT_CONTEXT_QUERY.match(/start_time < \w+\.updated_at/g) ?? []).length, 2)

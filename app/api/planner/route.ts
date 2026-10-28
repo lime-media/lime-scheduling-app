@@ -14,7 +14,7 @@ import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
 import { activeHoldWhere } from '@/lib/holdFilters'
-import { ALL_TRUCKS_QUERY, shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
+import { ALL_TRUCKS_QUERY, liveProgram, shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
 import { centralDate } from '@/lib/dateOnly'
 import { HIDDEN_TRUCKS } from '@/lib/availabilityEngine'
 import { isSfdcConfigured, sfdcQueryOptionalField } from '@/lib/salesforceClient'
@@ -46,6 +46,7 @@ LEFT JOIN dbo.clients cl
 LEFT JOIN dbo.client_program_markets cpm
     ON  cpm.client_program_market_uid = ps.client_program_market_uid
 WHERE COALESCE(t.is_deleted, 0) = 0
+  AND ${liveProgram()}
   AND ${shiftDayIn({ from: '@from', to: '@to' })}
 `
 

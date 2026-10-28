@@ -33,7 +33,7 @@ Gets the full active truck list, including trucks with no current schedule.
 
 **`CHAT_CONTEXT_QUERY`**
 A per-truck snapshot used by the AI. For each truck it returns:
-- `today_status` — `SCHEDULED` if there is a `program_schedule` row covering today, otherwise `AVAILABLE`
+- `today_status` — `SCHEDULED` if there is a `program_schedule` row covering today, otherwise `AVAILABLE`. Shifts an archived program never ran don't count (`liveProgram`, lib/scheduleQuery.ts): LED's archive leaves them in place, and only shifts that started before the archive are history
 - Current program name and market
 - Last known market from the most recent past shift (for context when a truck is idle)
 
@@ -97,7 +97,7 @@ Colours are shared across the internal and client views (`lib/statusColors.ts`):
 ## Availability Logic
 
 A truck is considered **available for a date range** if:
-- No `program_schedule` row in the LED database covers any day in that range
+- No `program_schedule` row in the LED database covers any day in that range (shifts an archived program never ran book nothing; LED's archive leaves its rows in place, and a lost deal's program is archived)
 - No HOLD, COMMITTED, or ATT_SOFT row in Prisma overlaps that range
 
 The AI checks both sources and reports conflicts from either. The Schedule Grid renders both as colored blocks on the same timeline.

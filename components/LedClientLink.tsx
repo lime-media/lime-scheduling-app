@@ -22,6 +22,7 @@ export function LedClientLink({ accountId, linked, onSaved }: {
   const [clients, setClients] = useState<LedClient[]>([])
   const [picked, setPicked] = useState('')
   const [suggested, setSuggested] = useState<string | null>(null)
+  const [linkDeleted, setLinkDeleted] = useState(false)
 
   const start = async () => {
     setOpen(true)
@@ -33,6 +34,7 @@ export function LedClientLink({ accountId, linked, onSaved }: {
       setAccountName(data.account_name)
       setClients(data.clients)
       setSuggested(data.suggestion?.client_uid ?? null)
+      setLinkDeleted(!!data.link_deleted)
       setPicked(data.link?.client_uid ?? data.suggestion?.client_uid ?? '')
     } catch {
       toast.error('Network error')
@@ -92,6 +94,9 @@ export function LedClientLink({ accountId, linked, onSaved }: {
                 <p className="text-sm text-gray-500">Loading LED clients…</p>
               ) : (
                 <>
+                  {linkDeleted && (
+                    <p className="text-xs text-amber-700">The LED client this account was linked to has been deleted in LED. Pick its client again.</p>
+                  )}
                   <select value={picked} onChange={e => setPicked(e.target.value)} className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm">
                     <option value="">Choose an LED client…</option>
                     {clients.map(c => (

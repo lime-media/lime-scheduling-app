@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { sfdcQuery, sfdcQueryOptionalField, updateOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
+import { isLinkableAccount } from '@/lib/ledClients'
 import { SFDC_SERVICE_USER_EMAIL, reconcileTarget } from '@/lib/sfdcIntegration'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry } from '@/lib/holdExpiry'
 import { centralDate } from '@/lib/dateOnly'
@@ -136,6 +137,9 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
   // Job_Number__c only links holds to LED (lib/ledJobs.ts). If this org or the
   // integration user can't read it, the stages are still read without it:
   // losing the LED link must never stop deals being committed or released.
+  // AccountId (a standard field) is in both forms of the query, so it has no
+  // such fallback: a field added here that might be unreadable belongs in the
+  // optional part, or an unreadable one fails the whole reconcile.
   // Opportunities read with Job_Number__c: only their holds' job numbers are updated.
   const readWithJob = new Set<string>()
   let tryJob = true
@@ -209,7 +213,8 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
         .catch((err) => console.error(`[sfdc-reconcile] job number write failed for ${key}; carrying on:`, err))
     }
     // The account, the same way: it finds the deal's LED client (lib/ledClients.ts).
-    const accountId = stage.AccountId && SFDC_ID.test(stage.AccountId) ? stage.AccountId : null
+    // Stored only in the form a link is made for, so the two can't drift.
+    const accountId = stage.AccountId && isLinkableAccount(stage.AccountId) ? stage.AccountId : null
     const staleAccount = group.filter(h => h.sfdc_account_id !== accountId).map(h => h.id)
     if (staleAccount.length) {
       await prisma.hold.updateMany({ where: { id: { in: staleAccount } }, data: { sfdc_account_id: accountId } })

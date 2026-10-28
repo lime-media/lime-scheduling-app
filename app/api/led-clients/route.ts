@@ -3,13 +3,9 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
-import { isAccountId } from '@/lib/sfdcSearch'
-import { ledClients, suggestLedClient } from '@/lib/ledClients'
+import { isLinkableAccount, ledClients, suggestLedClient } from '@/lib/ledClients'
 
-// An 18-character Account id, as the reconcile copies Opportunity.AccountId
-// onto holds: a 15-character one (or another object's id) would make a link no
-// hold ever matches. Nothing else reaches SOQL.
-const isLinkableAccount = (id: string) => id.length === 18 && isAccountId(id)
+// Only an isLinkableAccount id reaches SOQL.
 const UID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** The account's name in Salesforce, or null if it can't be read. */
@@ -22,6 +18,17 @@ async function accountName(id: string): Promise<string | null> {
     console.error('[led-clients] account name read failed:', err)
     return null
   }
+}
+
+/**
+ * Keep a link's stored account name current: it's saved blank when Salesforce
+ * can't be read at link time, and accounts get renamed. Best-effort.
+ */
+async function refreshAccountName(account: string, stored: string | undefined, name: string | null) {
+  const label = name?.slice(0, 255)
+  if (stored === undefined || !label || label === stored) return
+  await prisma.ledClientLink.update({ where: { sfdc_account_id: account }, data: { account_name: label } })
+    .catch((err) => console.error('[led-clients] account name refresh failed:', err))
 }
 
 /**
@@ -44,13 +51,15 @@ export async function GET(request: Request) {
   ])
   if (!clients) return NextResponse.json({ error: "The LED client list couldn't be read. Try again shortly." }, { status: 502 })
 
+  await refreshAccountName(account, link?.account_name, name)
   const linked = link ? clients.find(c => c.client_uid === link.client_uid.toLowerCase()) ?? null : null
-  const accountLabel = name ?? link?.account_name ?? null
+  const accountLabel = name ?? (link?.account_name || null)
   return NextResponse.json({
     account_name: accountLabel,
     clients,
-    // A link to an LED client since deleted in LED shows as unlinked.
+    // A link to an LED client since deleted in LED shows as unlinked, and says so.
     link: linked,
+    link_deleted: !!link && !linked,
     suggestion: linked || !accountLabel ? null : suggestLedClient(accountLabel, clients),
   })
 }
@@ -80,7 +89,10 @@ export async function PUT(request: Request) {
   const client = clients.find(c => c.client_uid === clientUid)
   if (!client) return NextResponse.json({ error: 'That LED client no longer exists.' }, { status: 404 })
   // Already linked to it: nothing to save or audit.
-  if (earlier?.client_uid.toLowerCase() === clientUid) return NextResponse.json({ link: client })
+  if (earlier?.client_uid.toLowerCase() === clientUid) {
+    await refreshAccountName(account, earlier.account_name, name)
+    return NextResponse.json({ link: client })
+  }
 
   const accountLabel = (name ?? earlier?.account_name ?? '').slice(0, 255)
   await prisma.$transaction([
@@ -92,6 +104,7 @@ export async function PUT(request: Request) {
     prisma.auditLog.create({
       data: {
         action: 'LINK_LED_CLIENT',
+        // Account-level: no hold and no truck. The column is required, so blank.
         truck_number: '',
         user_id: session.user.id,
         details: JSON.stringify({ sfdc_account_id: account, account_name: accountLabel, client_uid: clientUid, client: client.client, previous_client_uid: earlier?.client_uid ?? null }),

@@ -8,6 +8,14 @@
  * a suggestion from the names.
  */
 import { query } from '@/lib/mssql'
+import { isAccountId } from '@/lib/sfdcSearch'
+
+/**
+ * An account id a link can be made for, and the reconcile stores on holds:
+ * 18 characters, as SOQL returns Opportunity.AccountId. A 15-character one (or
+ * another object's id) would make a link no hold ever matches. Pure.
+ */
+export const isLinkableAccount = (id: string) => id.length === 18 && isAccountId(id)
 
 export type LedClient = { client_uid: string; client: string }
 

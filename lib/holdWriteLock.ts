@@ -12,7 +12,8 @@
  *
  * For the paths that choose trucks (Quote page, planner, client portal, AI
  * chat, MCP, grid holds, swaps, edits, reinstate). Mirror paths (the
- * Salesforce hold webhook, the AT&T sync) record what exists elsewhere and
+ * Salesforce hold webhook, the AT&T sync, the LED truck follow in
+ * lib/ledTruckFollow.ts) record what exists elsewhere and
  * never refuse, so they don't use it (REVIEW.md "Mirror paths record").
  * Server only.
  */

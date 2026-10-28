@@ -7,8 +7,8 @@ import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry, lastExpiryDate } from '@/lib/holdExpiry'
-import { NOTHING_TO_REINSTATE, bookingCapStarts, bookingKey, closedWonRefusal, reinstatableHolds, reinstateRefusal } from '@/lib/bookings'
-import { loadBookingHolds } from '@/lib/bookingLoad'
+import { NOTHING_TO_REINSTATE, bookingKey, closedWonRefusal, reinstatableHolds, reinstateRefusal } from '@/lib/bookings'
+import { capStarts, loadBooking, reviveBookingExpiry, revivalRefusalBody, setBookingExpiry } from '@/lib/bookingExpiry'
 import { closeOpportunityAsLost, getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { reopenClosedLostOpportunity, syncOpportunityLedWindow } from '@/lib/sfdcBooking'
@@ -33,29 +33,6 @@ const VALID_FROM: Record<Action, string[]> = {
   reinstate:          ['EXPIRED'],
 }
 
-type HoldWithClient = Hold & { client_user: { username: string; email: string | null; company_name: string } | null }
-
-/**
- * Every hold of the booking this hold belongs to (lib/bookings.ts bookingKey:
- * all markets of a multi-market quote, a campaign group, or a Salesforce
- * opportunity), or the hold alone. A booking is one quote: extensions, cancel
- * and expiry edits act on all of it in one request.
- */
-async function loadBooking(hold: HoldWithClient): Promise<HoldWithClient[]> {
-  const key = bookingKey(hold)
-  const ids = key ? (await loadBookingHolds(key)).map(h => h.id) : []
-  if (!ids.includes(hold.id)) ids.push(hold.id)
-  return prisma.hold.findMany({
-    where:   { id: { in: ids } },
-    include: { client_user: { select: { username: true, email: true, company_name: true } } },
-  })
-}
-
-/** The start dates that cap the booking's one expiry (lib/bookings.ts bookingCapStarts). */
-function capStarts(booking: Hold[]): string[] {
-  const today = centralDate(new Date())
-  return bookingCapStarts(booking.map(h => ({ start_date: h.start_date.toISOString().slice(0, 10), status: h.status })), today)
-}
 
 const day = (d: Date) => d.toISOString().slice(0, 10)
 
@@ -425,26 +402,10 @@ export async function PATCH(
   // yet brings them back, like reinstate: their trucks may have been booked by
   // someone else since they lapsed. Written under those trucks' locks and
   // re-checked (lib/holdWriteLock.ts); this booking's own holds don't count.
-  const reviveExpiry = (write: (tx: Prisma.TransactionClient) => Promise<unknown>) => {
-    const now = new Date()
-    const today = centralDate(now)
-    // As reinstate: a market that has already ended reserves nothing ahead.
-    const lapsed = live.filter(h => !holdReservesNow(h, now) && day(h.end_date) >= today)
-    return writeHoldsExclusive(
-      lapsed.map(h => ({ truck: h.truck_number, start: day(h.start_date), end: day(h.end_date) })),
-      write,
-      // Bringing a lapsed hold back is a new reservation of its truck: AT&T soft
-      // holds count, as in reinstate (they're treated as permanent).
-      { ignoreHoldIds: booking.map(h => h.id) },
-    )
-  }
+  const reviveExpiry = (write: (tx: Prisma.TransactionClient) => Promise<unknown>) => reviveBookingExpiry(live, booking, write)
   const revivalRefusal = (err: unknown) => {
-    if (err instanceof HoldClashError) {
-      const clashes = err.clashes.map(c => ({ truck: c.truck, client: c.client, start: c.start, end: c.end }))
-      return NextResponse.json({ error: reinstateRefusal(clashes), clashes }, { status: 409 })
-    }
-    if (err instanceof HoldLockTimeoutError) return NextResponse.json({ error: err.message }, { status: 409 })
-    throw err
+    const r = revivalRefusalBody(err)
+    return NextResponse.json(r.body, { status: r.status })
   }
 
   if (action === 'approve_extension') {
@@ -492,50 +453,10 @@ export async function PATCH(
   }
 
   // ── update_expiration ────────────────────────────────────────────────────
+  // Shared with the expiry email's Extend link (lib/bookingExpiry.ts).
   if (action === 'update_expiration') {
-    if (!newExpiresAtStr) {
-      return NextResponse.json({ error: 'expires_at is required' }, { status: 400 })
-    }
-    const newExp = /^\d{4}-\d{2}-\d{2}$/.test(newExpiresAtStr) ? endOfDayCentral(newExpiresAtStr) : new Date(NaN)
-    if (isNaN(newExp.getTime())) {
-      return NextResponse.json({ error: 'Invalid date' }, { status: 400 })
-    }
-    // Refused, not quietly cut back: the booking's one expiry can't run past
-    // 2 days before its earliest start (the Edit dialog blocks the same date).
-    const earliest = [...capStarts(booking)].sort()[0]
-    const lastDate = lastExpiryDate(earliest, new Date(), STAFF_MIN_DAYS_BEFORE_START)
-    if (newExpiresAtStr > lastDate) {
-      return NextResponse.json({
-        error: `The latest this booking can be held is ${lastDate}: ${STAFF_MIN_DAYS_BEFORE_START} days before its first market starts (${earliest}).`,
-        lastDate,
-      }, { status: 400 })
-    }
-    const closed = closedOpportunityBlocksReactivation(stage)
-    if (closed) return NextResponse.json({ error: `Can't change the expiry: ${closed}` }, { status: 409 })
-
-    // Every live hold of the booking to the one date.
-    try {
-      await reviveExpiry(async tx => {
-        await tx.hold.updateMany({
-          where: { id: { in: live.map(h => h.id) } },
-          data:  { expires_at: newExp, status: 'HOLD', extension_until: null, extension_reason: null },
-        })
-        await tx.auditLog.createMany({
-          data: live.map(h => ({
-            action:       'UPDATE_HOLD_EXPIRATION',
-            truck_number: h.truck_number,
-            user_id:      session.user.id,
-            hold_id:      h.id,
-            details:      JSON.stringify({ new_expires_at: newExp.toISOString(), booking: bookingKey(h) }),
-          })),
-        })
-      })
-    } catch (err) {
-      return revivalRefusal(err)
-    }
-
-    const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
-    return NextResponse.json({ ok: true, holds: live.length, expires_at: newExp.toISOString(), sfdcWarning })
+    const r = await setBookingExpiry({ hold, booking, stage, date: newExpiresAtStr, userId: session.user.id })
+    return NextResponse.json(r.body, { status: r.status })
   }
 
   // ── deny_extension ──────────────────────────────────────────────────────

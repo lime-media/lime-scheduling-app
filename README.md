@@ -338,6 +338,16 @@ keeps AT&T soft holds current (releases prior months, duplicates and stale
 holds; fills the current month and the next two), reconciles Salesforce Opportunity stages, expires
 holds past their `expires_at`, and re-runs conflict detection.
 
+**Expiry reminders.** The sweep emails each rep, once per expiry, about their
+reservations (made in the app) that lapse within 24 hours (`lib/holdExpiryWarnings.ts`): one card per
+booking, with **Extend 1 day** / **Extend 2 days** buttons. A button opens a confirm page
+(`/extend`, no sign-in: the link is signed for that rep and booking with `NEXTAUTH_SECRET`,
+`lib/extendLink.ts`) whose button extends the whole booking under the same rules as Edit expiry on
+Reservations (`lib/bookingExpiry.ts`: 2 days before the earliest start at most, Salesforce's Hold
+Exp synced). A link stops working when the expiry it warned about passes or changes, so each email
+extends once; the next reminder brings a new link, with no limit on how many times. Links use
+`NEXTAUTH_URL` as the app's address, or the branch URL on a preview deployment (UAT).
+
 **Opportunity stage reconcile.** Salesforce never tells us when an Opportunity
 closes — the hold webhook payload carries trucks and dates, no stage. So the sweep
 pulls the stage for every Opportunity behind an active `SALESFORCE` hold and settles

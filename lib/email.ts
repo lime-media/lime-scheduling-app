@@ -1,5 +1,5 @@
 import { getSetting } from '@/lib/appSettings'
-import { otpHtml } from '@/lib/emailTemplates'
+import { expiringHoldsHtml, expiringHoldsText, otpHtml, type ExpiringBooking } from '@/lib/emailTemplates'
 
 // Email notifications — wire up SMTP credentials in .env when ready.
 // Required env vars: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
@@ -252,20 +252,11 @@ export async function sendOtpEmail(data: OtpEmailData): Promise<void> {
   })
 }
 
-export interface ExpiringHoldSummary {
-  truckNumber: string
-  clientName:  string
-  market:      string
-  startDate:   string
-  endDate:     string
-  expiresAt:   string
-  hoursLeft:   number
-}
-
 export interface ExpiringHoldsEmailData {
-  to:         string
+  to:            string
   recipientName: string
-  holds:      ExpiringHoldSummary[]
+  bookings:      ExpiringBooking[]
+  reservationsUrl: string
 }
 
 /**
@@ -280,7 +271,7 @@ export async function sendExpiringHoldsEmail(data: ExpiringHoldsEmailData): Prom
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
     console.log('[email] SMTP not configured — expiry warning not sent:', {
       to: data.to,
-      holds: data.holds.length,
+      bookings: data.bookings.length,
     })
     return
   }
@@ -293,41 +284,18 @@ export async function sendExpiringHoldsEmail(data: ExpiringHoldsEmailData): Prom
     auth:   { user: SMTP_USER, pass: SMTP_PASS },
   })
 
-  const n = data.holds.length
+  const n = data.bookings.length
   const subject = n === 1
-    ? `Reservation expires tomorrow — Truck ${data.holds[0].truckNumber} · ${data.holds[0].clientName}`
+    ? `Reservation expires tomorrow — ${data.bookings[0].clientName} · Truck${data.bookings[0].trucks.length > 1 ? 's' : ''} ${data.bookings[0].trucks.join(', ')}`
     : `${n} reservations expire within 24 hours`
-
-  const lines = [
-    `${data.recipientName || 'Hi'},`,
-    ``,
-    n === 1
-      ? `A reservation you placed expires in ${data.holds[0].hoursLeft} hour${data.holds[0].hoursLeft === 1 ? '' : 's'}.`
-      : `${n} reservations you placed expire within the next 24 hours.`,
-    ``,
-  ]
-
-  for (const h of data.holds) {
-    lines.push(
-      `Truck ${h.truckNumber} — ${h.clientName}`,
-      `  Market:  ${h.market || 'Unknown'}`,
-      `  Dates:   ${h.startDate} → ${h.endDate}`,
-      `  Expires: ${h.expiresAt} (${h.hoursLeft}h)`,
-      ``,
-    )
-  }
-
-  lines.push(
-    `Commit or extend them at https://led.lime-media.com/hold-requests`,
-    ``,
-    `Anything not committed by its expiry is released automatically and the truck`,
-    `becomes available to everyone else.`,
-  )
+  const fields = { name: data.recipientName, bookings: data.bookings, reservationsUrl: data.reservationsUrl }
 
   await transporter.sendMail({
     from:    SMTP_FROM ?? SMTP_USER,
     to:      data.to,
     subject,
-    text:    lines.join('\n'),
+    text:    expiringHoldsText(fields),
+    html:    expiringHoldsHtml(fields),
   })
 }
+

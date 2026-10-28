@@ -4,7 +4,7 @@
  * Tells the server someone is using the app, for "Last activity" on the Users
  * page: on page loads and navigation, at most once every 10 minutes per tab.
  * Staff pages ping /api/activity, the client portal /api/client/activity;
- * login pages never ping. Fire-and-forget: a failure is ignored.
+ * login pages and /extend (no sign-in) never ping. Fire-and-forget: a failure is ignored.
  */
 
 import { useEffect } from 'react'
@@ -15,7 +15,8 @@ const EVERY_MS = 10 * 60_000
 export function ActivityPing() {
   const pathname = usePathname() ?? ''
   useEffect(() => {
-    if (pathname.endsWith('/login')) return
+    // Login pages and the expiry email's Extend page have no session to ping with.
+    if (pathname.endsWith('/login') || pathname === '/extend') return
     const client = pathname.startsWith('/client')
     const key = client ? 'activity.client' : 'activity.staff'
     try {

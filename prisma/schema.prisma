@@ -364,6 +364,20 @@ model DealValue {
   @@map("app_deal_values")
 }
 
+// A Salesforce opportunity the app created, so one made directly in Salesforce
+// can be told apart (lib/opportunityOrigins.ts). The app's integration user is
+// a real person's, so Salesforce's Created By can't.
+model CreatedOpportunity {
+  sfdc_opportunity_id String   @id @db.NVarChar(18)
+  created_at          DateTime @default(now())
+  /// The staff user who booked it; null for a client's own booking.
+  created_by          String?  @db.NVarChar(191)
+  /// 'staff', 'client' or 'multi-market'.
+  path                String   @db.NVarChar(30)
+
+  @@map("app_created_opportunities")
+}
+
 // Which LED client (dbo.clients.client_uid) a Salesforce account is: picked by
 // staff once per account (lib/ledClients.ts). LED has no Salesforce link.
 model LedClientLink {

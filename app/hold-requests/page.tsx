@@ -593,9 +593,12 @@ export default function HoldRequestsPage() {
   }, [rowsByBooking])
 
   // A won booking LED has fully scheduled: listed only under its own filter.
+  // One whose truck just moved to match LED, or whose new truck Salesforce
+  // refuses, stays in the main list (its badge is the news), for the week.
   const inLedOf = useCallback((r: HoldRequest) => {
     const key = bookingKey(r)
-    return bookingInLed(key ? rowsByBooking.get(key) ?? [r] : [r])
+    const rows = key ? rowsByBooking.get(key) ?? [r] : [r]
+    return bookingInLed(rows) && !rows.some(x => x.led_followed || x.led_trucks_unsynced_since)
   }, [rowsByBooking])
 
   const filtered = useMemo(

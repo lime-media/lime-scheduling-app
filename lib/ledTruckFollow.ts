@@ -27,6 +27,7 @@
 import { prisma } from '@/lib/prisma'
 import { jobKey } from '@/lib/jobNumber'
 import { ledMarketMatches } from '@/lib/ledJobs'
+import { centralDate } from '@/lib/dateOnly'
 import { stateCode } from '@/lib/usStates'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
@@ -84,10 +85,12 @@ export function labelCities(label: string): { city: string; state: string | null
  */
 function inHoldMarket(h: FollowHold, r: FollowRow): boolean {
   if (MULTI_MARKET.test(h.market)) {
-    // A city the label names, in the state it names with it (when it does).
-    const rowState = stateCode(r.state ?? '')
-    return labelCities(h.market).some(n =>
-      [cityOf(r.market), cityOf(r.standard_market_name ?? '')].includes(n.city) && (!n.state || n.state === rowState))
+    // A city the label names; with the state it names too (when it does), judged
+    // as one market would be (LED's state, else its market's or standard market's).
+    const row = { market: r.market, state: r.state ?? '', standard_market_name: r.standard_market_name }
+    return labelCities(h.market).some(n => n.state
+      ? ledMarketMatches({ market: n.city, state: n.state }, row)
+      : [cityOf(r.market), cityOf(r.standard_market_name ?? '')].includes(n.city))
   }
   return ledMarketMatches({ market: h.market, state: h.state ?? '' }, { market: r.market, state: r.state ?? '', standard_market_name: r.standard_market_name })
 }
@@ -250,20 +253,24 @@ export const FOLLOW_SYNC_OVERDUE_MS = 3600_000
 export async function syncFollowedOpportunities(justMoved: string[]): Promise<string[]> {
   const now = new Date()
   const overdueBefore = new Date(now.getTime() - FOLLOW_SYNC_OVERDUE_MS)
-  const marked = await prisma.hold.findMany({
-    where:  { led_follow_sync_pending: { not: null }, status: 'COMMITTED', sfdc_opportunity_id: { not: null } },
+  // Only holds still running: once a campaign has ended, its LED Trucks no
+  // longer decides anything, so a refusal isn't retried forever. Past the
+  // overdue point, a refusal is retried on the first sweep of each hour, not
+  // every sweep (the card already says so).
+  const today = new Date(centralDate(now) + 'T00:00:00Z')
+  const marked = (await prisma.hold.findMany({
+    where:  { led_follow_sync_pending: { not: null }, status: 'COMMITTED', sfdc_opportunity_id: { not: null }, end_date: { gte: today } },
     select: { id: true, sfdc_opportunity_id: true, led_follow_sync_pending: true },
   }).catch((err) => {
     console.error('[led-follow] reading holds waiting for a Salesforce sync failed:', err)
     return []
-  })
+  })).filter(h => h.led_follow_sync_pending! >= overdueBefore || now.getUTCMinutes() < 15)
   // A hold no longer committed drops its mark: its release synced on its own,
   // and a mark left behind would be taken for a refused sync if it's won again.
-  await prisma.hold.updateMany({ where: { led_follow_sync_pending: { not: null }, status: { not: 'COMMITTED' } }, data: { led_follow_sync_pending: null } })
+  // Likewise a hold with no opportunity left: there's nothing in Salesforce to sync.
+  await prisma.hold.updateMany({ where: { led_follow_sync_pending: { not: null }, OR: [{ status: { not: 'COMMITTED' } }, { sfdc_opportunity_id: null }] }, data: { led_follow_sync_pending: null } })
     .catch((err) => console.error('[led-follow] clearing sync marks on holds no longer committed failed:', err))
   const retry = marked.map(h => h.sfdc_opportunity_id).filter((id): id is string => !!id)
-  const overdue = [...new Set(marked.filter(h => h.led_follow_sync_pending! < overdueBefore).map(h => h.sfdc_opportunity_id))]
-  if (overdue.length) console.error(`[led-follow] LED Trucks still not in Salesforce after an hour (shown on Reservations): ${overdue.join(', ')}`)
   const pending: string[] = []
   for (const opp of new Set([...justMoved, ...retry])) {
     // The marks this sync covers: read before it runs, and cleared only if
@@ -284,5 +291,7 @@ export async function syncFollowedOpportunities(justMoved: string[]): Promise<st
         .catch((err) => console.error(`[led-follow] clearing the sync mark on hold ${h.id} failed:`, err))
     }
   }
+  const overdue = [...new Set(marked.filter(h => h.led_follow_sync_pending! < overdueBefore && pending.includes(h.sfdc_opportunity_id!)).map(h => h.sfdc_opportunity_id))]
+  if (overdue.length) console.error(`[led-follow] LED Trucks still not in Salesforce after an hour (shown on Reservations): ${overdue.join(', ')}`)
   return pending
 }

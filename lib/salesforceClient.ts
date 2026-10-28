@@ -147,16 +147,24 @@ export function fieldRefusedOnWrite(errors: unknown, field: string): boolean {
 }
 
 /**
+ * Whether a refused create was about CREATED_IN_APP_FIELD: the recognised
+ * refusals (fieldRefusedOnWrite), or any error naming the field, since
+ * Salesforce words a refused field more than one way. One rule for both the
+ * hour's skip and which error a rep sees. Pure.
+ */
+function aboutCreatedInApp(errors: unknown): boolean {
+  return fieldRefusedOnWrite(errors, CREATED_IN_APP_FIELD)
+    || JSON.stringify(errors ?? '').toLowerCase().includes(CREATED_IN_APP_FIELD.toLowerCase())
+}
+
+/**
  * When a create failed both with and without CREATED_IN_APP_FIELD, whether
  * the first attempt's error is the one to report. The marked attempt's is,
- * unless its errors mention the field at all (in any wording, wider than
- * fieldRefusedOnWrite: a refusal of the field is never the rep's to fix).
- * `firstMarked` says which went first. Pure.
+ * unless it was about the field (never the rep's to fix). `firstMarked` says
+ * which went first. Pure.
  */
 export function reportFirstFailure(firstMarked: boolean, firstErrors: unknown, secondErrors: unknown): boolean {
-  const markedErrors = firstMarked ? firstErrors : secondErrors
-  const aboutField = JSON.stringify(markedErrors ?? '').toLowerCase().includes(CREATED_IN_APP_FIELD.toLowerCase())
-  return aboutField !== firstMarked
+  return aboutCreatedInApp(firstMarked ? firstErrors : secondErrors) !== firstMarked
 }
 
 /**
@@ -206,7 +214,7 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
   // create made nothing, so the retry can't duplicate; a 5xx or an unreadable
   // reply may still have made the opportunity, so it isn't retried.
   if (!data.success && res.status === 400 && Array.isArray(data.errors)) {
-    const named = withMark && fieldRefusedOnWrite(data.errors, CREATED_IN_APP_FIELD)
+    const named = withMark && aboutCreatedInApp(data.errors)
     const first = { res, data }
     ;({ res, data } = await post(withMark ? body : marked(body)))
     if (named) {
@@ -214,7 +222,7 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
       console.warn(`[sfdc] ${CREATED_IN_APP_FIELD} refused; creating opportunities without it for an hour:`, JSON.stringify(first.data.errors))
     } else if (!withMark && data.success) {
       createdInAppRefusedAt = 0
-    } else if (!withMark && fieldRefusedOnWrite(data.errors, CREATED_IN_APP_FIELD)) {
+    } else if (!withMark && aboutCreatedInApp(data.errors)) {
       createdInAppRefusedAt = Date.now() // still refused: keep skipping it
     }
     // Both refused (the retry definitely too: a 5xx or unreadable retry may
@@ -324,6 +332,8 @@ export async function sfdcQuery<T = Record<string, unknown>>(soql: string): Prom
   return data?.records ?? []
 }
 
+const MAX_QUERY_PAGES = 1000
+
 /**
  * A SOQL query's every row: follows Salesforce's pages (nextRecordsUrl, 2,000
  * rows each) up to `maxRows`. `truncated` says rows were left out.
@@ -333,8 +343,9 @@ export async function sfdcQueryAll<T = Record<string, unknown>>(soql: string, ma
   let path: string | null = `/query?q=${encodeURIComponent(soql)}`
   const seen = new Set<string>()
   while (path) {
-    // A page already read means the replies are going round; stop, don't loop.
-    if (seen.has(path)) throw new Error('Salesforce SOQL query failed — its pages repeat')
+    // A page already read means the replies are going round, and far more
+    // pages than rows to read means they aren't advancing; stop, don't loop.
+    if (seen.has(path) || seen.size > MAX_QUERY_PAGES) throw new Error('Salesforce SOQL query failed — its pages are not advancing')
     seen.add(path)
     const res = await sfdcFetch(path)
     const data = await res.json().catch(() => null)

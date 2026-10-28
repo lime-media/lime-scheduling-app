@@ -15,7 +15,7 @@
  */
 import { prisma } from '@/lib/prisma'
 import { centralDate } from '@/lib/dateOnly'
-import { CREATED_IN_APP_FIELD, createOpportunity, fieldUnreadable, sfdcQueryAll, type CreateOpportunityInput, type SfdcOpportunityResult } from '@/lib/salesforceClient'
+import { CREATED_IN_APP_FIELD, createOpportunity, sfdcQueryAll, type CreateOpportunityInput, type SfdcOpportunityResult } from '@/lib/salesforceClient'
 
 /** How close an app reservation's creation must be to an opportunity's to count it as made in the app. */
 export const OPPORTUNITY_MATCH_MINUTES = 5
@@ -172,8 +172,6 @@ export async function opportunityOrigins(from: string, to: string): Promise<Orig
   try {
     read = await sfdcQueryAll<SoqlOpportunity>(soql(true))
   } catch (err) {
-    // Only the field missing is read again without it; an outage is an outage.
-    if (!fieldUnreadable(err, CREATED_IN_APP_FIELD)) throw err
     console.warn(`[opportunity-origins] ${CREATED_IN_APP_FIELD} not readable; counting without it:`, err)
     markerReadable = false
     read = await sfdcQueryAll<SoqlOpportunity>(soql(false))

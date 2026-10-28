@@ -5,6 +5,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { reservationOwners } from '@/lib/reservationOwners'
+import { ledClientNames } from '@/lib/ledClients'
 import { stillListed } from '@/lib/bookings'
 import { centralDate } from '@/lib/dateOnly'
 import { FOLLOW_SYNC_OVERDUE_MS } from '@/lib/ledTruckFollow'
@@ -83,10 +84,13 @@ export async function GET() {
   // `ledUnavailable` tells the page the LED read failed, so a badge says so
   // instead of "No job number yet" on every won booking.
   let ledUnavailable = false
+  // Each won booking's LED client, from its account's link (lib/ledClients.ts):
+  // the client's name when LED can be read, else just that it's linked.
+  const wonAccounts = [...new Set(holds.flatMap(h => h.status === 'COMMITTED' && h.sfdc_account_id ? [h.sfdc_account_id] : []))]
   // Won holds the sweep moved onto LED's truck in the last week (lib/ledTruckFollow.ts),
   // so the card says the truck changed: from the audit rows the move wrote.
   const anyWon = holds.some(h => h.status === 'COMMITTED')
-  const [owners, inLed, followed] = await Promise.all([
+  const [owners, inLed, linked, followed] = await Promise.all([
     reservationOwners(holds.map(h => ({ id: h.id, created_by: h.created_by, created_by_name: h.user?.name ?? null, sfdc_opportunity_id: h.sfdc_opportunity_id }))),
     ledShiftsForHolds(committed)
       .then(shifts => ledStandings(committed, shifts))
@@ -94,6 +98,14 @@ export async function GET() {
         console.error('[hold-requests] LED schedule match failed:', err)
         ledUnavailable = true
         return new Map<string, LedStanding>()
+      }),
+    // LED is read only for the linked clients, to name them.
+    (wonAccounts.length ? prisma.ledClientLink.findMany({ where: { sfdc_account_id: { in: wonAccounts } } }) : Promise.resolve([]))
+      .then(async (found) => {
+        const linkOf = new Map(found.map(l => [l.sfdc_account_id, l.client_uid.toLowerCase()]))
+        const clientNames = await ledClientNames([...new Set(linkOf.values())])
+          .catch((err): Map<string, string> | null => { console.error('[hold-requests] LED client read failed:', err); return null })
+        return { linkOf, clientNames }
       }),
     anyWon
       ? prisma.auditLog.findMany({
@@ -105,6 +117,14 @@ export async function GET() {
         }).catch((err) => { console.error('[hold-requests] LED follow read failed:', err); return [] })
       : [],
   ])
+  const { linkOf, clientNames } = linked
+  const ledClientOf = (accountId: string | null) => {
+    const uid = accountId ? linkOf.get(accountId) : undefined
+    if (!uid) return null
+    // A link to a client since deleted in LED counts as unlinked.
+    if (clientNames && !clientNames.has(uid)) return null
+    return { client_uid: uid, client: clientNames?.get(uid) ?? null }
+  }
   // A won hold's truck changes this week, in order; the card says "moved to
   // match LED" only while its last change was a follow onto the truck it's on
   // now (a staff swap since, or a follow back, says nothing).
@@ -149,6 +169,8 @@ export async function GET() {
     campaign_group_id: h.campaign_group_id ?? null,
     sfdc_opportunity_id: h.sfdc_opportunity_id ?? null,
     job_number:        h.sfdc_job_number ?? null,
+    sfdc_account_id:   h.sfdc_account_id ?? null,
+    led_client:        ledClientOf(h.sfdc_account_id),
     led_scheduled:     inLed.get(h.id)?.scheduled ?? false,
     led_days:          inLed.get(h.id)?.days ?? 0,
     led_days_sold:     inLed.get(h.id)?.of ?? null,

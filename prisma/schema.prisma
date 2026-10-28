@@ -49,6 +49,9 @@ model Hold {
   // Opportunity.Job_Number__c, copied by the reconcile; matches the LED program's
   // client_programs.job_number (lib/ledJobs.ts).
   sfdc_job_number     String?
+  // Opportunity.AccountId, copied by the reconcile; its LED client is in
+  // app_led_client_links (lib/ledClients.ts).
+  sfdc_account_id     String?     @db.NVarChar(18)
   // When the sweep moved this won hold onto LED's truck and its opportunity's
   // LED Trucks hasn't reached Salesforce yet; retried every sweep
   // (lib/ledTruckFollow.ts). Null: nothing waiting.
@@ -359,4 +362,16 @@ model DealValue {
 
   @@index([sfdc_opportunity_id, captured_at])
   @@map("app_deal_values")
+}
+
+// Which LED client (dbo.clients.client_uid) a Salesforce account is: picked by
+// staff once per account (lib/ledClients.ts). LED has no Salesforce link.
+model LedClientLink {
+  sfdc_account_id String   @id @db.NVarChar(18)
+  account_name    String   @db.NVarChar(255)
+  client_uid      String   @db.UniqueIdentifier
+  linked_by       String   @db.NVarChar(191)
+  linked_at       DateTime @default(now())
+
+  @@map("app_led_client_links")
 }

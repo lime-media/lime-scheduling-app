@@ -10,7 +10,7 @@ import { marketSizeTierFromDmaCode, NON_DMA_MARKET_TIER, type RateOverrides } fr
 import { loadStandardMarketCoords, normalizeMarketKey, titleCaseMarket } from '@/lib/marketBounds'
 import { findPlaces, placeCoords, withStateComma } from '@/lib/geo/places'
 import { dmaForPoint } from '@/lib/pricing/dmaArea'
-import { TOP_DMAS } from '@/lib/pricing/topDmas'
+import { TOP_DMAS, type TopDma } from '@/lib/pricing/topDmas'
 import type { ClientSession } from '@/lib/clientAuth'
 import { liveClientLinks } from '@/lib/clientLinks'
 
@@ -65,6 +65,24 @@ export function matchTopDma<T extends { dma_code: string; dma_name: string }>(
     const dmaState = dmaKey.split(',')[1]?.trim()
     if (dmaCity !== city) return false
     return !state || !dmaState || state === dmaState
+  })
+}
+
+/**
+ * A top-50 DMA named anywhere in free text, for locating a market nothing else
+ * knows: its own name, or one of its cities as a whole word ("Greater Boston
+ * Area", "Fort Worth area"). Whole words only, unlike the old substring test
+ * ("York, PA" is not New York); a state that rules the DMA out wins. Pure.
+ */
+export function locateTopDma(market: string): TopDma | undefined {
+  const exact = matchTopDma(market, TOP_DMAS)
+  if (exact) return exact
+  const text = ` ${normalizeMarketKey(market).replace(/[^a-z0-9]+/g, ' ')} `
+  const state = normalizeMarketKey(market).split(',').at(-1)?.trim()
+  return TOP_DMAS.find(d => {
+    const [cities, dmaState] = normalizeMarketKey(d.dma_name).split(',').map(p => p.trim())
+    if (state && /^[a-z]{2}$/.test(state) && state !== dmaState) return false
+    return cities.split('-').some(c => text.includes(` ${c.replace(/[^a-z0-9]+/g, ' ').trim()} `))
   })
 }
 
@@ -222,8 +240,9 @@ export async function resolveCampaignCoords(market: string): Promise<CampaignCoo
   const place = placeCoords(market)
   if (place) return { lat: place.lat, lng: place.lng, source: 'us_place' }
 
-  // Last, a top-50 DMA's own name ("Dallas-Fort Worth, TX"), matched strictly.
-  const dma = matchTopDma(market, TOP_DMAS)
+  // Last, a top-50 DMA named in the text ("Dallas-Fort Worth, TX", "Greater
+  // Boston Area").
+  const dma = locateTopDma(market)
   if (dma) return { lat: dma.lat, lng: dma.lng, source: 'top_dma' }
 
   console.warn('[resolvers] could not resolve coordinates for market:', market)

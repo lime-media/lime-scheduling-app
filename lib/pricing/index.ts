@@ -5,7 +5,6 @@ export {
   priceTransport,
   chargeForLeg,
   needsRepositioning,
-  estimatedLegs,
   cancellationCharge,
   marginCheck,
   activationDayCost,

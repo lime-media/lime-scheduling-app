@@ -4,7 +4,7 @@
  */
 import { eq, section } from './harness'
 import {
-  priceTransport, chargeForLeg, estimatedLegs, needsRepositioning,
+  priceTransport, chargeForLeg, needsRepositioning,
   transportDaysFromDistance, type TruckLeg,
 } from '@/lib/pricing/transport'
 import { billedDaysPerWeek, countActivationDays, countCalendarDays, defaultDaysPerWeek }
@@ -87,16 +87,6 @@ const farFleet = priceTransport({
 eq('3 distant trucks -> priced, not refused', farFleet.outcome, 'BILLED')
 eq('every distant truck billed', farFleet.charge, 3 * chargeForLeg(1000))
 eq('an extreme price is still a price', farFleet.charge > 9000, true)
-
-section('MCP estimate uses the SAME engine, only different legs')
-const mcpLegs = estimatedLegs(3, 400)
-const mcp = priceTransport({ activationDays: 5, leadBusinessDays: 5, legs: mcpLegs })
-const client = priceTransport({ activationDays: 5, leadBusinessDays: 5, legs: [repo(400), repo(400), repo(400)] })
-eq('identical legs -> identical result', mcp.charge, client.charge)
-eq('MCP estimate bills all 3 (no GPS)', mcp.charge, 3 * chargeForLeg(400))
-eq('MCP absorbs on the same 10/10 rule',
-   priceTransport({ activationDays: 10, leadBusinessDays: 10, legs: mcpLegs }).outcome, 'ABSORBED')
-eq('estimate inside radius -> no repositioning', estimatedLegs(2, 100)[0].needsRepositioning, false)
 
 section('activation days (the MCP day-count fix)')
 // 2026-09-01 is a Tuesday; 2026-09-14 is a Monday.

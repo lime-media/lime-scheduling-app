@@ -189,8 +189,7 @@ function classifyDistance(distanceMiles: number, serviceAreaMiles?: number): Pro
 
 /**
  * Convert selected trucks into transport legs for priceTransport().
- * This is the adapter for callers that HAVE real truck positions; callers
- * without truck selection use estimatedLegs() from lib/pricing/transport.
+ * This is the adapter from real truck positions.
  */
 export function legsFromTrucks(trucks: AvailableTruck[]): TruckLeg[] {
   return trucks.map(t => ({

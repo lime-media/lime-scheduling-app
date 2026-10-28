@@ -4,7 +4,7 @@
  * The tier used to come from the market's NAME alone, so a suburb inside a
  * mega-DMA ("Evanston, IL", "Plano, TX") was priced on small-metro reach.
  * Now a market that is not itself a top-50 DMA city takes the tier of the
- * nearest active top-50 DMA whose centre is within DMA_RADIUS_MILES.
+ * nearest top-50 DMA whose centre is within DMA_RADIUS_MILES.
  *
  * Nielsen's DMA boundaries are proprietary, so this is a radius around each
  * DMA's centre (lib/pricing/topDmas.ts): it catches the suburban ring

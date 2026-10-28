@@ -28,10 +28,8 @@
  *                    + (overnights x hotel per diem)
  *                  Transport days = ceil(distance / 450), minimum 1.
  *
- * Callers differ only in how they supply legs, not in the rules applied:
- *   - Quote/hold routes pass real trucks with live GPS distances.
- *   - The MCP endpoint has no truck selection, so it estimates every truck
- *     as sitting at the nearest accepted market (see estimatedLegs).
+ * Every caller (quote and hold routes, the MCP endpoint, the client portal)
+ * passes real trucks with live GPS distances.
  *
  * When transport is absorbed or no truck needs repositioning, the buyer sees
  * no transport line at all — not a $0 line (spec §7).
@@ -171,26 +169,6 @@ export function chargeForLeg(
     + (overrides?.airfare ?? TRANSPORT_CONFIG.airfareHomeOneWay)
     + overnights * (overrides?.hotelPerNight ?? TRANSPORT_CONFIG.hotelPerDiemPerNight)
   )
-}
-
-/**
- * Build legs for callers that have no truck selection (the MCP endpoint).
- *
- * Every truck is assumed to be sitting at the nearest accepted market, so the
- * campaign's distance to that market stands in for each truck's real distance.
- * This is an estimate: once trucks are actually selected, the quote routes
- * price the same order from live GPS positions and may land lower.
- */
-export function estimatedLegs(
-  truckCount: number,
-  distanceToNearestMarketMiles: number,
-  serviceAreaMiles?: number,
-): TruckLeg[] {
-  const repositions = needsRepositioning(distanceToNearestMarketMiles, serviceAreaMiles)
-  return Array.from({ length: truckCount }, () => ({
-    distanceMiles: distanceToNearestMarketMiles,
-    needsRepositioning: repositions,
-  }))
 }
 
 // ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@
  */
 import { defer, eq, section } from './harness'
 import { matchMarketKey, titleCaseMarket, normalizeMarketKey } from '@/lib/marketBounds'
-import { matchTopDma, resolveMarketSizeTierId } from '@/lib/pricing/resolvers'
+import { locateTopDma, matchTopDma, resolveMarketSizeTierId } from '@/lib/pricing/resolvers'
 import { TOP_DMAS } from '@/lib/pricing/topDmas'
 import { validateEmailList } from '@/lib/appSettings'
 import { marketSizeTierFromDmaCode, NON_DMA_MARKET_TIER, MARKET_SIZE_TIERS } from '@/lib/pricing/config'
@@ -63,15 +63,14 @@ eq('comma spacing normalized', normalizeMarketKey('Boston,MA'), 'boston, ma')
 eq('inner whitespace collapsed', normalizeMarketKey('  North   Palm Beach ,  FL '), 'north palm beach, fl')
 
 section('top-50 DMA matching (market size tier)')
-const DMAS = TOP_DMAS
-eq('exact city + state', matchTopDma('Chicago, IL', DMAS)?.dma_code, 'DMA-602')
-eq('city without a state still matches', matchTopDma('Chicago', DMAS)?.dma_code, 'DMA-602')
-eq('case and spacing ignored', matchTopDma('  chicago ,il ', DMAS)?.dma_code, 'DMA-602')
+eq('exact city + state', matchTopDma('Chicago, IL', TOP_DMAS)?.dma_code, 'DMA-602')
+eq('city without a state still matches', matchTopDma('Chicago', TOP_DMAS)?.dma_code, 'DMA-602')
+eq('case and spacing ignored', matchTopDma('  chicago ,il ', TOP_DMAS)?.dma_code, 'DMA-602')
 // The substring test this replaces matched BOTH directions, so "York, PA"
 // matched the New York DMA — tier 1 instead of tier 4, a 4.5x reach error.
-eq('substring no longer matches a different city', matchTopDma('York, PA', DMAS), undefined)
-eq('wrong state rules out the DMA', matchTopDma('Chicago, IN', DMAS), undefined)
-eq('unknown market does not match', matchTopDma('Allentown, PA', DMAS), undefined)
+eq('substring no longer matches a different city', matchTopDma('York, PA', TOP_DMAS), undefined)
+eq('wrong state rules out the DMA', matchTopDma('Chicago, IN', TOP_DMAS), undefined)
+eq('unknown market does not match', matchTopDma('Allentown, PA', TOP_DMAS), undefined)
 
 section('tier assignment')
 eq('mega DMA', marketSizeTierFromDmaCode('DMA-501'), 1)
@@ -96,6 +95,12 @@ eq('rejects whitespace inside an address', validateEmailList('an drew@lime-media
 section('market size tier from the top-50 DMA reference data')
 eq('50 DMAs, codes unique', [TOP_DMAS.length, new Set(TOP_DMAS.map(d => d.dma_code)).size], [50, 50])
 eq('NY and LA are mega-DMAs', ['DMA-501', 'DMA-803'].map(marketSizeTierFromDmaCode), [1, 1])
+// The tier-1 and tier-2 codes live in config.ts: each must be in the list, or that metro silently drops to tier 4.
+eq('every tier 1-2 DMA is in the list', ['DMA-501', 'DMA-803', 'DMA-602', 'DMA-623', 'DMA-504', 'DMA-618', 'DMA-524', 'DMA-511', 'DMA-807', 'DMA-506'].every(c => TOP_DMAS.some(d => d.dma_code === c) && marketSizeTierFromDmaCode(c) <= 2), true)
+eq('the rest of the list is tier 3', TOP_DMAS.filter(d => marketSizeTierFromDmaCode(d.dma_code) === 3).length, 40)
+eq('a DMA named in free text is located (last resort)', locateTopDma('Greater Boston Area')?.dma_code, 'DMA-506')
+eq('...including a hyphenated DMA by either city', [locateTopDma('Fort Worth area')?.dma_code, locateTopDma('NYC: New York City, Time Square')?.dma_code], ['DMA-623', 'DMA-501'])
+eq('...but never by part of a word', [locateTopDma('York, PA'), locateTopDma('Newark, NJ')], [undefined, undefined])
 defer((async () => eq('tier by name, then by location, else small metro', [
   await resolveMarketSizeTierId('New York, NY', { lat: 40.7128, lng: -74.006 }),
   // LED's "Dallas, TX" isn't the DMA's name ("Dallas-Fort Worth"): its location places it.

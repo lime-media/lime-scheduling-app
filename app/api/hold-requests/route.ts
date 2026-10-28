@@ -94,7 +94,7 @@ export async function GET() {
   // match LED" only while its last change was a follow onto the truck it's on
   // now (a staff swap since, or a follow back, says nothing).
   const won = new Map(holds.filter(h => h.status === 'COMMITTED').map(h => [h.id, h.truck_number]))
-  const lastSwap = new Map<string, { from: string; to: string; at: string; follow: boolean; first: string }>()
+  const lastSwap = new Map<string, { to: string; at: string; follow: boolean; first: string }>()
   for (const row of followed) {
     if (!row.hold_id || !won.has(row.hold_id)) continue
     let d: { old_truck?: string; new_truck?: string; reason?: string } = {}
@@ -104,7 +104,7 @@ export async function GET() {
     const follow = d.reason === 'led_truck_follow'
     // The truck it was on before this run of follows.
     const first = follow && earlier?.follow ? earlier.first : d.old_truck
-    lastSwap.set(row.hold_id, { from: d.old_truck, to: d.new_truck, at: row.created_at.toISOString(), follow, first })
+    lastSwap.set(row.hold_id, { to: d.new_truck, at: row.created_at.toISOString(), follow, first })
   }
   const followedOf = new Map<string, { from: string; to: string; at: string }>()
   for (const [id, s] of lastSwap) {

@@ -197,7 +197,7 @@ function LedFollowBadge({ rows }: { rows: HoldRequest[] }) {
       )}
       {unsynced && (
         <span className="text-xs text-red-700 font-medium"
-          title="The reservation moved to LED's truck, but Salesforce keeps refusing the new LED Trucks (a validation rule, or the opportunity is gone). It's retried every 15 minutes; fix the opportunity in Salesforce so it can go through.">
+          title="The reservation moved to LED's truck over an hour ago, and the new LED Trucks hasn't reached Salesforce yet (usually a validation rule or a deleted opportunity). It's retried every 15 minutes while the campaign runs; fix the opportunity in Salesforce so it can go through.">
           LED Trucks not updated in Salesforce
         </span>
       )}
@@ -593,8 +593,8 @@ export default function HoldRequestsPage() {
   }, [rowsByBooking])
 
   // A won booking LED has fully scheduled: listed only under its own filter.
-  // One whose truck just moved to match LED, or whose new truck Salesforce
-  // refuses, stays in the main list (its badge is the news), for the week.
+  // One whose truck moved to match LED this week, or whose new truck hasn't
+  // reached Salesforce, stays in the main list: its badge is the news.
   const inLedOf = useCallback((r: HoldRequest) => {
     const key = bookingKey(r)
     const rows = key ? rowsByBooking.get(key) ?? [r] : [r]

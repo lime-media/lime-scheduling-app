@@ -75,6 +75,8 @@ eq('LED row with no state of its own: its standard market gives it',
   moves([multi({ market: 'Multi-market: Detroit, MI, Los Angeles, CA' })], led('1261', DAYS, { market: 'Detroit', state: '', standard_market_name: 'Detroit, MI' })), [['h1', '6907', '1261']])
 eq('a suburb filed under the labelled city\'s standard market',
   moves([multi({ market: 'Multi-market: Portland, OR, Seattle, WA' })], led('1261', DAYS, { market: 'Beaverton', state: 'OR', standard_market_name: 'Portland, OR' })), [['h1', '6907', '1261']])
+eq('a suburb in another state filed under the labelled city\'s standard market',
+  moves([multi({ market: 'Multi-market: New York, NY, Detroit, MI' })], led('1261', DAYS, { market: 'Jersey City', state: 'NJ', standard_market_name: 'New York, NY' })), [['h1', '6907', '1261']])
 eq('labelCities: a state belongs to the city before it', labelCities('Multi-market: Detroit, Los Angeles, CA'), [{ city: 'detroit', state: null }, { city: 'los angeles', state: 'CA' }])
 eq('Washington, DC in a label', moves([multi({ market: 'Multi-market: Washington, DC, Detroit, MI' })], led('1261', DAYS, { market: 'Washington', state: 'DC', standard_market_name: 'Washington, DC' })), [['h1', '6907', '1261']])
 

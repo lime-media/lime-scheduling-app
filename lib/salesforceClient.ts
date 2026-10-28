@@ -216,9 +216,13 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
     // itself refused. The unmarked one may have failed only for lacking the
     // mark (a rule requiring it), which would tell a rep booking in the app
     // to make the opportunity in the app.
-    if (!data.success) {
-      console.warn('[sfdc] Opportunity creation refused both with and without the mark; first attempt:', JSON.stringify(first.data.errors))
-      if (reportFirstFailure(withMark, first.data.errors, data.errors)) ({ res, data } = first)
+    // Only when the retry was a definite refusal too: a 5xx or unreadable
+    // retry may have made the opportunity, so that one is what's reported.
+    if (!data.success && res.status === 400 && Array.isArray(data.errors)) {
+      const reportFirst = reportFirstFailure(withMark, first.data.errors, data.errors)
+      console.warn(`[sfdc] Opportunity creation refused with and without the mark; not reported (${reportFirst ? 'second' : 'first'} attempt):`,
+        JSON.stringify(reportFirst ? data.errors : first.data.errors))
+      if (reportFirst) ({ res, data } = first)
     }
   }
   if (!data.success) {
@@ -323,11 +327,7 @@ export async function sfdcQuery<T = Record<string, unknown>>(soql: string): Prom
 export async function sfdcQueryAll<T = Record<string, unknown>>(soql: string, maxRows = 20_000): Promise<{ rows: T[]; truncated: boolean }> {
   const rows: T[] = []
   let path: string | null = `/query?q=${encodeURIComponent(soql)}`
-  // Salesforce pages hold at least 200 rows, so more pages than this means a
-  // reply that isn't advancing; stop rather than loop.
-  const maxPages = Math.ceil(maxRows / 200) + 1
-  for (let page = 0; path; page++) {
-    if (page >= maxPages) return { rows, truncated: true }
+  while (path) {
     const res = await sfdcFetch(path)
     const data = await res.json().catch(() => null)
     if (!res.ok) {
@@ -339,9 +339,12 @@ export async function sfdcQueryAll<T = Record<string, unknown>>(soql: string, ma
     rows.push(...(data?.records ?? []))
     if (rows.length >= maxRows) return { rows: rows.slice(0, maxRows), truncated: !data?.done || rows.length > maxRows }
     // nextRecordsUrl is absolute from /services/data/<version>; sfdcFetch adds that prefix.
-    path = data?.done === false && typeof data.nextRecordsUrl === 'string'
+    const next: string | null = data?.done === false && typeof data.nextRecordsUrl === 'string'
       ? data.nextRecordsUrl.replace(/^\/services\/data\/[^/]+/, '')
       : null
+    // A page that isn't advancing (no rows, or the same page again) would loop.
+    if (next && (!data.records?.length || next === path)) throw new Error('Salesforce SOQL query failed — a page of results did not advance')
+    path = next
   }
   return { rows, truncated: false }
 }

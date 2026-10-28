@@ -149,11 +149,14 @@ export function fieldRefusedOnWrite(errors: unknown, field: string): boolean {
 /**
  * When a create failed both with and without CREATED_IN_APP_FIELD, whether
  * the first attempt's error is the one to report. The marked attempt's is,
- * unless it was the field itself refused. `firstMarked` says which went first. Pure.
+ * unless its errors mention the field at all (in any wording, wider than
+ * fieldRefusedOnWrite: a refusal of the field is never the rep's to fix).
+ * `firstMarked` says which went first. Pure.
  */
 export function reportFirstFailure(firstMarked: boolean, firstErrors: unknown, secondErrors: unknown): boolean {
   const markedErrors = firstMarked ? firstErrors : secondErrors
-  return fieldRefusedOnWrite(markedErrors, CREATED_IN_APP_FIELD) !== firstMarked
+  const aboutField = JSON.stringify(markedErrors ?? '').toLowerCase().includes(CREATED_IN_APP_FIELD.toLowerCase())
+  return aboutField !== firstMarked
 }
 
 /**
@@ -211,13 +214,14 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
       console.warn(`[sfdc] ${CREATED_IN_APP_FIELD} refused; creating opportunities without it for an hour:`, JSON.stringify(first.data.errors))
     } else if (!withMark && data.success) {
       createdInAppRefusedAt = 0
+    } else if (!withMark && fieldRefusedOnWrite(data.errors, CREATED_IN_APP_FIELD)) {
+      createdInAppRefusedAt = Date.now() // still refused: keep skipping it
     }
-    // Both failed: report the marked attempt's error, unless it was the field
-    // itself refused. The unmarked one may have failed only for lacking the
-    // mark (a rule requiring it), which would tell a rep booking in the app
-    // to make the opportunity in the app.
-    // Only when the retry was a definite refusal too: a 5xx or unreadable
-    // retry may have made the opportunity, so that one is what's reported.
+    // Both refused (the retry definitely too: a 5xx or unreadable retry may
+    // have made the opportunity, so that one is what's reported). Report the
+    // marked attempt's error unless it was about the field: the unmarked one
+    // may have failed only for lacking the mark (a rule requiring it), which
+    // would tell a rep booking in the app to make the opportunity in the app.
     if (!data.success && res.status === 400 && Array.isArray(data.errors)) {
       const reportFirst = reportFirstFailure(withMark, first.data.errors, data.errors)
       console.warn(`[sfdc] Opportunity creation refused with and without the mark; not reported (${reportFirst ? 'second' : 'first'} attempt):`,
@@ -327,7 +331,11 @@ export async function sfdcQuery<T = Record<string, unknown>>(soql: string): Prom
 export async function sfdcQueryAll<T = Record<string, unknown>>(soql: string, maxRows = 20_000): Promise<{ rows: T[]; truncated: boolean }> {
   const rows: T[] = []
   let path: string | null = `/query?q=${encodeURIComponent(soql)}`
+  const seen = new Set<string>()
   while (path) {
+    // A page already read means the replies are going round; stop, don't loop.
+    if (seen.has(path)) throw new Error('Salesforce SOQL query failed — its pages repeat')
+    seen.add(path)
     const res = await sfdcFetch(path)
     const data = await res.json().catch(() => null)
     if (!res.ok) {
@@ -339,12 +347,9 @@ export async function sfdcQueryAll<T = Record<string, unknown>>(soql: string, ma
     rows.push(...(data?.records ?? []))
     if (rows.length >= maxRows) return { rows: rows.slice(0, maxRows), truncated: !data?.done || rows.length > maxRows }
     // nextRecordsUrl is absolute from /services/data/<version>; sfdcFetch adds that prefix.
-    const next: string | null = data?.done === false && typeof data.nextRecordsUrl === 'string'
+    path = data?.done === false && typeof data.nextRecordsUrl === 'string'
       ? data.nextRecordsUrl.replace(/^\/services\/data\/[^/]+/, '')
       : null
-    // A page that isn't advancing (no rows, or the same page again) would loop.
-    if (next && (!data.records?.length || next === path)) throw new Error('Salesforce SOQL query failed — a page of results did not advance')
-    path = next
   }
   return { rows, truncated: false }
 }

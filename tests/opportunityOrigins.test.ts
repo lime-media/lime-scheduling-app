@@ -72,4 +72,6 @@ section('reportFirstFailure: which error the rep sees when both creates fail')
   eq('marked first, field refused: the unmarked retry\'s', reportFirstFailure(true, refused, missing), false)
   eq('unmarked first (mark skipped), marked retry fails otherwise: the marked retry\'s', reportFirstFailure(false, ban, missing), false)
   eq('unmarked first, marked retry refuses the field: the first', reportFirstFailure(false, missing, refused), true)
+  const oddWording = [{ errorCode: 'FIELD_INTEGRITY_EXCEPTION', message: 'Created_In_App__c: not available to this user' }]
+  eq('marked first, field refused in other words: the unmarked retry\'s', reportFirstFailure(true, oddWording, missing), false)
 }

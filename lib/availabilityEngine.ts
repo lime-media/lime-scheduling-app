@@ -21,6 +21,7 @@ import { query } from '@/lib/mssql'
 import { HIDDEN_TRUCKS } from '@/lib/hiddenTrucks'
 import { prisma } from '@/lib/prisma'
 import { CHAT_CONTEXT_QUERY } from '@/lib/scheduleQuery'
+import { centralDate } from '@/lib/dateOnly'
 import { getMarketCoords } from '@/lib/marketCoordinates'
 import {
   resolveNearestAcceptedMarket,
@@ -165,6 +166,12 @@ export type AvailabilityInput = {
    */
   excludeHoldId?: string
   /**
+   * The swap picker for a won hold: its own LED program (its job within its
+   * dates) is that booking scheduled, not something occupying a truck, so a
+   * swap can move the hold onto the truck LED put it on (lib/fleetTimelines.ts).
+   */
+  ownProgramOf?: { start_date: string; end_date: string; job_number: string | null; market: string; state: string }
+  /**
    * Staff quotes: a booking that would leave a LATER AT&T soft hold short of
    * travel time is allowed, with a warning (AvailableTruck.softHoldWarning).
    * Off for clients, who never affect AT&T's reservations.
@@ -204,7 +211,7 @@ export function legsFromTrucks(trucks: AvailableTruck[]): TruckLeg[] {
 // ---------------------------------------------------------------------------
 
 export async function checkAvailability(input: AvailabilityInput): Promise<AvailabilityResult> {
-  const { market, startDate, endDate, truckCount, serviceAreaMiles, excludeHoldId, softHoldStrandIsWarning = false } = input
+  const { market, startDate, endDate, truckCount, serviceAreaMiles, excludeHoldId, ownProgramOf, softHoldStrandIsWarning = false } = input
 
   // Resolve campaign market coordinates
   const campaignCoords = await resolveCampaignCoords(market)
@@ -212,7 +219,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
   // Fetch all data sources in parallel. Timelines come from the shared loader —
   // this module does not build its own, or the duplication starts again.
   const [fleet, contextRows, resolvedNearestMarket] = await Promise.all([
-    loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS, excludeHoldId }),
+    loadFleetTimelines({ hiddenTrucks: HIDDEN_TRUCKS, excludeHoldId, ownProgramOf }),
     query<Record<string, unknown>[]>(CHAT_CONTEXT_QUERY),
     campaignCoords
       ? resolveNearestAcceptedMarket(campaignCoords.lat, campaignCoords.lng)
@@ -267,7 +274,7 @@ export async function checkAvailability(input: AvailabilityInput): Promise<Avail
   // actually need repositioning — not here on the total request count.
 
   // Check each truck: campaign window free, can arrive, does not strand its next job
-  const today = new Date().toISOString().split('T')[0]
+  const today = centralDate(new Date())
   const availableTrucks: AvailableTruck[] = []
   const infeasible: InfeasibleTruck[] = []
   // Excluded trucks whose other dates are worth searching — only searched when
@@ -568,7 +575,7 @@ export async function checkTruckFeasibility(params: {
     campaignCoords,
     jobs,
     currentCoords,
-    today: new Date().toISOString().split('T')[0],
+    today: centralDate(new Date()),
     serviceAreaMiles,
   })
 

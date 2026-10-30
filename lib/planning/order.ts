@@ -383,7 +383,8 @@ export function planOrder(lines: OrderLine[], trucks: PlanTruck[], s: EngineSett
 // ---------------------------------------------------------------------------
 
 /** A stretch one truck spends in one market; `travelTo` when it ends with the drive to the other. */
-export type Stint = { lineId: string; market: string; start: string; end: string; travelTo: string | null }
+/** `workDays`: the stint's WORK days (not idle or travel), what is sold on its hold. */
+export type Stint = { lineId: string; market: string; start: string; end: string; travelTo: string | null; workDays: number }
 
 /** One day of a job: where the truck is, and whether it works or drives that day. */
 export type RotationDay = { date: string; lineId: string; kind: 'WORK' | 'IDLE' | 'TRAVEL' }
@@ -477,10 +478,11 @@ export function rotationStints(job: Job): Stint[] {
     const cur = out[out.length - 1]
     if (cur && cur.lineId === d.lineId && !cur.travelTo) {
       cur.end = d.date
+      if (d.kind === 'WORK') cur.workDays++
       if (d.kind === 'TRAVEL') cur.travelTo = job.lines.find(l => l.id !== d.lineId)!.market
       continue
     }
-    out.push({ lineId: d.lineId, market: byId.get(d.lineId)!.market, start: d.date, end: d.date, travelTo: d.kind === 'TRAVEL' ? job.lines.find(l => l.id !== d.lineId)!.market : null })
+    out.push({ lineId: d.lineId, market: byId.get(d.lineId)!.market, start: d.date, end: d.date, travelTo: d.kind === 'TRAVEL' ? job.lines.find(l => l.id !== d.lineId)!.market : null, workDays: d.kind === 'WORK' ? 1 : 0 })
   }
   return out
 }

@@ -47,6 +47,83 @@ export function bookingStatus(rows: { status: string; market: string }[]): { sta
   return { status, odd }
 }
 
+/**
+ * How much of a booking's committed (won) part LED has scheduled, in truck-days:
+ * the days each hold's job runs on its truck in LED, of the days sold on it
+ * (lib/ledJobs.ts), over the committed holds that have a job number to match
+ * on. `known` is false when none has one yet. Null when nothing in it is
+ * committed. Pure.
+ */
+export function ledProgress(rows: { status: string; led_days?: number; led_days_sold?: number | null }[]): { days: number; of: number; known: boolean } | null {
+  const committed = rows.filter(r => r.status === 'COMMITTED')
+  if (!committed.length) return null
+  const matched = committed.filter(r => r.led_days_sold != null)
+  return {
+    days: matched.reduce((n, r) => n + Math.min(r.led_days ?? 0, r.led_days_sold ?? 0), 0),
+    of: matched.reduce((n, r) => n + (r.led_days_sold ?? 0), 0),
+    known: matched.length > 0,
+  }
+}
+
+/**
+ * A booking LED has fully taken over: every live hold is committed and
+ * scheduled in LED, and LED runs at least one day of it. Reservations stops
+ * listing it (outside its own filter); the LED schedule blocks the trucks from
+ * then on. A hold that sells no days (a planner stint of only travel or idle
+ * days) doesn't hold the booking back, but a booking of only such holds has
+ * nothing in LED, so it stays listed. Pure.
+ */
+export function bookingInLed(rows: { status: string; led_scheduled?: boolean; led_days_sold?: number | null }[]): boolean {
+  const live = rows.filter(r => r.status === 'HOLD' || r.status === 'EXTENSION_REQUESTED' || r.status === 'COMMITTED')
+  return live.length > 0 && live.every(r => r.status === 'COMMITTED' && r.led_scheduled) && live.some(r => (r.led_days_sold ?? 0) > 0)
+}
+
+/**
+ * A won booking that is over: every live hold is committed and ended before
+ * `today` (a Central date, lib/dateOnly.ts). Nothing retires a committed hold,
+ * so Reservations lists such a booking only under its own filter, and the list
+ * stops carrying it a while after it ends (`stillListed`). Pure.
+ */
+export function bookingEnded(rows: { status: string; end_date: string }[], today: string): boolean {
+  const live = rows.filter(r => r.status === 'HOLD' || r.status === 'EXTENSION_REQUESTED' || r.status === 'COMMITTED')
+  return live.length > 0 && live.every(r => r.status === 'COMMITTED' && r.end_date.slice(0, 10) < today)
+}
+
+/**
+ * Days Reservations keeps listing a won booking after it ends: a week once LED
+ * has fully scheduled it, as with expired reservations, and longer while LED
+ * hasn't, so its "In LED: x of y days" or "No job number yet" badge gets seen.
+ */
+export const WON_ENDED_LISTED_DAYS = { inLed: 7, notInLed: 30 }
+
+/**
+ * The rows Reservations still lists: a won booking drops off whole once it
+ * ended more than WON_ENDED_LISTED_DAYS before `today` (a Central date);
+ * every other row is kept. A row with no booking key is its own booking. Pure.
+ */
+export function stillListed<R extends BookingRow & { status: string; end_date: string; led_scheduled?: boolean; led_days_sold?: number | null }>(rows: R[], today: string): R[] {
+  const daysBefore = (n: number) => {
+    const d = new Date(today + 'T00:00:00Z')
+    d.setUTCDate(d.getUTCDate() - n)
+    return d.toISOString().slice(0, 10)
+  }
+  const retired = (group: R[]) =>
+    bookingEnded(group, daysBefore(bookingInLed(group) ? WON_ENDED_LISTED_DAYS.inLed : WON_ENDED_LISTED_DAYS.notInLed))
+  const byBooking = new Map<string, R[]>()
+  for (const r of rows) {
+    const key = bookingKey(r)
+    if (!key) continue
+    const group = byBooking.get(key)
+    if (group) group.push(r)
+    else byBooking.set(key, [r])
+  }
+  const retiredKeys = new Set([...byBooking].filter(([, group]) => retired(group)).map(([key]) => key))
+  return rows.filter(r => {
+    const key = bookingKey(r)
+    return key ? !retiredKeys.has(key) : !retired([r])
+  })
+}
+
 /** What staff are told when a change would touch a won deal. */
 export const CLOSED_WON_READ_ONLY = 'This deal is Closed Won in Salesforce; change it there first.'
 

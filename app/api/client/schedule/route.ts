@@ -4,6 +4,7 @@ import { query, getPool } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { SCHEDULED_QUERY, ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
+import { centralDate } from '@/lib/dateOnly'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { getClientSession } from '@/lib/clientAuth'
 
@@ -55,7 +56,7 @@ export async function GET(req: NextRequest) {
       gpsMap = await getLiveVehicleLocations()
     } catch { /* continue without GPS */ }
 
-    const todayStr = new Date().toISOString().split('T')[0]
+    const todayStr = centralDate(new Date())
     const scheduleInfo: Record<string, { market: string; state: string; shift_start: string }> = {}
     for (const row of schedulesRaw) {
       const num        = String(row.truck_number ?? '')

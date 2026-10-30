@@ -121,8 +121,57 @@ export type SfdcOpportunityResult = {
   warnings?: string[]
 }
 
+/** The checkbox that marks an opportunity made in the app (lib/opportunityOrigins.ts). */
+export const CREATED_IN_APP_FIELD = 'Created_In_App__c'
+
+// When Salesforce last refused CREATED_IN_APP_FIELD by name (not in this org
+// yet, or not writable by the integration user): for an hour after, creates
+// skip it instead of failing once more each. Only a refusal that names the
+// field counts, and it lapses, so a passing error can't switch the mark off
+// for good, and the mark comes back within an hour of the field being added.
+const CREATED_IN_APP_RETRY_MS = 3600_000
+let createdInAppRefusedAt = 0
+
 /**
- * Create a new Opportunity in Salesforce.
+ * Whether a failed write was Salesforce refusing `field` itself: missing, or
+ * not writable by this user (INVALID_FIELD, INVALID_FIELD_FOR_INSERT_UPDATE,
+ * "No such column"), naming the field. Pure.
+ */
+export function fieldRefusedOnWrite(errors: unknown, field: string): boolean {
+  const list = Array.isArray(errors) ? errors : [errors]
+  return list.some(e => {
+    const code = String((e as { errorCode?: unknown })?.errorCode ?? '')
+    const text = `${code} ${String((e as { message?: unknown })?.message ?? '')} ${JSON.stringify((e as { fields?: unknown })?.fields ?? '')}`.toLowerCase()
+    return /invalid_field|no such column/.test(text) && text.includes(field.toLowerCase())
+  })
+}
+
+/**
+ * Whether a refused create was about CREATED_IN_APP_FIELD: the recognised
+ * refusals (fieldRefusedOnWrite), or any error naming the field, since
+ * Salesforce words a refused field more than one way. One rule for both the
+ * hour's skip and which error a rep sees. Pure.
+ */
+function aboutCreatedInApp(errors: unknown): boolean {
+  return fieldRefusedOnWrite(errors, CREATED_IN_APP_FIELD)
+    || JSON.stringify(errors ?? '').toLowerCase().includes(CREATED_IN_APP_FIELD.toLowerCase())
+}
+
+/**
+ * When a create failed both with and without CREATED_IN_APP_FIELD, whether
+ * the first attempt's error is the one to report. The marked attempt's is,
+ * unless it was about the field (never the rep's to fix). `firstMarked` says
+ * which went first. Pure.
+ */
+export function reportFirstFailure(firstMarked: boolean, firstErrors: unknown, secondErrors: unknown): boolean {
+  return aboutCreatedInApp(firstMarked ? firstErrors : secondErrors) !== firstMarked
+}
+
+/**
+ * Create a new Opportunity in Salesforce. It is marked made in the app
+ * (CREATED_IN_APP_FIELD) when this org has the field; if Salesforce refuses
+ * the field, it is created again without it, so the mark can never stop an
+ * opportunity being made.
  */
 export async function createOpportunity(input: CreateOpportunityInput): Promise<SfdcOpportunityResult> {
   const body: Record<string, unknown> = {
@@ -150,12 +199,44 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
   if (input.description) body.Description = input.description.slice(0, 32000)
   // LED_Revenue__c is a read-only field (formula/rollup) — use Amount instead
 
-  const res = await sfdcFetch('/sobjects/Opportunity', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  })
-
-  const data = await res.json()
+  const post = async (fields: Record<string, unknown>) => {
+    const res = await sfdcFetch('/sobjects/Opportunity', { method: 'POST', body: JSON.stringify(fields) })
+    // Salesforce returns errors as [{ message, errorCode, fields }]; success as { id, success, errors }.
+    const json = await res.json().catch(() => null)
+    return { res, data: Array.isArray(json) ? { success: false, errors: json } : (json ?? { success: false }) }
+  }
+  const marked = (fields: Record<string, unknown>) => ({ ...fields, [CREATED_IN_APP_FIELD]: true })
+  const withMark = Date.now() - createdInAppRefusedAt >= CREATED_IN_APP_RETRY_MS
+  let { res, data } = await post(withMark ? marked(body) : body)
+  // Any definite refusal (400, an error list) is tried once more the other way:
+  // without the mark (Salesforce words a refused field more than one way), or
+  // with it while it's being skipped (a rule may now require it). A failed
+  // create made nothing, so the retry can't duplicate; a 5xx or an unreadable
+  // reply may still have made the opportunity, so it isn't retried.
+  if (!data.success && res.status === 400 && Array.isArray(data.errors)) {
+    const named = withMark && aboutCreatedInApp(data.errors)
+    const first = { res, data }
+    ;({ res, data } = await post(withMark ? body : marked(body)))
+    if (named) {
+      createdInAppRefusedAt = Date.now()
+      console.warn(`[sfdc] ${CREATED_IN_APP_FIELD} refused; creating opportunities without it for an hour:`, JSON.stringify(first.data.errors))
+    } else if (!withMark && data.success) {
+      createdInAppRefusedAt = 0
+    } else if (!withMark && aboutCreatedInApp(data.errors)) {
+      createdInAppRefusedAt = Date.now() // still refused: keep skipping it
+    }
+    // Both refused (the retry definitely too: a 5xx or unreadable retry may
+    // have made the opportunity, so that one is what's reported). Report the
+    // marked attempt's error unless it was about the field: the unmarked one
+    // may have failed only for lacking the mark (a rule requiring it), which
+    // would tell a rep booking in the app to make the opportunity in the app.
+    if (!data.success && res.status === 400 && Array.isArray(data.errors)) {
+      const reportFirst = reportFirstFailure(withMark, first.data.errors, data.errors)
+      console.warn(`[sfdc] Opportunity creation refused with and without the mark; not reported (${reportFirst ? 'second' : 'first'} attempt):`,
+        JSON.stringify(reportFirst ? data.errors : first.data.errors))
+      if (reportFirst) ({ res, data } = first)
+    }
+  }
   if (!data.success) {
     console.error('[sfdc] Opportunity creation failed. Status:', res.status, 'Response:', JSON.stringify(data))
   }
@@ -249,6 +330,78 @@ export async function sfdcQuery<T = Record<string, unknown>>(soql: string): Prom
   }
 
   return data?.records ?? []
+}
+
+const MAX_QUERY_PAGES = 1000
+
+/**
+ * A SOQL query's every row: follows Salesforce's pages (nextRecordsUrl, 2,000
+ * rows each) up to `maxRows`. `truncated` says rows were left out.
+ */
+export async function sfdcQueryAll<T = Record<string, unknown>>(soql: string, maxRows = 20_000): Promise<{ rows: T[]; truncated: boolean }> {
+  const rows: T[] = []
+  let path: string | null = `/query?q=${encodeURIComponent(soql)}`
+  const seen = new Set<string>()
+  while (path) {
+    // A page already read means the replies are going round, and far more
+    // pages than rows to read means they aren't advancing; stop, don't loop.
+    if (seen.has(path) || seen.size > MAX_QUERY_PAGES) throw new Error('Salesforce SOQL query failed — its pages are not advancing')
+    seen.add(path)
+    const res = await sfdcFetch(path)
+    const data = await res.json().catch(() => null)
+    if (!res.ok) {
+      const detail = Array.isArray(data) && data[0]?.message ? `${data[0].errorCode}: ${data[0].message}` : `HTTP ${res.status}`
+      throw new Error(`Salesforce SOQL query failed — ${detail}`)
+    }
+    // An unreadable reply would otherwise read as "no rows, complete".
+    if (!data) throw new Error(`Salesforce SOQL query failed — unreadable reply (HTTP ${res.status})`)
+    rows.push(...(data?.records ?? []))
+    if (rows.length >= maxRows) return { rows: rows.slice(0, maxRows), truncated: !data?.done || rows.length > maxRows }
+    // nextRecordsUrl is absolute from /services/data/<version>; sfdcFetch adds that prefix.
+    path = data?.done === false && typeof data.nextRecordsUrl === 'string'
+      ? data.nextRecordsUrl.replace(/^\/services\/data\/[^/]+/, '')
+      : null
+  }
+  return { rows, truncated: false }
+}
+
+/**
+ * Whether a failed query was Salesforce refusing `field` itself: missing in
+ * this org, or hidden from the integration user ("INVALID_FIELD ... No such
+ * column '<field>'"). The message repeats the whole query, so the column it
+ * names is what's matched, not any mention of the field. Pure.
+ */
+export function fieldUnreadable(err: unknown, field: string): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /INVALID_FIELD/.test(msg) && msg.toLowerCase().includes(`no such column '${field.toLowerCase()}'`)
+}
+
+/**
+ * A query with an optional field: if the query with that field fails for any
+ * reason, it runs again without it, so what doesn't depend on the field still
+ * works. Salesforce words a refused field more than one way, so this doesn't
+ * rely on the wording (fieldUnreadable only picks the log line). A real outage
+ * fails the second query too and throws as before. `withField` says which
+ * ran; `refused`, that Salesforce said it can't read the field. A caller
+ * querying in chunks stops asking for the field once it is refused (passing
+ * `tryField` false), so it is asked for once per run, not per chunk, while
+ * a passing failure only costs the chunk it hit.
+ */
+export async function sfdcQueryOptionalField<T = Record<string, unknown>>(
+  field: string,
+  build: (withField: boolean) => string,
+  tryField = true,
+): Promise<{ rows: T[]; withField: boolean; refused: boolean }> {
+  if (!tryField) return { rows: await sfdcQuery<T>(build(false)), withField: false, refused: true }
+  try {
+    return { rows: await sfdcQuery<T>(build(true)), withField: true, refused: false }
+  } catch (err) {
+    const refused = fieldUnreadable(err, field)
+    console.error(refused
+      ? `[sfdc] ${field} not readable; querying without it:`
+      : `[sfdc] query with ${field} failed; trying without it:`, err)
+    return { rows: await sfdcQuery<T>(build(false)), withField: false, refused }
+  }
 }
 
 /**

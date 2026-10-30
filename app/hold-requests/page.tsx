@@ -8,6 +8,7 @@ import { format, formatDistanceToNow, isPast } from 'date-fns'
 import toast from 'react-hot-toast'
 import { Navbar } from '@/components/Navbar'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
+import { LedClientLink } from '@/components/LedClientLink'
 import { centralDate, parseDateOnly } from '@/lib/dateOnly'
 import { useReopenConfirm, type Reopenable } from '@/components/ReopenOpportunityDialog'
 import { formatMarketState } from '@/lib/format'
@@ -15,7 +16,7 @@ import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
-import { CLOSED_WON_READ_ONLY, bookingCapStarts, bookingKey, closedWonRefusal, bookingStatus, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
+import { CLOSED_WON_READ_ONLY, WON_ENDED_LISTED_DAYS, bookingCapStarts, bookingEnded, bookingInLed, bookingKey, closedWonRefusal, bookingStatus, ledProgress, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
 import { ownedBy, ownerOptions, runsBetween, wholeBookings, type OwnerFilter } from '@/lib/reservationFilters'
 import { useSession } from 'next-auth/react'
@@ -43,11 +44,32 @@ type HoldRequest = {
   truck_count: number | null
   campaign_group_id: string | null
   sfdc_opportunity_id: string | null
+  /** The opportunity's job number, and how LED stands on it for this truck: days run of days sold (lib/ledJobs.ts). */
+  job_number: string | null
+  /** The opportunity's account and its LED client, once staff have linked it (lib/ledClients.ts). */
+  sfdc_account_id: string | null
+  led_client: { client_uid: string; client: string | null } | null
+  led_scheduled: boolean
+  led_days: number
+  led_days_sold: number | null
+  /** The sweep moved this won hold onto the truck LED runs its job on, this week (lib/ledTruckFollow.ts). */
+  led_followed: { from: string; to: string; at: string } | null
+  /** Salesforce's LED Trucks has refused the moved truck for over an hour (still retried every sweep). */
+  led_trucks_unsynced_since: string | null
   expires_at: string | null
   extension_reason: string | null
   extension_until: string | null
   created_at: string
 }
+
+/** The filter for running won bookings LED has fully scheduled; every other filter leaves them out. */
+const LED_SCHEDULED = 'LED_SCHEDULED'
+/**
+ * The filter for won bookings whose dates have all passed, scheduled in LED or
+ * not; every other filter leaves them out. They drop off a while after they
+ * end (lib/bookings.ts stillListed).
+ */
+const WON_ENDED = 'WON_ENDED'
 
 const STATUS_BADGE: Record<string, string> = {
   HOLD:                 'bg-yellow-100 text-yellow-800 border border-yellow-200',
@@ -63,6 +85,8 @@ const STATUS_LABEL: Record<string, string> = {
   ATT_SOFT: 'AT&T Soft',
   EXPIRED: 'Expired',
   EXTENSION_REQUESTED: 'Extension Requested',
+  [LED_SCHEDULED]: 'Scheduled in LED',
+  [WON_ENDED]: 'Won, ended',
 }
 
 const SOURCE_BADGE: Record<string, string> = {
@@ -138,6 +162,57 @@ function ReviseLink({ rows, booking }: { rows: HoldRequest[]; booking?: HoldRequ
       className="px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-200 text-blue-700 hover:bg-blue-50 transition-colors">
       Revise
     </a>
+  )
+}
+
+/** Where a won booking stands in LED: matched by its job number on each truck (lib/ledJobs.ts). */
+function LedBadge({ progress, inLed, unavailable }: { progress: { days: number; of: number; known: boolean } | null; inLed: boolean; unavailable: boolean }) {
+  if (!progress) return null
+  if (inLed) {
+    return <span className="text-xs text-green-700 font-medium" title="LED runs this job on every truck for all the days sold">Scheduled in LED</span>
+  }
+  if (unavailable) {
+    return <span className="text-xs text-gray-500" title="The LED schedule couldn't be read, so this booking's LED status is unknown">LED status unavailable</span>
+  }
+  if (!progress.known) {
+    return <span className="text-xs text-gray-500" title="This deal has no job number yet, so it can't be matched to an LED program">No job number yet</span>
+  }
+  if (progress.of === 0) {
+    return <span className="text-xs text-gray-500" title="These holds sell no days for LED to run (travel or idle days only)">No LED days sold</span>
+  }
+  if (progress.days > 0) {
+    return (
+      <span className="text-xs text-amber-700 font-medium" title="Truck-days LED runs this job on the booking's trucks, of the days sold. The rest aren't scheduled, or are on another truck. The trucks stay held for every day either way.">
+        In LED: {progress.days} of {progress.of} days
+      </span>
+    )
+  }
+  return <span className="text-xs text-gray-500" title="No LED program with this deal's job number on these trucks yet">Not in LED yet</span>
+}
+
+/**
+ * A won booking whose truck the sweep moved to match LED this week, and any
+ * whose new truck Salesforce's LED Trucks still refuses (lib/ledTruckFollow.ts).
+ */
+function LedFollowBadge({ rows }: { rows: HoldRequest[] }) {
+  const moved = rows.filter(r => r.led_followed)
+  const unsynced = rows.some(r => r.led_trucks_unsynced_since)
+  if (!moved.length && !unsynced) return null
+  return (
+    <>
+      {moved.length > 0 && (
+        <span className="text-xs text-blue-700 font-medium"
+          title="LED scheduled this job on another truck, so the reservation moved to it (the trucks are kept in step with LED). Salesforce's LED Trucks is updated to match.">
+          Truck moved to match LED: {moved.map(r => `${r.led_followed!.from} → ${r.led_followed!.to} (${format(new Date(r.led_followed!.at), 'MMM d')})`).join(', ')}
+        </span>
+      )}
+      {unsynced && (
+        <span className="text-xs text-red-700 font-medium"
+          title="The reservation moved to LED's truck over an hour ago, and the new LED Trucks hasn't reached Salesforce yet (usually a validation rule or a deleted opportunity). It's retried every 15 minutes while the campaign runs; fix the opportunity in Salesforce so it can go through.">
+          LED Trucks not updated in Salesforce
+        </span>
+      )}
+    </>
   )
 }
 
@@ -250,6 +325,8 @@ export default function HoldRequestsPage() {
   // Whether staff changed the expiry field (it opens on the soonest expiry).
   const [expiryEdited, setExpiryEdited] = useState(false)
   const [expiredWindowDays, setExpiredWindowDays] = useState<number | null>(null)
+  // The LED schedule couldn't be read: won bookings' LED badges say so.
+  const [ledUnavailable, setLedUnavailable] = useState(false)
   const [saving, setSaving] = useState(false)
 
   // A change to the AT&T truck list being drafted (components/AttRosterPanel.tsx).
@@ -299,6 +376,7 @@ export default function HoldRequestsPage() {
       const data = await res.json()
       setRequests(data.holdRequests || [])
       setExpiredWindowDays(typeof data.expired_window_days === 'number' ? data.expired_window_days : null)
+      setLedUnavailable(data.led_unavailable === true)
     } catch (err) {
       toast.error('Failed to load hold requests')
       console.error(err)
@@ -525,12 +603,37 @@ export default function HoldRequestsPage() {
     return key ? bookingStatus(rowsByBooking.get(key) ?? [r]) : { status: r.status, odd: [] }
   }, [rowsByBooking])
 
+  // A won booking LED has fully scheduled: listed only under its own filter.
+  // One whose truck moved to match LED this week, or whose new truck hasn't
+  // reached Salesforce, stays in the main list: its badge is the news.
+  const inLedOf = useCallback((r: HoldRequest) => {
+    const key = bookingKey(r)
+    const rows = key ? rowsByBooking.get(key) ?? [r] : [r]
+    return bookingInLed(rows) && !rows.some(x => x.led_followed || x.led_trucks_unsynced_since)
+  }, [rowsByBooking])
+
+  // A won booking whose dates have all passed: listed only under its own filter.
+  // Today (Central) is read once per fetch, not once per row.
+  const endedOf = useMemo(() => {
+    const today = centralDate(new Date())
+    return (r: HoldRequest) => {
+      const key = bookingKey(r)
+      return bookingEnded(key ? rowsByBooking.get(key) ?? [r] : [r], today)
+    }
+  }, [rowsByBooking])
+
   const filtered = useMemo(
     () => {
       // A filter picks whole bookings by the booking's status, never part of one.
-      const shown = (status: string) => !filterStatus
-        || (filterStatus === 'HOLD' ? status === 'HOLD' || status === 'COMMITTED' : status === filterStatus)
-      let result = requests.filter(r => shown(statusOf(r).status))
+      const shown = (r: HoldRequest) => {
+        if (filterStatus === LED_SCHEDULED) return inLedOf(r) && !endedOf(r)
+        if (filterStatus === WON_ENDED) return endedOf(r)
+        if (inLedOf(r) || endedOf(r)) return false
+        const { status } = statusOf(r)
+        return !filterStatus
+          || (filterStatus === 'HOLD' ? status === 'HOLD' || status === 'COMMITTED' : status === filterStatus)
+      }
+      let result = requests.filter(shown)
       // Owner, dates and search pick whole bookings: a booking shows if any of
       // it matches, so a card, its total and its Edit always cover the same
       // reservations and a multi-market card never loses a market.
@@ -545,7 +648,7 @@ export default function HoldRequestsPage() {
       }
       return result
     },
-    [requests, filterStatus, search, statusOf, ownerShown, meId, dateFrom, dateTo]
+    [requests, filterStatus, search, statusOf, inLedOf, endedOf, ownerShown, meId, dateFrom, dateTo]
   )
 
   // The last date the card being edited can be held to: a booking has one
@@ -685,9 +788,14 @@ export default function HoldRequestsPage() {
                 Showing expired reservations from the last {expiredWindowDays} days. Older ones are kept but not listed here.
               </p>
             )}
+            {filterStatus === WON_ENDED && (
+              <p className="text-xs text-gray-400 mt-1">
+                Won bookings are listed for {WON_ENDED_LISTED_DAYS.inLed} days after they end once LED has fully scheduled them, and {WON_ENDED_LISTED_DAYS.notInLed} days if it hasn&apos;t.
+              </p>
+            )}
           </div>
           <div className="flex gap-2 flex-shrink-0 flex-wrap">
-            {(['', 'HOLD', 'ATT_SOFT', 'EXTENSION_REQUESTED', 'EXPIRED'] as const).map((s) => (
+            {(['', 'HOLD', 'ATT_SOFT', 'EXTENSION_REQUESTED', 'EXPIRED', LED_SCHEDULED, WON_ENDED] as const).map((s) => (
               <button
                 key={s}
                 onClick={() => setFilterStatus(s)}
@@ -697,7 +805,7 @@ export default function HoldRequestsPage() {
                     : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
                 }`}
               >
-                {s ? (STATUS_LABEL[s] ?? s) : 'All'}
+                {s ? (STATUS_LABEL[s] ?? s) : 'All (not in LED or ended)'}
               </button>
             ))}
           </div>
@@ -803,6 +911,11 @@ export default function HoldRequestsPage() {
                       )}
                       {/* The earliest expiry in the booking is the one to act on. */}
                       <ExpirationBadge expiresAt={expiry} status={status} />
+                      <LedBadge progress={ledProgress(groupItems)} inLed={bookingInLed(groupItems)} unavailable={ledUnavailable} />
+                      {status === 'COMMITTED' && first.sfdc_account_id && (
+                        <LedClientLink accountId={first.sfdc_account_id} linked={first.led_client} onSaved={fetchRequests} />
+                      )}
+                      <LedFollowBadge rows={groupItems} />
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.HOLD}`}>
                         {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[status] ?? status)}
                       </span>

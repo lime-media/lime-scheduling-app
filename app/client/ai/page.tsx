@@ -6,6 +6,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { ClientHeader } from '@/components/ClientHeader'
 import { useClientAuth, hasAiAssistantAccess } from '@/lib/useClientAuth'
+import { centralDate } from '@/lib/dateOnly'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -111,9 +112,8 @@ function fmtMoney(n: number): string {
   return '$' + Math.round(n).toLocaleString('en-US')
 }
 
-function todayStr(): string {
-  return new Date().toISOString().split('T')[0]
-}
+/** Today in Central, the day the server validates against (lib/dateOnly.ts). */
+function todayStr(): string { return centralDate(new Date()) }
 
 function getTierLabel(toggles: FeatureToggles, studiesAvailable: boolean): string {
   const { shadowFencing, smartDirectional, deviceId, studies } = toggles

@@ -14,9 +14,10 @@ import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
 import { activeHoldWhere } from '@/lib/holdFilters'
-import { ALL_TRUCKS_QUERY } from '@/lib/scheduleQuery'
+import { ALL_TRUCKS_QUERY, shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
+import { centralDate } from '@/lib/dateOnly'
 import { HIDDEN_TRUCKS } from '@/lib/availabilityEngine'
-import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
+import { isSfdcConfigured, sfdcQueryOptionalField } from '@/lib/salesforceClient'
 import { parseQuoteFeatures } from '@/lib/quoteFeatures'
 import { buildEntries, plannerRange, plannerWindow, weekStart, type PlannerHold, type PlannerShift } from '@/lib/planner/build'
 
@@ -28,7 +29,7 @@ const iso = (d: Date) => d.toISOString().slice(0, 10)
 const SHIFTS_QUERY = `
 SELECT
     t.truck_number,
-    CAST(ps.start_time AS DATE) AS shift_date,
+    ${shiftDay('ps.start_time')} AS shift_date,
     COALESCE(ps.shift_duration_in_mins, DATEDIFF(MINUTE, ps.start_time, ps.end_time)) AS minutes,
     CAST(ps.driver_uid AS NVARCHAR(64)) AS driver_uid,
     COALESCE(cl.client,  '') AS client,
@@ -45,7 +46,7 @@ LEFT JOIN dbo.clients cl
 LEFT JOIN dbo.client_program_markets cpm
     ON  cpm.client_program_market_uid = ps.client_program_market_uid
 WHERE COALESCE(t.is_deleted, 0) = 0
-  AND CAST(ps.start_time AS DATE) BETWEEN @from AND @to
+  AND ${shiftDayIn({ from: '@from', to: '@to' })}
 `
 
 /**
@@ -101,11 +102,16 @@ async function opportunityNames(ids: string[]): Promise<Map<string, { name: stri
   if (ids.length === 0 || !isSfdcConfigured()) return new Map()
   const out = new Map<string, { name: string; jobNumber: string | null }>()
   // Per chunk, so one failed query never discards the names already found.
+  // A refused Job_Number__c is asked for once, not per chunk.
+  let tryJob = true
   for (let i = 0; i < ids.length; i += 200) {
     const chunk = ids.slice(i, i + 200).filter(id => /^[A-Za-z0-9]{15,18}$/.test(id))
     if (chunk.length === 0) continue
     try {
-      const rows = await sfdcQuery<{ Id: string; Name: string; Job_Number__c: string | null }>(`SELECT Id, Name, Job_Number__c FROM Opportunity WHERE Id IN (${chunk.map(id => `'${id}'`).join(',')})`)
+      // Names still load if Salesforce refuses Job_Number__c.
+      const { rows, refused }: { rows: { Id: string; Name: string; Job_Number__c?: string | null }[]; refused: boolean } = await sfdcQueryOptionalField<{ Id: string; Name: string; Job_Number__c?: string | null }>('Job_Number__c', (job) =>
+        `SELECT Id, Name${job ? ', Job_Number__c' : ''} FROM Opportunity WHERE Id IN (${chunk.map(id => `'${id}'`).join(',')})`, tryJob)
+      tryJob = !refused
       for (const r of rows) out.set(r.Id, { name: r.Name, jobNumber: r.Job_Number__c?.trim() || null })
     } catch (err) {
       console.error('[planner] opportunity names failed for a chunk:', err)
@@ -126,7 +132,7 @@ export async function GET(req: NextRequest) {
   const toParam = req.nextUrl.searchParams.get('to')
   const window = isDate(fromParam)
     ? plannerRange(fromParam, isDate(toParam) ? toParam : iso(new Date(Date.parse(weekStart(fromParam) + 'T00:00:00Z') + (8 * 7 - 1) * 864e5)))
-    : plannerWindow(iso(new Date()))
+    : plannerWindow(centralDate(new Date()))
 
   try {
     const [trucksRaw, shiftsRaw, holds] = await Promise.all([

@@ -13,11 +13,15 @@ import { activeHoldWhere } from '@/lib/holdFilters'
 import { reconcileSfdcOpportunities, closeOpportunityAsLost } from '@/lib/sfdcOpportunityReconcile'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { warnExpiringHolds } from '@/lib/holdExpiryWarnings'
-import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
+import { SCHEDULED_QUERY, SCHEDULED_WINDOW } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 import { syncAttSoftHolds } from '@/lib/attSoftHolds'
 import { freeRanges } from '@/lib/ranges'
-import { recordAmountChanges, recordExecuted, recordPrestart, sharedOriginMeasurer } from '@/lib/transportMetricsRecord'
+import { isOwnLedProgram, jobKey, linkedJob } from '@/lib/jobNumber'
+import { followLedTrucks, syncFollowedOpportunities } from '@/lib/ledTruckFollow'
+import { daysSold } from '@/lib/ledJobs'
+import { centralDate } from '@/lib/dateOnly'
+import { recordAmountChanges, recordExecuted, recordPrestart, recordSwap, sharedOriginMeasurer } from '@/lib/transportMetricsRecord'
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────
 
@@ -43,6 +47,10 @@ export interface RefreshSummary {
   expiry_warnings_sent:       number
   expiry_warning_recipients:  number
   conflicts_auto_resolved:    number
+  /** Won holds moved onto the truck LED runs them on (lib/ledTruckFollow.ts). */
+  led_trucks_followed:        number
+  /** Opportunities whose followed trucks haven't reached Salesforce yet; retried every sweep. */
+  led_follow_sync_pending:    number
 }
 
 /**
@@ -112,14 +120,21 @@ export async function refreshCache(): Promise<RefreshSummary> {
     market:       String(r.market       ?? ''),
     shift_start:  toDateStr(r.shift_start),
     shift_end:    toDateStr(r.shift_end),
+    job_number:   String(r.job_number   ?? ''),
+    state:        String(r.state        ?? ''),
   }))
 
-  // Deduplicate by truck_number + program + shift_start before conflict detection.
-  // The source query can return multiple rows per program/date (one per market row).
+  // Deduplicate by truck_number + program + job_number + state + shift_start before conflict
+  // detection. The source query can return multiple rows per program/date (one per
+  // market row). The job number is part of the key: two LED programs can share a
+  // name, and dropping one's row would lose the job number that tells a booking's
+  // own program from a clash (findConflicts).
   const schedules = schedulesAll.filter((s, index, self) =>
     index === self.findIndex((t) =>
       t.truck_number === s.truck_number &&
       t.program      === s.program &&
+      jobKey(t.job_number) === jobKey(s.job_number) &&
+      (t.state ?? '') === (s.state ?? '') &&
       t.shift_start  === s.shift_start
     )
   )
@@ -133,7 +148,45 @@ export async function refreshCache(): Promise<RefreshSummary> {
     start_date:          h.start_date.toISOString().split('T')[0],
     end_date:            h.end_date.toISOString().split('T')[0],
     sfdc_opportunity_id: h.sfdc_opportunity_id,
+    job_number:          linkedJob(h),
+    state:               h.state,
   }))
+
+  // A won hold follows the truck LED scheduled it on (lib/ledTruckFollow.ts),
+  // before conflicts are judged, so they're judged on LED's truck. Salesforce's
+  // LED Trucks follow too. Never fails the sweep. Only holds inside the dates
+  // SCHEDULED_QUERY covers (a day in from each edge, to spare the edges'
+  // shifts) can be judged.
+  const today = centralDate(new Date())
+  const shift = (n: number) => { const d = new Date(`${today}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10) }
+  const ledFollow = await followLedTrucks(
+    holdsRaw.filter((h) => linkedJob(h)).map((h) => ({
+      id: h.id, truck_number: h.truck_number, market: h.market, state: h.state, job_number: linkedJob(h),
+      start_date: toDateStr(h.start_date), end_date: toDateStr(h.end_date),
+      days_sold: daysSold(h.features, toDateStr(h.start_date), toDateStr(h.end_date)),
+      sfdc_opportunity_id: h.sfdc_opportunity_id, created_by: h.created_by,
+    })),
+    // A deleted program or an archived truck is never a truck to follow.
+    schedulesRaw.filter((r) => !Number(r.program_deleted) && !Number(r.truck_deleted)).map((r) => ({
+      truck_number: String(r.truck_number ?? ''), job_number: String(r.job_number ?? ''), shift_start: toDateStr(r.shift_start),
+      market: String(r.market ?? ''), state: String(r.state ?? ''), standard_market_name: String(r.standard_market_name ?? ''),
+    })),
+    today,
+    holds,
+    { from: shift(1 - SCHEDULED_WINDOW.pastDays), to: shift(SCHEDULED_WINDOW.aheadDays - 1) },
+  ).catch((err) => {
+    console.error('[scheduleCache] LED truck follow failed:', err)
+    return { moved: [], opportunities: [] as string[] }
+  })
+  for (const m of ledFollow.moved) {
+    const hold = holds.find((h) => h.id === m.holdId)
+    if (hold) hold.truck_number = m.to
+  }
+  // Retried every sweep until Salesforce takes it (a mark on the moved holds).
+  const ledFollowPending = await syncFollowedOpportunities(ledFollow.opportunities).catch((err) => {
+    console.error('[scheduleCache] LED follow Salesforce sync failed:', err)
+    return ledFollow.opportunities
+  })
 
   // Before detection: a conflict whose window merely shifted is closed here and re-raised
   // against its new dates in the same pass.
@@ -150,8 +203,17 @@ export async function refreshCache(): Promise<RefreshSummary> {
   // conflict detection; independent (different holds), so in parallel.
   // Best-effort; never fails the sweep.
   // The two recorders that measure trucks share one fleet and GPS load.
+  // Holds the sweep moved onto LED's truck are measured as swaps here too, on
+  // the same fleet load (recordSwap never throws), but only before they start:
+  // a running campaign's new truck is already in market, and its leg would
+  // replace the quoted plan with a false LOCAL one.
   const measurer = sharedOriginMeasurer()
-  const [metricsPrestart, metricsExecuted, metricsAmounts] = await Promise.all([recordPrestart(measurer), recordExecuted(measurer), recordAmountChanges()])
+  const [metricsPrestart, metricsExecuted, metricsAmounts] = await Promise.all([
+    recordPrestart(measurer), recordExecuted(measurer), recordAmountChanges(),
+    ...ledFollow.moved
+      .filter((m) => (holds.find((h) => h.id === m.holdId)?.start_date ?? '') > today)
+      .map((m) => recordSwap(m.holdId, m.by, measurer)),
+  ])
   if (metricsPrestart || metricsExecuted || metricsAmounts) {
     console.log(`[scheduleCache] metrics: ${metricsPrestart} pre-start snapshot(s), ${metricsExecuted} executed leg(s), ${metricsAmounts} amount change(s)`)
   }
@@ -162,7 +224,8 @@ export async function refreshCache(): Promise<RefreshSummary> {
     `${att_soft_released} ATT_SOFT hold(s) released, ` +
     `${sfdc.committed} committed / ${sfdc.uncommitted} back to hold / ${sfdc.released} released from ${sfdc.checked} SFDC opportunit${sfdc.checked === 1 ? 'y' : 'ies'}, ` +
     `${warnings.warned} expiry warning(s) to ${warnings.recipients} user(s), ` +
-    `${reconciled.resolved} conflict(s) auto-resolved` +
+    `${reconciled.resolved} conflict(s) auto-resolved, ` +
+    `${ledFollow.moved.length} hold(s) moved to LED's truck, ${ledFollowPending.length} opportunit${ledFollowPending.length === 1 ? 'y' : 'ies'} awaiting its LED Trucks sync` +
     (warnings.skipped_no_email > 0 ? ` (${warnings.skipped_no_email} unwarned — no email)` : '')
   )
 
@@ -180,6 +243,8 @@ export async function refreshCache(): Promise<RefreshSummary> {
     expiry_warnings_sent:      warnings.warned,
     expiry_warning_recipients: warnings.recipients,
     conflicts_auto_resolved:   reconciled.resolved,
+    led_trucks_followed:       ledFollow.moved.length,
+    led_follow_sync_pending:   ledFollowPending.length,
   }
 }
 
@@ -324,6 +389,10 @@ export interface ConflictHold {
   start_date:          string  // YYYY-MM-DD
   end_date:            string  // YYYY-MM-DD
   sfdc_opportunity_id?: string | null
+  /** The opportunity's job number (lib/ledJobs.ts); its own LED program isn't a conflict. */
+  job_number?:         string | null
+  /** Two-letter state: a program of the same job in another state is another market. */
+  state?:              string | null
 }
 
 export interface ConflictSchedule {
@@ -332,6 +401,14 @@ export interface ConflictSchedule {
   market:       string
   shift_start:  string  // YYYY-MM-DD
   shift_end:    string  // YYYY-MM-DD
+  /** The LED program's job number; blocks merge only within one job number. */
+  job_number?:  string
+  /**
+   * The market's state. One day of a job can be filed under markets in two
+   * states; the day is a won hold's own if any of them is the hold's state
+   * (dropOwnProgramRows). Not part of a merged block's identity.
+   */
+  state?:       string
 }
 
 // ── Conflict detection ────────────────────────────────────────────────────────
@@ -341,6 +418,8 @@ export interface DetectedConflict {
   key:           string
   hold:          ConflictHold
   program:       string
+  /** The LED program's job number as compared (jobKey), '' when it has none. */
+  jobNumber:     string
   conflictStart: string  // YYYY-MM-DD
   conflictEnd:   string  // YYYY-MM-DD
 }
@@ -351,12 +430,18 @@ export interface DetectedConflict {
  * problems, and dismissing one must not hide the other. Compared trimmed, case- and
  * space-insensitive, so a cosmetic difference in the LED program name cannot split one
  * conflict into two (none has been seen in production; this keeps it that way).
+ * So is the program's job number (jobKey, '' for none): two LED programs can share a
+ * name on one truck, and each is its own problem. `jobNumber` null: a row recorded
+ * before job numbers were (scheduled_job_number NULL), matched on the rest alone.
  */
 export const programKey = (program: string) => program.trim().toLowerCase().replace(/\s+/g, ' ')
 
-function conflictKey(holdId: string, truckNumber: string, program: string, start: string, end: string): string {
-  return `${holdId}|${truckNumber}|${programKey(program)}|${start}|${end}`
+function conflictKey(holdId: string, truckNumber: string, program: string, jobNumber: string | null, start: string, end: string): string {
+  return `${holdId}|${truckNumber}|${programKey(program)}|${jobNumber === null ? '' : `${jobNumber}|`}${start}|${end}`
 }
+
+/** A recorded conflict row's job number as conflictKey takes it: null for a row from before job numbers. */
+const recordedJob = (v: string | null | undefined): string | null => v === null || v === undefined ? null : jobKey(v) ?? ''
 
 const nextDay = (d: string) => new Date(Date.parse(d + 'T00:00:00Z') + 864e5).toISOString().slice(0, 10)
 
@@ -369,11 +454,17 @@ const nextDay = (d: string) => new Date(Date.parse(d + 'T00:00:00Z') + 864e5).to
  */
 export function mergeScheduleBlocks(schedules: ConflictSchedule[]): ConflictSchedule[] {
   const sorted = [...schedules].sort((a, b) =>
-    a.truck_number.localeCompare(b.truck_number) || a.program.localeCompare(b.program) || a.shift_start.localeCompare(b.shift_start))
+    a.truck_number.localeCompare(b.truck_number) || a.program.localeCompare(b.program)
+    || (jobKey(a.job_number) ?? '').localeCompare(jobKey(b.job_number) ?? '')
+    || a.shift_start.localeCompare(b.shift_start))
   const out: ConflictSchedule[] = []
   for (const s of sorted) {
     const last = out[out.length - 1]
-    if (last && last.truck_number === s.truck_number && last.program === s.program && s.shift_start <= nextDay(last.shift_end)) {
+    // Same-named programs with different job numbers stay apart, so a block
+    // never carries one program's job number over another's days.
+    if (last && last.truck_number === s.truck_number && last.program === s.program
+      && jobKey(last.job_number) === jobKey(s.job_number)
+      && s.shift_start <= nextDay(last.shift_end)) {
       if (s.shift_end > last.shift_end) last.shift_end = s.shift_end
     } else {
       out.push({ ...s })
@@ -395,24 +486,31 @@ export function findConflicts(
   holds:     ConflictHold[]
 ): DetectedConflict[] {
   const found: DetectedConflict[] = []
-  const blocks = mergeScheduleBlocks(schedules)
+  const byTruck = new Map<string, ConflictSchedule[]>()
+  for (const s of schedules) {
+    const rows = byTruck.get(s.truck_number)
+    if (rows) rows.push(s)
+    else byTruck.set(s.truck_number, [s])
+  }
 
   for (const hold of holds) {
-    const overlapping = blocks.filter(
-      (s) =>
-        s.truck_number === hold.truck_number &&
-        s.shift_start  <= hold.end_date &&
-        s.shift_end    >= hold.start_date
+    // The schedule within the hold's dates, less the won hold's own program
+    // days (this booking scheduled in LED, not a clash with it), merged into
+    // blocks. Dropped per day before merging, so a block of other work around
+    // an own day still conflicts on its own days.
+    const within = (byTruck.get(hold.truck_number) ?? []).filter(
+      (s) => s.shift_start <= hold.end_date && s.shift_end >= hold.start_date
     )
-
-    for (const sched of overlapping) {
+    for (const sched of mergeScheduleBlocks(dropOwnProgramRows(within, hold))) {
       const conflictStart = hold.start_date > sched.shift_start ? hold.start_date : sched.shift_start
       const conflictEnd   = hold.end_date   < sched.shift_end   ? hold.end_date   : sched.shift_end
+      const jobNumber     = jobKey(sched.job_number) ?? ''
 
       found.push({
-        key:           conflictKey(hold.id, hold.truck_number, sched.program, conflictStart, conflictEnd),
+        key:           conflictKey(hold.id, hold.truck_number, sched.program, jobNumber, conflictStart, conflictEnd),
         hold,
         program:       sched.program,
+        jobNumber,
         conflictStart,
         conflictEnd,
       })
@@ -420,6 +518,27 @@ export function findConflicts(
   }
 
   return found
+}
+
+/**
+ * A hold's truck's schedule rows less its own LED program days
+ * (lib/jobNumber.ts isOwnLedProgram), judged per day and job: a day LED files
+ * under markets in two states is the hold's own if either is the hold's
+ * state, so its other row isn't left behind as a clash. Pure.
+ */
+export function dropOwnProgramRows(rows: ConflictSchedule[], hold: ConflictHold): ConflictSchedule[] {
+  const job = jobKey(hold.job_number)
+  if (!job) return rows
+  const states = new Map<string, string[]>()
+  for (const r of rows) {
+    if (jobKey(r.job_number) !== job) continue
+    const day = `${r.shift_start}|${r.shift_end}`
+    const seen = states.get(day)
+    if (seen) seen.push(r.state ?? '')
+    else states.set(day, [r.state ?? ''])
+  }
+  return rows.filter((r) => !(jobKey(r.job_number) === job && isOwnLedProgram(hold,
+    { start: r.shift_start, end: r.shift_end, job_number: r.job_number, state: r.state, states: states.get(`${r.shift_start}|${r.shift_end}`) })))
 }
 
 /**
@@ -449,11 +568,15 @@ export async function reconcileConflicts(
 
   const pool = await getPool()
 
-  const live = new Set(findConflicts(schedules, holds).map((c) => c.key))
+  const current = findConflicts(schedules, holds)
+  const live = new Set(current.map((c) => c.key))
+  // Rows recorded before job numbers match on the rest of the key.
+  const liveAnyJob = new Set(current.map((c) =>
+    conflictKey(c.hold.id, c.hold.truck_number, c.program, null, c.conflictStart, c.conflictEnd)))
 
   const active = await pool.request().query(`
     SELECT
-      id, hold_id, truck_number, scheduled_program,
+      id, hold_id, truck_number, scheduled_program, scheduled_job_number,
       CONVERT(varchar(10), conflict_start, 120) AS conflict_start,
       CONVERT(varchar(10), conflict_end,   120) AS conflict_end
     FROM dbo.schedule_conflicts
@@ -464,9 +587,11 @@ export async function reconcileConflicts(
   const resolvedIds: string[] = []
 
   for (const row of active.recordset as {
-    id: string; hold_id: string; truck_number: string; scheduled_program: string | null; conflict_start: string; conflict_end: string
+    id: string; hold_id: string; truck_number: string; scheduled_program: string | null; scheduled_job_number: string | null
+    conflict_start: string; conflict_end: string
   }[]) {
-    if (live.has(conflictKey(row.hold_id, row.truck_number, row.scheduled_program ?? '', row.conflict_start, row.conflict_end))) continue
+    const job = recordedJob(row.scheduled_job_number)
+    if ((job === null ? liveAnyJob : live).has(conflictKey(row.hold_id, row.truck_number, row.scheduled_program ?? '', job, row.conflict_start, row.conflict_end))) continue
 
     // Guarded on status so a human resolving the same row mid-sweep is not overwritten.
     await pool
@@ -500,20 +625,47 @@ export async function reconcileConflicts(
  * - 'new': record and email. Includes a conflict that went away (closed by
  *   an earlier sweep) and has come back: email is the only push, so a
  *   recurrence is news.
- * `justResolved`: ids reconcileConflicts() closed in this same sweep. Pure.
+ * `justResolved`: ids reconcileConflicts() closed in this same sweep.
+ * `utcDatedBefore`: rows detected before this instant were dated by the UTC
+ * day of LED's shifts, before shifts took their market's local day
+ * (lib/scheduleQuery.ts shiftDay). An evening shift's local day is the day
+ * before its UTC day, so such a dismissal also covers the day before it:
+ * otherwise re-dating a dismissed evening program would raise it again. Pure.
  */
 export function priorDecision(
   start: string,
   end: string,
-  prior: { id: string; conflict_start: string; conflict_end: string; status: string; resolved_by: string | null }[],
+  prior: { id: string; conflict_start: string; conflict_end: string; status: string; resolved_by: string | null; detected_at?: string | null }[],
   justResolved: ReadonlySet<string> = new Set(),
+  utcDatedBefore: string | null = null,
 ): 'dismissed' | 'reported' | 'new' {
-  const over = prior.filter(p => p.conflict_start <= end && p.conflict_end >= start)
+  const dayBefore = (d: string) => { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() - 1); return t.toISOString().slice(0, 10) }
+  const utcDated = (p: { detected_at?: string | null }) => !!utcDatedBefore && !!p.detected_at && p.detected_at < utcDatedBefore
+  const over = prior.filter(p => (utcDated(p) ? dayBefore(p.conflict_start) : p.conflict_start) <= end && p.conflict_end >= start)
   const byPerson = over
     .filter(p => p.status === 'RESOLVED' && p.resolved_by)
-    .map(p => ({ start: p.conflict_start, end: p.conflict_end }))
+    .map(p => ({ start: utcDated(p) ? dayBefore(p.conflict_start) : p.conflict_start, end: p.conflict_end }))
   if (byPerson.length && freeRanges(start, end, byPerson).length === 0) return 'dismissed'
   return over.some(p => p.status === 'ACTIVE' || justResolved.has(p.id)) ? 'reported' : 'new'
+}
+
+// When conflicts started being dated by local shift days (#140): the first
+// sweep with this code records it (app_settings), so rows detected before it
+// are known to be UTC-dated (priorDecision). Null if it can't be read or
+// written: then no extra day is covered, the strict rule.
+const LOCAL_DAYS_KEY = 'conflicts_local_shift_days_since'
+let localDaysSince: string | null = null
+async function localShiftDaysSince(): Promise<string | null> {
+  if (localDaysSince) return localDaysSince
+  try {
+    const row = await prisma.appSetting.findUnique({ where: { key: LOCAL_DAYS_KEY } })
+      ?? await prisma.appSetting.create({ data: { key: LOCAL_DAYS_KEY, value: new Date().toISOString(), updated_by: 'conflict sweep' } })
+        .catch(() => prisma.appSetting.findUnique({ where: { key: LOCAL_DAYS_KEY } }))
+    localDaysSince = row?.value ?? null
+  } catch (err) {
+    console.error('[conflicts] local shift days cutoff unreadable:', err)
+  }
+  return localDaysSince
 }
 
 export async function detectConflicts(
@@ -525,12 +677,14 @@ export async function detectConflicts(
   if (holds.length === 0 || schedules.length === 0) return
 
   const pool = await getPool()
+  const utcDatedBefore = await localShiftDaysSince()
 
   for (const conflict of findConflicts(schedules, holds)) {
-    const { hold, program, conflictStart, conflictEnd } = conflict
+    const { hold, program, jobNumber, conflictStart, conflictEnd } = conflict
 
-    // What was recorded before for this reservation, truck and program: a
-    // person dismissing these dates, or the conflict already being shown.
+    // What was recorded before for this reservation, truck, program and job
+    // number: a person dismissing these dates, or the conflict already being
+    // shown. A row recorded before job numbers counts for any job.
     const prior = (await pool
       .request()
       .input('holdId',      hold.id)
@@ -538,20 +692,23 @@ export async function detectConflicts(
       .input('from',        conflictStart)
       .input('to',          conflictEnd)
       .query(`
-        SELECT id, scheduled_program,
+        SELECT id, scheduled_program, scheduled_job_number,
                CONVERT(varchar(10), conflict_start, 120) AS conflict_start,
                CONVERT(varchar(10), conflict_end,   120) AS conflict_end,
-               status, resolved_by
+               status, resolved_by,
+               CONVERT(varchar(30), detected_at, 127) AS detected_at
         FROM dbo.schedule_conflicts
         WHERE hold_id = @holdId AND truck_number = @truckNumber
-          AND conflict_start <= @to AND conflict_end >= @from
-      `)).recordset.filter((p: { scheduled_program: string | null }) => programKey(p.scheduled_program ?? '') === programKey(program))
+          AND conflict_start <= DATEADD(day, 1, CAST(@to AS DATE)) AND conflict_end >= @from
+      `)).recordset.filter((p: { scheduled_program: string | null; scheduled_job_number: string | null }) =>
+        programKey(p.scheduled_program ?? '') === programKey(program)
+        && [null, jobNumber].includes(recordedJob(p.scheduled_job_number)))
 
     // Already recorded exactly: nothing to do.
     if (prior.some((p: { status: string; conflict_start: string; conflict_end: string }) =>
       p.status === 'ACTIVE' && p.conflict_start === conflictStart && p.conflict_end === conflictEnd)) continue
 
-    const decision = priorDecision(conflictStart, conflictEnd, prior, justResolved)
+    const decision = priorDecision(conflictStart, conflictEnd, prior, justResolved, utcDatedBefore)
     if (decision === 'dismissed') continue
 
     await pool
@@ -563,13 +720,14 @@ export async function detectConflicts(
       .input('holdClient',       hold.client_name)
       .input('holdMarket',       hold.market)
       .input('scheduledProgram', program)
+      .input('scheduledJob',     jobNumber)
       .query(`
         INSERT INTO dbo.schedule_conflicts
           (id, hold_id, truck_number, conflict_start, conflict_end,
-           hold_client, hold_market, scheduled_program)
+           hold_client, hold_market, scheduled_program, scheduled_job_number)
         VALUES
           (NEWID(), @holdId, @truckNumber, @conflictStart, @conflictEnd,
-           @holdClient, @holdMarket, @scheduledProgram)
+           @holdClient, @holdMarket, @scheduledProgram, @scheduledJob)
       `)
 
     console.log(

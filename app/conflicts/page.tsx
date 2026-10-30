@@ -59,6 +59,8 @@ type Conflict = {
   hold_client:       string
   hold_market:       string
   scheduled_program: string
+  /** The LED program's job number; null on conflicts recorded before job numbers, '' when it has none. */
+  scheduled_job_number: string | null
   status:            string
   detected_at:       string
   hold_start:        string | null
@@ -285,7 +287,10 @@ export default function ConflictsPage() {
                           </div>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-gray-700">{c.scheduled_program}</td>
+                      <td className="px-4 py-3 text-gray-700">
+                        {c.scheduled_program}
+                        {c.scheduled_job_number && <div className="text-xs text-gray-400">Job {c.scheduled_job_number}</div>}
+                      </td>
                       <td className="px-4 py-3 whitespace-nowrap">
                         <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded-lg text-xs font-medium">
                           {range(c.conflict_start, c.conflict_end)}

@@ -16,7 +16,8 @@ import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
-import { createOpportunity, getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
+import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
+import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
@@ -337,7 +338,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
       } else {
       // Owned by the rep who booked it (matched by email), else the account owner.
       const owner = await resolveOpportunityOwner({ creatorEmail: actor.email, accountOwnerId: accountInfo?.ownerId })
-      const result = await createOpportunity({
+      const result = await createAppOpportunity({
         accountId: sfdc_account_id,
         ownerId: owner.ownerId ?? undefined,
         clientType: accountInfo?.clientType,
@@ -365,7 +366,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
           truckNumbers: created,
         }),
         activationNotes,
-      })
+      }, { createdBy: actor.id ?? null, path: 'staff' })
 
       if (result.success && result.id) {
         sfdcOpportunityId = result.id

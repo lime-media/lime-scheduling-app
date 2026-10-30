@@ -18,7 +18,9 @@ import { scheduledWithMarketQuery } from '@/lib/scheduleQuery'
 import { hasMarketBounds, loadStandardMarketCoords, normalizeMarketKey } from '@/lib/marketBounds'
 import { placeCoords } from '@/lib/geo/places'
 import { getLiveVehicleLocations, type SamsaraVehicleLocation } from '@/lib/samsaraService'
-import { buildTruckTimelines, type DayRow, type TruckJob } from '@/lib/truckTimeline'
+import { buildTruckTimelines, dropOwnProgramDays, type DayRow, type TruckJob } from '@/lib/truckTimeline'
+import { isOwnLedProgram, jobKey, linkedJob } from '@/lib/jobNumber'
+import { ledMarketMatches } from '@/lib/ledJobs'
 
 export type FleetHold = {
   id: string
@@ -31,6 +33,8 @@ export type FleetHold = {
   client_name: string
   origination: string
   source: string
+  /** A won hold's job number: its own LED program is no clash (lib/ledJobs.ts). Null otherwise. */
+  job_number: string | null
   lat?: number
   lng?: number
 }
@@ -60,6 +64,14 @@ export async function loadFleetTimelines(opts: {
   /** Omit these holds — a booking being revised, so its own trucks are free to it. */
   excludeHoldIds?: Set<string>
   /**
+   * A won hold whose own LED program is left out: its job, within its dates,
+   * in its market (lib/ledJobs.ts ledMarketMatches; unconfirmed markets stay),
+   * on any truck. It's that booking scheduled, so it mustn't make the truck LED
+   * put it on look taken (the swap picker). The same job on other dates, or in
+   * another market of the booking, is other work and stays.
+   */
+  ownProgramOf?: { start_date: string; end_date: string; job_number: string | null; market: string; state: string }
+  /**
    * Explicit schedule window (YYYY-MM-DD, inclusive) instead of the rolling
    * -30/+63 days. For planning programs that run past the rolling window; the
    * windowed load also carries each job's booking client.
@@ -88,12 +100,29 @@ export async function loadFleetTimelines(opts: {
     ] as const),
   ])
 
+  const own = opts.ownProgramOf
+  // Every market of a booking shares its job number, so on another truck the
+  // program must also be in the hold's market to be the hold's own. A truck's
+  // day of the job is the hold's own if any of its rows is (LED can file one
+  // day under markets in two states), and then all of them go.
+  const ownDay = (row: Record<string, unknown>) => `${String(row.truck_number ?? '')}|${toDateStr(row.shift_start)}`
+  const ownDays = new Set<string>()
+  if (own) {
+    for (const row of scheduleRows) {
+      const day = toDateStr(row.shift_start)
+      if (day && isOwnLedProgram(own, { start: day, end: day, job_number: String(row.job_number ?? '') })
+        && ledMarketMatches(own, { market: String(row.market ?? ''), state: String(row.state ?? ''), standard_market_name: String(row.standard_market_name ?? '') })) {
+        ownDays.add(ownDay(row))
+      }
+    }
+  }
   const scheduleDays: DayRow[] = []
   for (const row of scheduleRows) {
     const truckNumber = String(row.truck_number ?? '')
     if (!truckNumber || hidden.has(truckNumber)) continue
     const day = toDateStr(row.shift_start)
     if (!day) continue
+    if (own && ownDays.has(ownDay(row)) && jobKey(String(row.job_number ?? '')) === jobKey(own.job_number)) continue
     const lat = Number(row.market_lat)
     const lng = Number(row.market_lng)
     scheduleDays.push({
@@ -102,6 +131,7 @@ export async function loadFleetTimelines(opts: {
       market: normalizeMarket(row.standard_market_name || row.market),
       state: String(row.state ?? ''),
       program: String(row.program ?? ''),
+      jobNumber: String(row.job_number ?? ''),
       client: window ? String(row.client ?? '') : undefined,
       // Only when the database supplied them AND they are real numbers; a
       // market row with null bounds behaves exactly like the columns being absent.
@@ -133,13 +163,15 @@ export async function loadFleetTimelines(opts: {
         client_name: h.client_name,
         origination: h.origination,
         source: h.source,
+        job_number: linkedJob(h),
         lat: coords?.lat,
         lng: coords?.lng,
       }
     })
 
+  // A won hold's own LED program days are the hold itself (dropOwnProgramDays).
   const timelines = buildTruckTimelines(
-    scheduleDays,
+    dropOwnProgramDays(scheduleDays, fleetHolds),
     fleetHolds.filter(h => h.id !== opts.excludeHoldId && !opts.excludeHoldIds?.has(h.id)),
   )
 

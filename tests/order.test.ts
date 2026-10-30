@@ -118,6 +118,7 @@ section('order: holds by market for a shared truck')
     ['Dallas', '2026-10-23', '2026-10-25'],      // Fri-Sun
   ])
   eq('each stretch but the last ends with the drive to the other', st.map(x => x.travelTo), ['Fort Worth', 'Dallas', null])
+  eq('each stretch counts its own work days (no idle or travel days)', st.map(x => x.workDays), [3, 6, 3])
   const days = (id: string) => st.filter(x => x.lineId === id).reduce((n, x) => n + (Math.round((Date.parse(x.end) - Date.parse(x.start)) / 864e5) + 1) - (x.travelTo ? 1 : 0), 0)
   eq('each market gets its 3 days in each of the 2 weeks', [days('dal'), days('ftw')], [6, 6])
   const noOverlap = st.every((x, i) => i === 0 || x.start > st[i - 1].end)
@@ -126,7 +127,7 @@ section('order: holds by market for a shared truck')
 
   const lead = line('dal', 'dal', '2026-10-05', '2026-10-25')
   const [j2] = buildJobs([lead, b], S).jobs
-  eq('a week on Dallas alone comes before the rotation', rotationStints(j2)[0], { lineId: 'dal', market: 'Dallas', start: '2026-10-05', end: '2026-10-15', travelTo: 'Fort Worth' })
+  eq('a week on Dallas alone comes before the rotation', rotationStints(j2)[0], { lineId: 'dal', market: 'Dallas', start: '2026-10-05', end: '2026-10-15', travelTo: 'Fort Worth', workDays: 6 })
   eq('a market on its own truck: one hold', rotationStints(buildJobs([line('den', 'den', '2026-10-12', '2026-11-08', 1, 5, 8)], S).jobs[0]).length, 1)
 }
 

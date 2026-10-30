@@ -46,6 +46,16 @@ model Hold {
   // the existing hold instead of creating duplicates.
   sfdc_opportunity_id String?
   sfdc_hold_exp       DateTime? // DEPRECATED — use expires_at instead
+  // Opportunity.Job_Number__c, copied by the reconcile; matches the LED program's
+  // client_programs.job_number (lib/ledJobs.ts).
+  sfdc_job_number     String?
+  // Opportunity.AccountId, copied by the reconcile; its LED client is in
+  // app_led_client_links (lib/ledClients.ts).
+  sfdc_account_id     String?     @db.NVarChar(18)
+  // When the sweep moved this won hold onto LED's truck and its opportunity's
+  // LED Trucks hasn't reached Salesforce yet; retried every sweep
+  // (lib/ledTruckFollow.ts). Null: nothing waiting.
+  led_follow_sync_pending DateTime?
   // Client user link (nullable — only set for CLIENT-sourced holds)
   client_user_id      String?
   // Pricing snapshot — locked at hold creation from the quote engine
@@ -352,4 +362,30 @@ model DealValue {
 
   @@index([sfdc_opportunity_id, captured_at])
   @@map("app_deal_values")
+}
+
+// A Salesforce opportunity the app created, so one made directly in Salesforce
+// can be told apart (lib/opportunityOrigins.ts). The app's integration user is
+// a real person's, so Salesforce's Created By can't.
+model CreatedOpportunity {
+  sfdc_opportunity_id String   @id @db.NVarChar(18)
+  created_at          DateTime @default(now())
+  /// The staff user who booked it; null for a client's own booking.
+  created_by          String?  @db.NVarChar(191)
+  /// 'staff', 'client' or 'multi-market'.
+  path                String   @db.NVarChar(30)
+
+  @@map("app_created_opportunities")
+}
+
+// Which LED client (dbo.clients.client_uid) a Salesforce account is: picked by
+// staff once per account (lib/ledClients.ts). LED has no Salesforce link.
+model LedClientLink {
+  sfdc_account_id String   @id @db.NVarChar(18)
+  account_name    String   @db.NVarChar(255)
+  client_uid      String   @db.UniqueIdentifier
+  linked_by       String   @db.NVarChar(191)
+  linked_at       DateTime @default(now())
+
+  @@map("app_led_client_links")
 }

@@ -85,7 +85,7 @@ Availability for a market, distances, prices and bookings don't come from this c
 | SCHEDULED | LED app (`program_schedule`) | Assigned to a client program |
 | AVAILABLE | LED app (no row for today) | No active program |
 | HOLD | This app (Prisma) | Reservation. Shown as a yellow **Reservation** everywhere |
-| COMMITTED | This app (Prisma) | **Committed (won)**, soft gray: won in Salesforce (Closed Won sets it) but not yet on the LED schedule. Blocks the truck and never auto-expires. Read-only in the app except truck swaps: change the deal in Salesforce |
+| COMMITTED | This app (Prisma) | **Committed (won)**, soft gray: won in Salesforce (Closed Won sets it). Blocks the truck and never auto-expires. Read-only in the app except truck swaps: change the deal in Salesforce. Linked to its LED program by the opportunity's job number (`Job_Number__c` = `client_programs.job_number`, lib/ledJobs.ts): its own program isn't a conflict, and Reservations lists the booking under **Scheduled in LED** instead once LED runs the job on every truck for as many days as were sold (else it shows "In LED: x of y days"). If ops schedules it in LED on a different truck, the sweep moves the hold there (lib/ledTruckFollow.ts) and syncs LED Trucks to Salesforce, but only when LED's choice is unambiguous: none of its days on the hold's truck, and the job in its market (a Salesforce multi-market hold: a city its label names, in the state it gives) on exactly one other truck, for every day sold, that no other hold of the job or of its opportunity is on or could take. Any new clash shows as a conflict. The card says **Truck moved to match LED** for a week. A Salesforce refusal of the new LED Trucks is retried every sweep while the hold is won and its campaign runs, and after an hour the card says **LED Trucks not updated in Salesforce**. Once every market of a won booking has ended (Central date), Reservations lists it only under **Won, ended** (`bookingEnded`, lib/bookings.ts). It stops being listed 7 days after it ends if LED has fully scheduled it, else after 30 days, so its "In LED" or "No job number yet" badge gets seen first (`stillListed`). Each won booking's card also shows its account's **LED client**: staff pick it once per Salesforce account (**Link LED client**, `lib/ledClients.ts`, suggested from the names), since LED has no Salesforce link; the app will set up the deal's LED program under it. The hold blocks every day of its range either way |
 | ATT_SOFT | This app (Prisma, auto-created) | AT&T soft hold (blue): trucks with more than 5 days of 160over90 work (any program) in the current month, or through the 10th in the prior month (each month on its own), for the current month (from today) and the next two. A day or two on another client does not release it; from the 11th, no 160over90 shifts this month does. See `lib/attSoftHolds.ts` |
 
 **Releasing an AT&T soft hold** is always for a specific booking and only for its dates: from the Quote Builder ("Release for this booking"), a client-request truck swap, the schedule grid's cell panel, or the Conflicts page. Anyone signed in may do it after the warning to check with operations; the soft hold is cut around the booking's dates and the release is recorded so the hourly sync never puts it back (`lib/attSoftRelease.ts`). The partner/MCP and internal holds APIs can never book over, or strand, a soft hold. The Conflicts page lists soft holds that still clash with a reservation, to release or dismiss.
@@ -113,6 +113,9 @@ The AI checks both sources and reports conflicts from either. The Schedule Grid 
 | Markets / programs | Azure SQL (`dbo.client_program_markets`) | 5-min cache |
 | GPS locations | Samsara Fleet API | Always live, no cache |
 | Holds / commitments | Prisma (SQL Server) | Always live |
+| Opportunity origins (Ops → Opp Origins) | Salesforce LED opportunities + `app_created_opportunities` | Always live |
+
+**Opportunity origins** (`/ops/opportunities`, `lib/opportunityOrigins.ts`): LED opportunities created in Salesforce each Central week, made in the app vs made directly in Salesforce, with the direct ones by who made them. The app creates opportunities as its integration user (a real person's Salesforce user), so Created By can't tell them apart: the app records each opportunity it makes (`app_created_opportunities`) and sets `Created_In_App__c` once that checkbox exists in Salesforce (best-effort; refused, it creates without it). Opportunities from before the record count as made in the app when an app reservation on them was made within 5 minutes of them ("matched").
 
 ---
 
@@ -334,6 +337,16 @@ The app is hosted on Vercel. Pushing to `main` on GitHub does not auto-deploy �
 keeps AT&T soft holds current (releases prior months, duplicates and stale
 holds; fills the current month and the next two), reconciles Salesforce Opportunity stages, expires
 holds past their `expires_at`, and re-runs conflict detection.
+
+**Expiry reminders.** The sweep emails each rep, once per expiry, about their
+reservations (made in the app) that lapse within 24 hours (`lib/holdExpiryWarnings.ts`): one card per
+booking, with **Extend 1 day** / **Extend 2 days** buttons. A button opens a confirm page
+(`/extend`, no sign-in: the link is signed for that rep and booking with `NEXTAUTH_SECRET`,
+`lib/extendLink.ts`) whose button extends the whole booking under the same rules as Edit expiry on
+Reservations (`lib/bookingExpiry.ts`: 2 days before the earliest start at most, Salesforce's Hold
+Exp synced). A link stops working when the expiry it warned about passes or changes, so each email
+extends once; the next reminder brings a new link, with no limit on how many times. Links use
+`NEXTAUTH_URL` as the app's address, or the branch URL on a preview deployment (UAT).
 
 **Opportunity stage reconcile.** Salesforce never tells us when an Opportunity
 closes — the hold webhook payload carries trucks and dates, no stage. So the sweep

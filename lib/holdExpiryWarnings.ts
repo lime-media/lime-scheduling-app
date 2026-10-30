@@ -21,8 +21,13 @@
  */
 
 import { prisma } from '@/lib/prisma'
-import { sendExpiringHoldsEmail, type ExpiringHoldSummary } from '@/lib/email'
-import { APP_TIME_ZONE } from '@/lib/dateOnly'
+import type { Hold } from '@prisma/client'
+import { sendExpiringHoldsEmail } from '@/lib/email'
+import type { ExpiringBooking } from '@/lib/emailTemplates'
+import { APP_TIME_ZONE, centralDate } from '@/lib/dateOnly'
+import { bookingCapStarts, bookingKey } from '@/lib/bookings'
+import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
+import { extendOptions, signExtendToken } from '@/lib/extendLink'
 
 /** When a hold lapses, as reps read it (Central time). */
 const EXPIRES_AT = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: APP_TIME_ZONE, timeZoneName: 'short' })
@@ -42,6 +47,66 @@ export type ExpiryWarningResult = {
 
 function toDateStr(d: Date): string {
   return d.toISOString().split('T')[0]
+}
+
+/**
+ * The app's address, for links in the email. NEXTAUTH_URL is one value for
+ * Production and Preview, so a preview deployment (UAT) uses its branch URL
+ * (Vercel's VERCEL_BRANCH_URL) or its links would open production.
+ */
+export function appUrl(env: Record<string, string | undefined> = process.env): string {
+  const url = env.VERCEL_ENV === 'preview' && env.VERCEL_BRANCH_URL
+    ? `https://${env.VERCEL_BRANCH_URL}`
+    : env.NEXTAUTH_URL ?? 'https://led.lime-media.com'
+  return url.replace(/\/$/, '')
+}
+
+const hoursLeft = (expiresAt: Date, now: Date) => Math.max(0, Math.round((expiresAt.getTime() - now.getTime()) / 3600_000))
+
+/**
+ * One reminder card per booking (lib/bookings.ts bookingKey; a hold with none
+ * is its own): a booking is extended as one. Each card carries Extend links
+ * for the days that stay within the booking's limit (2 days before its
+ * earliest start), signed for the rep (lib/extendLink.ts); none when the
+ * signing secret isn't set. Exported for tests.
+ */
+export function expiringBookings(holds: Hold[], now: Date, secret: string | undefined = process.env.NEXTAUTH_SECRET): ExpiringBooking[] {
+  const groups = new Map<string, Hold[]>()
+  for (const h of holds) {
+    const key = bookingKey(h) ?? `hold:${h.id}`
+    groups.set(key, [...(groups.get(key) ?? []), h])
+  }
+  const today = centralDate(now)
+  return [...groups.values()].map(group => {
+    // The booking's one expiry: the earliest, should older bookings differ.
+    const first = [...group].sort((a, b) => (a.expires_at?.getTime() ?? 0) - (b.expires_at?.getTime() ?? 0))[0]
+    const starts = group.map(h => toDateStr(h.start_date))
+    // The server's cap rule (lib/bookingExpiry.ts capStarts), over the holds this email covers.
+    const capFrom = bookingCapStarts(group.map(h => ({ start_date: toDateStr(h.start_date), status: h.status })), today).sort()[0]
+    const lastDate = lastExpiryDate(capFrom, now, STAFF_MIN_DAYS_BEFORE_START)
+    const expiresOn = first.expires_at ? centralDate(first.expires_at) : null
+    // Extending sets every hold to one date: never earlier than a hold already expires.
+    const latestOn = group.map(h => h.expires_at ? centralDate(h.expires_at) : '').sort().reverse()[0]
+    const token = secret && first.expires_at
+      ? signExtendToken({ holdId: first.id, userId: first.created_by, expiresAt: first.expires_at.toISOString() }, secret)
+      : null
+    // A client's pending extension request is answered on Reservations, not from here.
+    const pending = group.some(h => h.status === 'EXTENSION_REQUESTED')
+    const extend = token && expiresOn && !pending
+      ? extendOptions(expiresOn, lastDate, latestOn).map(o => ({ days: o.days, label: o.label, url: `${appUrl()}/extend?t=${encodeURIComponent(token)}&d=${o.days}` }))
+      : []
+    return {
+      clientName: first.client_name,
+      markets:    [...new Set(group.map(h => h.market).filter(Boolean))],
+      trucks:     [...new Set(group.map(h => h.truck_number))],
+      startDate:  starts.sort()[0],
+      endDate:    group.map(h => toDateStr(h.end_date)).sort().reverse()[0],
+      // In Central time, as the rep's confirmation and Salesforce's Hold Exp give it.
+      expiresAt:  first.expires_at ? EXPIRES_AT.format(first.expires_at) : 'unknown',
+      hoursLeft:  first.expires_at ? hoursLeft(first.expires_at, now) : 0,
+      extend,
+    }
+  })
 }
 
 export async function warnExpiringHolds(now = new Date()): Promise<ExpiryWarningResult> {
@@ -117,24 +182,16 @@ export async function warnExpiringHolds(now = new Date()): Promise<ExpiryWarning
       continue
     }
 
-    const summaries: ExpiringHoldSummary[] = holds.map(h => ({
-      truckNumber: h.truck_number,
-      clientName:  h.client_name,
-      market:      h.market,
-      startDate:   toDateStr(h.start_date),
-      endDate:     toDateStr(h.end_date),
-      // In Central time, as the rep's confirmation and Salesforce's Hold Exp give it.
-      expiresAt:   h.expires_at ? EXPIRES_AT.format(h.expires_at) : 'unknown',
-      hoursLeft:   h.expires_at
-        ? Math.max(0, Math.round((h.expires_at.getTime() - now.getTime()) / 3600_000))
-        : 0,
-    }))
+    // Extend links act as the rep without sign-in: only in the rep's own inbox,
+    // not the NOTIFY_EMAIL fallback.
+    const bookings = expiringBookings(holds, now, user?.email ? process.env.NEXTAUTH_SECRET : undefined)
 
     try {
       await sendExpiringHoldsEmail({
         to,
         recipientName: user?.name ?? '',
-        holds: summaries,
+        bookings,
+        reservationsUrl: `${appUrl()}/hold-requests`,
       })
     } catch (err) {
       // Do not mark as warned — a send failure should retry on the next sweep.
@@ -143,21 +200,19 @@ export async function warnExpiringHolds(now = new Date()): Promise<ExpiryWarning
     }
 
     // Mark only after a successful send.
-    for (const h of holds) {
-      await prisma.auditLog.create({
-        data: {
-          action:       WARN_ACTION,
-          truck_number: h.truck_number,
-          user_id:      h.created_by,
-          hold_id:      h.id,
-          details:      JSON.stringify({
-            expires_at: h.expires_at,
-            hours_left: summaries.find(s => s.truckNumber === h.truck_number)?.hoursLeft,
-            sent_to:    to,
-          }),
-        },
-      })
-    }
+    await prisma.auditLog.createMany({
+      data: holds.map(h => ({
+        action:       WARN_ACTION,
+        truck_number: h.truck_number,
+        user_id:      h.created_by,
+        hold_id:      h.id,
+        details:      JSON.stringify({
+          expires_at: h.expires_at,
+          hours_left: h.expires_at ? hoursLeft(h.expires_at, now) : null,
+          sent_to:    to,
+        }),
+      })),
+    })
 
     result.warned += holds.length
     result.recipients += 1

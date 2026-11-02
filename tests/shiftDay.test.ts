@@ -59,7 +59,9 @@ for (const file of [...files('lib'), ...files('app')]) {
 const live = liveProgram('p', 'ps2')
 eq('keeps a live program, or a shift with no program row', live.startsWith('(COALESCE(p.is_deleted, 0) = 0 OR '), true)
 eq('keeps an archived program\'s shifts that started before the archive', live.endsWith('OR ps2.start_time < p.updated_at)'), true)
+// With no archive time there's no way to tell run from never-run: keep them all, as before the filter.
+eq('keeps every shift of an archived program with no archive time', live.includes(' OR p.updated_at IS NULL OR '), true)
 for (const [name, q] of Object.entries({ SCHEDULED_QUERY, CHAT_CONTEXT_QUERY, windowed: scheduledWithMarketQuery(true, true), rolling: scheduledWithMarketQuery(false, false) })) {
-  eq(`${name}: leaves out shifts an archived program never ran`, /\.is_deleted, 0\) = 0 OR \w+\.start_time < \w+\.updated_at\)/.test(q), true)
+  eq(`${name}: leaves out shifts an archived program never ran`, /\.is_deleted, 0\) = 0 OR \w+\.updated_at IS NULL OR \w+\.start_time < \w+\.updated_at\)/.test(q), true)
 }
 eq('CHAT_CONTEXT: today and the last-known market both filter', (CHAT_CONTEXT_QUERY.match(/start_time < \w+\.updated_at/g) ?? []).length, 2)

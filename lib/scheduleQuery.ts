@@ -37,11 +37,13 @@ const SQL_ZONE = (market: string) => `CASE ${market}.market_timezone
  * roster, the planner's hours and where a truck last was rely on. The archive
  * time is updated_at, which Core stamps on every save, the archive included
  * (a later edit to an archived program would move it; Core doesn't edit them).
+ * An archived program with no updated_at keeps every shift, as before this
+ * filter: an unknown archive time is treated as booked, the safe direction.
  * `program` is the alias of a joined dbo.client_programs (a shift with no
  * program row is kept), `shift` of dbo.program_schedule.
  */
 export const liveProgram = (program = 'cp', shift = 'ps') =>
-  `(COALESCE(${program}.is_deleted, 0) = 0 OR ${shift}.start_time < ${program}.updated_at)`
+  `(COALESCE(${program}.is_deleted, 0) = 0 OR ${program}.updated_at IS NULL OR ${shift}.start_time < ${program}.updated_at)`
 
 /** SQL for today's date in Central time, the app's day (REVIEW.md); GETDATE() is UTC on Azure. */
 const TODAY = `CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Central Standard Time' AS DATE)`

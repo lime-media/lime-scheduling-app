@@ -13,7 +13,7 @@ import { resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
  * market for its impressions; lib/pricing/topDmas.ts). The path is kept so the
  * deployed MCP server keeps working.
  *
- * The radius is the default rate card's (else config.ts). A client's rate
+ * The radius and transport rule are the default rate card's (else config.ts). A client's rate
  * agreement can set its own radius or include transport, so the quote, which
  * applies the caller's agreement, is the answer for a given market.
  */
@@ -24,12 +24,16 @@ export async function GET(request: Request) {
   // Never throws: no default rate card, or a failed read, gives the configured radius.
   const defaults = await resolveDefaultRateOverrides()
   const radius = defaults?.service_area_miles ?? SERVICE_AREA_RADIUS_MILES
+  // The engine absorbs every leg when the default card includes transport (priceTransport).
+  const transport = defaults?.transport_included === true
+    ? 'Transport is included by default: no repositioning charges. A client\'s rate agreement can change that, so the quote is the answer for a given market.'
+    : `By default, trucks within ${radius} miles of the market need no transport; from further away, transport is shown on the quote, billed or, for a campaign of 10+ activation days booked 10+ business days ahead, absorbed by Lime. A client's rate agreement can set its own radius or include transport, so the quote is the answer for a given market.`
 
   return NextResponse.json({
     service_area: 'contiguous_48_states',
     description: 'Lime serves campaigns in any city, town or ZIP in the contiguous 48 US states (not Alaska or Hawaii). There is no list of markets to pick from.',
     service_area_radius_miles: radius,
-    transport: `By default, trucks within ${radius} miles of the market need no transport; from further away, transport is shown on the quote, billed or, for a campaign of 10+ activation days booked 10+ business days ahead, absorbed by Lime. A client's rate agreement can set its own radius or include transport, so the quote is the answer for a given market.`,
+    transport,
     how_to_check_a_market: 'Quote it: get_rate_quote places the market, applies your rate agreement, and says if it cannot serve it.',
   })
 }

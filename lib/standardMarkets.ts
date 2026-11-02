@@ -53,6 +53,8 @@ export function pickStandardMarket(
   return best ? { uid: best.uid, via: 'area' } : null
 }
 
+const warnedBoxes = new Set<string>()
+
 /** Every standard market (363 rows). Throws on a failed read, so the caller keeps what it has. */
 export async function loadStandardMarkets(): Promise<StandardMarket[]> {
   const bounds = await hasMarketBounds()
@@ -72,7 +74,9 @@ export async function loadStandardMarkets(): Promise<StandardMarket[]> {
       : null
     const market: StandardMarket = { uid: r.uid.toUpperCase(), key, box }
     if (box && !boxIsWhereItsCityIs(market)) {
-      console.warn(`[standardMarkets] "${r.name.trim()}": its area isn't where the town is; matched by name only`)
+      // Once per process, not every sweep: the row stays wrong until LED fixes it.
+      if (!warnedBoxes.has(key)) console.warn(`[standardMarkets] "${r.name.trim()}": its area isn't where the town is; matched by name only`)
+      warnedBoxes.add(key)
       market.box = null
     }
     out.push(market)

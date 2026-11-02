@@ -357,7 +357,7 @@ The fallback is only reported when the unmappable job **has not started yet**. I
 When it does fire, it is counted and reported, never silent:
 
 - staff quote shows a red "priced from GPS, not their prior job" warning naming the markets
-- `/conflicts` shows a "Market names not recognized" banner
+- `/conflicts` shows a "Market names not recognized" banner. It also lists holds whose own market can't be located: they are still checked for overlaps with other bookings, but not for travel time
 - the server logs a warning per quote
 
 A non-zero count means market names are drifting from the coordinate map and some transport is being priced from the wrong origin. Fixing it is a data task: add the missing markets to the map.

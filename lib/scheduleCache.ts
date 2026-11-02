@@ -21,6 +21,7 @@ import { isOwnLedProgram, jobKey, linkedJob } from '@/lib/jobNumber'
 import { followLedTrucks, syncFollowedOpportunities } from '@/lib/ledTruckFollow'
 import { daysSold } from '@/lib/ledJobs'
 import { centralDate } from '@/lib/dateOnly'
+import { assignStandardMarkets } from '@/lib/standardMarkets'
 import { recordAmountChanges, recordExecuted, recordPrestart, recordSwap, sharedOriginMeasurer } from '@/lib/transportMetricsRecord'
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────
@@ -51,6 +52,10 @@ export interface RefreshSummary {
   led_trucks_followed:        number
   /** Opportunities whose followed trucks haven't reached Salesforce yet; retried every sweep. */
   led_follow_sync_pending:    number
+  /** Holds whose LED standard market was set or changed (lib/standardMarkets.ts). */
+  standard_markets_set:       number
+  /** Live holds whose market isn't located in a standard market. */
+  standard_markets_unlocated: number
 }
 
 /**
@@ -101,6 +106,12 @@ export async function refreshCache(): Promise<RefreshSummary> {
   const warnings = await warnExpiringHolds().catch((err) => {
     console.error('[scheduleCache] expiry warnings failed:', err)
     return { candidates: 0, warned: 0, recipients: 0, skipped_already_warned: 0, skipped_no_email: 0 }
+  })
+
+  // Each live hold's LED standard market, from its market text.
+  const standardMarkets = await assignStandardMarkets().catch((err) => {
+    console.error('[scheduleCache] standard market assignment failed:', err)
+    return { updated: 0, unlocated: 0 }
   })
 
   const [schedulesRaw, holdsRaw] = await Promise.all([
@@ -245,6 +256,8 @@ export async function refreshCache(): Promise<RefreshSummary> {
     conflicts_auto_resolved:   reconciled.resolved,
     led_trucks_followed:       ledFollow.moved.length,
     led_follow_sync_pending:   ledFollowPending.length,
+    standard_markets_set:       standardMarkets.updated,
+    standard_markets_unlocated: standardMarkets.unlocated,
   }
 }
 

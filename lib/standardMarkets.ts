@@ -11,6 +11,7 @@
  *   3. else none. A Salesforce "Multi-market: ..." label names several markets
  *      and stays unset.
  */
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { query } from '@/lib/mssql'
 import { hasMarketBounds, matchMarketKey, normalizeMarketKey } from '@/lib/marketBounds'
@@ -53,7 +54,12 @@ export function pickStandardMarket(
   return best ? { uid: best.uid, via: 'area' } : null
 }
 
-const warnedBoxes = new Set<string>()
+const warned = new Set<string>()
+/** Logs once per process, not every sweep: a bad row stays bad until LED fixes it. */
+const warnOnce = (key: string, message: string) => {
+  if (!warned.has(key)) console.warn(`[standardMarkets] ${message}`)
+  warned.add(key)
+}
 
 /** Every standard market (363 rows). Throws on a failed read, so the caller keeps what it has. */
 export async function loadStandardMarkets(): Promise<StandardMarket[]> {
@@ -62,11 +68,19 @@ export async function loadStandardMarkets(): Promise<StandardMarket[]> {
     SELECT CAST(standard_market_uid AS NVARCHAR(36)) AS uid, standard_market AS name
       ${bounds ? ', bounds_ne_lat AS ne_lat, bounds_ne_lng AS ne_lng, bounds_sw_lat AS sw_lat, bounds_sw_lng AS sw_lng' : ''}
     FROM dbo.standard_market_lookup
+    ORDER BY standard_market_id
   `)
   const out: StandardMarket[] = []
+  const seen = new Set<string>()
   for (const r of rows) {
     const key = normalizeMarketKey(r.name)
     if (!key || !r.uid) continue
+    // Two rows of one name: the older row wins, the same one every sweep.
+    if (seen.has(key)) {
+      warnOnce(`dup:${key}`, `"${r.name.trim()}" is listed twice; holds get the first row`)
+      continue
+    }
+    seen.add(key)
     const raw = [r.ne_lat, r.ne_lng, r.sw_lat, r.sw_lng]
     const nums = raw.map(Number)
     const box = bounds && raw.every(v => v != null) && nums.every(Number.isFinite)
@@ -74,9 +88,7 @@ export async function loadStandardMarkets(): Promise<StandardMarket[]> {
       : null
     const market: StandardMarket = { uid: r.uid.toUpperCase(), key, box }
     if (box && !boxIsWhereItsCityIs(market)) {
-      // Once per process, not every sweep: the row stays wrong until LED fixes it.
-      if (!warnedBoxes.has(key)) console.warn(`[standardMarkets] "${r.name.trim()}": its area isn't where the town is; matched by name only`)
-      warnedBoxes.add(key)
+      warnOnce(`box:${key}`, `"${r.name.trim()}": its area isn't where the town is; matched by name only`)
       market.box = null
     }
     out.push(market)
@@ -118,7 +130,11 @@ const usState = (s: string | null | undefined) => (s && /^[A-Za-z]{2}$/.test(s.t
 /**
  * Sets standard_market_uid on every hold not yet EXPIRED, from its market
  * text, wherever it differs (an edited market moves it; one no longer located
- * clears it). Never throws: a failed read of the list changes nothing.
+ * clears it). Never throws: a failed read changes nothing, and a failed write
+ * is logged and the rest carry on.
+ *
+ * Written with plain SQL so a hold's updated_at keeps meaning a change to the
+ * booking (Prisma's updateMany would stamp it).
  */
 export async function assignStandardMarkets(): Promise<{ updated: number; unlocated: number }> {
   let markets: StandardMarket[]
@@ -130,10 +146,20 @@ export async function assignStandardMarkets(): Promise<{ updated: number; unloca
   }
   if (markets.length === 0) return { updated: 0, unlocated: 0 }
 
-  const holds = await prisma.hold.findMany({
-    where: { status: { not: 'EXPIRED' } },
-    select: { id: true, market: true, state: true, standard_market_uid: true },
-  })
+  // Without any area (the bounds check failed or the columns are absent), a
+  // town can't be placed: leave such holds as they are rather than clear them.
+  const areasKnown = markets.some(m => m.box)
+
+  let holds: { id: string; market: string; state: string; standard_market_uid: string | null }[]
+  try {
+    holds = await prisma.hold.findMany({
+      where: { status: { not: 'EXPIRED' } },
+      select: { id: true, market: true, state: true, standard_market_uid: true },
+    })
+  } catch (err) {
+    console.error('[standardMarkets] hold read failed; holds left as they are:', err)
+    return { updated: 0, unlocated: 0 }
+  }
   const memo = new Map<string, string | null>()
   const changes = new Map<string | null, string[]>()
   let unlocated = 0
@@ -143,6 +169,7 @@ export async function assignStandardMarkets(): Promise<{ updated: number; unloca
     const uid = memo.get(memoKey)!
     if (!uid) unlocated++
     if ((h.standard_market_uid?.toUpperCase() ?? null) === uid) continue
+    if (!uid && !areasKnown) continue
     changes.set(uid, [...(changes.get(uid) ?? []), h.id])
   }
 
@@ -150,8 +177,12 @@ export async function assignStandardMarkets(): Promise<{ updated: number; unloca
   for (const [uid, ids] of changes) {
     // Under SQL Server's 2,100-parameter limit per statement.
     for (let i = 0; i < ids.length; i += IN_CHUNK) {
-      const res = await prisma.hold.updateMany({ where: { id: { in: ids.slice(i, i + IN_CHUNK) } }, data: { standard_market_uid: uid } })
-      updated += res.count
+      const slice = ids.slice(i, i + IN_CHUNK)
+      try {
+        updated += await prisma.$executeRaw`UPDATE dbo.app_holds SET standard_market_uid = ${uid} WHERE id IN (${Prisma.join(slice)})`
+      } catch (err) {
+        console.error(`[standardMarkets] setting ${slice.length} holds to ${uid ?? 'none'} failed; retried next sweep:`, err)
+      }
     }
   }
   return { updated, unlocated }

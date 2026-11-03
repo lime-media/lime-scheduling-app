@@ -5,6 +5,7 @@
 import { eq, section } from './harness'
 import { findPlaces, placeCoords, placeForZip, suggestPlaces, withStateComma } from '@/lib/geo/places'
 import { dmaForPoint, DMA_RADIUS_MILES } from '@/lib/pricing/dmaArea'
+import { TOP_DMAS } from '@/lib/pricing/topDmas'
 
 section('places: any US city or town can be quoted')
 eq('Ames, IA (the college town north of Des Moines)', findPlaces('Ames, IA').map(p => p.name), ['Ames, IA'])
@@ -47,6 +48,23 @@ section('market size tier: by location, not just by name')
   eq('between two DMAs, the nearer wins (Silver Spring: Washington)', at('Silver Spring, MD'), 'Washington')
   eq('Ames, IA is in no top-50 ring: small metro', at('Ames, IA'), null)
   eq(`the ring is ${DMA_RADIUS_MILES} miles`, DMA_RADIUS_MILES, 40)
+}
+
+section('market size tier: a polycentric DMA has a centre at each principal city')
+{
+  const at = (place: string) => dmaForPoint(placeCoords(place)!, TOP_DMAS)?.dma_name ?? null
+  eq('San Jose, CA (47 miles from San Francisco) is in the SF DMA', at('San Jose, CA'), 'San Francisco, CA')
+  eq('Weatherford, TX (west of Fort Worth) is in Dallas-Fort Worth', at('Weatherford, TX'), 'Dallas-Fort Worth, TX')
+  eq('Riverside, CA is in Los Angeles', at('Riverside, CA'), 'Los Angeles, CA')
+  eq('Coral Springs, FL goes to Miami-Fort Lauderdale, not West Palm Beach', at('Coral Springs, FL'), 'Miami, FL')
+  eq('Daytona Beach, FL is in Orlando', at('Daytona Beach, FL'), 'Orlando, FL')
+  eq('Lancaster, PA stays in Harrisburg, though Reading is a Philadelphia centre', at('Lancaster, PA'), 'Harrisburg, PA')
+  eq('Allentown, PA is in Philadelphia', at('Allentown, PA'), 'Philadelphia, PA')
+  eq('Lumberton, NC (Florence-Myrtle Beach DMA) stays a small metro', at('Lumberton, NC'), null)
+  eq('Merced, CA (Fresno DMA) stays a small metro', at('Merced, CA'), null)
+  eq('Lansing, MI stays a small metro', at('Lansing, MI'), null)
+  eq('Ames, IA stays a small metro', at('Ames, IA'), null)
+  eq('every extra centre is in the contiguous 48', TOP_DMAS.flatMap(d => d.also ?? []).every(c => c.lat > 24 && c.lat < 50 && c.lng > -125 && c.lng < -66), true)
 }
 
 section('places: review fixes — punctuated names and a missing comma')

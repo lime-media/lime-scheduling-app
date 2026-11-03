@@ -84,10 +84,10 @@ let marketCoordsCache: Map<string, MarketCoords> | null = null
  * Every standard market's centroid, keyed by normalized name.
  *
  * Holds and typed campaign markets have no standard_market_uid to join on, so
- * they are matched by name instead — but against the authoritative 356-market
+ * they are matched by name instead — but against the authoritative standard market
  * list rather than the 281-entry hardcoded file, which covers 61% of it.
  *
- * Loaded once per process (356 rows), and empty when the bounds columns are
+ * Loaded once per process, and empty when the bounds columns are
  * absent so callers fall through to their existing behavior.
  */
 export async function loadStandardMarketCoords(): Promise<Map<string, MarketCoords>> {

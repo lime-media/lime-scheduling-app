@@ -54,8 +54,12 @@ export interface RefreshSummary {
   led_follow_sync_pending:    number
   /** Holds whose LED standard market was set or changed (lib/standardMarkets.ts). */
   standard_markets_set:       number
+  /** Holds whose standard market write failed; retried next sweep. */
+  standard_markets_failed:    number
   /** Live holds whose market isn't located in a standard market. */
   standard_markets_unlocated: number
+  /** A read that stopped the standard market step, else null. */
+  standard_markets_error:     string | null
 }
 
 /**
@@ -108,10 +112,12 @@ export async function refreshCache(): Promise<RefreshSummary> {
     return { candidates: 0, warned: 0, recipients: 0, skipped_already_warned: 0, skipped_no_email: 0 }
   })
 
-  // Each live hold's LED standard market, from its market text.
-  const standardMarkets = await assignStandardMarkets().catch((err) => {
+  // Each live hold's LED standard market, from its market text. Nothing
+  // below reads standard_market_uid, so it runs alongside the rest of the
+  // sweep and is awaited at the end.
+  const standardMarketsRun = assignStandardMarkets().catch((err) => {
     console.error('[scheduleCache] standard market assignment failed:', err)
-    return { updated: 0, unlocated: 0 }
+    return { updated: 0, failed: 0, unlocated: 0, error: 'standard market step threw' }
   })
 
   const [schedulesRaw, holdsRaw] = await Promise.all([
@@ -225,6 +231,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
       .filter((m) => (holds.find((h) => h.id === m.holdId)?.start_date ?? '') > today)
       .map((m) => recordSwap(m.holdId, m.by, measurer)),
   ])
+  const standardMarkets = await standardMarketsRun
   if (metricsPrestart || metricsExecuted || metricsAmounts) {
     console.log(`[scheduleCache] metrics: ${metricsPrestart} pre-start snapshot(s), ${metricsExecuted} executed leg(s), ${metricsAmounts} amount change(s)`)
   }
@@ -257,7 +264,9 @@ export async function refreshCache(): Promise<RefreshSummary> {
     led_trucks_followed:       ledFollow.moved.length,
     led_follow_sync_pending:   ledFollowPending.length,
     standard_markets_set:       standardMarkets.updated,
+    standard_markets_failed:    standardMarkets.failed,
     standard_markets_unlocated: standardMarkets.unlocated,
+    standard_markets_error:     standardMarkets.error,
   }
 }
 

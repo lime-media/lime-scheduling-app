@@ -95,7 +95,7 @@ export async function clientAvailability(session: ClientSession, request: Client
   }
 
   // Resolve the market input — handles disambiguation and formalization
-  // Resolve against the hardcoded map AND the 356-market list the team
+  // Resolve against the hardcoded map AND the standard market list the team
   // maintains — /api/markets autocompletes from the latter, so gating on the
   // former would reject markets the rep just picked from the dropdown.
   const marketMatches = await resolveMarketInputAll(market)

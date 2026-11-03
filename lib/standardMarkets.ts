@@ -61,7 +61,7 @@ const warnOnce = (key: string, message: string) => {
   warned.add(key)
 }
 
-/** Every standard market (363 rows). Throws on a failed read, so the caller keeps what it has. */
+/** Every standard market. Throws on a failed read, so the caller keeps what it has. */
 export async function loadStandardMarkets(): Promise<StandardMarket[]> {
   const bounds = await hasMarketBounds()
   const rows = await query<{ uid: string; name: string; ne_lat?: number; ne_lng?: number; sw_lat?: number; sw_lng?: number }[]>(`
@@ -131,20 +131,25 @@ const usState = (s: string | null | undefined) => (s && /^[A-Za-z]{2}$/.test(s.t
  * Sets standard_market_uid on every hold not yet EXPIRED, from its market
  * text, wherever it differs (an edited market moves it; one no longer located
  * clears it). Never throws: a failed read changes nothing, and a failed write
- * is logged and the rest carry on.
+ * is logged and the rest carry on. The result says which: `failed` counts the
+ * holds a write didn't reach, and `error` names a read that failed, so a
+ * sweep reporting 0 set means converged only when both are clear.
  *
  * Written with plain SQL so a hold's updated_at keeps meaning a change to the
  * booking (Prisma's updateMany would stamp it).
  */
-export async function assignStandardMarkets(): Promise<{ updated: number; unlocated: number }> {
+export type StandardMarketAssignment = { updated: number; failed: number; unlocated: number; error: string | null }
+
+export async function assignStandardMarkets(): Promise<StandardMarketAssignment> {
+  const none = (error: string | null): StandardMarketAssignment => ({ updated: 0, failed: 0, unlocated: 0, error })
   let markets: StandardMarket[]
   try {
     markets = await loadStandardMarkets()
   } catch (err) {
     console.error('[standardMarkets] standard market list read failed; holds left as they are:', err)
-    return { updated: 0, unlocated: 0 }
+    return none('standard market list read failed')
   }
-  if (markets.length === 0) return { updated: 0, unlocated: 0 }
+  if (markets.length === 0) return none('standard market list is empty')
 
   // Without any area (the bounds check failed or the columns are absent), a
   // town can't be placed: leave such holds as they are rather than clear them.
@@ -158,7 +163,7 @@ export async function assignStandardMarkets(): Promise<{ updated: number; unloca
     })
   } catch (err) {
     console.error('[standardMarkets] hold read failed; holds left as they are:', err)
-    return { updated: 0, unlocated: 0 }
+    return none('hold read failed')
   }
   const memo = new Map<string, string | null>()
   const changes = new Map<string | null, string[]>()
@@ -174,6 +179,7 @@ export async function assignStandardMarkets(): Promise<{ updated: number; unloca
   }
 
   let updated = 0
+  let failed = 0
   for (const [uid, ids] of changes) {
     // Under SQL Server's 2,100-parameter limit per statement.
     for (let i = 0; i < ids.length; i += IN_CHUNK) {
@@ -181,9 +187,10 @@ export async function assignStandardMarkets(): Promise<{ updated: number; unloca
       try {
         updated += await prisma.$executeRaw`UPDATE dbo.app_holds SET standard_market_uid = ${uid} WHERE id IN (${Prisma.join(slice)})`
       } catch (err) {
+        failed += slice.length
         console.error(`[standardMarkets] setting ${slice.length} holds to ${uid ?? 'none'} failed; retried next sweep:`, err)
       }
     }
   }
-  return { updated, unlocated }
+  return { updated, failed, unlocated, error: null }
 }

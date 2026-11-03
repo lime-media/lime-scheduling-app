@@ -12,10 +12,10 @@
 import type { Hold, Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { holdReservesNow } from '@/lib/holdFilters'
-import { bookingCapStarts, bookingKey, reinstateRefusal } from '@/lib/bookings'
+import { bookingKey, reinstateRefusal } from '@/lib/bookings'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
-import { type ExpiryActor, expiryRefusal } from '@/lib/expiryRules'
+import { type ExpiryActor, capStarts, expiryRefusal } from '@/lib/expiryRules'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { centralDate, endOfDayCentral } from '@/lib/dateOnly'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
@@ -42,11 +42,8 @@ export async function loadBooking(hold: Hold): Promise<HoldWithClient[]> {
   })
 }
 
-/** The start dates that cap the booking's one expiry (lib/bookings.ts bookingCapStarts). */
-export function capStarts(booking: Hold[]): string[] {
-  const today = centralDate(new Date())
-  return bookingCapStarts(booking.map(h => ({ start_date: h.start_date.toISOString().slice(0, 10), status: h.status })), today)
-}
+/** The start dates that cap the booking's one expiry (lib/expiryRules.ts). */
+export { capStarts }
 
 /**
  * Runs `write` under the locks of the booking's live holds that lapsed by
@@ -88,8 +85,7 @@ export function revivalRefusalBody(err: unknown): ExpiryResult {
  * every live hold, by the rules in lib/expiryRules.ts for `actor`: staff Edit
  * (the default), staff approving a client's request, or the email link.
  * Approving answers the request: the booking goes back to HOLD with its
- * request cleared. `booking` and `stage` are passed when the caller already
- * has them. `via` is recorded on the audit rows (e.g. 'expiry_email').
+ * request cleared. `booking` is passed when the caller already has it. `via` is recorded on the audit rows (e.g. 'expiry_email').
  * `expectExpiresAt` (ISO) refuses, inside the write, if `hold`'s expiry is no
  * longer that: the email link's one extension can't race another click or an
  * edit on Reservations.
@@ -100,7 +96,6 @@ export async function setBookingExpiry(args: {
   userId: string
   actor?: Exclude<ExpiryActor, 'client_request'>
   booking?: HoldWithClient[]
-  stage?: Stage
   via?: string
   expectExpiresAt?: string
 }): Promise<ExpiryResult> {
@@ -115,8 +110,7 @@ export async function setBookingExpiry(args: {
   const live = booking.filter(h => h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED')
   // The booking's own checks first; Salesforce is asked for the stage only when they pass.
   const refusalFor = (stage: Stage) => expiryRefusal({ actor, date, booking, stage })
-  const refused = args.stage !== undefined ? refusalFor(args.stage)
-    : refusalFor(null) ?? (hold.sfdc_opportunity_id ? refusalFor(await getOpportunityStage(hold.sfdc_opportunity_id)) : null)
+  const refused = refusalFor(null) ?? (hold.sfdc_opportunity_id ? refusalFor(await getOpportunityStage(hold.sfdc_opportunity_id)) : null)
   if (refused) return { status: refused.status, body: { error: refused.error, ...(refused.lastDate ? { lastDate: refused.lastDate } : {}) } }
   const newExp = endOfDayCentral(date)
   // Approve answers a waiting request; the others only run on a booking with none

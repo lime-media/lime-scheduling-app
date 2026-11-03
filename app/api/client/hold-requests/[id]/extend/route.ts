@@ -75,7 +75,10 @@ export async function POST(
   // The date checks first; Salesforce is asked for the stage only when they pass.
   const opportunityId = held.find(h => h.sfdc_opportunity_id)?.sfdc_opportunity_id ?? null
   const refusalFor = (stage: Awaited<ReturnType<typeof getOpportunityStage>>) =>
-    expiryRefusal({ actor: 'client_request', date: extend_until, booking: holds, stage })
+    // `held`: the holds this request extends (clientExtendRefusal already refused
+    // committed or pending ones), so a lapsed market's start doesn't cap it,
+    // as in the portal's date picker (app/client/hold-requests extendWindow).
+    expiryRefusal({ actor: 'client_request', date: extend_until, booking: held, stage })
   const refused = refusalFor(null) ?? (opportunityId ? refusalFor(await getOpportunityStage(opportunityId)) : null)
   if (refused) {
     return NextResponse.json({ error: refused.error, ...(refused.lastDate ? { lastDate: refused.lastDate } : {}) }, { status: refused.status })

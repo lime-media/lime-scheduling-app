@@ -54,11 +54,14 @@ const isLive = (h: { status: string }) => h.status === 'HOLD' || h.status === 'E
 export const minDaysBeforeStart = (actor: ExpiryActor) =>
   actor === 'client_request' ? CLIENT_MIN_DAYS_BEFORE_START : STAFF_MIN_DAYS_BEFORE_START
 
+/** The start dates that cap the booking's one expiry (lib/bookings.ts bookingCapStarts). */
+export function capStarts(booking: { status: string; start_date: Date }[], now: Date = new Date()): string[] {
+  return bookingCapStarts(booking.map(h => ({ start_date: h.start_date.toISOString().slice(0, 10), status: h.status })), centralDate(now))
+}
+
 /** The last date (YYYY-MM-DD, Central) `actor` may set on this booking. */
 export function bookingLastDate(booking: { status: string; start_date: Date }[], actor: ExpiryActor, now: Date = new Date()): string {
-  const today = centralDate(now)
-  const starts = bookingCapStarts(booking.map(h => ({ start_date: h.start_date.toISOString().slice(0, 10), status: h.status })), today)
-  return lastExpiryDate([...starts].sort()[0], now, minDaysBeforeStart(actor))
+  return lastExpiryDate([...capStarts(booking, now)].sort()[0], now, minDaysBeforeStart(actor))
 }
 
 /** The latest Central date any live hold of the booking is held through, or null. */

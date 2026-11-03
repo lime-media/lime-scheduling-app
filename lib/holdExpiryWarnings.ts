@@ -64,27 +64,30 @@ export function appUrl(env: Record<string, string | undefined> = process.env): s
 
 const hoursLeft = (expiresAt: Date, now: Date) => Math.max(0, Math.round((expiresAt.getTime() - now.getTime()) / 3600_000))
 
+/** A reminder card's booking: its bookingKey, or the hold alone. */
+export const cardKey = (h: Hold) => bookingKey(h) ?? `hold:${h.id}`
+
 /**
  * One reminder card per booking (lib/bookings.ts bookingKey; a hold with none
  * is its own): a booking is extended as one. Each card carries Extend links
  * for the days the server would accept (lib/expiryRules.ts, actor 'email'),
- * judged on the whole booking (`whole`, by the card's first hold id) when
+ * judged on the whole booking (`whole`, by cardKey) when
  * given, signed for the rep (lib/extendLink.ts); none when the signing
  * secret isn't set. Exported for tests.
  */
 export function expiringBookings(holds: Hold[], now: Date, secret: string | undefined = process.env.NEXTAUTH_SECRET, whole?: Map<string, Hold[]>): ExpiringBooking[] {
   const groups = new Map<string, Hold[]>()
   for (const h of holds) {
-    const key = bookingKey(h) ?? `hold:${h.id}`
+    const key = cardKey(h)
     groups.set(key, [...(groups.get(key) ?? []), h])
   }
-  return [...groups.values()].map(group => {
+  return [...groups].map(([key, group]) => {
     // The booking's one expiry: the earliest, should older bookings differ.
     const first = [...group].sort((a, b) => (a.expires_at?.getTime() ?? 0) - (b.expires_at?.getTime() ?? 0))[0]
     const starts = group.map(h => toDateStr(h.start_date))
     // The whole booking decides, not just its holds expiring now: the server
     // judges the click on all of it (lib/expiryRules.ts).
-    const booking = whole?.get(first.id) ?? group
+    const booking = whole?.get(key) ?? group
     const lastDate = bookingLastDate(booking, 'email', now)
     const expiresOn = first.expires_at ? centralDate(first.expires_at) : null
     // Extending sets every hold to one date: never earlier than a hold already expires.
@@ -189,17 +192,14 @@ export async function warnExpiringHolds(now = new Date()): Promise<ExpiryWarning
     // not the NOTIFY_EMAIL fallback.
     const secret = user?.email ? process.env.NEXTAUTH_SECRET : undefined
     // The whole booking behind each card, so its buttons offer only what the server accepts.
+    // Keyed as expiringBookings groups the cards (cardKey); any hold of a booking loads all of it.
     const whole = new Map<string, Hold[]>()
     if (secret) {
-      const firsts = new Map<string, Hold>()
-      for (const h of holds) {
-        const key = bookingKey(h) ?? `hold:${h.id}`
-        const f = firsts.get(key)
-        if (!f || (h.expires_at?.getTime() ?? 0) < (f.expires_at?.getTime() ?? 0)) firsts.set(key, h)
-      }
-      await Promise.all([...firsts.values()].map(f => loadBooking(f).then(
-        b => { whole.set(f.id, b) },
-        err => console.error(`[expiry-warn] booking read failed for hold ${f.id}; buttons judged on the expiring holds:`, err),
+      const one = new Map<string, Hold>()
+      for (const h of holds) if (!one.has(cardKey(h))) one.set(cardKey(h), h)
+      await Promise.all([...one].map(([key, h]) => loadBooking(h).then(
+        b => { whole.set(key, b) },
+        err => console.error(`[expiry-warn] booking read failed for hold ${h.id}; buttons judged on the expiring holds:`, err),
       )))
     }
     const bookings = expiringBookings(holds, now, secret, whole)

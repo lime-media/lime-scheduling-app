@@ -6,7 +6,7 @@
  */
 import type { Hold } from '@prisma/client'
 import { eq, section } from './harness'
-import { appUrl, expiringBookings } from '@/lib/holdExpiryWarnings'
+import { appUrl, cardKey, expiringBookings } from '@/lib/holdExpiryWarnings'
 import { expiringHoldsHtml, expiringHoldsText } from '@/lib/emailTemplates'
 import { readExtendToken } from '@/lib/extendLink'
 
@@ -39,8 +39,8 @@ eq('the 24-hour floor still allows one day', expiringBookings([hold({ start_date
 
 // Judged on the whole booking: a market not expiring now that starts sooner caps it, and a won market locks it.
 const lone = hold({ id: 'w1', campaign_group_id: 'mm_w_1' })
-eq('the whole booking caps the buttons', expiringBookings([lone], NOW, 's', new Map([['w1', [lone, hold({ id: 'w2', campaign_group_id: 'mm_w_2', start_date: new Date('2026-11-01T00:00:00Z'), expires_at: null })]]]))[0].extend.map(x => x.days), [1])
-eq('a won market: no buttons', expiringBookings([lone], NOW, 's', new Map([['w1', [lone, hold({ id: 'w3', status: 'COMMITTED', sfdc_opportunity_id: '006000000000001AAA' })]]]))[0].extend, [])
+eq('the whole booking caps the buttons', expiringBookings([lone], NOW, 's', new Map([[cardKey(lone), [lone, hold({ id: 'w2', campaign_group_id: 'mm_w_2', start_date: new Date('2026-11-01T00:00:00Z'), expires_at: null })]]]))[0].extend.map(x => x.days), [1])
+eq('a won market: no buttons', expiringBookings([lone], NOW, 's', new Map([[cardKey(lone), [lone, hold({ id: 'w3', status: 'COMMITTED', sfdc_opportunity_id: '006000000000001AAA' })]]]))[0].extend, [])
 
 section('expiry email template')
 const fields = { name: 'Pat', bookings: multi, reservationsUrl: 'https://x/hold-requests' }

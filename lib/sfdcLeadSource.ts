@@ -26,11 +26,14 @@ export const LEAD_SOURCES = [
 
 export type LeadSource = (typeof LEAD_SOURCES)[number]
 
-/** A picklist value, matched exactly (case and spaces aside), or null. Pure. */
+/** Case, spaces and apostrophe style aside: "EMS '25" typed straight is "EMS ‘25". */
+const matchKey = (s: string) => s.trim().toLowerCase().replace(/[‘’'`]/g, "'")
+
+/** A picklist value, matched exactly (case, spaces and apostrophe style aside), or null. Pure. */
 export function leadSourceOf(value: unknown): LeadSource | null {
-  const v = String(value ?? '').trim().toLowerCase()
+  const v = matchKey(String(value ?? ''))
   if (!v) return null
-  return LEAD_SOURCES.find(s => s.toLowerCase() === v) ?? null
+  return LEAD_SOURCES.find(s => matchKey(s) === v) ?? null
 }
 
 /** Why a booking that makes a new opportunity is refused without a lead source. */

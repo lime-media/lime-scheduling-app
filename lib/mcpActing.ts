@@ -96,7 +96,8 @@ export function parseMcpStaffPricing(body: Record<string, unknown>): { sfdc_acco
   const sfdc_account_id = body.sfdc_account_id ?? undefined
   const brand_markup_pct = body.brand_markup_pct ?? undefined
   // The seller's pick, as on the Quote page: it sets Brand Direct pricing.
-  const client_type = body.client_type ?? undefined
+  // Blank is "not given" too, as a blank sfdc_account_id is.
+  const client_type = body.client_type === '' ? undefined : body.client_type ?? undefined
   if (client_type !== undefined && !chosenClientType(client_type)) return { error: 'client_type must be "Agency" or "Brand Direct"' }
   if (sfdc_account_id !== undefined && typeof sfdc_account_id !== 'string') return { error: 'sfdc_account_id must be a Salesforce Account id' }
   if (brand_markup_pct !== undefined && (typeof brand_markup_pct !== 'number' || !Number.isFinite(brand_markup_pct))) {

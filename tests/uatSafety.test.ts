@@ -33,14 +33,17 @@ eq('a preview with writes turned on is refused', sweepUnsafeHere({ VERCEL_ENV: '
   "Not sweeping a preview deployment with Salesforce writes on: it shares production's Salesforce. Remove SFDC_WRITES=on from it first.")
 
 section('Salesforce writes off')
-const was = process.env.SFDC_WRITES
+const was = { SFDC_WRITES: process.env.SFDC_WRITES, VERCEL_ENV: process.env.VERCEL_ENV }
+delete process.env.VERCEL_ENV
 process.env.SFDC_WRITES = 'off'
 eq('read from SFDC_WRITES', salesforceWritesOff(), true)
 delete process.env.SFDC_WRITES
 eq('unset: writes on', salesforceWritesOff(), false)
 // Assigning undefined to process.env stores the string "undefined".
-if (was === undefined) delete process.env.SFDC_WRITES
-else process.env.SFDC_WRITES = was
+for (const [k, v] of Object.entries(was)) {
+  if (v === undefined) delete process.env[k]
+  else process.env[k] = v
+}
 eq('read from a given env', salesforceWritesOff({ SFDC_WRITES: ' Off ' }), true)
 eq('a preview: off by default', salesforceWritesOff({ VERCEL_ENV: 'preview' }), true)
 eq('a preview turned on on purpose', salesforceWritesOff({ VERCEL_ENV: 'preview', SFDC_WRITES: 'on' }), false)

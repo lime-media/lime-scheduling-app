@@ -16,7 +16,7 @@ import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
-import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
+import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner, salesforceWritesOff, WRITES_OFF_MESSAGE } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
@@ -389,8 +389,13 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   // Transport and deal-value metrics (best-effort; never fails the booking).
   if (!quoteOnly) await recordBooking({ event: 'BOOKED', groups: [{ groupId: campaignGroupId, legs: legsFromSelectedTrucks(selectedTrucks, transport) }], appQuotedTotal: serverTotal, createdBy })
 
+  // Writes off (UAT): Salesforce wasn't asked, and is production's org, so
+  // there's nothing to do there by hand. Say so instead.
+  const writesOff = !sfdcOpportunityId && !!sfdcError && !attachUnreachable && salesforceWritesOff()
+  if (writesOff) sfdcError = WRITES_OFF_MESSAGE
   // Never silent: if the opportunity was not created, the rep is told.
-  const sfdcNote = sfdcOpportunityId
+  const sfdcNote = writesOff ? WRITES_OFF_MESSAGE
+    : sfdcOpportunityId
     ? `${target ? `Added to Salesforce opportunity "${target.Name}".` : 'Salesforce opportunity created.'}${sfdcWarnings.length ? ` Check it: ${sfdcWarnings.join('; ')}.` : ''}`
     // An existing opportunity is updated by hand; creating one would duplicate it.
     : sfdcError ? (target || attachUnreachable

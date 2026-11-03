@@ -73,7 +73,7 @@ export function salesforceWritesOff(env: Record<string, string | undefined> = pr
   // production's Salesforce unless someone turns writes on for it on purpose.
   return env.VERCEL_ENV === 'preview'
 }
-export const WRITES_OFF_MESSAGE = 'Salesforce writes are off in this environment (UAT reads production Salesforce but never changes it), so Salesforce was not changed.'
+export const WRITES_OFF_MESSAGE = 'Salesforce writes are off in this deployment (SFDC_WRITES=off, or a preview such as UAT, which reads production Salesforce but never changes it), so Salesforce was not changed.'
 
 /** The refusal a write gets while writes are off: Salesforce's error shape, status 403. Pure. */
 export function writesOffResponse(): Response {

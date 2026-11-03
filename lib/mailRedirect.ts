@@ -10,8 +10,8 @@ type Message = { to?: unknown; cc?: unknown; bcc?: unknown; subject?: unknown; [
 type Transport = { sendMail: (message: never) => Promise<unknown> }
 
 // nodemailer takes an address as a string or as { name, address }.
-const address = (a: unknown) => String(a && typeof a === 'object' && 'address' in a ? (a as { address: unknown }).address : a)
-const list = (v: unknown) => (Array.isArray(v) ? v : v ? [v] : []).map(address).filter(Boolean)
+const address = (a: unknown) => (a && typeof a === 'object' && 'address' in a ? (a as { address: unknown }).address : a)
+const list = (v: unknown) => (Array.isArray(v) ? v : v ? [v] : []).map(address).filter(Boolean).map(String)
 
 /** The message as sent while redirecting to `to` (or unchanged when `to` is empty). Pure. */
 export function redirectedMessage<M extends Message>(message: M, to: string | undefined): M {

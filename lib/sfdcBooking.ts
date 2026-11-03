@@ -4,7 +4,6 @@
  * says what the fields become).
  */
 
-import { chosenClientType, type ClientType } from '@/lib/pricing/brandMarkup'
 import { isSfdcConfigured, sfdcQuery, updateOpportunity, updateOpportunityWithError } from '@/lib/salesforceClient'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
@@ -14,6 +13,7 @@ import { loadOpportunityReservingHolds } from '@/lib/bookingLoad'
 import { CLOSED_WON_READ_ONLY } from '@/lib/bookings'
 import { prisma } from '@/lib/prisma'
 import { centralDate } from '@/lib/dateOnly'
+import { chosenClientType, type ClientType } from '@/lib/pricing/brandMarkup'
 
 const OPP_ID = /^006[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/
 const ACCOUNT_ID = /^001[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/

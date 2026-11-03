@@ -18,7 +18,7 @@ import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
 import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
-import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
+import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, CLIENT_TYPE_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { brandMarkupFor, chosenClientType } from '@/lib/pricing/brandMarkup'
 import { readLeadSource } from '@/lib/sfdcLeadSource'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
@@ -349,6 +349,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
         else sfdcError = 'Salesforce rejected the opportunity update'
         if (applied.ok && applied.amountLeft) sfdcWarnings.push(AMOUNT_LEFT_NOTE)
         if (applied.ok && applied.windowLeft) sfdcWarnings.push(WINDOW_LEFT_NOTE)
+        if (applied.ok && applied.clientTypeLeft) sfdcWarnings.push(CLIENT_TYPE_LEFT_NOTE)
       } else {
       // Owned by the rep who booked it (matched by email), else the account owner.
       const owner = await resolveOpportunityOwner({ creatorEmail: actor.email, accountOwnerId: accountInfo?.ownerId })

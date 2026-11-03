@@ -6,6 +6,7 @@
  */
 import fs from 'fs'
 import { eq, section } from './harness'
+import { clientVisibleFeatures } from '@/lib/quoteFeatures'
 import { CLIENT_PORTAL_LEAD_SOURCE, LEAD_SOURCES, MCP_LEAD_SOURCE, NEED_LEAD_SOURCE, leadSourceOf, readLeadSource } from '@/lib/sfdcLeadSource'
 import { brandMarkupFor, chosenClientType } from '@/lib/pricing/brandMarkup'
 
@@ -37,3 +38,10 @@ const planHold = fs.readFileSync('app/api/plan/hold/route.ts', 'utf8')
 eq('so does the planner', planHold.includes('readLeadSource(body.leadSource, !body.revise?.bookingKey && !body.attachOpportunityId)'), true)
 eq('and a revision that makes a new opportunity', planHold.includes('if (reviseKey && !target && !leadSource) return NextResponse.json({ error: NEED_LEAD_SOURCE, needLeadSource: true }'), true)
 eq('a client booking gets the portal or MCP source', fs.readFileSync('lib/clientBooking.ts', 'utf8').includes("opts.origination === 'mcp' ? MCP_LEAD_SOURCE : CLIENT_PORTAL_LEAD_SOURCE"), true)
+
+section('a client never sees internal pricing')
+const stored = JSON.stringify({ dailyRate: 1500, brandMarkupPct: 10, clientType: 'Brand Direct', truckDays: 4 })
+eq('Brand Direct markup and client type are removed', clientVisibleFeatures(stored), JSON.stringify({ dailyRate: 1500, truckDays: 4 }))
+eq('nothing internal: unchanged', clientVisibleFeatures('{"dailyRate":1500}'), '{"dailyRate":1500}')
+eq('none', clientVisibleFeatures(null), null)
+eq('unparseable text as stored', clientVisibleFeatures('nope'), 'nope')

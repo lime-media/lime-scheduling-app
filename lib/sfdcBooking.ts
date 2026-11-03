@@ -29,6 +29,8 @@ export type BookingOpportunity = OpportunityLed & {
   /** Has products (Salesforce CPQ quote lines): Amount is then Salesforce's, not ours to write. */
   HasOpportunityLineItem: boolean
   Brand_Job_Name__c: string | null
+  /** The opportunity's own Client Type: a pick that matches it isn't written again. */
+  Client_Type__c?: string | null
   Primary_Contact__c: string | null
   Primary_Contact__r: { Name: string; Email: string | null; Title: string | null } | null
 }
@@ -38,7 +40,7 @@ export async function getBookingOpportunity(id: string): Promise<BookingOpportun
   if (!isSfdcConfigured() || !OPP_ID.test(id)) return null
   const rows = await sfdcQuery<BookingOpportunity>(
     `SELECT Id, Name, AccountId, Account.Name, Account.Client_Type2__c, StageName, IsClosed, IsWon, HasOpportunityLineItem, Amount, Markets__c, LED_Trucks__c,
-       LED_Hold_Start__c, LED_Hold_Stop__c, LED_Hold_Exp__c, Description, Brand_Job_Name__c,
+       LED_Hold_Start__c, LED_Hold_Stop__c, LED_Hold_Exp__c, Description, Brand_Job_Name__c, Client_Type__c,
        Primary_Contact__c, Primary_Contact__r.Name, Primary_Contact__r.Email, Primary_Contact__r.Title
      FROM Opportunity WHERE Id = '${id}' LIMIT 1`,
   )
@@ -120,15 +122,28 @@ export async function applyBookingToOpportunity(opts: {
   clientType?: 'Agency' | 'Brand Direct'
   /** REPLACE: the revised booking as it stood. */
   was?: { amount: number | null; markets: string[] }
-}): Promise<{ ok: boolean; amountLeft: boolean; windowLeft: boolean }> {
+}): Promise<{ ok: boolean; amountLeft: boolean; windowLeft: boolean; clientTypeLeft: boolean }> {
   const linked = await loadOpportunityReservingHolds(opts.opp.Id)
   const { fields, windowLeft } = mergedOpportunityFields(opts.mode, opts.opp, opts.booking, { date: centralDate(new Date()), by: opts.by }, linked, opts.was)
   if (opts.primaryContactId && !opts.opp.Primary_Contact__c) fields.Primary_Contact__c = opts.primaryContactId
-  if (opts.clientType) fields.Client_Type__c = opts.clientType
   const amountLeft = opts.opp.HasOpportunityLineItem
   if (amountLeft) delete fields.Amount
-  return { ok: await updateOpportunity(opts.opp.Id, fields), amountLeft, windowLeft }
+  // The picked Client Type is best-effort: a validation rule, record type or
+  // lock that refuses it can't keep the booking's trucks, amount and window
+  // out of Salesforce. Refused with it, the update is sent again without it
+  // (a PATCH, so sending it twice can't duplicate anything) and the rep told.
+  if (opts.clientType && opts.clientType !== opts.opp.Client_Type__c) {
+    if (await updateOpportunity(opts.opp.Id, { ...fields, Client_Type__c: opts.clientType })) return { ok: true, amountLeft, windowLeft, clientTypeLeft: false }
+    console.warn(`[sfdc] ${opts.opp.Id}: update refused with Client Type ${opts.clientType}; sending it without`)
+    const ok = await updateOpportunity(opts.opp.Id, fields)
+    return { ok, amountLeft, windowLeft, clientTypeLeft: ok }
+  }
+  return { ok: await updateOpportunity(opts.opp.Id, fields), amountLeft, windowLeft, clientTypeLeft: false }
 }
+
+/** What the rep is told when an opportunity kept its own Client Type (applyBookingToOpportunity). */
+export const CLIENT_TYPE_LEFT_NOTE = "Salesforce wouldn't change the opportunity's Client Type, so it keeps its own; change it in Salesforce if it should match this quote's."
+
 
 /**
  * After any expiry change or release (reinstate, approve or deny extension,

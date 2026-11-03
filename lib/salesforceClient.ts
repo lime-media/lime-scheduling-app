@@ -176,16 +176,17 @@ export function reportFirstFailure(firstMarked: boolean, firstErrors: unknown, s
  * opportunity being made.
  */
 export async function createOpportunity(input: CreateOpportunityInput): Promise<SfdcOpportunityResult> {
-  const result = await createOpportunityOnce(input)
+  const { refused, ...result } = await createOpportunityOnce(input)
   // Lead Source is a picklist kept in step by hand (lib/sfdcLeadSource.ts): a
   // value Salesforce has since retired or restricted can't stop the
-  // opportunity being made. Only a definite refusal naming the field is
-  // retried (a failed create made nothing, so the retry can't duplicate).
-  if (!result.success && input.leadSource && aboutLeadSource(result.errors)) {
+  // opportunity being made. Only a definite refusal (a 400 with an error
+  // list) naming the field is retried: that create made nothing, so the retry
+  // can't duplicate. A 5xx may have made it, so it never is.
+  if (!result.success && refused && input.leadSource && aboutLeadSource(result.errors)) {
     console.warn('[sfdc] LeadSource refused; creating the opportunity without it:', JSON.stringify(result.errors))
     const retry = await createOpportunityOnce({ ...input, leadSource: undefined })
     if (retry.success) {
-      return { ...retry, warnings: [...(retry.warnings ?? []), `Salesforce refused the lead source "${input.leadSource}", so the opportunity has none (set it in Salesforce)`] }
+      return { success: true, id: retry.id, errors: retry.errors, warnings: [...(retry.warnings ?? []), `Salesforce refused the lead source "${input.leadSource}", so the opportunity has none (set it in Salesforce)`] }
     }
   }
   return result
@@ -201,7 +202,8 @@ function aboutLeadSource(errors: unknown): boolean {
   })
 }
 
-async function createOpportunityOnce(input: CreateOpportunityInput): Promise<SfdcOpportunityResult> {
+/** `refused`: Salesforce definitely refused it (a 400 with an error list), so nothing was made. */
+async function createOpportunityOnce(input: CreateOpportunityInput): Promise<SfdcOpportunityResult & { refused: boolean }> {
   const body: Record<string, unknown> = {
     AccountId: input.accountId,
     Name: input.name,
@@ -279,6 +281,7 @@ async function createOpportunityOnce(input: CreateOpportunityInput): Promise<Sfd
     success: data.success ?? false,
     id: data.id,
     errors: data.errors,
+    refused: !data.success && res.status === 400 && Array.isArray(data.errors),
     ...(warnings.length ? { warnings } : {}),
   }
 }

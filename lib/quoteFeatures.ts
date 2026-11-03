@@ -62,6 +62,26 @@ export type QuoteFeatures = {
   }[]
 }
 
+/** Keys in `features` that are internal pricing (Brand Direct), never sent to a client. */
+const INTERNAL_KEYS = ['brandMarkupPct', 'clientType'] as const
+
+/**
+ * A hold's `features` as a client may see them: the internal pricing keys
+ * removed (Brand Direct markup and client type). Unparseable text is passed
+ * through as it was stored. Pure.
+ */
+export function clientVisibleFeatures(features: string | null | undefined): string | null {
+  if (!features) return null
+  try {
+    const f = JSON.parse(features) as Record<string, unknown>
+    if (!f || typeof f !== 'object' || Array.isArray(f) || !INTERNAL_KEYS.some(k => k in f)) return features
+    for (const k of INTERNAL_KEYS) delete f[k]
+    return JSON.stringify(f)
+  } catch {
+    return features
+  }
+}
+
 /**
  * A hold's quote breakdown, or null when its features hold no quote: a
  * Salesforce-made hold's features may carry only the app's bookkeeping (the

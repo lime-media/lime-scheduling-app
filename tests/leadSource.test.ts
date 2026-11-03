@@ -1,0 +1,33 @@
+/**
+ * Lead source and client type on a quote's opportunity (lib/sfdcLeadSource.ts,
+ * lib/pricing/brandMarkup.ts chosenClientType).
+ *
+ * Run with: npm test
+ */
+import fs from 'fs'
+import { eq, section } from './harness'
+import { CLIENT_PORTAL_LEAD_SOURCE, LEAD_SOURCES, MCP_LEAD_SOURCE, leadSourceOf } from '@/lib/sfdcLeadSource'
+import { brandMarkupFor, chosenClientType } from '@/lib/pricing/brandMarkup'
+
+section('lead source')
+eq('the 13 picklist values', LEAD_SOURCES.length, 13)
+eq('a picklist value is kept as Salesforce spells it', leadSourceOf('get in touch web form'), 'Get In Touch Web Form')
+eq('the curly quote is part of the value', leadSourceOf('EMS ‘25'), 'EMS ‘25')
+eq('a value no longer on the picklist is not accepted', leadSourceOf('Firefly'), null)
+eq('blank is none', leadSourceOf('  '), null)
+eq('not a string is none', leadSourceOf(3), null)
+eq('the portal and MCP sources are picklist values', [leadSourceOf(CLIENT_PORTAL_LEAD_SOURCE), leadSourceOf(MCP_LEAD_SOURCE)], [CLIENT_PORTAL_LEAD_SOURCE, MCP_LEAD_SOURCE])
+
+section('client type picked on the quote')
+eq('Brand Direct', chosenClientType('Brand Direct'), 'Brand Direct')
+eq('Agency', chosenClientType('Agency'), 'Agency')
+eq('anything else is no pick (the account decides)', [chosenClientType('brand direct'), chosenClientType(undefined), chosenClientType(true)], [null, null, null])
+eq('picking Agency on a Brand Direct account prices with no markup', brandMarkupFor(chosenClientType('Agency') ?? 'Brand Direct', 10), 0)
+eq('picking Brand Direct on an Agency account adds it', brandMarkupFor(chosenClientType('Brand Direct') ?? 'Agency', 10), 10)
+
+section('where the opportunity is made')
+const sf = fs.readFileSync('lib/salesforceClient.ts', 'utf8')
+eq('createOpportunity writes LeadSource', sf.includes('body.LeadSource = input.leadSource'), true)
+eq('the Quote page requires a lead source for a new opportunity', fs.readFileSync('app/api/quote/hold/route.ts', 'utf8').includes('requireLeadSource: true'), true)
+eq('so does the planner', fs.readFileSync('app/api/plan/hold/route.ts', 'utf8').includes("'Pick a lead source for the opportunity.'"), true)
+eq('a client booking gets the portal or MCP source', fs.readFileSync('lib/clientBooking.ts', 'utf8').includes("opts.origination === 'mcp' ? MCP_LEAD_SOURCE : CLIENT_PORTAL_LEAD_SOURCE"), true)

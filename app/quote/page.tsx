@@ -7,11 +7,12 @@ import { ATT_RELEASE_WARNING } from '@/lib/attSoftRules'
 import type { OverrideOption } from '@/lib/availabilityEngine'
 import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
+import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup, type ClientType } from '@/lib/pricing/brandMarkup'
 import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
 import { PlannerTab } from '@/components/PlannerTab'
+import { ClientTypePicker, LeadSourcePicker } from '@/components/OpportunityFields'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
 import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
@@ -112,7 +113,11 @@ export default function InternalQuotePage() {
   const [brand, setBrand] = useState('')
   // Low conviction: log a priced opportunity without reserving any truck.
   const [quoteOnly, setQuoteOnly] = useState(false)
-  const isBrandDirect = account?.clientType === 'Brand Direct'
+  // The opportunity's Client Type and Lead Source: the seller picks both,
+  // starting from the account's (components/OpportunityFields.tsx).
+  const [clientType, setClientType] = useState<ClientType>('Agency')
+  const [leadSource, setLeadSource] = useState('')
+  const isBrandDirect = clientType === 'Brand Direct'
   const markupPct = isBrandDirect ? clampBrandMarkup(brandMarkupPct) : 0
 
   // Quote form
@@ -174,7 +179,7 @@ export default function InternalQuotePage() {
       const res = await fetch('/api/quote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, market, start_date, end_date, truck_count, sfdc_account_id: account?.id, brand_markup_pct: isBrandDirect ? markupPct : undefined, quote_only: opts.quoteOnly || quoteResult?.pricing.quoteOnlyRequired || undefined }),
+        body: JSON.stringify({ ...form, market, start_date, end_date, truck_count, sfdc_account_id: account?.id, client_type: account?.id ? clientType : undefined, brand_markup_pct: isBrandDirect ? markupPct : undefined, quote_only: opts.quoteOnly || quoteResult?.pricing.quoteOnlyRequired || undefined }),
       })
       const data = await res.json()
 
@@ -205,7 +210,7 @@ export default function InternalQuotePage() {
     } finally {
       setQuoteLoading(false)
     }
-  }, [quoteLoading, form, account?.id, isBrandDirect, markupPct, quoteResult?.pricing.quoteOnlyRequired])
+  }, [quoteLoading, form, account?.id, clientType, isBrandDirect, markupPct, quoteResult?.pricing.quoteOnlyRequired])
 
   // Changing the Brand Direct markup re-prices the quote on the server, so
   // every line on screen is the real, folded-in price.
@@ -257,7 +262,7 @@ export default function InternalQuotePage() {
   }
 
   const placeHold = useCallback(async (expectedOverride?: number) => {
-    if (holdLoading || !quoteResult || !account || !contact) return
+    if (holdLoading || !quoteResult || !account || !contact || (!attachTo && !leadSource)) return
     setHoldLoading(true)
 
     try {
@@ -280,8 +285,10 @@ export default function InternalQuotePage() {
           smart_directional: toggles.smartDirectional,
           device_id: toggles.deviceId,
           studies: toggles.studies,
-          // Server re-checks the account is Brand Direct before applying it.
+          client_type: clientType,
           brand_markup_pct: isBrandDirect ? markupPct : undefined,
+          // Adding to an existing opportunity keeps its own lead source.
+          lead_source: attachTo ? undefined : leadSource,
           stage,
           quote_only: quoteOnly,
           days_per_week: form.days_per_week,
@@ -304,7 +311,7 @@ export default function InternalQuotePage() {
     } finally {
       setHoldLoading(false)
     }
-  }, [holdLoading, quoteResult, account, contact, holdDays, attachTo, form, toggles, isBrandDirect, markupPct, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [holdLoading, quoteResult, account, contact, holdDays, attachTo, form, toggles, clientType, isBrandDirect, markupPct, leadSource, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (status === 'loading' || !session) return null
 
@@ -358,9 +365,13 @@ export default function InternalQuotePage() {
         {/* Step 1: Client selection */}
         <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 mb-4">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
-          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setContact(null); setAttachTo(null); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
+          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setClientType(a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setContact(null); setAttachTo(null); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
           {account && (
             <div className="mt-3">
+              {/* Sets Brand Direct pricing, so a change needs a fresh price. */}
+              <div className="mb-3">
+                <ClientTypePicker value={clientType} onChange={t => { if (t !== clientType) { setClientType(t); setQuoteResult(null); setHoldResult(null) } }} />
+              </div>
               <label className="text-xs font-medium text-gray-600 mb-1 block">Primary contact <span className="text-red-500">*</span></label>
               <ContactSearch accountId={account.id} selected={contact} onSelect={setContact} />
               <div className="mt-3">
@@ -685,6 +696,12 @@ export default function InternalQuotePage() {
                     <div className="flex justify-between font-bold text-gray-900 pt-2 border-t border-gray-200 text-base"><span>Total</span><span>{fmtMoney(total)}</span></div>
                   </div>
 
+                  {/* A new opportunity's lead source: the seller picks one (Salesforce's picklist). */}
+                  {!holdResult?.ok && !attachTo && (
+                    <div className="mt-4">
+                      <LeadSourcePicker value={leadSource} onChange={setLeadSource} />
+                    </div>
+                  )}
                   {/* Opportunity stage — open stages only */}
                   {!holdResult?.ok && (
                     <div className="mt-4 flex items-center gap-2 text-xs">
@@ -730,9 +747,9 @@ export default function InternalQuotePage() {
                       )}
                     </>
                   ) : (
-                    <button onClick={() => placeHold()} disabled={holdLoading || quoteLoading || markupPending || !account || !contact || holdResult?.ok === true}
+                    <button onClick={() => placeHold()} disabled={holdLoading || quoteLoading || markupPending || !account || !contact || (!attachTo && !leadSource) || holdResult?.ok === true}
                       className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium transition-colors">
-                      {!account ? 'Select a client above to place hold' : !contact ? 'Choose the primary contact above' : markupPending ? 'Update the price for the new markup first' : holdLoading ? 'Submitting...'
+                      {!account ? 'Select a client above to place hold' : !contact ? 'Choose the primary contact above' : !attachTo && !leadSource ? 'Choose the lead source above' : markupPending ? 'Update the price for the new markup first' : holdLoading ? 'Submitting...'
                         : quoteOnly ? `Log quote in Salesforce (no reservation) \u2014 ${fmtMoney(total)}`
                         : `Place Hold \u2014 ${fmtMoney(total)}`}
                     </button>

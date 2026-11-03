@@ -19,7 +19,8 @@ import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START }
 import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
-import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
+import { brandMarkupFor, chosenClientType } from '@/lib/pricing/brandMarkup'
+import { leadSourceOf } from '@/lib/sfdcLeadSource'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import {
@@ -43,13 +44,13 @@ import { holdExpDate } from '@/lib/dateOnly'
 export type StaffActor = { id?: string; name?: string | null; email?: string | null }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the request body, read field by field as the route always has
-export async function placeStaffBooking(body: any, actor: StaffActor, opts: { origination?: 'frontend' | 'mcp' } = {}): Promise<CoreResult> {
+export async function placeStaffBooking(body: any, actor: StaffActor, opts: { origination?: 'frontend' | 'mcp'; requireLeadSource?: boolean } = {}): Promise<CoreResult> {
   const {
     market, state, start_date, end_date, truck_count,
     sfdc_account_id, sfdc_account_name, brand: rawBrand, primary_contact_id,
     shadow_fencing, smart_directional, device_id, studies: rawStudies,
     days_per_week, operating_hours, brand_markup_pct, stage, quote_only, expected_total, hold_days,
-    attach_opportunity_id,
+    attach_opportunity_id, client_type, lead_source,
   } = body
   // How long the seller is holding the trucks (default 3 days; lib/holdExpiry.ts).
   const holdDays = parseHoldDays(hold_days)
@@ -71,6 +72,17 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   }
   if (holdDays === null) {
     return reply({ error: `Hold for 1 to ${MAX_HOLD_DAYS} days.` }, { status: 400 })
+  }
+  // The opportunity's Lead Source: one of Salesforce's picklist values
+  // (lib/sfdcLeadSource.ts). The Quote page makes the seller pick one for a
+  // new opportunity (requireLeadSource); a value off the picklist is refused
+  // rather than dropped. Adding to an existing opportunity keeps its own.
+  const leadSource = leadSourceOf(lead_source)
+  if (lead_source != null && lead_source !== '' && !leadSource) {
+    return reply({ error: `"${String(lead_source)}" isn't a Salesforce lead source.` }, { status: 400 })
+  }
+  if (opts.requireLeadSource && !attach_opportunity_id && !leadSource) {
+    return reply({ error: 'Pick a lead source for the opportunity.' }, { status: 400 })
   }
   // Every opportunity needs its primary contact, on this account. A definite
   // no refuses; Salesforce being unreachable only warns (see checkPrimaryContact).
@@ -149,13 +161,14 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
     .map((s: string) => s.trim().toLowerCase())
     .filter((s: string): s is StudyType => (VALID_STUDIES as readonly string[]).includes(s))
 
-  // Brand Direct: folded into every price by the engine — only when
-  // Salesforce says the account is Brand Direct (the browser's word is not
-  // enough). The seller's percentage is kept to 0-50%; it starts at 10%.
+  // Brand Direct: folded into every price by the engine, when the seller
+  // picked Brand Direct on the quote, or (no pick) Salesforce says the
+  // account is. The seller's percentage is kept to 0-50%; it starts at 10%.
   const accountInfo = sfdc_account_id && isSfdcConfigured()
     ? await getSfdcAccountInfo(sfdc_account_id).catch((err) => { console.error('[quote/hold] account lookup failed:', err); return null })
     : null
-  const markupPct = brandMarkupFor(accountInfo?.clientType, brand_markup_pct)
+  const clientType = chosenClientType(client_type) ?? accountInfo?.clientType
+  const markupPct = brandMarkupFor(clientType, brand_markup_pct)
 
   const marketSizeTierId = await resolveMarketSizeTierId(market)
   const quote = computeQuote({
@@ -341,7 +354,8 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
       const result = await createAppOpportunity({
         accountId: sfdc_account_id,
         ownerId: owner.ownerId ?? undefined,
-        clientType: accountInfo?.clientType,
+        clientType,
+        leadSource: leadSource ?? undefined,
         // Internal record only (Salesforce): every price above already includes it.
         description: [
           quoteOnly ? `Quote only (low conviction): no trucks reserved. ${truck_count} truck${truck_count === 1 ? '' : 's'} quoted, ${start_date} to ${end_date}`

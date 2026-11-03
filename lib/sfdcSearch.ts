@@ -6,6 +6,7 @@
 
 import { soqlString, sfdcQuery } from '@/lib/salesforceClient'
 import { clientTypeOf } from '@/lib/pricing/brandMarkup'
+import { leadSourceOf } from '@/lib/sfdcLeadSource'
 
 /** Accounts whose name contains q (at least 2 characters), up to 20. */
 export async function searchAccounts(q: string) {
@@ -13,11 +14,17 @@ export async function searchAccounts(q: string) {
   // Typed % and _ are literal (an account name, not a pattern): the AI chat
   // passes its own text here, and "_" alone would match any account.
   const escaped = soqlString(q).replace(/[%_]/g, '\\$&')
-  const records = await sfdcQuery<{ Id: string; Name: string; Client_Type2__c: string | null }>(
-    `SELECT Id, Name, Client_Type2__c FROM Account WHERE Name LIKE '%${escaped}%' ORDER BY Name LIMIT 20`
+  const records = await sfdcQuery<{ Id: string; Name: string; Client_Type2__c: string | null; Opportunities?: { records?: { LeadSource: string | null }[] } | null }>(
+    `SELECT Id, Name, Client_Type2__c, (SELECT LeadSource FROM Opportunities WHERE Job_Type__c = 'LED' AND LeadSource != null ORDER BY CreatedDate DESC LIMIT 1)`
+    + ` FROM Account WHERE Name LIKE '%${escaped}%' ORDER BY Name LIMIT 20`
   )
   // clientType: Account "Client Type" — Agency (also when blank) or Brand Direct.
-  return records.map(r => ({ id: r.Id, name: r.Name, clientType: clientTypeOf(r.Client_Type2__c) }))
+  // leadSource: the suggestion for a new quote, from the account's latest LED
+  // opportunity that has one, only when it's still on the picklist.
+  return records.map(r => ({
+    id: r.Id, name: r.Name, clientType: clientTypeOf(r.Client_Type2__c),
+    leadSource: leadSourceOf(r.Opportunities?.records?.[0]?.LeadSource) ?? undefined,
+  }))
 }
 
 export const isAccountId = (id: string) => /^001[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/.test(id)

@@ -101,6 +101,8 @@ export type CreateOpportunityInput = {
   ownerId?: string
   /** Opportunity Client Type (Agency / Brand Direct). */
   clientType?: 'Agency' | 'Brand Direct'
+  /** Opportunity Lead Source: a picklist value (lib/sfdcLeadSource.ts). */
+  leadSource?: string
   /** Brand_Job_Name__c (50 characters): the brand, already cleaned (lib/brand.ts). */
   brand?: string
   /**
@@ -187,6 +189,7 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
   if (input.market) body.Markets__c = input.market
   if (input.ownerId) body.OwnerId = input.ownerId
   if (input.clientType) body.Client_Type__c = input.clientType
+  if (input.leadSource) body.LeadSource = input.leadSource
   if (input.brand) body.Brand_Job_Name__c = input.brand.slice(0, 50)
   if (input.primaryContactId) body.Primary_Contact__c = input.primaryContactId
   if (input.holdStart) body.LED_Hold_Start__c = input.holdStart

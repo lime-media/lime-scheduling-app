@@ -47,6 +47,7 @@ import { canonicalMarketName } from '@/lib/marketBounds'
 import { bookingHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
 import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
+import { leadSourceOf } from '@/lib/sfdcLeadSource'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, reopenClosedLostOpportunity, type BookingOpportunity } from '@/lib/sfdcBooking'
@@ -75,6 +76,8 @@ type HoldBody = QuoteRequest & {
   expectedTotal?: number
   /** Opportunity stage the seller chose: Cold, Warm or Hot (never closed). */
   stage?: string
+  /** A new opportunity's Lead Source, from Salesforce's picklist (lib/sfdcLeadSource.ts). Required for one. */
+  leadSource?: string
   /** Low conviction: log a priced opportunity, reserve nothing (lib/quoteOnly.ts). */
   quoteOnly?: boolean
   /** The opportunity's primary contact: a Contact on the account. Required. */
@@ -126,6 +129,11 @@ async function handlePost(req: NextRequest) {
   if (!body.requestId || !/^[A-Za-z0-9_-]{8,64}$/.test(body.requestId)) return NextResponse.json({ error: 'Missing booking request id.' }, { status: 400 })
   const holdDays = parseHoldDays(body.holdDays)
   if (holdDays === null) return NextResponse.json({ error: `Hold for 1 to ${MAX_HOLD_DAYS} days.` }, { status: 400 })
+  // A new opportunity's lead source: the seller picks one off Salesforce's
+  // picklist. A revision or an attach keeps the opportunity's own.
+  const leadSource = leadSourceOf(body.leadSource)
+  if (body.leadSource != null && body.leadSource !== '' && !leadSource) return NextResponse.json({ error: `"${String(body.leadSource)}" isn't a Salesforce lead source.` }, { status: 400 })
+  if (!body.revise?.bookingKey && !body.attachOpportunityId && !leadSource) return NextResponse.json({ error: 'Pick a lead source for the opportunity.' }, { status: 400 })
   // Every opportunity needs its primary contact, on this account — checked
   // after the cheap local guards. A definite no refuses; Salesforce being
   // unreachable only warns (see checkPrimaryContact).
@@ -549,7 +557,9 @@ async function handlePost(req: NextRequest) {
         const result = await createAppOpportunity({
           accountId: body.sfdcAccountId,
           ownerId: owner.ownerId ?? undefined,
-          clientType: accountInfo?.clientType,
+          // The type the quote was priced as (the seller's pick, else the account's).
+          clientType: quote.clientType ?? accountInfo?.clientType,
+          leadSource: leadSource ?? undefined,
           name: opportunityName(brand, accountName, `Multi-market (${quote.summary.markets} markets) - ${starts[0]} to ${ends[ends.length - 1]}`),
           brand: brand || undefined,
           primaryContactId: body.primaryContactId,

@@ -113,8 +113,10 @@ export async function setBookingExpiry(args: {
 
   const booking = args.booking ?? await loadBooking(hold)
   const live = booking.filter(h => h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED')
-  const stage = args.stage !== undefined ? args.stage : hold.sfdc_opportunity_id ? await getOpportunityStage(hold.sfdc_opportunity_id) : null
-  const refused = expiryRefusal({ actor, date, booking, stage })
+  // The booking's own checks first; Salesforce is asked for the stage only when they pass.
+  const refusalFor = (stage: Stage) => expiryRefusal({ actor, date, booking, stage })
+  const refused = args.stage !== undefined ? refusalFor(args.stage)
+    : refusalFor(null) ?? (hold.sfdc_opportunity_id ? refusalFor(await getOpportunityStage(hold.sfdc_opportunity_id)) : null)
   if (refused) return { status: refused.status, body: { error: refused.error, ...(refused.lastDate ? { lastDate: refused.lastDate } : {}) } }
   const newExp = endOfDayCentral(date)
   // Approve answers a waiting request; the others only run on a booking with none

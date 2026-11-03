@@ -394,19 +394,25 @@ export default function HoldRequestsPage() {
   const runAction = useCallback(async (allIds: string[], action: 'approve' | 'reject' | 'approve_extension' | 'deny_extension' | 'reinstate', groupKey: string) => {
     setActing(groupKey)
     try {
-      const send = async (reopenOpportunity = false): Promise<{ ok: boolean; error?: string; reopenable?: Reopenable; holds?: number; sfdcWarning?: string | null }> => {
+      const send = async (reopenOpportunity = false, expiresAt?: string): Promise<{ ok: boolean; error?: string; reopenable?: Reopenable; lastDate?: string; holds?: number; sfdcWarning?: string | null }> => {
         const res = await fetch(`/api/hold-requests/${allIds[0]}`, {
           method:  'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ action, ...(reopenOpportunity ? { reopenOpportunity: true } : {}) }),
+          body:    JSON.stringify({ action, ...(reopenOpportunity ? { reopenOpportunity: true } : {}), ...(expiresAt ? { expires_at: expiresAt } : {}) }),
         })
         const body = await res.json().catch(() => ({}))
-        if (!res.ok) return { ok: false, error: body.error || 'Failed', reopenable: body.reopenable }
+        if (!res.ok) return { ok: false, error: body.error || 'Failed', reopenable: body.reopenable, lastDate: body.lastDate }
         return { ok: true, holds: body.holds, sfdcWarning: body.sfdcWarning ?? null }
       }
       let result = await send()
       // Reinstating onto a Closed Lost opportunity: ask once, then send it again.
       if (result.reopenable && await reopen.ask(result.reopenable.question)) result = await send(true)
+      // The client's date is past the staff limit (lib/expiryRules.ts refuses
+      // it rather than cutting it back): offer the limit, said out loud.
+      if (action === 'approve_extension' && result.lastDate
+        && confirm(`${result.error}\n\nApprove it until ${format(parseDateOnly(result.lastDate), 'EEE, MMM d')} instead? The client is emailed that date.`)) {
+        result = await send(false, result.lastDate)
+      }
 
       const actionLabel = action.replace('_', ' ')
       if (result.ok) {

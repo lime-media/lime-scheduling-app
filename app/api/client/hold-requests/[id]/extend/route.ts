@@ -72,9 +72,11 @@ export async function POST(
   // The same rules as every expiry change (lib/expiryRules.ts): Closed Won or
   // Lost in Salesforce, the client's 3-day limit for the whole booking, and
   // only ever later than it's held now.
+  // The date checks first; Salesforce is asked for the stage only when they pass.
   const opportunityId = held.find(h => h.sfdc_opportunity_id)?.sfdc_opportunity_id ?? null
-  const stage = opportunityId ? await getOpportunityStage(opportunityId) : null
-  const refused = expiryRefusal({ actor: 'client_request', date: extend_until, booking: holds, stage })
+  const refusalFor = (stage: Awaited<ReturnType<typeof getOpportunityStage>>) =>
+    expiryRefusal({ actor: 'client_request', date: extend_until, booking: holds, stage })
+  const refused = refusalFor(null) ?? (opportunityId ? refusalFor(await getOpportunityStage(opportunityId)) : null)
   if (refused) {
     return NextResponse.json({ error: refused.error, ...(refused.lastDate ? { lastDate: refused.lastDate } : {}) }, { status: refused.status })
   }
@@ -139,7 +141,7 @@ export async function POST(
   // The request holds the booking to the date asked, so Salesforce's Hold Exp
   // follows (lib/sfdcBooking.ts syncOpportunityLedWindow). Logged for staff,
   // not shown to the client.
-  const sfdcWarning = await syncOpportunityLedWindow(held.find(h => h.sfdc_opportunity_id)?.sfdc_opportunity_id ?? null)
+  const sfdcWarning = await syncOpportunityLedWindow(opportunityId)
   if (sfdcWarning) console.warn(`[hold-extend] ${sfdcWarning}`)
 
   return NextResponse.json({ ok: true, holds: held.length, extend_until })

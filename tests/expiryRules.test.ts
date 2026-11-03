@@ -4,7 +4,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { bookingLastDate, expiryRefusal, heldThrough, type ExpiryActor } from '@/lib/expiryRules'
+import { CLIENT_CLOSED, CLIENT_CONFIRMED, bookingLastDate, expiryRefusal, heldThrough, type ExpiryActor } from '@/lib/expiryRules'
 import { endOfDayCentral } from '@/lib/dateOnly'
 import { CLOSED_WON_READ_ONLY } from '@/lib/bookings'
 
@@ -31,6 +31,7 @@ eq('a client asking past their limit is refused', refuse('client_request', '2026
 eq('the past is refused', refuse('staff_edit', '2026-11-02'), "The expiry can't be in the past (today is 2026-11-03).")
 eq('today is allowed', refuse('staff_edit', '2026-11-03'), null)
 eq('a malformed date is refused', refuse('staff_edit', '2026-13-45x'), 'Invalid date')
+eq('a day past the month end is refused, not rolled over', refuse('staff_edit', '2026-11-31'), 'Invalid date')
 
 section('expiry rules: shortening')
 eq('staff Edit may bring an expiry in', refuse('staff_edit', '2026-11-04'), null)
@@ -54,6 +55,11 @@ section('expiry rules: the deal')
 const actors: ExpiryActor[] = ['staff_edit', 'staff_approve', 'email', 'client_request']
 for (const a of actors) {
   const booking = a === 'staff_approve' ? pending : [hold()]
+  if (a === 'client_request') {
+    eq(`${a}: Closed Won in Salesforce is confirmed`, refuse(a, '2026-11-12', booking, wonStage), CLIENT_CONFIRMED)
+    eq(`${a}: Closed Lost names no stage to the client`, refuse(a, '2026-11-12', booking, lost), CLIENT_CLOSED)
+    continue
+  }
   eq(`${a}: Closed Won in Salesforce is read-only`, refuse(a, '2026-11-12', booking, wonStage), CLOSED_WON_READ_ONLY)
   eq(`${a}: Closed Lost is refused until reopened`, refuse(a, '2026-11-12', booking, lost)?.startsWith("Can't change the expiry: Its Salesforce Opportunity is \"Closed Lost - Budget\"") ?? false, true)
 }

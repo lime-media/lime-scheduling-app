@@ -43,6 +43,10 @@ type BookingHold = {
 
 type Stage = { isClosed: boolean; isWon: boolean; stageName: string } | null
 
+/** What a client is told about a won or lost deal (no internal stage names or Salesforce steps). */
+export const CLIENT_CONFIRMED = 'This booking is confirmed; there is no hold to extend.'
+export const CLIENT_CLOSED = 'This booking can no longer be extended. Contact your Lime Media representative.'
+
 const DATE = /^\d{4}-\d{2}-\d{2}$/
 const isLive = (h: { status: string }) => h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED'
 
@@ -77,10 +81,15 @@ export function expiryRefusal(args: {
 }): ExpiryRefusal | null {
   const { actor, date, booking, stage } = args
   const now = args.now ?? new Date()
-  if (!DATE.test(date) || isNaN(new Date(`${date}T00:00:00Z`).getTime())) return { status: 400, error: 'Invalid date' }
+  // Round-tripped: Date rolls a day past the month's end over (2026-02-31 is
+  // March 3), which would pass the string comparisons below and write a later day.
+  const parsed = new Date(`${date}T00:00:00Z`)
+  if (!DATE.test(date) || isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) return { status: 400, error: 'Invalid date' }
+  const client = actor === 'client_request'
 
+  // A client is told what it means for them, not the Salesforce steps staff take.
   const won = closedWonRefusal(booking, stage?.isClosed ? { isWon: stage.isWon } : null)
-  if (won) return { status: 409, error: won }
+  if (won) return { status: 409, error: client ? CLIENT_CONFIRMED : won }
   const live = booking.filter(isLive)
   if (live.length === 0) return { status: 400, error: 'This booking has no live hold to change.' }
 
@@ -96,7 +105,7 @@ export function expiryRefusal(args: {
   }
 
   const closed = closedOpportunityBlocksReactivation(stage)
-  if (closed) return { status: 409, error: `Can't change the expiry: ${closed}` }
+  if (closed) return { status: 409, error: client ? CLIENT_CLOSED : `Can't change the expiry: ${closed}` }
 
   const today = centralDate(now)
   if (date < today) return { status: 400, error: `The expiry can't be in the past (today is ${today}).` }

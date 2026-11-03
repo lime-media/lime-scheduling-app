@@ -400,8 +400,9 @@ export async function PATCH(
   if (action === 'approve_extension') {
     // Answers the client's request with the booking's one expiry, by the same
     // rules as every expiry change (lib/expiryRules.ts): the date the client
-    // asked for, or one staff choose instead (`expires_at`), or the standard
-    // length when neither. A date past the staff limit is refused, never
+    // asked for, or the date staff confirm instead (`expires_at`: Reservations
+    // offers the limit when the asked date is past it), or the standard length
+    // when neither. A date past the staff limit is refused, never
     // quietly cut back.
     const asked = live.map(h => h.extension_until).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0]
     const date = typeof newExpiresAtStr === 'string' ? newExpiresAtStr

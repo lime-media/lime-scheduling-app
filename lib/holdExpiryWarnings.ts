@@ -197,13 +197,10 @@ export async function warnExpiringHolds(now = new Date()): Promise<ExpiryWarning
         const f = firsts.get(key)
         if (!f || (h.expires_at?.getTime() ?? 0) < (f.expires_at?.getTime() ?? 0)) firsts.set(key, h)
       }
-      for (const f of firsts.values()) {
-        try {
-          whole.set(f.id, await loadBooking(f))
-        } catch (err) {
-          console.error(`[expiry-warn] booking read failed for hold ${f.id}; buttons judged on the expiring holds:`, err)
-        }
-      }
+      await Promise.all([...firsts.values()].map(f => loadBooking(f).then(
+        b => { whole.set(f.id, b) },
+        err => console.error(`[expiry-warn] booking read failed for hold ${f.id}; buttons judged on the expiring holds:`, err),
+      )))
     }
     const bookings = expiringBookings(holds, now, secret, whole)
 

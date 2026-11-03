@@ -6,6 +6,7 @@ import { mcpParty, parseMcpCampaign, parseMcpStaffPricing } from '@/lib/mcpActin
 import { resolveQuoteMarket } from '@/lib/staffQuote'
 import { placeClientBooking } from '@/lib/clientBooking'
 import { placeStaffBooking } from '@/lib/staffBooking'
+import { readLeadSource } from '@/lib/sfdcLeadSource'
 
 /**
  * POST /api/v1/internal/holds: the MCP server's booking.
@@ -17,7 +18,8 @@ import { placeStaffBooking } from '@/lib/staffBooking'
  *   expiry, the team is emailed and the opportunity is created on the
  *   client's Salesforce account;
  * - a staff member gets the Quote page's (lib/staffBooking.ts): it needs the
- *   Salesforce account and its primary contact, as the Quote page does, and
+ *   Salesforce account, its primary contact and the lead source (client_type
+ *   optional: the seller's pick, else the account's), as the Quote page does, and
  *   gets the staff expiry, the opportunity and the price check
  *   (expected_total, when given).
  * Holds are marked origination 'mcp' ("Via MCP" on the schedule).
@@ -56,6 +58,10 @@ export async function POST(req: NextRequest) {
   if (staff && 'error' in staff) return NextResponse.json({ error: staff.error }, { status: 400 })
   const accountName = str(body.sfdc_account_name)?.trim()
   const expectedTotal = body.expected_total ?? undefined
+  // A staff member picks the lead source of a new opportunity, as on the Quote
+  // page: checked here, before the market lookup and the duplicate query.
+  const lead = party.kind === 'staff' ? readLeadSource(body.lead_source, true) : null
+  if (lead && 'error' in lead) return NextResponse.json({ error: lead.error }, { status: 400 })
   if (party.kind === 'staff') {
     if (!accountName) return NextResponse.json({ error: 'sfdc_account_name is required: the Salesforce Account the booking is for' }, { status: 400 })
     if (expectedTotal !== undefined && (typeof expectedTotal !== 'number' || !Number.isFinite(expectedTotal))) {
@@ -115,7 +121,7 @@ export async function POST(req: NextRequest) {
     ...staff,
     sfdc_account_name: accountName,
     primary_contact_id: str(body.primary_contact_id), brand: str(body.brand), hold_days: body.hold_days, stage: str(body.stage),
-    notes: str(body.notes), expected_total: expectedTotal,
-  }, party.actor, { origination: 'mcp' })
+    lead_source: lead?.leadSource ?? undefined, notes: str(body.notes), expected_total: expectedTotal,
+  }, party.actor, { origination: 'mcp', requireLeadSource: true })
   return NextResponse.json(result.body, { status: result.status })
 }

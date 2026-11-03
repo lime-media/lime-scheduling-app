@@ -6,6 +6,7 @@
  */
 import fs from 'fs'
 import { eq, section } from './harness'
+import { parseMcpStaffPricing } from '@/lib/mcpActing'
 import { clientVisibleFeatures } from '@/lib/quoteFeatures'
 import { CLIENT_PORTAL_LEAD_SOURCE, LEAD_SOURCES, MCP_LEAD_SOURCE, NEED_LEAD_SOURCE, leadSourceOf, readLeadSource } from '@/lib/sfdcLeadSource'
 import { brandMarkupFor, chosenClientType } from '@/lib/pricing/brandMarkup'
@@ -14,6 +15,7 @@ section('lead source')
 eq('the 13 picklist values', LEAD_SOURCES.length, 13)
 eq('a picklist value is kept as Salesforce spells it', leadSourceOf('get in touch web form'), 'Get In Touch Web Form')
 eq('the curly quote is part of the value', leadSourceOf('EMS ‘25'), 'EMS ‘25')
+eq('typed with a straight quote, it is still that value', leadSourceOf("EMS '25"), 'EMS ‘25')
 eq('a value no longer on the picklist is not accepted', leadSourceOf('Firefly'), null)
 eq('blank is none', leadSourceOf('  '), null)
 eq('not a string is none', leadSourceOf(3), null)
@@ -46,3 +48,9 @@ eq('nor the deadhead cost or Salesforce bookkeeping', clientVisibleFeatures(JSON
 eq('nothing internal: unchanged', clientVisibleFeatures('{"dailyRate":1500}'), '{"dailyRate":1500}')
 eq('none', clientVisibleFeatures(null), null)
 eq('unparseable text as stored', clientVisibleFeatures('nope'), 'nope')
+
+section('staff MCP: client type is checked')
+eq('Brand Direct is taken', parseMcpStaffPricing({ client_type: 'Brand Direct' }), { sfdc_account_id: undefined, brand_markup_pct: undefined, client_type: 'Brand Direct' })
+eq('null is not given', parseMcpStaffPricing({ client_type: null }), { sfdc_account_id: undefined, brand_markup_pct: undefined, client_type: undefined })
+eq('blank is not given', parseMcpStaffPricing({ client_type: '' }), { sfdc_account_id: undefined, brand_markup_pct: undefined, client_type: undefined })
+eq('anything else is refused', parseMcpStaffPricing({ client_type: 'brand' }), { error: 'client_type must be "Agency" or "Brand Direct"' })

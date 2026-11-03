@@ -252,7 +252,7 @@ Returns `401` if the token is missing, invalid, or revoked.
 
 Quotes one market, the way the app does, for whoever the call acts for (headers as for holds): a client gets the client portal's quote (`lib/clientQuote.ts`: their rate agreement, the lead-time minimum, real trucks), a staff member the Quote page's (`lib/staffQuote.ts`).
 
-**Body:** `market`, `start_date`, `end_date`, `truck_count`; optional `shadow_fencing`, `smart_directional`, `device_id`, `studies`, `days_per_week`, `operating_hours`; staff only: `sfdc_account_id`, `brand_markup_pct`. The response is the client portal's or the Quote page's quote.
+**Body:** `market`, `start_date`, `end_date`, `truck_count`; optional `shadow_fencing`, `smart_directional`, `device_id`, `studies`, `days_per_week`, `operating_hours`; staff only: `sfdc_account_id`, `brand_markup_pct`, `client_type` (`Agency` or `Brand Direct`: the seller's pick, which sets Brand Direct pricing; else the account's). The response is the client portal's or the Quote page's quote.
 
 ### `POST /api/v1/internal/holds`
 
@@ -270,7 +270,7 @@ If the same caller already has a live booking for these dates made in the last d
 - `X-Acting-User-Id: <user_id>` (resolved from validate-token)
 - `X-Acting-User-Type: app_user | client_user` (defaults to `app_user`)
 
-**Body:** `market`, `start_date`, `end_date`, `truck_count`; optional features as for the quote, `state`, `notes`, `brand`; staff: `sfdc_account_id`, `sfdc_account_name`, `primary_contact_id`, `hold_days`, `stage`, `brand_markup_pct`, `expected_total`; `confirm_duplicate` (see above).
+**Body:** `market`, `start_date`, `end_date`, `truck_count`; optional features as for the quote, `state`, `notes`, `brand`; staff: `sfdc_account_id`, `sfdc_account_name`, `primary_contact_id`, `hold_days`, `stage`, `brand_markup_pct`, `client_type`, `lead_source` (required: one of Salesforce's Lead Source values, `lib/sfdcLeadSource.ts`), `expected_total`; `confirm_duplicate` (see above).
 
 **Response:** the client portal's or Quote page's booking result (200), or its refusal (400 / 409).
 

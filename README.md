@@ -316,6 +316,8 @@ Optional: `user_id`, `token_id`, `request_params`, `response_summary`.
 | `CRON_SECRET` | Bearer token for `GET /api/cron`. **Required in production** — without it the sweep returns 500 and holds never expire |
 | `SFDC_AUTOCLOSE` | `on` (default), `dry_run`, or `off`. Kill switch for writing `Closed Lost - Declined` back to an Opportunity when its last hold expires. `dry_run` logs what would close without writing |
 | `SFDC_CLOSED_LOST_STAGE` | Optional. Opportunity `StageName` set when the app releases an Opportunity's last hold. Defaults to `Closed Lost - Declined` — must match the Salesforce picklist or the write is rejected |
+| `SFDC_WRITES` | `off` on UAT only. The app still reads Salesforce but never creates or updates anything there: each write is refused with a message saying so. UAT shares production's Salesforce org |
+| `EMAIL_REDIRECT_TO` | UAT only. Every email goes to this one address instead of its recipients, who are named in the subject. UAT shares production's SMTP |
 
 ---
 
@@ -337,6 +339,14 @@ The app is hosted on Vercel. Pushing to `main` on GitHub does not auto-deploy �
 keeps AT&T soft holds current (releases prior months, duplicates and stale
 holds; fills the current month and the next two), reconciles Salesforce Opportunity stages, expires
 holds past their `expires_at`, and re-runs conflict detection.
+
+**On UAT.** Vercel Cron only runs on production. UAT's sweep runs from GitHub
+Actions every 15 minutes (`.github/workflows/uat-sweep.yml`, repository secrets
+`UAT_URL` and `UAT_CRON_SECRET`, plus `VERCEL_AUTOMATION_BYPASS_SECRET` if UAT is
+protected). UAT shares production's Salesforce org and SMTP, so the sweep refuses
+a preview deployment unless it has `SFDC_WRITES=off` and `EMAIL_REDIRECT_TO` set
+(`lib/sweepGuard.ts`): it then reads Salesforce stages and job numbers as
+production does, never writes back, and sends every email to the one inbox.
 
 **Expiry reminders.** The sweep emails each rep, once per expiry, about their
 reservations (made in the app) that lapse within 24 hours (`lib/holdExpiryWarnings.ts`): one card per

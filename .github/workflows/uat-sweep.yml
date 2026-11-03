@@ -1,0 +1,41 @@
+# The 15-minute maintenance sweep for UAT. Vercel Cron only runs on
+# production, so nothing sweep-driven (expiries, Salesforce stage pulls, LED
+# follow, expiry emails) happened on UAT. UAT shares production's Salesforce
+# and SMTP: the sweep refuses to run there unless the UAT deployment has
+# SFDC_WRITES=off and EMAIL_REDIRECT_TO set (app/api/cron sweepUnsafeHere).
+#
+# Repository secrets:
+#   UAT_URL                          e.g. https://<uat alias>.vercel.app (no trailing slash)
+#   UAT_CRON_SECRET                  the CRON_SECRET the UAT deployment has
+#   VERCEL_AUTOMATION_BYPASS_SECRET  only if UAT is behind Vercel deployment protection
+#
+# Scheduled workflows run from the default branch, so this starts once it is on main.
+name: UAT sweep
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Run the UAT sweep
+        env:
+          UAT_URL: ${{ secrets.UAT_URL }}
+          CRON_SECRET: ${{ secrets.UAT_CRON_SECRET }}
+          BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          if [ -z "$UAT_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "UAT_URL or UAT_CRON_SECRET is not set; skipping."
+            exit 0
+          fi
+          args=(-sS --max-time 320 -w '\nHTTP %{http_code}\n' -H "Authorization: Bearer $CRON_SECRET")
+          if [ -n "$BYPASS" ]; then args+=(-H "x-vercel-protection-bypass: $BYPASS"); fi
+          out=$(curl "${args[@]}" "$UAT_URL/api/cron")
+          echo "$out" | tail -c 2000
+          echo "$out" | tail -n 1 | grep -q 'HTTP 200'

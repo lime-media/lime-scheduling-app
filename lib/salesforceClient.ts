@@ -57,7 +57,29 @@ async function getAccessToken(): Promise<{ accessToken: string; instanceUrl: str
 // Generic REST helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * SFDC_WRITES=off: this deployment reads Salesforce but never changes it.
+ * Set on UAT, which shares production's Salesforce org: every create and
+ * update is refused here, before a request is sent, with WRITES_OFF_MESSAGE
+ * as Salesforce's own error, so callers show and log it as a refusal.
+ * Reads (queries, record GETs) still go through.
+ */
+export const salesforceWritesOff = () => process.env.SFDC_WRITES?.trim().toLowerCase() === 'off'
+export const WRITES_OFF_MESSAGE = 'Salesforce writes are off in this environment (SFDC_WRITES=off), so Salesforce was not changed.'
+
+/** The refusal a write gets while writes are off: Salesforce's error shape, status 403. Pure. */
+export function writesOffResponse(): Response {
+  return new Response(JSON.stringify([{ errorCode: 'WRITES_OFF', message: WRITES_OFF_MESSAGE, fields: [] }]), {
+    status: 403,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
 async function sfdcFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  if (salesforceWritesOff() && (options.method ?? 'GET').toUpperCase() !== 'GET') {
+    console.warn(`[sfdc] writes are off: ${options.method} ${path} not sent`)
+    return writesOffResponse()
+  }
   const { accessToken, instanceUrl } = await getAccessToken()
   const url = `${instanceUrl}/services/data/${API_VERSION}${path}`
   return fetch(url, {

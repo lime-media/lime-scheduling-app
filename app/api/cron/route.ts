@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { refreshCache } from '@/lib/scheduleCache'
+import { sweepUnsafeHere } from '@/lib/sweepGuard'
 
 // Never cached, and given a generous budget. The sweep is serial: per-hold audit
 // and status writes, a Salesforce round trip per Opportunity it closes, then
@@ -33,6 +34,11 @@ export async function GET(req: NextRequest) {
   if (req.headers.get('authorization') !== `Bearer ${secret}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+  // A preview deployment (UAT) shares production's Salesforce org and SMTP:
+  // its sweep runs only with Salesforce writes off and mail redirected
+  // (.github/workflows/uat-sweep.yml), so it can't touch real deals or inboxes.
+  const unsafe = sweepUnsafeHere(process.env)
+  if (unsafe) return NextResponse.json({ error: unsafe }, { status: 409 })
 
   const started = Date.now()
   try {

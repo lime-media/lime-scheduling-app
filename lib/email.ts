@@ -1,5 +1,6 @@
 import { getSetting } from '@/lib/appSettings'
 import { expiringHoldsHtml, expiringHoldsText, otpHtml, type ExpiringBooking } from '@/lib/emailTemplates'
+import { redirectingTransport } from '@/lib/mailRedirect'
 
 // Email notifications — wire up SMTP credentials in .env when ready.
 // Required env vars: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
@@ -37,12 +38,12 @@ export async function sendHoldRequestEmail(data: HoldRequestEmailData): Promise<
 
   // Lazy-load nodemailer so the module works even when SMTP isn't set up
   const nodemailer = (await import('nodemailer')).default
-  const transporter = nodemailer.createTransport({
+  const transporter = redirectingTransport(nodemailer.createTransport({
     host:   SMTP_HOST,
     port:   Number(SMTP_PORT ?? 587),
     secure: Number(SMTP_PORT ?? 587) === 465,
     auth:   { user: SMTP_USER, pass: SMTP_PASS },
-  })
+  }))
 
   const trucks = data.truckNumbers.length === 1 ? `Truck ${data.truckNumbers[0]}` : `${data.truckNumbers.length} trucks`
   const subject = `Hold Request — ${trucks} · ${data.market}`
@@ -82,12 +83,12 @@ export async function sendAssistanceRequestEmail(data: AssistanceRequestEmailDat
   }
 
   const nodemailer = (await import('nodemailer')).default
-  const transporter = nodemailer.createTransport({
+  const transporter = redirectingTransport(nodemailer.createTransport({
     host:   SMTP_HOST,
     port:   Number(SMTP_PORT ?? 587),
     secure: Number(SMTP_PORT ?? 587) === 465,
     auth:   { user: SMTP_USER, pass: SMTP_PASS },
-  })
+  }))
 
   const subject = `Assistance Request — ${data.companyName}${data.market ? ' · ' + data.market : ''}`
   const text = [
@@ -127,12 +128,12 @@ export async function sendCancellationEmail(data: CancellationEmailData): Promis
   }
 
   const nodemailer = (await import('nodemailer')).default
-  const transporter = nodemailer.createTransport({
+  const transporter = redirectingTransport(nodemailer.createTransport({
     host:   SMTP_HOST,
     port:   Number(SMTP_PORT ?? 587),
     secure: Number(SMTP_PORT ?? 587) === 465,
     auth:   { user: SMTP_USER, pass: SMTP_PASS },
-  })
+  }))
 
   const markets = data.markets.join(', ')
   const trucks = data.truckNumbers.length === 1 ? `Truck ${data.truckNumbers[0]}` : `${data.truckNumbers.length} trucks (${data.truckNumbers.join(', ')})`
@@ -177,12 +178,12 @@ export async function sendExtensionDecisionEmail(data: ExtensionDecisionEmailDat
   }
 
   const nodemailer = (await import('nodemailer')).default
-  const transporter = nodemailer.createTransport({
+  const transporter = redirectingTransport(nodemailer.createTransport({
     host:   SMTP_HOST,
     port:   Number(SMTP_PORT ?? 587),
     secure: Number(SMTP_PORT ?? 587) === 465,
     auth:   { user: SMTP_USER, pass: SMTP_PASS },
-  })
+  }))
 
   const markets = data.markets.join(', ')
   const subject = `Hold Extension ${data.heldUntil ? 'Approved' : 'Declined'} — ${markets}`
@@ -224,12 +225,12 @@ export async function sendOtpEmail(data: OtpEmailData): Promise<void> {
   }
 
   const nodemailer = (await import('nodemailer')).default
-  const transporter = nodemailer.createTransport({
+  const transporter = redirectingTransport(nodemailer.createTransport({
     host:   SMTP_HOST,
     port:   Number(SMTP_PORT ?? 587),
     secure: Number(SMTP_PORT ?? 587) === 465,
     auth:   { user: SMTP_USER, pass: SMTP_PASS },
-  })
+  }))
 
   const subject = `Your Lime Media login code: ${data.code}`
   // Sent alongside the HTML: what a plain-text client, a screen reader or a
@@ -277,12 +278,12 @@ export async function sendExpiringHoldsEmail(data: ExpiringHoldsEmailData): Prom
   }
 
   const nodemailer = (await import('nodemailer')).default
-  const transporter = nodemailer.createTransport({
+  const transporter = redirectingTransport(nodemailer.createTransport({
     host:   SMTP_HOST,
     port:   Number(SMTP_PORT ?? 587),
     secure: Number(SMTP_PORT ?? 587) === 465,
     auth:   { user: SMTP_USER, pass: SMTP_PASS },
-  })
+  }))
 
   const n = data.bookings.length
   const subject = n === 1

@@ -16,7 +16,7 @@ import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
-import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner, salesforceWritesOff, WRITES_OFF_MESSAGE } from '@/lib/salesforceClient'
+import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner, readOnlyPreview, WRITES_OFF_MESSAGE } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
@@ -393,7 +393,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   // there's nothing to do there by hand (an unreachable attach included). Say
   // so, as part of the confirmation rather than as a failure whose modal asks
   // the rep to fix it in Salesforce.
-  const writesOff = !sfdcOpportunityId && !!sfdcError && salesforceWritesOff()
+  const writesOff = !sfdcOpportunityId && !!sfdcError && readOnlyPreview()
   if (writesOff) sfdcError = WRITES_OFF_MESSAGE
   // Never silent: if the opportunity was not created, the rep is told.
   const sfdcNote = writesOff ? WRITES_OFF_MESSAGE

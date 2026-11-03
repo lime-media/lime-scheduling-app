@@ -7,7 +7,7 @@
 import { defer, eq, section } from './harness'
 import { mailPolicy, redirectedMessage } from '@/lib/mailRedirect'
 import { sweepUnsafeHere } from '@/lib/sweepGuard'
-import { WRITES_OFF_MESSAGE, salesforceWritesOff, writesOffResponse } from '@/lib/salesforceClient'
+import { WRITES_OFF_MESSAGE, readOnlyPreview, salesforceWritesOff, writesOffResponse } from '@/lib/salesforceClient'
 
 section('mail redirect')
 const msg = { from: 'app@x', to: 'rep@lime-media.com', cc: ['ops@lime-media.com'], bcc: 'a@b', subject: 'Expiring', text: 'hi' }
@@ -51,3 +51,8 @@ eq('production: on', salesforceWritesOff({ VERCEL_ENV: 'production' }), false)
 const res = writesOffResponse()
 eq('a refused write looks like a Salesforce refusal', res.status, 403)
 defer(res.json().then(body => eq('with the reason', body, [{ errorCode: 'WRITES_OFF', message: WRITES_OFF_MESSAGE, fields: [] }])))
+
+section('who is told to fix Salesforce by hand')
+eq('UAT (a preview, writes off): nobody, nothing to fix', readOnlyPreview({ VERCEL_ENV: 'preview' }), true)
+eq('production with the emergency stop: reps still are', readOnlyPreview({ VERCEL_ENV: 'production', SFDC_WRITES: 'off' }), false)
+eq('a preview with writes on: as for any refusal', readOnlyPreview({ VERCEL_ENV: 'preview', SFDC_WRITES: 'on' }), false)

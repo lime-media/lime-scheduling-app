@@ -4,7 +4,7 @@
  * says what the fields become).
  */
 
-import { isSfdcConfigured, salesforceWritesOff, sfdcQuery, updateOpportunity, updateOpportunityWithError, WRITES_OFF_MESSAGE } from '@/lib/salesforceClient'
+import { isSfdcConfigured, readOnlyPreview, sfdcQuery, updateOpportunity, updateOpportunityWithError, WRITES_OFF_MESSAGE } from '@/lib/salesforceClient'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { closedOpportunityBlocksReactivation, withAppHoldExp } from '@/lib/sfdcIntegration'
@@ -154,7 +154,7 @@ export async function syncOpportunityLedWindow(opportunityId: string | null): Pr
   if (!opportunityId || !isSfdcConfigured() || !OPP_ID.test(opportunityId)) return null
   // Writes off (UAT): the write would be refused and the marker put back, so
   // skip both, and don't tell the rep to edit production's Salesforce by hand.
-  if (salesforceWritesOff()) return `Saved here. ${WRITES_OFF_MESSAGE}`
+  if (readOnlyPreview()) return `Saved here. ${WRITES_OFF_MESSAGE}`
   let fields: Record<string, string | null> = {}
   let recorded: { id: string; features: string | null }[] = []
   try {

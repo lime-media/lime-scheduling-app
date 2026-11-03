@@ -46,6 +46,8 @@ export type QuoteFeatures = {
   attachedToOpportunity?: boolean
   /** The Brand Direct markup (%) folded into these prices; 0 for other clients. A revision keeps it. */
   brandMarkupPct?: number
+  /** The client type the seller priced it as (Agency / Brand Direct). A revision reopens as it. */
+  clientType?: 'Agency' | 'Brand Direct'
   /**
    * Deadhead this booking adds to each truck's next job, captured at hold time.
    * Recorded for review only — never part of any total, and deliberately absent
@@ -58,6 +60,29 @@ export type QuoteFeatures = {
     deltaTransportDays: number
     deltaCost: number
   }[]
+}
+
+/**
+ * Keys in `features` that are internal, never sent to a client: Brand Direct
+ * pricing (markup, client type), the deadhead cost a booking adds to the next
+ * job, and the app's Salesforce bookkeeping.
+ */
+const INTERNAL_KEYS = ['brandMarkupPct', 'clientType', 'successorImpact', APP_HOLD_EXP_KEY] as const
+
+/**
+ * A hold's `features` as a client may see them: the internal keys removed
+ * (INTERNAL_KEYS). Unparseable text is passed through as it was stored. Pure.
+ */
+export function clientVisibleFeatures(features: string | null | undefined): string | null {
+  if (!features) return null
+  try {
+    const f = JSON.parse(features) as Record<string, unknown>
+    if (!f || typeof f !== 'object' || Array.isArray(f) || !INTERNAL_KEYS.some(k => k in f)) return features
+    for (const k of INTERNAL_KEYS) delete f[k]
+    return JSON.stringify(f)
+  } catch {
+    return features
+  }
 }
 
 /**

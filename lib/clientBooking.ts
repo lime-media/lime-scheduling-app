@@ -17,6 +17,7 @@ import { sendHoldRequestEmail } from '@/lib/email'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { isSfdcConfigured, getSfdcAccountInfo } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
+import { CLIENT_PORTAL_LEAD_SOURCE, MCP_LEAD_SOURCE } from '@/lib/sfdcLeadSource'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { legsFromSelectedTrucks } from '@/lib/transportMetrics'
@@ -297,6 +298,8 @@ export async function placeClientBooking(
         accountId: sfdcAccountId,
         ownerId: accountInfo?.ownerId ?? undefined,
         clientType: accountInfo?.clientType,
+        // No seller to pick one: the website, or a partner booking through MCP.
+        leadSource: opts.origination === 'mcp' ? MCP_LEAD_SOURCE : CLIENT_PORTAL_LEAD_SOURCE,
         name: oppName,
         brand: brand || undefined,
         stageName: DEFAULT_STAGE, // a client's own request: no seller to choose

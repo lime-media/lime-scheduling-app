@@ -15,9 +15,10 @@
 import { MarketInput } from '@/components/MarketInput'
 import { SHORT_RANGE_MAX_DAYS } from '@/lib/pricing/schedule'
 import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
-import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup } from '@/lib/pricing/brandMarkup'
+import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, chosenClientType, clampBrandMarkup, type ClientType } from '@/lib/pricing/brandMarkup'
 import { useEffect, useRef, useState } from 'react'
 import { copyDatesDown, holdStartDates } from '@/lib/planner/rows'
+import { ClientTypePicker, LeadSourcePicker } from '@/components/OpportunityFields'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
 import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
@@ -137,7 +138,17 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
   const [alloyRenews, setAlloyRenews] = useState(false)
   // Brand Direct accounts: a premium folded into every price (internal control only).
   const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
-  const isBrandDirect = account?.clientType === 'Brand Direct'
+  // The opportunity's Client Type and Lead Source: the seller picks both,
+  // starting from the account's (components/OpportunityFields.tsx).
+  const [clientType, setClientType] = useState<ClientType>('Agency')
+  const [leadSource, setLeadSource] = useState('')
+  const isBrandDirect = clientType === 'Brand Direct'
+  // A revised booking that loaded without an account: the client type it was
+  // priced as, applied when the seller picks its account.
+  const revisedClientType = useRef<ClientType | null>(null)
+  // Booked onto an opportunity that already exists (a revision's own, or one
+  // picked to add to), which keeps its lead source; otherwise one is made.
+  const keepsOpportunity = revision ? !!revision.opportunityName : !!attachTo
   // Opportunity stage for the order's opportunity: Cold, Warm or Hot (never closed).
   const [stage, setStage] = useState<OpenStage>(DEFAULT_STAGE)
   // Low conviction: log a priced opportunity without reserving any truck.
@@ -168,7 +179,19 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     load(false)
       .then(b => {
         if (!alive) return
-        if (b.account) setAccount(b.account)
+        // Priced as it was booked: the client type its holds record; on older
+        // holds, a recorded Brand Direct markup means Brand Direct; else the account's.
+        // A booking with no opportunity loads without an account: the type
+        // waits for the account the seller picks (AccountSearch below).
+        const booked = chosenClientType(b.clientType) ?? (typeof b.brandMarkupPct === 'number' && b.brandMarkupPct > 0 ? 'Brand Direct' : null)
+        revisedClientType.current = b.account ? null : booked
+        if (b.account) {
+          setAccount(b.account)
+          setClientType(booked ?? b.account.clientType ?? 'Agency')
+        }
+        // A lead source is asked for only if a new opportunity is made; never
+        // carry over one picked for an earlier quote's account.
+        setLeadSource('')
         setContact(b.contact)
         setBrand(b.brand ?? '')
         setRows(b.rows.map((r: { market: string; startDate: string; endDate: string; trucks: number; daysPerWeek: number; hours: number }) =>
@@ -303,7 +326,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     sfdcAccountName: account?.name,
     features,
     alloyRenews,
-    // The server applies it only if Salesforce says the account is Brand Direct.
+    clientType: account ? clientType : undefined,
     brandMarkupPct: isBrandDirect ? clampBrandMarkup(brandMarkupPct) : undefined,
     // Revising: the server frees the booking's trucks and keeps them where they fit.
     revise: revision ? { bookingKey: revision.key } : undefined,
@@ -333,7 +356,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, quoteOnly, brand, primaryContactId: contact.id, holdDays, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: keepsOpportunity ? undefined : leadSource, quoteOnly, brand, primaryContactId: contact.id, holdDays, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
       })
       const data = await readJson(res)
       // The opportunity went Closed Lost after the booking was opened: ask now.
@@ -355,6 +378,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         setHoldResult({ ok: false, message: 'No holds placed.' })
         return
       }
+      // The revised booking's opportunity is gone from Salesforce since it was
+      // opened, so a new one is made: show the lead source picker.
+      if (res.status === 400 && data.needLeadSource && revision) setRevision(r => r && { ...r, opportunityName: null })
       if (!res.ok) throw new Error(data.error || 'Holds could not be placed')
       setHoldResult({ ok: true, message: data.confirmation ?? data.message, sfdcFailure: data.sfdcFailure ?? null })
       setSfdcFailureOpen(Boolean(data.sfdcFailure))
@@ -409,15 +435,24 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           const changingClient = !!revision && !!account
           if (changingClient && !window.confirm('Changing the client stops revising this booking and starts a new quote. Continue?')) return
           if (changingClient) stopRevising()
-          setAccount(a); setContact(null); setAttachTo(null); setQuote(null); setHoldResult(null)
+          setAccount(a); setClientType((revision && !account ? revisedClientType.current : null) ?? a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setContact(null); setAttachTo(null); setQuote(null); setHoldResult(null)
         }} />
         {account && (
           <div className="mt-3">
+            {/* Sets Brand Direct pricing, so a change needs a fresh price. */}
+            <div className="mb-3">
+              <ClientTypePicker value={clientType} onChange={t => { if (t !== clientType) { setClientType(t); setQuote(null); setHoldResult(null) } }} />
+            </div>
             <label className="text-xs font-medium text-gray-600 mb-1 block">Primary contact <span className="text-red-500">*</span></label>
             <ContactSearch accountId={account.id} selected={contact} onSelect={setContact} />
             {!revision && (
               <div className="mt-3">
-                <OpportunityPicker accountId={account.id} value={attachTo} onChange={setAttachTo} />
+                <OpportunityPicker accountId={account.id} value={attachTo} onChange={o => {
+                  // Adding to an opportunity starts at its own Client Type (it was priced that way); a new one at the account's.
+                  setAttachTo(o)
+                  const t = o?.clientType ?? account.clientType ?? 'Agency'
+                  if (t !== clientType) { setClientType(t); setQuote(null); setHoldResult(null) }
+                }} />
               </div>
             )}
           </div>
@@ -529,6 +564,12 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           <label className="flex items-center gap-2"><input type="checkbox" checked={features.deviceId} onChange={e => setFeatures(f => ({ ...f, deviceId: e.target.checked }))} /> Device ID passback</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={alloyRenews} onChange={e => setAlloyRenews(e.target.checked)} /> Keep AT&amp;T Alloy Build trucks reserved</label>
         </div>
+        {/* A new opportunity's lead source; a revision or an attach keeps its opportunity's own. */}
+        {!keepsOpportunity && (
+          <div className="mt-3">
+            <LeadSourcePicker value={leadSource} onChange={setLeadSource} />
+          </div>
+        )}
         <div className="mt-3 flex items-center gap-2 text-xs">
           <span className="font-medium text-gray-600">Opportunity stage</span>
           <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5" role="radiogroup" aria-label="Opportunity stage">
@@ -574,6 +615,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           account={account}
           contact={contact}
           revising={revision !== null}
+          needsLeadSource={!keepsOpportunity && !leadSource}
           committedMarkets={revision?.committedMarkets ?? []}
           attachName={revision ? null : attachTo?.name ?? null}
           holdDays={holdDays}
@@ -692,12 +734,14 @@ function ImportPanel(p: {
 /** A booking's outcome; sfdcFailure is set when the holds saved but Salesforce didn't. */
 type HoldResult = { ok: boolean; message: string; sfdcFailure?: string | null }
 
-function QuoteResult({ quote, account, contact, revising, committedMarkets, attachName, holdDays, onHoldDays, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
+function QuoteResult({ quote, account, contact, revising, needsLeadSource, committedMarkets, attachName, holdDays, onHoldDays, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
   quote: MultiMarketQuote
   account: SfdcAccount | null
   contact: SfdcContact | null
   /** Booking replaces an existing booking (Reservations → Revise). */
   revising: boolean
+  /** A new opportunity with no lead source picked yet: booking waits for one. */
+  needsLeadSource: boolean
   /** On a revision, the markets (lower-cased) that stay committed: they hold nothing, so they don't cap the expiry. */
   committedMarkets: string[]
   /** Booking is added to this existing opportunity. */
@@ -817,10 +861,11 @@ function QuoteResult({ quote, account, contact, revising, committedMarkets, atta
               <HoldLength days={holdDays} onChange={onHoldDays}
                 startDates={holdStartDates(chosen.filter(l => !committedMarkets.includes(l.market.trim().toLowerCase())))} />
             )}
-            <button onClick={onPlaceHolds} disabled={holding || !account || !contact || chosen.length === 0}
+            <button onClick={onPlaceHolds} disabled={holding || !account || !contact || needsLeadSource || chosen.length === 0}
               className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium">
               {!account ? 'Select a client above to place holds'
                 : !contact ? 'Choose the primary contact above'
+                : needsLeadSource ? 'Choose the lead source above'
                 : chosen.length === 0 ? 'Select at least one market to book'
                 : holding ? (quoteOnly ? 'Logging the quote…' : 'Re-checking trucks and placing holds…')
                 : revising ? `Update booking${quoteOnly ? ' (quote only, no reservation)' : ''} — ${chosen.length} of ${quote.lines.length} markets, ${fmtMoney(chosenTotal)}`

@@ -141,6 +141,8 @@ export type CreateOpportunityInput = {
   ownerId?: string
   /** Opportunity Client Type (Agency / Brand Direct). */
   clientType?: 'Agency' | 'Brand Direct'
+  /** Opportunity Lead Source: a picklist value (lib/sfdcLeadSource.ts). */
+  leadSource?: string
   /** Brand_Job_Name__c (50 characters): the brand, already cleaned (lib/brand.ts). */
   brand?: string
   /**
@@ -214,6 +216,34 @@ export function reportFirstFailure(firstMarked: boolean, firstErrors: unknown, s
  * opportunity being made.
  */
 export async function createOpportunity(input: CreateOpportunityInput): Promise<SfdcOpportunityResult> {
+  const { refused, ...result } = await createOpportunityOnce(input)
+  // Lead Source is a picklist kept in step by hand (lib/sfdcLeadSource.ts): a
+  // value Salesforce has since retired or restricted can't stop the
+  // opportunity being made. Only a definite refusal (a 400 with an error
+  // list) naming the field is retried: that create made nothing, so the retry
+  // can't duplicate. A 5xx may have made it, so it never is.
+  if (!result.success && refused && input.leadSource && aboutLeadSource(result.errors)) {
+    console.warn('[sfdc] LeadSource refused; creating the opportunity without it:', JSON.stringify(result.errors))
+    const retry = await createOpportunityOnce({ ...input, leadSource: undefined })
+    if (retry.success) {
+      return { success: true, id: retry.id, errors: retry.errors, warnings: [...(retry.warnings ?? []), `Salesforce refused the lead source "${input.leadSource}", so the opportunity has none (set it in Salesforce)`] }
+    }
+  }
+  return result
+}
+
+/** Whether a refused create's errors name the Lead Source field. Pure. */
+function aboutLeadSource(errors: unknown): boolean {
+  if (!Array.isArray(errors)) return false
+  return errors.some(e => {
+    const fields = (e as { fields?: unknown })?.fields
+    if (Array.isArray(fields) && fields.some(f => String(f).toLowerCase() === 'leadsource')) return true
+    return /lead ?source/i.test(String((e as { message?: unknown })?.message ?? ''))
+  })
+}
+
+/** `refused`: Salesforce definitely refused it (a 400 with an error list), so nothing was made. */
+async function createOpportunityOnce(input: CreateOpportunityInput): Promise<SfdcOpportunityResult & { refused: boolean }> {
   const body: Record<string, unknown> = {
     AccountId: input.accountId,
     Name: input.name,
@@ -227,6 +257,7 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
   if (input.market) body.Markets__c = input.market
   if (input.ownerId) body.OwnerId = input.ownerId
   if (input.clientType) body.Client_Type__c = input.clientType
+  if (input.leadSource) body.LeadSource = input.leadSource
   if (input.brand) body.Brand_Job_Name__c = input.brand.slice(0, 50)
   if (input.primaryContactId) body.Primary_Contact__c = input.primaryContactId
   if (input.holdStart) body.LED_Hold_Start__c = input.holdStart
@@ -290,6 +321,7 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
     success: data.success ?? false,
     id: data.id,
     errors: data.errors,
+    refused: !data.success && res.status === 400 && Array.isArray(data.errors),
     ...(warnings.length ? { warnings } : {}),
   }
 }

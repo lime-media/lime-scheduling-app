@@ -359,6 +359,13 @@ Exp synced). A link stops working when the expiry it warned about passes or chan
 extends once; the next reminder brings a new link, with no limit on how many times. Links use
 `NEXTAUTH_URL` as the app's address, or the branch URL on a preview deployment (UAT).
 
+**Standard market.** The sweep sets each live hold's `standard_market_uid` (LED's
+`standard_market_lookup`, the one market list) from its market text (`lib/standardMarkets.ts`):
+the standard market of that name, else the one whose area contains the town (the nearest centre
+where areas overlap), else none (a Salesforce "Multi-market: …" label, or a town outside every
+area). A row whose area isn't on its own city (a placeholder box) is matched by name only, with a
+warning in the log. An edited market moves it on the next sweep.
+
 **Opportunity stage reconcile.** Salesforce never tells us when an Opportunity
 closes — the hold webhook payload carries trucks and dates, no stage. So the sweep
 pulls the stage for every Opportunity behind an active `SALESFORCE` hold and settles

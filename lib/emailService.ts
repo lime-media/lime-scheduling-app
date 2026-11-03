@@ -1,5 +1,6 @@
 import { getSetting } from '@/lib/appSettings'
 import nodemailer from 'nodemailer'
+import { redirectingTransport } from '@/lib/mailRedirect'
 
 export interface ConflictEmailPayload {
   truck_number:      string
@@ -15,7 +16,7 @@ function createTransporter() {
   if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
     return null
   }
-  return nodemailer.createTransport({
+  return redirectingTransport(nodemailer.createTransport({
     host:   process.env.SMTP_HOST,
     port:   Number(process.env.SMTP_PORT) || 587,
     secure: false,
@@ -23,7 +24,7 @@ function createTransporter() {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
     },
-  })
+  }))
 }
 
 export async function sendConflictEmail(conflict: ConflictEmailPayload): Promise<void> {

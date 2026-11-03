@@ -16,7 +16,7 @@ import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
 import { holdExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
-import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
+import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner, readOnlyPreview, salesforceWritesOff, WRITES_OFF_MESSAGE, WRITES_STOPPED_ERROR } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
@@ -389,8 +389,18 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   // Transport and deal-value metrics (best-effort; never fails the booking).
   if (!quoteOnly) await recordBooking({ event: 'BOOKED', groups: [{ groupId: campaignGroupId, legs: legsFromSelectedTrucks(selectedTrucks, transport) }], appQuotedTotal: serverTotal, createdBy })
 
+  // Writes off (UAT): Salesforce wasn't asked, and is production's org, so
+  // there's nothing to do there by hand (an unreachable attach included). Say
+  // so, as part of the confirmation rather than as a failure whose modal asks
+  // the rep to fix it in Salesforce.
+  // Writes stopped on production (SFDC_WRITES=off): the rep still fixes it by
+  // hand, but is told why rather than that Salesforce rejected it.
+  const refused = !sfdcOpportunityId && !!sfdcError && salesforceWritesOff()
+  const writesOff = refused && readOnlyPreview()
+  if (refused) sfdcError = writesOff ? WRITES_OFF_MESSAGE : WRITES_STOPPED_ERROR
   // Never silent: if the opportunity was not created, the rep is told.
-  const sfdcNote = sfdcOpportunityId
+  const sfdcNote = writesOff ? WRITES_OFF_MESSAGE
+    : sfdcOpportunityId
     ? `${target ? `Added to Salesforce opportunity "${target.Name}".` : 'Salesforce opportunity created.'}${sfdcWarnings.length ? ` Check it: ${sfdcWarnings.join('; ')}.` : ''}`
     // An existing opportunity is updated by hand; creating one would duplicate it.
     : sfdcError ? (target || attachUnreachable
@@ -412,8 +422,8 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
     message: `${booked} ${sfdcNote}`,
     // The UI shows the booking and a Salesforce failure apart, so a failure
     // can't read as part of a success.
-    confirmation: sfdcOpportunityId ? `${booked} ${sfdcNote}` : booked,
-    sfdcFailure: sfdcOpportunityId ? null : sfdcNote || null,
+    confirmation: sfdcOpportunityId || writesOff ? `${booked} ${sfdcNote}` : booked,
+    sfdcFailure: sfdcOpportunityId || writesOff ? null : sfdcNote || null,
     _internal: {
       chainFlags: successorImpact,
       _warning: 'INTERNAL ONLY — downstream deadhead, recorded not billed',

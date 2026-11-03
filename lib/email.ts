@@ -1,5 +1,6 @@
 import { getSetting } from '@/lib/appSettings'
 import { expiringHoldsHtml, expiringHoldsText, otpHtml, type ExpiringBooking } from '@/lib/emailTemplates'
+import { redirectingTransport } from '@/lib/mailRedirect'
 
 // Email notifications — wire up SMTP credentials in .env when ready.
 // Required env vars: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
@@ -18,6 +19,24 @@ import { expiringHoldsHtml, expiringHoldsText, otpHtml, type ExpiringBooking } f
 //   notify.holds   / HOLD_NOTIFY_EMAIL    a client booked
 //   notify.assist  / ASSIST_NOTIFY_EMAIL  a client needs a human
 
+/**
+ * The SMTP transport every send here uses, once its caller has checked SMTP is
+ * configured. nodemailer is lazy-loaded so this module works without SMTP set
+ * up. Sends follow lib/mailRedirect.ts (redirected, or not sent, on UAT),
+ * except `direct` ones: a login code must reach the person logging in.
+ */
+async function smtpTransport(opts: { direct?: boolean } = {}) {
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env
+  const nodemailer = (await import('nodemailer')).default
+  const transport = nodemailer.createTransport({
+    host:   SMTP_HOST,
+    port:   Number(SMTP_PORT ?? 587),
+    secure: Number(SMTP_PORT ?? 587) === 465,
+    auth:   { user: SMTP_USER, pass: SMTP_PASS },
+  })
+  return opts.direct ? transport : redirectingTransport(transport)
+}
+
 /** One email per booking: every truck it holds, not one email per truck. */
 export interface HoldRequestEmailData {
   companyName:  string
@@ -29,20 +48,13 @@ export interface HoldRequestEmailData {
 }
 
 export async function sendHoldRequestEmail(data: HoldRequestEmailData): Promise<void> {
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
+  const { SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
     console.log('[email] SMTP not configured — hold request received (not emailed):', data)
     return
   }
 
-  // Lazy-load nodemailer so the module works even when SMTP isn't set up
-  const nodemailer = (await import('nodemailer')).default
-  const transporter = nodemailer.createTransport({
-    host:   SMTP_HOST,
-    port:   Number(SMTP_PORT ?? 587),
-    secure: Number(SMTP_PORT ?? 587) === 465,
-    auth:   { user: SMTP_USER, pass: SMTP_PASS },
-  })
+  const transporter = await smtpTransport()
 
   const trucks = data.truckNumbers.length === 1 ? `Truck ${data.truckNumbers[0]}` : `${data.truckNumbers.length} trucks`
   const subject = `Hold Request — ${trucks} · ${data.market}`
@@ -75,19 +87,13 @@ export interface AssistanceRequestEmailData {
 }
 
 export async function sendAssistanceRequestEmail(data: AssistanceRequestEmailData): Promise<void> {
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
+  const { SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
     console.log('[email] SMTP not configured — assistance request received (not emailed):', data)
     return
   }
 
-  const nodemailer = (await import('nodemailer')).default
-  const transporter = nodemailer.createTransport({
-    host:   SMTP_HOST,
-    port:   Number(SMTP_PORT ?? 587),
-    secure: Number(SMTP_PORT ?? 587) === 465,
-    auth:   { user: SMTP_USER, pass: SMTP_PASS },
-  })
+  const transporter = await smtpTransport()
 
   const subject = `Assistance Request — ${data.companyName}${data.market ? ' · ' + data.market : ''}`
   const text = [
@@ -120,19 +126,13 @@ export interface CancellationEmailData {
 }
 
 export async function sendCancellationEmail(data: CancellationEmailData): Promise<void> {
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
+  const { SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
     console.log('[email] SMTP not configured — cancellation notice (not emailed):', data)
     return
   }
 
-  const nodemailer = (await import('nodemailer')).default
-  const transporter = nodemailer.createTransport({
-    host:   SMTP_HOST,
-    port:   Number(SMTP_PORT ?? 587),
-    secure: Number(SMTP_PORT ?? 587) === 465,
-    auth:   { user: SMTP_USER, pass: SMTP_PASS },
-  })
+  const transporter = await smtpTransport()
 
   const markets = data.markets.join(', ')
   const trucks = data.truckNumbers.length === 1 ? `Truck ${data.truckNumbers[0]}` : `${data.truckNumbers.length} trucks (${data.truckNumbers.join(', ')})`
@@ -170,19 +170,13 @@ export interface ExtensionDecisionEmailData {
 }
 
 export async function sendExtensionDecisionEmail(data: ExtensionDecisionEmailData): Promise<void> {
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
+  const { SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
     console.log('[email] SMTP not configured — extension decision (not emailed):', data)
     return
   }
 
-  const nodemailer = (await import('nodemailer')).default
-  const transporter = nodemailer.createTransport({
-    host:   SMTP_HOST,
-    port:   Number(SMTP_PORT ?? 587),
-    secure: Number(SMTP_PORT ?? 587) === 465,
-    auth:   { user: SMTP_USER, pass: SMTP_PASS },
-  })
+  const transporter = await smtpTransport()
 
   const markets = data.markets.join(', ')
   const subject = `Hold Extension ${data.heldUntil ? 'Approved' : 'Declined'} — ${markets}`
@@ -216,20 +210,15 @@ export interface OtpEmailData {
 }
 
 export async function sendOtpEmail(data: OtpEmailData): Promise<void> {
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
+  const { SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
     // No SMTP configured (e.g. local dev) — log the code so login still works.
     console.log(`[email] SMTP not configured — OTP for ${data.to}: ${data.code}`)
     return
   }
 
-  const nodemailer = (await import('nodemailer')).default
-  const transporter = nodemailer.createTransport({
-    host:   SMTP_HOST,
-    port:   Number(SMTP_PORT ?? 587),
-    secure: Number(SMTP_PORT ?? 587) === 465,
-    auth:   { user: SMTP_USER, pass: SMTP_PASS },
-  })
+  // To the person logging in, on UAT too: anyone testing UAT has to be able to log in.
+  const transporter = await smtpTransport({ direct: true })
 
   const subject = `Your Lime Media login code: ${data.code}`
   // Sent alongside the HTML: what a plain-text client, a screen reader or a
@@ -267,7 +256,7 @@ export interface ExpiringHoldsEmailData {
  * ignore.
  */
 export async function sendExpiringHoldsEmail(data: ExpiringHoldsEmailData): Promise<void> {
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
+  const { SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
     console.log('[email] SMTP not configured — expiry warning not sent:', {
       to: data.to,
@@ -276,13 +265,7 @@ export async function sendExpiringHoldsEmail(data: ExpiringHoldsEmailData): Prom
     return
   }
 
-  const nodemailer = (await import('nodemailer')).default
-  const transporter = nodemailer.createTransport({
-    host:   SMTP_HOST,
-    port:   Number(SMTP_PORT ?? 587),
-    secure: Number(SMTP_PORT ?? 587) === 465,
-    auth:   { user: SMTP_USER, pass: SMTP_PASS },
-  })
+  const transporter = await smtpTransport()
 
   const n = data.bookings.length
   const subject = n === 1

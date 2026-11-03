@@ -57,7 +57,47 @@ async function getAccessToken(): Promise<{ accessToken: string; instanceUrl: str
 // Generic REST helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether this deployment reads Salesforce but never changes it: SFDC_WRITES
+ * =off, or any preview deployment (UAT shares production's Salesforce org)
+ * unless SFDC_WRITES=on. Every create and update is then refused here, before
+ * a request is sent, with WRITES_OFF_MESSAGE as Salesforce's own error, so
+ * callers show and log it as a refusal. Reads (queries, record GETs) still go
+ * through.
+ */
+export function salesforceWritesOff(env: Record<string, string | undefined> = process.env): boolean {
+  const set = env.SFDC_WRITES?.trim().toLowerCase()
+  if (set === 'off') return true
+  if (set === 'on') return false
+  // Fail closed: a preview deployment (UAT, branch previews) never writes
+  // production's Salesforce unless someone turns writes on for it on purpose.
+  return env.VERCEL_ENV === 'preview'
+}
+/**
+ * A preview (UAT) reading another environment's org with writes off: a
+ * refused write there needs nothing done by hand, so reps aren't told to.
+ * SFDC_WRITES=off on production is an emergency stop instead: the writes it
+ * refuses still have to be made, and reps are told so as for any refusal.
+ */
+export const readOnlyPreview = (env: Record<string, string | undefined> = process.env) =>
+  env.VERCEL_ENV === 'preview' && salesforceWritesOff(env)
+/** Why a write failed on a deployment with writes stopped that isn't a preview (no trailing period: callers append). */
+export const WRITES_STOPPED_ERROR = 'Salesforce writes are stopped in this deployment (SFDC_WRITES=off)'
+export const WRITES_OFF_MESSAGE = 'Salesforce writes are off in this deployment (SFDC_WRITES=off, or a preview such as UAT, which reads production Salesforce but never changes it), so Salesforce was not changed.'
+
+/** The refusal a write gets while writes are off: Salesforce's error shape, status 403. Pure. */
+export function writesOffResponse(): Response {
+  return new Response(JSON.stringify([{ errorCode: 'WRITES_OFF', message: WRITES_OFF_MESSAGE, fields: [] }]), {
+    status: 403,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
 async function sfdcFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  if (salesforceWritesOff() && (options.method ?? 'GET').toUpperCase() !== 'GET') {
+    console.warn(`[sfdc] writes are off: ${options.method} ${path} not sent`)
+    return writesOffResponse()
+  }
   const { accessToken, instanceUrl } = await getAccessToken()
   const url = `${instanceUrl}/services/data/${API_VERSION}${path}`
   return fetch(url, {

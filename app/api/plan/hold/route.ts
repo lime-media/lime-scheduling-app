@@ -45,7 +45,7 @@ import { prisma } from '@/lib/prisma'
 import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { bookingHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
-import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
+import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner, readOnlyPreview, salesforceWritesOff, WRITES_OFF_MESSAGE, WRITES_STOPPED_ERROR } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
@@ -463,7 +463,7 @@ async function handlePost(req: NextRequest) {
         } catch (err) {
           if (err instanceof HoldClashError || err instanceof HoldLockTimeoutError) {
             return NextResponse.json({
-              error: `${r.error} The revised booking was kept: the old one can't be put back (${err.message}). Reopen the opportunity in Salesforce by hand.`,
+              error: `${r.error} The revised booking was kept: the old one can't be put back (${err.message}).${readOnlyPreview() ? '' : ' Reopen the opportunity in Salesforce by hand.'}`,
             }, { status: 409 })
           }
           throw err
@@ -599,6 +599,15 @@ async function handlePost(req: NextRequest) {
     // What the rep does when Salesforce wasn't updated: an existing opportunity
     // is updated by hand (creating one would duplicate it); otherwise one is created.
     const existingOpp = target ?? (attachUnreachable ? { Name: 'the opportunity you picked' } : null)
+    // Writes off (UAT): Salesforce wasn't asked, and is production's org, so
+    // there's nothing to do there by hand (an unreachable attach included). Say
+    // so, as part of the confirmation rather than as a failure whose modal asks
+    // the rep to fix it in Salesforce.
+    // Writes stopped on production (SFDC_WRITES=off): the rep still fixes it
+    // by hand, but is told why rather than that Salesforce rejected it.
+    const refused = !sfdcOpportunityId && !!sfdcError && salesforceWritesOff()
+    const writesOff = refused && readOnlyPreview()
+    if (refused && !writesOff) sfdcError = WRITES_STOPPED_ERROR
     const fixByHand = existingOpp
       ? ` Update ${target ? `"${target.Name}"` : existingOpp.Name} in Salesforce by hand with this booking (holds grouped under ${groupPrefix}*).`
       : ` Create the opportunity by hand (holds grouped under ${groupPrefix}*).`
@@ -610,10 +619,11 @@ async function handlePost(req: NextRequest) {
           + (bookingExpiry.cappedByStart ? ` (${STAFF_MIN_DAYS_BEFORE_START} days before the first market starts, ${bookingExpiry.startDate}: the latest a booking can be held)`
             : bookingExpiry.atMinimum ? ' (the 24-hour minimum: the first market starts too soon for a longer hold)' : '') : '')
         + '.'
-    const sfdcDone = !sfdcOpportunityId ? ''
+    const sfdcDone = writesOff ? ` ${WRITES_OFF_MESSAGE}`
+      : !sfdcOpportunityId ? ''
       : quoteOnly ? ` ${oppDone}.` + checkIt
       : ` ${oppDone}` + (leftOut ? ', with the markets not booked listed in its Description.' : '.') + checkIt
-    const sfdcFailure = sfdcOpportunityId || !sfdcError ? null
+    const sfdcFailure = sfdcOpportunityId || !sfdcError || writesOff ? null
       : quoteOnly ? `${sfdcError}.${fixByHand}` : `${sfdcError}; the holds are placed.${fixByHand}`
     return NextResponse.json({
       ok: true,

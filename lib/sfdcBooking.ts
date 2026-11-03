@@ -4,7 +4,7 @@
  * says what the fields become).
  */
 
-import { isSfdcConfigured, sfdcQuery, updateOpportunity, updateOpportunityWithError } from '@/lib/salesforceClient'
+import { isSfdcConfigured, readOnlyPreview, salesforceWritesOff, sfdcQuery, updateOpportunity, updateOpportunityWithError, WRITES_OFF_MESSAGE, WRITES_STOPPED_ERROR } from '@/lib/salesforceClient'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { closedOpportunityBlocksReactivation, withAppHoldExp } from '@/lib/sfdcIntegration'
@@ -152,10 +152,16 @@ export async function applyBookingToOpportunity(opts: {
  */
 export async function syncOpportunityLedWindow(opportunityId: string | null): Promise<string | null> {
   if (!opportunityId || !isSfdcConfigured() || !OPP_ID.test(opportunityId)) return null
+  // Writes off (UAT): the write would be refused and the marker put back, so
+  // skip both, and don't tell the rep to edit production's Salesforce by hand.
+  if (readOnlyPreview()) return `Saved here. ${WRITES_OFF_MESSAGE}`
   let fields: Record<string, string | null> = {}
   let recorded: { id: string; features: string | null }[] = []
   try {
     fields = ledWindowFields(await loadOpportunityReservingHolds(opportunityId), centralDate(new Date()))
+    // Writes stopped on production: the write would be refused, so don't set
+    // (and then restore) the markers; tell the rep what to set by hand.
+    if (salesforceWritesOff()) return ledWindowWarning(fields, WRITES_STOPPED_ERROR)
     // A date is recorded; a Hold Exp cleared (nothing reserves a truck) clears
     // the record too, so a rep later entering that same date in Salesforce isn't
     // taken for an echo. Left out (all committed): Salesforce keeps its date, and

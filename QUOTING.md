@@ -115,13 +115,12 @@ The campaign must clear **1,200,000 estimated impressions** to qualify. If it do
 
 ### How market tier gets picked
 
-The market name on the quote is fuzzy-matched against the active accepted-markets list, then mapped by DMA code:
+The market is matched to Nielsen's top-50 DMAs (`lib/pricing/topDmas.ts`): by the DMA's city name (same city, and same state when both give one), else by location, taking the top-50 DMA with the nearest centre within 40 miles (`lib/pricing/dmaArea.ts`), so a suburb gets its metro's tier. A polycentric DMA has a centre at each of its principal cities (San Jose for San Francisco, Fort Worth for Dallas, Riverside and San Bernardino for Los Angeles), with a smaller ring where the full one would reach a DMA outside the top 50. Then:
 
 - New York and LA → Tier 1
 - Chicago, Dallas, Philadelphia, Houston, Atlanta, DC, San Francisco, Boston → Tier 2
-- **Everything else → Tier 3**
-
-If the market can't be matched at all, it falls back to **Tier 3**. Note that Tier 4 is never assigned automatically — see §8.
+- Every other top-50 DMA → Tier 3
+- **Anything outside the top 50, or a market that can't be located → Tier 4**
 
 ---
 
@@ -358,7 +357,7 @@ The fallback is only reported when the unmappable job **has not started yet**. I
 When it does fire, it is counted and reported, never silent:
 
 - staff quote shows a red "priced from GPS, not their prior job" warning naming the markets
-- `/conflicts` shows a "Market names not recognized" banner
+- `/conflicts` shows a "Market names not recognized" banner. It also lists holds whose own market can't be located: they are still checked for overlaps with other bookings, but not for travel time
 - the server logs a warning per quote
 
 A non-zero count means market names are drifting from the coordinate map and some transport is being priced from the wrong origin. Fixing it is a data task: add the missing markets to the map.
@@ -502,7 +501,7 @@ Real observations from the current code. None break a quote, but each can produc
 
 ### Resolved 2026-09-14
 
-Market Tier 4 is now reachable: a market that is not one of the accepted top-50 DMAs is classified **Sub-DMA / small metro (20,000/truck/day)** instead of falling back to Tier 3's 40,000. The DMA match is also stricter — it previously tested substrings in both directions, so "York, PA" matched the New York DMA and jumped from tier 4 to tier 1, a 4.5x reach error.
+Market Tier 4 is now reachable: a market that is not in one of the top-50 DMAs is classified **Sub-DMA / small metro (20,000/truck/day)** instead of falling back to Tier 3's 40,000. The DMA match is also stricter — it previously tested substrings in both directions, so "York, PA" matched the New York DMA and jumped from tier 4 to tier 1, a 4.5x reach error.
 
 **Lift studies will qualify less often in small markets.** That is the point: estimated reach was double the modelled figure for every market outside the top 50.
 

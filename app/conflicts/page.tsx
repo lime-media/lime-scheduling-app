@@ -349,7 +349,7 @@ export default function ConflictsPage() {
               )}
               {dataGaps.unresolvedMarkets.length > 0 && (
                 <p className="text-red-700 mt-1">
-                  <span className="font-medium">{dataGaps.unresolvedMarkets.length} hold{dataGaps.unresolvedMarkets.length !== 1 ? 's' : ''}</span> not checked — market not recognized:{' '}
+                  <span className="font-medium">{dataGaps.unresolvedMarkets.length} hold{dataGaps.unresolvedMarkets.length !== 1 ? 's' : ''}</span> checked for overlaps but not for travel time — market not recognized:{' '}
                   {[...new Set(dataGaps.unresolvedMarkets.map(g => g.market))].join('; ')}
                 </p>
               )}

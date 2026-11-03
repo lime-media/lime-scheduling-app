@@ -267,12 +267,16 @@ async function quote(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
   // The ref covers the market as the quote resolved it: that is what place_hold books.
   const ref = quoteRef({ ...q, market: String(body.market) }, body.grandTotal, terms)
   const trucks = Array.isArray(body.selectedTrucks) ? body.selectedTrucks.join(', ') : ''
-  // Only a quote place_hold could book (account, its name and the contact) is
-  // offered as bookable; without them its ref can never match a booking.
+  // Only a quote place_hold could book (account, its name, the contact, the
+  // client type and the lead source) is offered as bookable; without them its
+  // ref can never match a booking.
   const bookable = !!q.sfdc_account_id && isStr(terms.sfdc_account_name) && isStr(terms.primary_contact_id)
+    && !!q.client_type && !!terms.lead_source
+  // The summary is what the rep confirms when the reply leaves the ref out, so
+  // it names everything the ref covers that changes the opportunity.
   return {
     content: json({ ...body, quote_ref: ref }),
-    quote: bookable ? { ref, summary: `${body.market}, ${q.start_date} to ${q.end_date}, ${q.truck_count} truck${q.truck_count === 1 ? '' : 's'}${trucks ? ` (${trucks})` : ''}, ${money(body.grandTotal)}${terms.sfdc_account_name ? ` for ${terms.sfdc_account_name.trim()}` : ''}, held ${terms.hold_days ?? DEFAULT_HOLD_DAYS} days` } : undefined,
+    quote: bookable ? { ref, summary: `${body.market}, ${q.start_date} to ${q.end_date}, ${q.truck_count} truck${q.truck_count === 1 ? '' : 's'}${trucks ? ` (${trucks})` : ''}, ${money(body.grandTotal)}${terms.sfdc_account_name ? ` for ${terms.sfdc_account_name.trim()}` : ''}, ${q.client_type}, lead source ${terms.lead_source}, held ${terms.hold_days ?? DEFAULT_HOLD_DAYS} days` } : undefined,
   }
 }
 

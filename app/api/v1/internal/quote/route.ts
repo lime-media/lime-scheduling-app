@@ -17,7 +17,8 @@ import { staffQuote } from '@/lib/staffQuote'
  *
  * Body: market, start_date, end_date, truck_count; optional shadow_fencing,
  * smart_directional, device_id, studies, days_per_week, operating_hours;
- * staff only: sfdc_account_id, brand_markup_pct.
+ * staff only: sfdc_account_id, brand_markup_pct, client_type (Agency or Brand
+ * Direct: the seller's pick, which sets Brand Direct pricing; else the account's).
  */
 
 export async function POST(request: Request) {

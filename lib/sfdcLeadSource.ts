@@ -4,7 +4,8 @@
  * them (verified against the org 2026-11-02; "EMS ‘25" has a curly quote).
  * Sources seen on older opportunities but no longer on the picklist (Firefly,
  * AdQuick and others) aren't offered. When the picklist changes in
- * Salesforce, change this list to match.
+ * Salesforce, change this list to match, and the copy in lime-mcp-server's
+ * book_campaign description (server.py), which MCP callers read.
  */
 
 export const LEAD_SOURCES = [

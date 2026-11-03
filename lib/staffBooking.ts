@@ -390,8 +390,10 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   if (!quoteOnly) await recordBooking({ event: 'BOOKED', groups: [{ groupId: campaignGroupId, legs: legsFromSelectedTrucks(selectedTrucks, transport) }], appQuotedTotal: serverTotal, createdBy })
 
   // Writes off (UAT): Salesforce wasn't asked, and is production's org, so
-  // there's nothing to do there by hand. Say so instead.
-  const writesOff = !sfdcOpportunityId && !!sfdcError && !attachUnreachable && salesforceWritesOff()
+  // there's nothing to do there by hand (an unreachable attach included). Say
+  // so, as part of the confirmation rather than as a failure whose modal asks
+  // the rep to fix it in Salesforce.
+  const writesOff = !sfdcOpportunityId && !!sfdcError && salesforceWritesOff()
   if (writesOff) sfdcError = WRITES_OFF_MESSAGE
   // Never silent: if the opportunity was not created, the rep is told.
   const sfdcNote = writesOff ? WRITES_OFF_MESSAGE
@@ -417,8 +419,8 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
     message: `${booked} ${sfdcNote}`,
     // The UI shows the booking and a Salesforce failure apart, so a failure
     // can't read as part of a success.
-    confirmation: sfdcOpportunityId ? `${booked} ${sfdcNote}` : booked,
-    sfdcFailure: sfdcOpportunityId ? null : sfdcNote || null,
+    confirmation: sfdcOpportunityId || writesOff ? `${booked} ${sfdcNote}` : booked,
+    sfdcFailure: sfdcOpportunityId || writesOff ? null : sfdcNote || null,
     _internal: {
       chainFlags: successorImpact,
       _warning: 'INTERNAL ONLY — downstream deadhead, recorded not billed',

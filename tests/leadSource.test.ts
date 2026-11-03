@@ -6,7 +6,7 @@
  */
 import fs from 'fs'
 import { eq, section } from './harness'
-import { CLIENT_PORTAL_LEAD_SOURCE, LEAD_SOURCES, MCP_LEAD_SOURCE, leadSourceOf } from '@/lib/sfdcLeadSource'
+import { CLIENT_PORTAL_LEAD_SOURCE, LEAD_SOURCES, MCP_LEAD_SOURCE, NEED_LEAD_SOURCE, leadSourceOf, readLeadSource } from '@/lib/sfdcLeadSource'
 import { brandMarkupFor, chosenClientType } from '@/lib/pricing/brandMarkup'
 
 section('lead source')
@@ -16,6 +16,10 @@ eq('the curly quote is part of the value', leadSourceOf('EMS ‘25'), 'EMS ‘25
 eq('a value no longer on the picklist is not accepted', leadSourceOf('Firefly'), null)
 eq('blank is none', leadSourceOf('  '), null)
 eq('not a string is none', leadSourceOf(3), null)
+eq('a picked value is read', readLeadSource('Trade Show', true), { leadSource: 'Trade Show' })
+eq('a value off the picklist is refused, even when optional', 'error' in readLeadSource('Firefly', false), true)
+eq('none is refused when required', readLeadSource('', true), { error: NEED_LEAD_SOURCE })
+eq('none is fine when not required', readLeadSource(undefined, false), { leadSource: null })
 eq('the portal and MCP sources are picklist values', [leadSourceOf(CLIENT_PORTAL_LEAD_SOURCE), leadSourceOf(MCP_LEAD_SOURCE)], [CLIENT_PORTAL_LEAD_SOURCE, MCP_LEAD_SOURCE])
 
 section('client type picked on the quote')
@@ -29,5 +33,7 @@ section('where the opportunity is made')
 const sf = fs.readFileSync('lib/salesforceClient.ts', 'utf8')
 eq('createOpportunity writes LeadSource', sf.includes('body.LeadSource = input.leadSource'), true)
 eq('the Quote page requires a lead source for a new opportunity', fs.readFileSync('app/api/quote/hold/route.ts', 'utf8').includes('requireLeadSource: true'), true)
-eq('so does the planner', fs.readFileSync('app/api/plan/hold/route.ts', 'utf8').includes("'Pick a lead source for the opportunity.'"), true)
+const planHold = fs.readFileSync('app/api/plan/hold/route.ts', 'utf8')
+eq('so does the planner', planHold.includes('readLeadSource(body.leadSource, !body.revise?.bookingKey && !body.attachOpportunityId)'), true)
+eq('and a revision that makes a new opportunity', planHold.includes('if (reviseKey && !target && !leadSource) return NextResponse.json({ error: NEED_LEAD_SOURCE }'), true)
 eq('a client booking gets the portal or MCP source', fs.readFileSync('lib/clientBooking.ts', 'utf8').includes("opts.origination === 'mcp' ? MCP_LEAD_SOURCE : CLIENT_PORTAL_LEAD_SOURCE"), true)

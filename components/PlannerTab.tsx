@@ -143,6 +143,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
   const [clientType, setClientType] = useState<ClientType>('Agency')
   const [leadSource, setLeadSource] = useState('')
   const isBrandDirect = clientType === 'Brand Direct'
+  // Booked onto an opportunity that already exists (a revision's own, or one
+  // picked to add to), which keeps its lead source; otherwise one is made.
+  const keepsOpportunity = revision ? !!revision.opportunityName : !!attachTo
   // Opportunity stage for the order's opportunity: Cold, Warm or Hot (never closed).
   const [stage, setStage] = useState<OpenStage>(DEFAULT_STAGE)
   // Low conviction: log a priced opportunity without reserving any truck.
@@ -173,7 +176,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     load(false)
       .then(b => {
         if (!alive) return
-        if (b.account) { setAccount(b.account); setClientType(b.account.clientType ?? 'Agency') }
+        // Priced as it was booked: a recorded Brand Direct markup means it was
+        // quoted Brand Direct, whatever the account says now; else the account's.
+        if (b.account) { setAccount(b.account); setClientType(typeof b.brandMarkupPct === 'number' && b.brandMarkupPct > 0 ? 'Brand Direct' : b.account.clientType ?? 'Agency') }
         setContact(b.contact)
         setBrand(b.brand ?? '')
         setRows(b.rows.map((r: { market: string; startDate: string; endDate: string; trucks: number; daysPerWeek: number; hours: number }) =>
@@ -338,7 +343,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: revision || attachTo ? undefined : leadSource, quoteOnly, brand, primaryContactId: contact.id, holdDays, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: keepsOpportunity ? undefined : leadSource, quoteOnly, brand, primaryContactId: contact.id, holdDays, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
       })
       const data = await readJson(res)
       // The opportunity went Closed Lost after the booking was opened: ask now.
@@ -538,8 +543,8 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           <label className="flex items-center gap-2"><input type="checkbox" checked={features.deviceId} onChange={e => setFeatures(f => ({ ...f, deviceId: e.target.checked }))} /> Device ID passback</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={alloyRenews} onChange={e => setAlloyRenews(e.target.checked)} /> Keep AT&amp;T Alloy Build trucks reserved</label>
         </div>
-        {/* A new opportunity's lead source; a revision or an attach keeps the opportunity's own. */}
-        {!revision && !attachTo && (
+        {/* A new opportunity's lead source; a revision or an attach keeps its opportunity's own. */}
+        {!keepsOpportunity && (
           <div className="mt-3">
             <LeadSourcePicker value={leadSource} onChange={setLeadSource} />
           </div>
@@ -589,7 +594,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           account={account}
           contact={contact}
           revising={revision !== null}
-          needsLeadSource={!revision && !attachTo && !leadSource}
+          needsLeadSource={!keepsOpportunity && !leadSource}
           committedMarkets={revision?.committedMarkets ?? []}
           attachName={revision ? null : attachTo?.name ?? null}
           holdDays={holdDays}

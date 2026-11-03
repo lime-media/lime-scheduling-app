@@ -47,7 +47,8 @@ import { canonicalMarketName } from '@/lib/marketBounds'
 import { bookingHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
 import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
-import { leadSourceOf } from '@/lib/sfdcLeadSource'
+import { chosenClientType } from '@/lib/pricing/brandMarkup'
+import { NEED_LEAD_SOURCE, readLeadSource } from '@/lib/sfdcLeadSource'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, reopenClosedLostOpportunity, type BookingOpportunity } from '@/lib/sfdcBooking'
@@ -130,10 +131,11 @@ async function handlePost(req: NextRequest) {
   const holdDays = parseHoldDays(body.holdDays)
   if (holdDays === null) return NextResponse.json({ error: `Hold for 1 to ${MAX_HOLD_DAYS} days.` }, { status: 400 })
   // A new opportunity's lead source: the seller picks one off Salesforce's
-  // picklist. A revision or an attach keeps the opportunity's own.
-  const leadSource = leadSourceOf(body.leadSource)
-  if (body.leadSource != null && body.leadSource !== '' && !leadSource) return NextResponse.json({ error: `"${String(body.leadSource)}" isn't a Salesforce lead source.` }, { status: 400 })
-  if (!body.revise?.bookingKey && !body.attachOpportunityId && !leadSource) return NextResponse.json({ error: 'Pick a lead source for the opportunity.' }, { status: 400 })
+  // picklist. A revision or an attach keeps the opportunity's own (a
+  // revision with no opportunity left makes one: checked once that's known).
+  const lead = readLeadSource(body.leadSource, !body.revise?.bookingKey && !body.attachOpportunityId)
+  if ('error' in lead) return NextResponse.json({ error: lead.error }, { status: 400 })
+  const { leadSource } = lead
   // Every opportunity needs its primary contact, on this account — checked
   // after the cheap local guards. A definite no refuses; Salesforce being
   // unreachable only warns (see checkPrimaryContact).
@@ -223,6 +225,9 @@ async function handlePost(req: NextRequest) {
       const refusal = attachUnreachable || (reviseKey && !target) ? null : opportunityRefusal(target, body.sfdcAccountId, { closedLostReopening: lost.kind === 'reopen' })
       if (refusal) return NextResponse.json({ error: refusal }, { status: 409 })
     }
+    // A revised booking with no opportunity (none, or gone from Salesforce)
+    // gets a new one, so it needs a lead source like any new booking.
+    if (reviseKey && !target && !leadSource) return NextResponse.json({ error: NEED_LEAD_SOURCE }, { status: 400 })
 
     const { lines: allLines, errors } = await resolveRows(body.rows)
     if (errors.length) return NextResponse.json({ error: 'Some markets need attention.', rowErrors: errors }, { status: 400 })
@@ -540,6 +545,7 @@ async function handlePost(req: NextRequest) {
             },
             by: (token.name as string | undefined) || (token.email as string | undefined) || 'the app',
             primaryContactId: body.primaryContactId,
+            clientType: chosenClientType(body.clientType) ?? undefined,
             // What the revised booking added to the opportunity, to take back off.
             ...(reviseKey ? { was: {
               amount: summarizeBooking(reviseHolds.map(h => ({ ...h, expires_at: null }))).total,

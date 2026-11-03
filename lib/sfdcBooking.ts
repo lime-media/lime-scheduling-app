@@ -115,12 +115,15 @@ export async function applyBookingToOpportunity(opts: {
   booking: BookingLed
   by: string
   primaryContactId?: string
+  /** The client type the seller picked on the quote; it priced the booking, so the opportunity follows. */
+  clientType?: 'Agency' | 'Brand Direct'
   /** REPLACE: the revised booking as it stood. */
   was?: { amount: number | null; markets: string[] }
 }): Promise<{ ok: boolean; amountLeft: boolean; windowLeft: boolean }> {
   const linked = await loadOpportunityReservingHolds(opts.opp.Id)
   const { fields, windowLeft } = mergedOpportunityFields(opts.mode, opts.opp, opts.booking, { date: centralDate(new Date()), by: opts.by }, linked, opts.was)
   if (opts.primaryContactId && !opts.opp.Primary_Contact__c) fields.Primary_Contact__c = opts.primaryContactId
+  if (opts.clientType) fields.Client_Type__c = opts.clientType
   const amountLeft = opts.opp.HasOpportunityLineItem
   if (amountLeft) delete fields.Amount
   return { ok: await updateOpportunity(opts.opp.Id, fields), amountLeft, windowLeft }

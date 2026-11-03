@@ -20,7 +20,7 @@ import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOppor
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { brandMarkupFor, chosenClientType } from '@/lib/pricing/brandMarkup'
-import { leadSourceOf } from '@/lib/sfdcLeadSource'
+import { readLeadSource } from '@/lib/sfdcLeadSource'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import {
@@ -77,13 +77,9 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   // (lib/sfdcLeadSource.ts). The Quote page makes the seller pick one for a
   // new opportunity (requireLeadSource); a value off the picklist is refused
   // rather than dropped. Adding to an existing opportunity keeps its own.
-  const leadSource = leadSourceOf(lead_source)
-  if (lead_source != null && lead_source !== '' && !leadSource) {
-    return reply({ error: `"${String(lead_source)}" isn't a Salesforce lead source.` }, { status: 400 })
-  }
-  if (opts.requireLeadSource && !attach_opportunity_id && !leadSource) {
-    return reply({ error: 'Pick a lead source for the opportunity.' }, { status: 400 })
-  }
+  const lead = readLeadSource(lead_source, !!opts.requireLeadSource && !attach_opportunity_id)
+  if ('error' in lead) return reply({ error: lead.error }, { status: 400 })
+  const { leadSource } = lead
   // Every opportunity needs its primary contact, on this account. A definite
   // no refuses; Salesforce being unreachable only warns (see checkPrimaryContact).
   const contact = await checkPrimaryContact(primary_contact_id, sfdc_account_id)
@@ -343,6 +339,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
           },
           by: actor.name || actor.email || 'the app',
           primaryContactId: primary_contact_id,
+          clientType: chosenClientType(client_type) ?? undefined,
         })
         if (applied.ok) sfdcOpportunityId = target.Id
         else sfdcError = 'Salesforce rejected the opportunity update'

@@ -41,7 +41,7 @@ export type StaffQuoteInput = {
   operating_hours?: number
   sfdc_account_id?: string
   sfdc_account_name?: string
-  /** Seller's Brand Direct markup; applied only if Salesforce says the account is Brand Direct. */
+  /** Seller's Brand Direct markup; applied only to a Brand Direct quote (client_type, else the account's). */
   brand_markup_pct?: number
   /** The seller's pick, Agency or Brand Direct (chosenClientType); else the account's. */
   client_type?: string

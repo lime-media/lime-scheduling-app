@@ -115,7 +115,7 @@ The campaign must clear **1,200,000 estimated impressions** to qualify. If it do
 
 ### How market tier gets picked
 
-The market is matched to Nielsen's top-50 DMAs (`lib/pricing/topDmas.ts`): by the DMA's city name (same city, and same state when both give one), else by location, taking the top-50 DMA with the nearest centre within 40 miles (`lib/pricing/dmaArea.ts`), so a suburb gets its metro's tier. A polycentric DMA has a centre at each of its principal cities (San Jose for San Francisco, Fort Worth for Dallas, Riverside and San Bernardino for Los Angeles). Then:
+The market is matched to Nielsen's top-50 DMAs (`lib/pricing/topDmas.ts`): by the DMA's city name (same city, and same state when both give one), else by location, taking the top-50 DMA with the nearest centre within 40 miles (`lib/pricing/dmaArea.ts`), so a suburb gets its metro's tier. A polycentric DMA has a centre at each of its principal cities (San Jose for San Francisco, Fort Worth for Dallas, Riverside and San Bernardino for Los Angeles), with a smaller ring where the full one would reach a DMA outside the top 50. Then:
 
 - New York and LA → Tier 1
 - Chicago, Dallas, Philadelphia, Houston, Atlanta, DC, San Francisco, Boston → Tier 2

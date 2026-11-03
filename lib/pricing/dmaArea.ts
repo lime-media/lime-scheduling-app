@@ -20,18 +20,20 @@ export const DMA_RADIUS_MILES = 40
 
 type Point = { lat: number; lng: number }
 
-/** The DMA with the nearest centre within the radius, or null. Pure. */
-export function dmaForPoint<T extends Point & { also?: readonly Point[] }>(
+/** The DMA with the nearest centre within its radius, or null. An `also`
+ *  centre may have a smaller radius (`miles`). Pure. */
+export function dmaForPoint<T extends Point & { also?: readonly (Point & { miles?: number })[] }>(
   point: Point,
   dmas: readonly T[],
   radiusMiles = DMA_RADIUS_MILES,
 ): T | null {
   let best: { dma: T; miles: number } | null = null
   for (const dma of dmas) {
-    for (const centre of [dma, ...(dma.also ?? [])]) {
+    const centres = [{ ...dma, miles: radiusMiles }, ...(dma.also ?? [])]
+    for (const centre of centres) {
       if (!Number.isFinite(centre.lat) || !Number.isFinite(centre.lng)) continue
       const miles = haversineDistance(point.lat, point.lng, centre.lat, centre.lng)
-      if (miles <= radiusMiles && (!best || miles < best.miles)) best = { dma, miles }
+      if (miles <= (centre.miles ?? radiusMiles) && (!best || miles < best.miles)) best = { dma, miles }
     }
   }
   return best?.dma ?? null

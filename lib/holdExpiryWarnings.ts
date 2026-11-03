@@ -25,8 +25,9 @@ import type { Hold } from '@prisma/client'
 import { sendExpiringHoldsEmail } from '@/lib/email'
 import type { ExpiringBooking } from '@/lib/emailTemplates'
 import { APP_TIME_ZONE, centralDate } from '@/lib/dateOnly'
-import { bookingCapStarts, bookingKey } from '@/lib/bookings'
-import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
+import { bookingKey, closedWonRefusal } from '@/lib/bookings'
+import { bookingLastDate, heldThrough } from '@/lib/expiryRules'
+import { loadBooking } from '@/lib/bookingExpiry'
 import { extendOptions, signExtendToken } from '@/lib/extendLink'
 
 /** When a hold lapses, as reps read it (Central time). */
@@ -66,32 +67,34 @@ const hoursLeft = (expiresAt: Date, now: Date) => Math.max(0, Math.round((expire
 /**
  * One reminder card per booking (lib/bookings.ts bookingKey; a hold with none
  * is its own): a booking is extended as one. Each card carries Extend links
- * for the days that stay within the booking's limit (2 days before its
- * earliest start), signed for the rep (lib/extendLink.ts); none when the
- * signing secret isn't set. Exported for tests.
+ * for the days the server would accept (lib/expiryRules.ts, actor 'email'),
+ * judged on the whole booking (`whole`, by the card's first hold id) when
+ * given, signed for the rep (lib/extendLink.ts); none when the signing
+ * secret isn't set. Exported for tests.
  */
-export function expiringBookings(holds: Hold[], now: Date, secret: string | undefined = process.env.NEXTAUTH_SECRET): ExpiringBooking[] {
+export function expiringBookings(holds: Hold[], now: Date, secret: string | undefined = process.env.NEXTAUTH_SECRET, whole?: Map<string, Hold[]>): ExpiringBooking[] {
   const groups = new Map<string, Hold[]>()
   for (const h of holds) {
     const key = bookingKey(h) ?? `hold:${h.id}`
     groups.set(key, [...(groups.get(key) ?? []), h])
   }
-  const today = centralDate(now)
   return [...groups.values()].map(group => {
     // The booking's one expiry: the earliest, should older bookings differ.
     const first = [...group].sort((a, b) => (a.expires_at?.getTime() ?? 0) - (b.expires_at?.getTime() ?? 0))[0]
     const starts = group.map(h => toDateStr(h.start_date))
-    // The server's cap rule (lib/bookingExpiry.ts capStarts), over the holds this email covers.
-    const capFrom = bookingCapStarts(group.map(h => ({ start_date: toDateStr(h.start_date), status: h.status })), today).sort()[0]
-    const lastDate = lastExpiryDate(capFrom, now, STAFF_MIN_DAYS_BEFORE_START)
+    // The whole booking decides, not just its holds expiring now: the server
+    // judges the click on all of it (lib/expiryRules.ts).
+    const booking = whole?.get(first.id) ?? group
+    const lastDate = bookingLastDate(booking, 'email', now)
     const expiresOn = first.expires_at ? centralDate(first.expires_at) : null
     // Extending sets every hold to one date: never earlier than a hold already expires.
-    const latestOn = group.map(h => h.expires_at ? centralDate(h.expires_at) : '').sort().reverse()[0]
+    const latestOn = heldThrough(booking) ?? ''
     const token = secret && first.expires_at
       ? signExtendToken({ holdId: first.id, userId: first.created_by, expiresAt: first.expires_at.toISOString() }, secret)
       : null
-    // A client's pending extension request is answered on Reservations, not from here.
-    const pending = group.some(h => h.status === 'EXTENSION_REQUESTED')
+    // A client's pending extension request is answered on Reservations, not
+    // from here; a won deal's expiry changes in Salesforce.
+    const pending = booking.some(h => h.status === 'EXTENSION_REQUESTED') || !!closedWonRefusal(booking)
     const extend = token && expiresOn && !pending
       ? extendOptions(expiresOn, lastDate, latestOn).map(o => ({ days: o.days, label: o.label, url: `${appUrl()}/extend?t=${encodeURIComponent(token)}&d=${o.days}` }))
       : []
@@ -184,7 +187,25 @@ export async function warnExpiringHolds(now = new Date()): Promise<ExpiryWarning
 
     // Extend links act as the rep without sign-in: only in the rep's own inbox,
     // not the NOTIFY_EMAIL fallback.
-    const bookings = expiringBookings(holds, now, user?.email ? process.env.NEXTAUTH_SECRET : undefined)
+    const secret = user?.email ? process.env.NEXTAUTH_SECRET : undefined
+    // The whole booking behind each card, so its buttons offer only what the server accepts.
+    const whole = new Map<string, Hold[]>()
+    if (secret) {
+      const firsts = new Map<string, Hold>()
+      for (const h of holds) {
+        const key = bookingKey(h) ?? `hold:${h.id}`
+        const f = firsts.get(key)
+        if (!f || (h.expires_at?.getTime() ?? 0) < (f.expires_at?.getTime() ?? 0)) firsts.set(key, h)
+      }
+      for (const f of firsts.values()) {
+        try {
+          whole.set(f.id, await loadBooking(f))
+        } catch (err) {
+          console.error(`[expiry-warn] booking read failed for hold ${f.id}; buttons judged on the expiring holds:`, err)
+        }
+      }
+    }
+    const bookings = expiringBookings(holds, now, secret, whole)
 
     try {
       await sendExpiringHoldsEmail({

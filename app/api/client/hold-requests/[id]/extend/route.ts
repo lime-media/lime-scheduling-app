@@ -2,14 +2,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
 import { sendAssistanceRequestEmail } from '@/lib/email'
-import { bookingCapStarts, bookingKey, clientExtendRefusal } from '@/lib/bookings'
+import { bookingKey, clientExtendRefusal } from '@/lib/bookings'
 import { loadBookingHolds } from '@/lib/bookingLoad'
-import { lastExpiryDate } from '@/lib/holdExpiry'
+import { expiryRefusal } from '@/lib/expiryRules'
+import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { holdReservesNow } from '@/lib/holdFilters'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
-import { centralDate, endOfDayCentral, holdExpDate } from '@/lib/dateOnly'
+import { centralDate, endOfDayCentral } from '@/lib/dateOnly'
 
 /**
  * POST /api/client/hold-requests/[id]/extend
@@ -21,16 +22,17 @@ import { centralDate, endOfDayCentral, holdExpDate } from '@/lib/dateOnly'
  * - Refused unless every live hold is an ordinary reservation
  *   (clientExtendRefusal): not a confirmed (Closed Won) booking, not an
  *   expired one, not one with a request already waiting.
- * - The date may be no later than the client's limit: 3 days before the
- *   booking's first start (lastExpiryDate, the default runway). Later is a
- *   400 naming the limit, never quietly cut back. Staff approving may still
- *   give up to 2 days (app/api/hold-requests/[id]).
+ * - The date follows the shared rules (lib/expiryRules.ts, actor
+ *   'client_request'): no later than 3 days before the booking's first start
+ *   (a 400 naming the limit, never quietly cut back), later than it's held
+ *   now, and not on a deal Salesforce says is Closed Won or Lost. Staff
+ *   approving may still give up to 2 days (app/api/hold-requests/[id]).
  * - While the request waits, the booking stays held until the date asked
  *   (its expiry is set to that date's end, which the limit keeps no later than
  *   3 days before the start): the sweep never releases a booking a client is
  *   still waiting on, and an unanswered request lapses at that date at the
- *   latest. Staff approve (the booking gets that date, capped at their limit)
- *   or deny (the booking is released).
+ *   latest. Staff approve (the booking gets that date, or one they choose
+ *   within their limit) or deny (the booking is released).
  * - Status, date, reason and the audit row land in one transaction; the team
  *   gets ONE email for the booking.
  */
@@ -51,9 +53,6 @@ export async function POST(
   if (isNaN(extendDate.getTime())) {
     return NextResponse.json({ error: 'Invalid extend_until date' }, { status: 400 })
   }
-  if (extendDate <= new Date()) {
-    return NextResponse.json({ error: 'Extension date must be in the future' }, { status: 400 })
-  }
 
   const hold = await prisma.hold.findUnique({ where: { id } })
   if (!hold || hold.client_user_id !== session.id) {
@@ -70,19 +69,17 @@ export async function POST(
   if (refusal) return NextResponse.json({ error: refusal }, { status: 400 })
 
   const held = holds.filter(h => h.status === 'HOLD')
-  const today = centralDate(new Date())
-  const starts = bookingCapStarts(held.map(h => ({ start_date: h.start_date.toISOString().slice(0, 10), status: h.status })), today)
-  const lastDate = lastExpiryDate([...starts].sort()[0])
-  if (extend_until > lastDate) {
-    return NextResponse.json({
-      error: `The latest this booking can be held is ${lastDate}: 3 days before it starts.`,
-      lastDate,
-    }, { status: 400 })
+  // The same rules as every expiry change (lib/expiryRules.ts): Closed Won or
+  // Lost in Salesforce, the client's 3-day limit for the whole booking, and
+  // only ever later than it's held now.
+  const opportunityId = held.find(h => h.sfdc_opportunity_id)?.sfdc_opportunity_id ?? null
+  const stage = opportunityId ? await getOpportunityStage(opportunityId) : null
+  const refused = expiryRefusal({ actor: 'client_request', date: extend_until, booking: holds, stage })
+  if (refused) {
+    return NextResponse.json({ error: refused.error, ...(refused.lastDate ? { lastDate: refused.lastDate } : {}) }, { status: refused.status })
   }
   const currentExpiry = held.map(h => h.expires_at).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0]
-  if (currentExpiry && (extendDate <= currentExpiry || extend_until <= holdExpDate(currentExpiry))) {
-    return NextResponse.json({ error: `This booking is already held until ${holdExpDate(currentExpiry)}. Choose a later date.` }, { status: 400 })
-  }
+  const today = centralDate(new Date())
 
   // The audit row's user is a staff record (FK to app_users); a client has
   // none, so the service user stands in, as for client holds.

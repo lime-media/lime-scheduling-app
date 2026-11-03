@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { centralDate } from '@/lib/dateOnly'
-import { loadBooking, setBookingExpiry } from '@/lib/bookingExpiry'
+import { setBookingExpiry } from '@/lib/bookingExpiry'
 import { EXTEND_STALE_MESSAGE, addDays, isExtendDays, readExtendToken } from '@/lib/extendLink'
 
 /**
@@ -35,20 +35,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: EXTEND_STALE_MESSAGE }, { status: 409 })
   }
 
+  // Pending client requests, Closed Won or Lost, the limit and "only ever
+  // extends" are the shared rules (lib/expiryRules.ts, actor 'email').
   const date = addDays(centralDate(new Date(claims.expiresAt)), body!.days as number)
-  // The booking gets one date: an "extend" must not cut short a hold of it that
-  // already expires later (bookings whose expiries drifted apart before #115).
-  const booking = await loadBooking(hold)
-  const latestOn = booking
-    .filter(h => h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED')
-    .map(h => h.expires_at ? centralDate(h.expires_at) : '').sort().reverse()[0]
-  // A client's extension request is staff's to answer on Reservations (with its email); extending here would clear it unanswered.
-  if (booking.some(h => h.status === 'EXTENSION_REQUESTED')) {
-    return NextResponse.json({ error: 'The client has asked to extend this reservation. Answer the request on Reservations.' }, { status: 409 })
-  }
-  if (latestOn && date < latestOn) {
-    return NextResponse.json({ error: `Part of this reservation is already held through ${latestOn}. Change its expiry on Reservations instead.` }, { status: 409 })
-  }
-  const r = await setBookingExpiry({ hold, booking, date, userId: user.id, via: 'expiry_email', expectExpiresAt: claims.expiresAt })
+  const r = await setBookingExpiry({ hold, date, userId: user.id, actor: 'email', via: 'expiry_email', expectExpiresAt: claims.expiresAt })
   return NextResponse.json(r.status === 200 ? { ...r.body, date } : r.body, { status: r.status })
 }

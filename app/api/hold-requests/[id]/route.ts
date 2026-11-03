@@ -6,18 +6,17 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
-import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry, lastExpiryDate } from '@/lib/holdExpiry'
+import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry } from '@/lib/holdExpiry'
 import { NOTHING_TO_REINSTATE, bookingKey, closedWonRefusal, reinstatableHolds, reinstateRefusal } from '@/lib/bookings'
-import { capStarts, loadBooking, reviveBookingExpiry, revivalRefusalBody, setBookingExpiry } from '@/lib/bookingExpiry'
+import { capStarts, loadBooking, setBookingExpiry } from '@/lib/bookingExpiry'
 import { closeOpportunityAsLost, getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { reopenClosedLostOpportunity, syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { sendCancellationEmail, sendExtensionDecisionEmail } from '@/lib/email'
-import { centralDate, endOfDayCentral, holdExpDate } from '@/lib/dateOnly'
+import { centralDate, holdExpDate } from '@/lib/dateOnly'
 import { recordSwap } from '@/lib/transportMetricsRecord'
 import { waitUntil } from '@vercel/functions'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
-import type { Prisma } from '@prisma/client'
 
 type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration' | 'reinstate'
 
@@ -398,46 +397,19 @@ export async function PATCH(
   }
 
   // ── approve_extension ───────────────────────────────────────────────────
-  // Giving a new expiry to holds that lapsed by time but haven't been swept
-  // yet brings them back, like reinstate: their trucks may have been booked by
-  // someone else since they lapsed. Written under those trucks' locks and
-  // re-checked (lib/holdWriteLock.ts); this booking's own holds don't count.
-  const reviveExpiry = (write: (tx: Prisma.TransactionClient) => Promise<unknown>) => reviveBookingExpiry(live, booking, write)
-  const revivalRefusal = (err: unknown) => {
-    const r = revivalRefusalBody(err)
-    return NextResponse.json(r.body, { status: r.status })
-  }
-
   if (action === 'approve_extension') {
-    // The booking's one expiry, on every live hold: the date the client asked
-    // for, but never past the staff limit (2 days before its earliest start),
-    // or the standard length when none was asked.
-    const starts = capStarts(booking)
-    const limit = endOfDayCentral(lastExpiryDate([...starts].sort()[0], new Date(), STAFF_MIN_DAYS_BEFORE_START))
+    // Answers the client's request with the booking's one expiry, by the same
+    // rules as every expiry change (lib/expiryRules.ts): the date the client
+    // asked for, or one staff choose instead (`expires_at`), or the standard
+    // length when neither. A date past the staff limit is refused, never
+    // quietly cut back.
     const asked = live.map(h => h.extension_until).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0]
-    const newExpiresAt = asked
-      ? (asked > limit ? limit : asked)
-      : bookingHoldExpiry(starts, DEFAULT_HOLD_DAYS, new Date(), null, STAFF_MIN_DAYS_BEFORE_START).expiresAt
-
-    try {
-      await reviveExpiry(async tx => {
-        await tx.hold.updateMany({
-          where: { id: { in: live.map(h => h.id) } },
-          data:  { status: 'HOLD', expires_at: newExpiresAt, extension_until: null, extension_reason: null },
-        })
-        await tx.auditLog.createMany({
-          data: live.map(h => ({
-            action:       'APPROVE_HOLD_EXTENSION',
-            truck_number: h.truck_number,
-            user_id:      session.user.id,
-            hold_id:      h.id,
-            details:      JSON.stringify({ new_expires_at: newExpiresAt.toISOString(), booking: bookingKey(h) }),
-          })),
-        })
-      })
-    } catch (err) {
-      return revivalRefusal(err)
-    }
+    const date = typeof newExpiresAtStr === 'string' ? newExpiresAtStr
+      : (asked ? holdExpDate(asked)
+        : holdExpDate(bookingHoldExpiry(capStarts(booking), DEFAULT_HOLD_DAYS, new Date(), null, STAFF_MIN_DAYS_BEFORE_START).expiresAt))
+    const r = await setBookingExpiry({ hold, booking, stage, date, userId: session.user.id, actor: 'staff_approve' })
+    if (r.status !== 200) return NextResponse.json(r.body, { status: r.status })
+    const newExpiresAt = new Date(r.body.expires_at as string)
 
     const client = live.find(h => h.client_user?.email)?.client_user
     if (client?.email) {
@@ -448,8 +420,7 @@ export async function PATCH(
       }).catch(err => console.error('[approve-extension] email send failed:', err))
     }
 
-    const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
-    return NextResponse.json({ ok: true, status: 'HOLD', holds: live.length, expires_at: newExpiresAt.toISOString(), sfdcWarning })
+    return NextResponse.json({ ...r.body, status: 'HOLD' })
   }
 
   // ── update_expiration ────────────────────────────────────────────────────

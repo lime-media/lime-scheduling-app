@@ -14,10 +14,8 @@
  * centre has a smaller one (`miles`): San Jose stops short of Santa Cruz,
  * Reading and Allentown of Schuylkill and Carbon Counties, Canton of Salem,
  * Kalamazoo of Three Rivers, Sarasota of Port Charlotte.
- * Lancaster is listed although it is inside Harrisburg's ring, so that Reading's
- * centre doesn't pull it into Philadelphia. Fayetteville (Raleigh-Durham) is
- * left out: its ring would reach Lumberton, in a DMA outside the top 50, and an
- * overstated reach is the worse error.
+ * Fayetteville (Raleigh-Durham) is left out: its ring would reach Lumberton,
+ * in a DMA outside the top 50, and an overstated reach is the worse error.
  */
 export type TopDma = {
   dma_code: string
@@ -34,7 +32,7 @@ export type DmaCentre = { name: string; lat: number; lng: number; miles?: number
 export const TOP_DMAS: readonly TopDma[] = [
   { dma_code: 'DMA-501', dma_name: 'New York, NY', lat: 40.7128, lng: -74.006 },
   { dma_code: 'DMA-504', dma_name: 'Philadelphia, PA', lat: 39.9526, lng: -75.1652,
-    also: [{ name: 'Reading, PA', lat: 40.3392, lng: -75.9263, miles: 20 }, { name: 'Allentown, PA', lat: 40.5936, lng: -75.4784, miles: 18 }] },
+    also: [{ name: 'Reading, PA', lat: 40.3392, lng: -75.9263, miles: 19 }, { name: 'Allentown, PA', lat: 40.5936, lng: -75.4784, miles: 15.5 }] },
   { dma_code: 'DMA-505', dma_name: 'Detroit, MI', lat: 42.3314, lng: -83.0458 },
   { dma_code: 'DMA-506', dma_name: 'Boston, MA', lat: 42.3601, lng: -71.0589 },
   { dma_code: 'DMA-508', dma_name: 'Pittsburgh, PA', lat: 40.4406, lng: -79.9959 },
@@ -62,8 +60,7 @@ export const TOP_DMAS: readonly TopDma[] = [
   { dma_code: 'DMA-561', dma_name: 'Jacksonville, FL', lat: 30.3322, lng: -81.6557 },
   { dma_code: 'DMA-563', dma_name: 'Grand Rapids, MI', lat: 42.9634, lng: -85.6681,
     also: [{ name: 'Kalamazoo, MI', lat: 42.2752, lng: -85.5885, miles: 20 }] },
-  { dma_code: 'DMA-566', dma_name: 'Harrisburg, PA', lat: 40.2732, lng: -76.8867,
-    also: [{ name: 'Lancaster, PA', lat: 40.0421, lng: -76.301 }] },
+  { dma_code: 'DMA-566', dma_name: 'Harrisburg, PA', lat: 40.2732, lng: -76.8867 },
   { dma_code: 'DMA-567', dma_name: 'Greenville, SC', lat: 34.8526, lng: -82.394,
     also: [{ name: 'Asheville, NC', lat: 35.571, lng: -82.5527 }] },
   { dma_code: 'DMA-602', dma_name: 'Chicago, IL', lat: 41.8781, lng: -87.6298 },

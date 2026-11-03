@@ -85,7 +85,7 @@ export async function loadFleetTimelines(opts: {
   const withBounds = await hasMarketBounds()
 
   const [marketCoords, [scheduleRows, holds, gpsMap]] = await Promise.all([
-    // Holds carry no standard_market_uid, so their markets are matched by name
+    // Holds are matched by name (their standard_market_uid, set by the sweep, isn't read here)
     // against the authoritative list rather than the hardcoded file.
     loadStandardMarketCoords(),
     Promise.all([

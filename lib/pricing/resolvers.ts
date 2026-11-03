@@ -183,7 +183,7 @@ export type CampaignCoords = { lat: number; lng: number; source: 'coords_map' | 
  *
  * Tries in order:
  * 1. Hardcoded COORDS map (281 US cities) via getMarketCoords()
- * 2. standard_market_lookup (356 markets) — the list the team maintains, and
+ * 2. standard_market_lookup (every standard market) — the list the team maintains, and
  *    the only one that covers what they can actually schedule. The hardcoded
  *    map covers 61% of it.
  * 3. Any US city, town or ZIP (lib/geo/places.ts)
@@ -270,7 +270,7 @@ export function businessDaysBetween(from: Date, to: Date): number {
  *
  * resolveMarketInput() alone searches the 281-entry hardcoded file, which is
  * the gate both quote routes run before anything else. /api/markets, meanwhile,
- * autocompletes from the real 356-market list — so a rep could pick a valid
+ * autocompletes from the real standard market list — so a rep could pick a valid
  * market from the dropdown and be told it does not exist. This closes that.
  *
  * The standard market list wins on ties: it is the list the team maintains and

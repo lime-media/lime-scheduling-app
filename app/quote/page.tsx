@@ -375,7 +375,12 @@ export default function InternalQuotePage() {
               <label className="text-xs font-medium text-gray-600 mb-1 block">Primary contact <span className="text-red-500">*</span></label>
               <ContactSearch accountId={account.id} selected={contact} onSelect={setContact} />
               <div className="mt-3">
-                <OpportunityPicker accountId={account.id} value={attachTo} onChange={setAttachTo} />
+                <OpportunityPicker accountId={account.id} value={attachTo} onChange={o => {
+                  // Adding to an opportunity starts at its own Client Type (it was priced that way); a new one at the account's.
+                  setAttachTo(o)
+                  const t = o?.clientType ?? account.clientType ?? 'Agency'
+                  if (t !== clientType) { setClientType(t); setQuoteResult(null); setHoldResult(null) }
+                }} />
               </div>
             </div>
           )}

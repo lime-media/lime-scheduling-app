@@ -163,7 +163,8 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   const accountInfo = sfdc_account_id && isSfdcConfigured()
     ? await getSfdcAccountInfo(sfdc_account_id).catch((err) => { console.error('[quote/hold] account lookup failed:', err); return null })
     : null
-  const clientType = chosenClientType(client_type) ?? accountInfo?.clientType
+  const chosenType = chosenClientType(client_type)
+  const clientType = chosenType ?? accountInfo?.clientType
   const markupPct = brandMarkupFor(clientType, brand_markup_pct)
 
   const marketSizeTierId = await resolveMarketSizeTierId(market)
@@ -342,7 +343,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
           },
           by: actor.name || actor.email || 'the app',
           primaryContactId: primary_contact_id,
-          clientType: chosenClientType(client_type) ?? undefined,
+          clientType: chosenType ?? undefined,
         })
         if (applied.ok) sfdcOpportunityId = target.Id
         else sfdcError = 'Salesforce rejected the opportunity update'

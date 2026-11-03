@@ -12,6 +12,7 @@
 
 import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { centralDate } from '@/lib/dateOnly'
+import { chosenClientType, type ClientType } from '@/lib/pricing/brandMarkup'
 
 type BookingRow = {
   campaign_group_id: string | null
@@ -356,7 +357,7 @@ export function reviseRows(holds: RevisableHold[]): {
   /** The Brand Direct markup it was sold at, or null when the holds predate recording it. */
   brandMarkupPct: number | null
   /** The client type the seller priced it as, or null when the holds predate recording it. */
-  clientType: 'Agency' | 'Brand Direct' | null
+  clientType: ClientType | null
 } {
   const live = holds.some(h => h.live)
   const byGroup = new Map<string, RevisableHold[]>()
@@ -393,7 +394,7 @@ export function reviseRows(holds: RevisableHold[]): {
     live,
     quoteOnly: holds.every(h => h.origination === QUOTE_ONLY_ORIGINATION),
     brandMarkupPct: typeof f.brandMarkupPct === 'number' ? f.brandMarkupPct : null,
-    clientType: f.clientType === 'Agency' || f.clientType === 'Brand Direct' ? f.clientType : null,
+    clientType: chosenClientType(f.clientType),
   }
 }
 

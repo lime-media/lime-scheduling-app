@@ -15,7 +15,7 @@
 import { MarketInput } from '@/components/MarketInput'
 import { SHORT_RANGE_MAX_DAYS } from '@/lib/pricing/schedule'
 import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
-import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup, type ClientType } from '@/lib/pricing/brandMarkup'
+import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, chosenClientType, clampBrandMarkup, type ClientType } from '@/lib/pricing/brandMarkup'
 import { useEffect, useRef, useState } from 'react'
 import { copyDatesDown, holdStartDates } from '@/lib/planner/rows'
 import { ClientTypePicker, LeadSourcePicker } from '@/components/OpportunityFields'
@@ -143,6 +143,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
   const [clientType, setClientType] = useState<ClientType>('Agency')
   const [leadSource, setLeadSource] = useState('')
   const isBrandDirect = clientType === 'Brand Direct'
+  // A revised booking that loaded without an account: the client type it was
+  // priced as, applied when the seller picks its account.
+  const revisedClientType = useRef<ClientType | null>(null)
   // Booked onto an opportunity that already exists (a revision's own, or one
   // picked to add to), which keeps its lead source; otherwise one is made.
   const keepsOpportunity = revision ? !!revision.opportunityName : !!attachTo
@@ -178,11 +181,17 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         if (!alive) return
         // Priced as it was booked: the client type its holds record; on older
         // holds, a recorded Brand Direct markup means Brand Direct; else the account's.
+        // A booking with no opportunity loads without an account: the type
+        // waits for the account the seller picks (AccountSearch below).
+        const booked = chosenClientType(b.clientType) ?? (typeof b.brandMarkupPct === 'number' && b.brandMarkupPct > 0 ? 'Brand Direct' : null)
+        revisedClientType.current = b.account ? null : booked
         if (b.account) {
           setAccount(b.account)
-          setClientType(b.clientType === 'Agency' || b.clientType === 'Brand Direct' ? b.clientType
-            : typeof b.brandMarkupPct === 'number' && b.brandMarkupPct > 0 ? 'Brand Direct' : b.account.clientType ?? 'Agency')
+          setClientType(booked ?? b.account.clientType ?? 'Agency')
         }
+        // A lead source is asked for only if a new opportunity is made; never
+        // carry over one picked for an earlier quote's account.
+        setLeadSource('')
         setContact(b.contact)
         setBrand(b.brand ?? '')
         setRows(b.rows.map((r: { market: string; startDate: string; endDate: string; trucks: number; daysPerWeek: number; hours: number }) =>
@@ -426,7 +435,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           const changingClient = !!revision && !!account
           if (changingClient && !window.confirm('Changing the client stops revising this booking and starts a new quote. Continue?')) return
           if (changingClient) stopRevising()
-          setAccount(a); setClientType(a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setContact(null); setAttachTo(null); setQuote(null); setHoldResult(null)
+          setAccount(a); setClientType((revision && !account ? revisedClientType.current : null) ?? a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setContact(null); setAttachTo(null); setQuote(null); setHoldResult(null)
         }} />
         {account && (
           <div className="mt-3">
@@ -438,7 +447,12 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
             <ContactSearch accountId={account.id} selected={contact} onSelect={setContact} />
             {!revision && (
               <div className="mt-3">
-                <OpportunityPicker accountId={account.id} value={attachTo} onChange={setAttachTo} />
+                <OpportunityPicker accountId={account.id} value={attachTo} onChange={o => {
+                  // Adding to an opportunity starts at its own Client Type (it was priced that way); a new one at the account's.
+                  setAttachTo(o)
+                  const t = o?.clientType ?? account.clientType ?? 'Agency'
+                  if (t !== clientType) { setClientType(t); setQuote(null); setHoldResult(null) }
+                }} />
               </div>
             )}
           </div>

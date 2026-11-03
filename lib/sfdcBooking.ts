@@ -4,6 +4,7 @@
  * says what the fields become).
  */
 
+import { chosenClientType, type ClientType } from '@/lib/pricing/brandMarkup'
 import { isSfdcConfigured, sfdcQuery, updateOpportunity, updateOpportunityWithError } from '@/lib/salesforceClient'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
@@ -86,16 +87,16 @@ export async function reopenClosedLostOpportunity(opportunityId: string): Promis
   return { ok: true, fromStage: before.stageName, toStage: after.stageName }
 }
 
-export type OpenOpportunity = { id: string; name: string; stage: string; amount: number | null; holdStart: string | null; holdStop: string | null; createdDate: string; hasProducts: boolean }
+export type OpenOpportunity = { id: string; name: string; stage: string; amount: number | null; holdStart: string | null; holdStop: string | null; createdDate: string; hasProducts: boolean; clientType: ClientType | null }
 
 /** The account's open LED opportunities, newest first — what a quote can be added to. */
 export async function listOpenLedOpportunities(accountId: string): Promise<OpenOpportunity[]> {
   if (!ACCOUNT_ID.test(accountId)) return []
-  const rows = await sfdcQuery<{ Id: string; Name: string; StageName: string; Amount: number | null; LED_Hold_Start__c: string | null; LED_Hold_Stop__c: string | null; CreatedDate: string; HasOpportunityLineItem: boolean }>(
-    `SELECT Id, Name, StageName, Amount, LED_Hold_Start__c, LED_Hold_Stop__c, CreatedDate, HasOpportunityLineItem FROM Opportunity
+  const rows = await sfdcQuery<{ Id: string; Name: string; StageName: string; Amount: number | null; LED_Hold_Start__c: string | null; LED_Hold_Stop__c: string | null; CreatedDate: string; HasOpportunityLineItem: boolean; Client_Type__c: string | null }>(
+    `SELECT Id, Name, StageName, Amount, LED_Hold_Start__c, LED_Hold_Stop__c, CreatedDate, HasOpportunityLineItem, Client_Type__c FROM Opportunity
      WHERE AccountId = '${accountId}' AND IsClosed = false AND Job_Type__c = 'LED' ORDER BY CreatedDate DESC LIMIT 25`,
   )
-  return rows.map(r => ({ id: r.Id, name: r.Name, stage: r.StageName, amount: r.Amount, holdStart: r.LED_Hold_Start__c, holdStop: r.LED_Hold_Stop__c, createdDate: r.CreatedDate, hasProducts: r.HasOpportunityLineItem }))
+  return rows.map(r => ({ id: r.Id, name: r.Name, stage: r.StageName, amount: r.Amount, holdStart: r.LED_Hold_Start__c, holdStop: r.LED_Hold_Stop__c, createdDate: r.CreatedDate, hasProducts: r.HasOpportunityLineItem, clientType: chosenClientType(r.Client_Type__c) }))
 }
 
 /**

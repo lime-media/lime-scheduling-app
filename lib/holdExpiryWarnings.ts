@@ -94,8 +94,8 @@ export function expiringBookings(holds: Hold[], now: Date, secret: string | unde
       : null
     // A client's pending extension request is answered on Reservations, not
     // from here; a won deal's expiry changes in Salesforce.
-    const pending = booking.some(h => h.status === 'EXTENSION_REQUESTED') || !!closedWonRefusal(booking)
-    const extend = token && expiresOn && !pending
+    const blocked = booking.some(h => h.status === 'EXTENSION_REQUESTED') || !!closedWonRefusal(booking)
+    const extend = token && expiresOn && !blocked
       ? extendOptions(expiresOn, lastDate, latestOn).map(o => ({ days: o.days, label: o.label, url: `${appUrl()}/extend?t=${encodeURIComponent(token)}&d=${o.days}` }))
       : []
     return {

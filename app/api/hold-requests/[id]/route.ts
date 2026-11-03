@@ -351,7 +351,10 @@ export async function PATCH(
   const live = booking.filter(h => h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED')
   // A won deal is read-only: refuse when any of the booking is committed, or
   // Salesforce already says Closed Won (the reconcile commits it within 15 minutes).
-  const stage = hold.sfdc_opportunity_id ? await getOpportunityStage(hold.sfdc_opportunity_id) : null
+  // An expiry change checks its date first and asks Salesforce only when it
+  // passes (setBookingExpiry, lib/expiryRules.ts), so it isn't asked here.
+  const expiryChange = action === 'approve_extension' || action === 'update_expiration'
+  const stage = !expiryChange && hold.sfdc_opportunity_id ? await getOpportunityStage(hold.sfdc_opportunity_id) : null
   const won = closedWonRefusal(booking, stage?.isClosed ? { isWon: stage.isWon } : null)
   if (won) return NextResponse.json({ error: won }, { status: 409 })
 
@@ -408,7 +411,7 @@ export async function PATCH(
     const date = typeof newExpiresAtStr === 'string' ? newExpiresAtStr
       : (asked ? holdExpDate(asked)
         : holdExpDate(bookingHoldExpiry(capStarts(booking), DEFAULT_HOLD_DAYS, new Date(), null, STAFF_MIN_DAYS_BEFORE_START).expiresAt))
-    const r = await setBookingExpiry({ hold, booking, stage, date, userId: session.user.id, actor: 'staff_approve' })
+    const r = await setBookingExpiry({ hold, booking, date, userId: session.user.id, actor: 'staff_approve' })
     if (r.status !== 200) return NextResponse.json(r.body, { status: r.status })
     const newExpiresAt = new Date(r.body.expires_at as string)
 
@@ -427,7 +430,7 @@ export async function PATCH(
   // ── update_expiration ────────────────────────────────────────────────────
   // Shared with the expiry email's Extend link (lib/bookingExpiry.ts).
   if (action === 'update_expiration') {
-    const r = await setBookingExpiry({ hold, booking, stage, date: newExpiresAtStr, userId: session.user.id })
+    const r = await setBookingExpiry({ hold, booking, date: newExpiresAtStr, userId: session.user.id })
     return NextResponse.json(r.body, { status: r.status })
   }
 

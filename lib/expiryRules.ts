@@ -25,7 +25,7 @@
  * which applies the same limit. Pure.
  */
 import { CLIENT_MIN_DAYS_BEFORE_START, STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
-import { bookingCapStarts, closedWonRefusal } from '@/lib/bookings'
+import { CLIENT_CONFIRMED, bookingCapStarts, closedWonRefusal } from '@/lib/bookings'
 import { closedOpportunityBlocksReactivation } from '@/lib/sfdcIntegration'
 import { centralDate } from '@/lib/dateOnly'
 
@@ -44,7 +44,7 @@ type BookingHold = {
 type Stage = { isClosed: boolean; isWon: boolean; stageName: string } | null
 
 /** What a client is told about a won or lost deal (no internal stage names or Salesforce steps). */
-export const CLIENT_CONFIRMED = 'This booking is confirmed; there is no hold to extend.'
+export { CLIENT_CONFIRMED }
 export const CLIENT_CLOSED = 'This booking can no longer be extended. Contact your Lime Media representative.'
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/

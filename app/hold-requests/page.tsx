@@ -1084,8 +1084,10 @@ export default function HoldRequestsPage() {
         const first = editingGroup[0]
         // A won deal: truck swaps only (lib/bookings.ts closedWonRefusal).
         const won = !!closedWonRefusal(editingGroup)
+        // A client's request waiting: its expiry changes only by Approve or Deny (lib/expiryRules.ts).
+        const requested = editingGroup.some(r => r.status === 'EXTENSION_REQUESTED')
         const currentExpDate = first.expires_at ? centralDate(new Date(first.expires_at)) : ''
-        const hasChanges = editingGroup.some(r => selectedTrucks.get(r.id) !== r.truck_number) || (!won && newExpiresAt !== currentExpDate)
+        const hasChanges = editingGroup.some(r => selectedTrucks.get(r.id) !== r.truck_number) || (!won && !requested && newExpiresAt !== currentExpDate)
         return (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
@@ -1224,12 +1226,17 @@ export default function HoldRequestsPage() {
                         <input
                           type="date"
                           value={newExpiresAt}
+                          min={centralDate(new Date())}
                           max={editLastDate || undefined}
+                          disabled={requested}
                           onChange={(e) => { setNewExpiresAt(e.target.value); setExpiryEdited(true) }}
                           className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                         />
                       ) : null}
-                      {first.expires_at && editLastDate && (
+                      {requested && (
+                        <p className="mt-1.5 text-xs text-gray-500">The client has asked to extend this reservation: approve or deny the request to change its expiry.</p>
+                      )}
+                      {first.expires_at && editLastDate && !requested && (
                         <p className={`mt-1.5 text-xs ${expiryEdited && newExpiresAt > editLastDate ? 'text-red-700 font-medium' : 'text-gray-500'}`}>
                           {expiryEdited && newExpiresAt > editLastDate ? 'Too late: ' : ''}
                           Held until {format(parseDateOnly(editLastDate), 'MMM d')} at the latest ({STAFF_MIN_DAYS_BEFORE_START} days before the first market starts). Every truck on this card gets the same date.

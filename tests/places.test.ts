@@ -58,6 +58,8 @@ section('market size tier: a polycentric DMA has a centre at each principal city
   eq('Riverside, CA is in Los Angeles', at('Riverside, CA'), 'Los Angeles, CA')
   eq('Daytona Beach, FL is in Orlando', at('Daytona Beach, FL'), 'Orlando, FL')
   eq('Lancaster, PA stays in Harrisburg, though Reading is a Philadelphia centre', at('Lancaster, PA'), 'Harrisburg, PA')
+  eq('Ephrata, PA (Lancaster County) is in Harrisburg, not Philadelphia', at('Ephrata, PA'), 'Harrisburg, PA')
+  eq('Coatesville, PA is in Philadelphia', at('Coatesville, PA'), 'Philadelphia, PA')
   eq('Allentown, PA is in Philadelphia', at('Allentown, PA'), 'Philadelphia, PA')
   eq('Lumberton, NC (Florence-Myrtle Beach DMA) stays a small metro', at('Lumberton, NC'), null)
   eq('Morgan Hill, CA is in the SF DMA', at('Morgan Hill, CA'), 'San Francisco, CA')

@@ -14,6 +14,8 @@
  * centre has a smaller one (`miles`): San Jose stops short of Santa Cruz,
  * Reading and Allentown of Schuylkill and Carbon Counties, Canton of Salem,
  * Kalamazoo of Three Rivers, Sarasota of Port Charlotte.
+ * Lancaster is inside Harrisburg's ring but listed with a small one, so that
+ * Reading's doesn't take northeast Lancaster County (Ephrata) to Philadelphia.
  * Fayetteville (Raleigh-Durham) is left out: its ring would reach Lumberton,
  * in a DMA outside the top 50, and an overstated reach is the worse error.
  */
@@ -60,7 +62,8 @@ export const TOP_DMAS: readonly TopDma[] = [
   { dma_code: 'DMA-561', dma_name: 'Jacksonville, FL', lat: 30.3322, lng: -81.6557 },
   { dma_code: 'DMA-563', dma_name: 'Grand Rapids, MI', lat: 42.9634, lng: -85.6681,
     also: [{ name: 'Kalamazoo, MI', lat: 42.2752, lng: -85.5885, miles: 20 }] },
-  { dma_code: 'DMA-566', dma_name: 'Harrisburg, PA', lat: 40.2732, lng: -76.8867 },
+  { dma_code: 'DMA-566', dma_name: 'Harrisburg, PA', lat: 40.2732, lng: -76.8867,
+    also: [{ name: 'Lancaster, PA', lat: 40.0421, lng: -76.301, miles: 20 }] },
   { dma_code: 'DMA-567', dma_name: 'Greenville, SC', lat: 34.8526, lng: -82.394,
     also: [{ name: 'Asheville, NC', lat: 35.571, lng: -82.5527 }] },
   { dma_code: 'DMA-602', dma_name: 'Chicago, IL', lat: 41.8781, lng: -87.6298 },

@@ -46,7 +46,7 @@ export async function GET(req: NextRequest) {
       pricing_tier:      r.pricing_tier ?? null,
       quoted_total:      r.quoted_total ?? null,
       daily_rate:        r.daily_rate ?? null,
-      // Never the internal pricing keys (Brand Direct markup, client type).
+      // Never the internal keys (Brand Direct pricing, deadhead cost, Salesforce bookkeeping).
       features:          clientVisibleFeatures(r.features),
       truck_count:       r.truck_count ?? null,
       campaign_group_id: r.campaign_group_id ?? null,

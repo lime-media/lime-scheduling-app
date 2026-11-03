@@ -42,6 +42,7 @@ eq('a client booking gets the portal or MCP source', fs.readFileSync('lib/client
 section('a client never sees internal pricing')
 const stored = JSON.stringify({ dailyRate: 1500, brandMarkupPct: 10, clientType: 'Brand Direct', truckDays: 4 })
 eq('Brand Direct markup and client type are removed', clientVisibleFeatures(stored), JSON.stringify({ dailyRate: 1500, truckDays: 4 }))
+eq('nor the deadhead cost or Salesforce bookkeeping', clientVisibleFeatures(JSON.stringify({ dailyRate: 1500, successorImpact: [{ deltaCost: 900 }], appHoldExp: '2026-11-10' })), JSON.stringify({ dailyRate: 1500 }))
 eq('nothing internal: unchanged', clientVisibleFeatures('{"dailyRate":1500}'), '{"dailyRate":1500}')
 eq('none', clientVisibleFeatures(null), null)
 eq('unparseable text as stored', clientVisibleFeatures('nope'), 'nope')

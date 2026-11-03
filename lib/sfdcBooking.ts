@@ -132,8 +132,13 @@ export async function applyBookingToOpportunity(opts: {
   // lock that refuses it can't keep the booking's trucks, amount and window
   // out of Salesforce. Refused with it, the update is sent again without it
   // (a PATCH, so sending it twice can't duplicate anything) and the rep told.
+  // Only a definite refusal (Salesforce's error list) is retried: a 5xx or an
+  // unreadable reply may have applied the Client Type, so the rep isn't told
+  // it was left.
   if (opts.clientType && opts.clientType !== opts.opp.Client_Type__c) {
-    if (await updateOpportunity(opts.opp.Id, { ...fields, Client_Type__c: opts.clientType })) return { ok: true, amountLeft, windowLeft, clientTypeLeft: false }
+    const first = await updateOpportunityWithError(opts.opp.Id, { ...fields, Client_Type__c: opts.clientType })
+    if (first.ok) return { ok: true, amountLeft, windowLeft, clientTypeLeft: false }
+    if (first.error.startsWith('HTTP ')) return { ok: false, amountLeft, windowLeft, clientTypeLeft: false }
     console.warn(`[sfdc] ${opts.opp.Id}: update refused with Client Type ${opts.clientType}; sending it without`)
     const ok = await updateOpportunity(opts.opp.Id, fields)
     return { ok, amountLeft, windowLeft, clientTypeLeft: ok }
@@ -143,7 +148,6 @@ export async function applyBookingToOpportunity(opts: {
 
 /** What the rep is told when an opportunity kept its own Client Type (applyBookingToOpportunity). */
 export const CLIENT_TYPE_LEFT_NOTE = "Salesforce wouldn't change the opportunity's Client Type, so it keeps its own; change it in Salesforce if it should match this quote's."
-
 
 /**
  * After any expiry change or release (reinstate, approve or deny extension,

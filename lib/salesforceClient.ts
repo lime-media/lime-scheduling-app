@@ -58,14 +58,22 @@ async function getAccessToken(): Promise<{ accessToken: string; instanceUrl: str
 // ---------------------------------------------------------------------------
 
 /**
- * SFDC_WRITES=off: this deployment reads Salesforce but never changes it.
- * Set on UAT, which shares production's Salesforce org: every create and
- * update is refused here, before a request is sent, with WRITES_OFF_MESSAGE
- * as Salesforce's own error, so callers show and log it as a refusal.
- * Reads (queries, record GETs) still go through.
+ * Whether this deployment reads Salesforce but never changes it: SFDC_WRITES
+ * =off, or any preview deployment (UAT shares production's Salesforce org)
+ * unless SFDC_WRITES=on. Every create and update is then refused here, before
+ * a request is sent, with WRITES_OFF_MESSAGE as Salesforce's own error, so
+ * callers show and log it as a refusal. Reads (queries, record GETs) still go
+ * through.
  */
-export const salesforceWritesOff = () => process.env.SFDC_WRITES?.trim().toLowerCase() === 'off'
-export const WRITES_OFF_MESSAGE = 'Salesforce writes are off in this environment (SFDC_WRITES=off), so Salesforce was not changed.'
+export function salesforceWritesOff(env: Record<string, string | undefined> = process.env): boolean {
+  const set = env.SFDC_WRITES?.trim().toLowerCase()
+  if (set === 'off') return true
+  if (set === 'on') return false
+  // Fail closed: a preview deployment (UAT, branch previews) never writes
+  // production's Salesforce unless someone turns writes on for it on purpose.
+  return env.VERCEL_ENV === 'preview'
+}
+export const WRITES_OFF_MESSAGE = 'Salesforce writes are off in this environment (UAT reads production Salesforce but never changes it), so Salesforce was not changed.'
 
 /** The refusal a write gets while writes are off: Salesforce's error shape, status 403. Pure. */
 export function writesOffResponse(): Response {

@@ -35,8 +35,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   // A preview deployment (UAT) shares production's Salesforce org and SMTP:
-  // its sweep runs only with Salesforce writes off and mail redirected
-  // (.github/workflows/uat-sweep.yml), so it can't touch real deals or inboxes.
+  // its sweep (.github/workflows/uat-sweep.yml) runs only with Salesforce
+  // writes off, so it can't touch real deals (lib/sweepGuard.ts).
   const unsafe = sweepUnsafeHere(process.env)
   if (unsafe) return NextResponse.json({ error: unsafe }, { status: 409 })
 

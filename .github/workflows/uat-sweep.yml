@@ -1,8 +1,9 @@
 # The 15-minute maintenance sweep for UAT. Vercel Cron only runs on
 # production, so nothing sweep-driven (expiries, Salesforce stage pulls, LED
 # follow, expiry emails) happened on UAT. UAT shares production's Salesforce
-# and SMTP: the sweep refuses to run there unless the UAT deployment has
-# SFDC_WRITES=off and EMAIL_REDIRECT_TO set (app/api/cron sweepUnsafeHere).
+# and SMTP: there, Salesforce writes are off and email is redirected to
+# EMAIL_REDIRECT_TO or not sent (lib/salesforceClient.ts, lib/mailRedirect.ts),
+# and the sweep refuses if someone turned writes on (lib/sweepGuard.ts).
 #
 # Repository secrets:
 #   UAT_URL                          e.g. https://<uat alias>.vercel.app (no trailing slash)
@@ -18,6 +19,12 @@ on:
   workflow_dispatch:
 
 permissions: {}
+
+# A delayed scheduled run can overlap the previous one (the sweep takes up to
+# 300s): queue it instead of running two sweeps at once.
+concurrency:
+  group: uat-sweep
+  cancel-in-progress: false
 
 jobs:
   sweep:
@@ -38,4 +45,7 @@ jobs:
           if [ -n "$BYPASS" ]; then args+=(-H "x-vercel-protection-bypass: $BYPASS"); fi
           out=$(curl "${args[@]}" "$UAT_URL/api/cron")
           echo "$out" | tail -c 2000
-          echo "$out" | tail -n 1 | grep -q 'HTTP 200'
+          code=$(echo "$out" | tail -n 1 | sed 's/HTTP //')
+          # 409: the deployment refused because Salesforce writes are on there. Skipped, not failed.
+          if [ "$code" = "409" ]; then echo "::warning::UAT refused the sweep (Salesforce writes are on there)."; exit 0; fi
+          [ "$code" = "200" ]

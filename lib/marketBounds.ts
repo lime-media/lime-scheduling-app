@@ -83,8 +83,8 @@ let marketCoordsCache: Map<string, MarketCoords> | null = null
 /**
  * Every standard market's centroid, keyed by normalized name.
  *
- * Holds and typed campaign markets have no standard_market_uid to join on, so
- * they are matched by name instead — but against the authoritative standard market
+ * Holds (whose standard_market_uid the sweep sets later, and nothing here
+ * reads) and typed campaign markets are matched by name instead — but against the authoritative standard market
  * list rather than the 281-entry hardcoded file, which covers 61% of it.
  *
  * Loaded once per process, and empty when the bounds columns are
@@ -128,7 +128,7 @@ export async function loadStandardMarketCoords(): Promise<Map<string, MarketCoor
  * Holds are written from several paths with whatever market text the caller
  * had, so the same place ends up stored as "Dallas", "dallas, tx" and
  * "Dallas, TX". Those strings are what later resolve a hold's coordinates —
- * there is no standard_market_uid on a hold — so canonicalizing on write is
+ * a hold's standard_market_uid is set only by the sweep — so canonicalizing on write is
  * what keeps a hold usable as a transport origin later.
  *
  * Returns null when nothing matches; callers keep the caller's text rather than

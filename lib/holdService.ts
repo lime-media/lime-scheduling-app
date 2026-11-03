@@ -114,7 +114,7 @@ export async function createHold(params: CreateHoldParams): Promise<CreateHoldRe
   }
 
   // Store the canonical market name so this hold can resolve its own
-  // coordinates later — holds carry no standard_market_uid.
+  // coordinates later; its standard_market_uid comes from the sweep.
   const canonicalMarket = (await canonicalMarketName(market, state)) ?? market
 
   // Written under the truck's lock, re-checked for a hold placed since the

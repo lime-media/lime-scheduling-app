@@ -22,6 +22,7 @@ import { followLedTrucks, syncFollowedOpportunities } from '@/lib/ledTruckFollow
 import { daysSold } from '@/lib/ledJobs'
 import { centralDate } from '@/lib/dateOnly'
 import { assignStandardMarkets } from '@/lib/standardMarkets'
+import { waitUntil } from '@vercel/functions'
 import { recordAmountChanges, recordExecuted, recordPrestart, recordSwap, sharedOriginMeasurer } from '@/lib/transportMetricsRecord'
 
 // ── Cache refresh ─────────────────────────────────────────────────────────────
@@ -114,11 +115,13 @@ export async function refreshCache(): Promise<RefreshSummary> {
 
   // Each live hold's LED standard market, from its market text. Nothing
   // below reads standard_market_uid, so it runs alongside the rest of the
-  // sweep and is awaited at the end.
+  // sweep and is awaited at the end. waitUntil keeps it running to the end
+  // if a later step throws and the cron answers early.
   const standardMarketsRun = assignStandardMarkets().catch((err) => {
     console.error('[scheduleCache] standard market assignment failed:', err)
     return { updated: 0, failed: 0, unlocated: 0, error: 'standard market step threw' }
   })
+  waitUntil(standardMarketsRun)
 
   const [schedulesRaw, holdsRaw] = await Promise.all([
     query<Record<string, unknown>[]>(SCHEDULED_QUERY),

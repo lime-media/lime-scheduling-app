@@ -46,6 +46,8 @@ export type QuoteFeatures = {
   attachedToOpportunity?: boolean
   /** The Brand Direct markup (%) folded into these prices; 0 for other clients. A revision keeps it. */
   brandMarkupPct?: number
+  /** The client type the seller priced it as (Agency / Brand Direct). A revision reopens as it. */
+  clientType?: 'Agency' | 'Brand Direct'
   /**
    * Deadhead this booking adds to each truck's next job, captured at hold time.
    * Recorded for review only — never part of any total, and deliberately absent

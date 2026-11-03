@@ -355,6 +355,8 @@ export function reviseRows(holds: RevisableHold[]): {
   quoteOnly: boolean
   /** The Brand Direct markup it was sold at, or null when the holds predate recording it. */
   brandMarkupPct: number | null
+  /** The client type the seller priced it as, or null when the holds predate recording it. */
+  clientType: 'Agency' | 'Brand Direct' | null
 } {
   const live = holds.some(h => h.live)
   const byGroup = new Map<string, RevisableHold[]>()
@@ -391,6 +393,7 @@ export function reviseRows(holds: RevisableHold[]): {
     live,
     quoteOnly: holds.every(h => h.origination === QUOTE_ONLY_ORIGINATION),
     brandMarkupPct: typeof f.brandMarkupPct === 'number' ? f.brandMarkupPct : null,
+    clientType: f.clientType === 'Agency' || f.clientType === 'Brand Direct' ? f.clientType : null,
   }
 }
 

@@ -176,6 +176,32 @@ export function reportFirstFailure(firstMarked: boolean, firstErrors: unknown, s
  * opportunity being made.
  */
 export async function createOpportunity(input: CreateOpportunityInput): Promise<SfdcOpportunityResult> {
+  const result = await createOpportunityOnce(input)
+  // Lead Source is a picklist kept in step by hand (lib/sfdcLeadSource.ts): a
+  // value Salesforce has since retired or restricted can't stop the
+  // opportunity being made. Only a definite refusal naming the field is
+  // retried (a failed create made nothing, so the retry can't duplicate).
+  if (!result.success && input.leadSource && aboutLeadSource(result.errors)) {
+    console.warn('[sfdc] LeadSource refused; creating the opportunity without it:', JSON.stringify(result.errors))
+    const retry = await createOpportunityOnce({ ...input, leadSource: undefined })
+    if (retry.success) {
+      return { ...retry, warnings: [...(retry.warnings ?? []), `Salesforce refused the lead source "${input.leadSource}", so the opportunity has none (set it in Salesforce)`] }
+    }
+  }
+  return result
+}
+
+/** Whether a refused create's errors name the Lead Source field. Pure. */
+function aboutLeadSource(errors: unknown): boolean {
+  if (!Array.isArray(errors)) return false
+  return errors.some(e => {
+    const fields = (e as { fields?: unknown })?.fields
+    if (Array.isArray(fields) && fields.some(f => String(f).toLowerCase() === 'leadsource')) return true
+    return /lead ?source/i.test(String((e as { message?: unknown })?.message ?? ''))
+  })
+}
+
+async function createOpportunityOnce(input: CreateOpportunityInput): Promise<SfdcOpportunityResult> {
   const body: Record<string, unknown> = {
     AccountId: input.accountId,
     Name: input.name,

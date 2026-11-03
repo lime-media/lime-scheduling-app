@@ -42,7 +42,7 @@ export const NEED_LEAD_SOURCE = 'Pick a lead source for the opportunity.'
  */
 export function readLeadSource(value: unknown, required: boolean): { leadSource: LeadSource | null } | { error: string } {
   const leadSource = leadSourceOf(value)
-  if (value != null && value !== '' && !leadSource) return { error: `"${String(value)}" isn't a Salesforce lead source.` }
+  if (!leadSource && String(value ?? '').trim() !== '') return { error: `"${String(value)}" isn't a Salesforce lead source.` }
   if (required && !leadSource) return { error: NEED_LEAD_SOURCE }
   return { leadSource }
 }

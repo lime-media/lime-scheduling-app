@@ -35,5 +35,5 @@ eq('createOpportunity writes LeadSource', sf.includes('body.LeadSource = input.l
 eq('the Quote page requires a lead source for a new opportunity', fs.readFileSync('app/api/quote/hold/route.ts', 'utf8').includes('requireLeadSource: true'), true)
 const planHold = fs.readFileSync('app/api/plan/hold/route.ts', 'utf8')
 eq('so does the planner', planHold.includes('readLeadSource(body.leadSource, !body.revise?.bookingKey && !body.attachOpportunityId)'), true)
-eq('and a revision that makes a new opportunity', planHold.includes('if (reviseKey && !target && !leadSource) return NextResponse.json({ error: NEED_LEAD_SOURCE }'), true)
+eq('and a revision that makes a new opportunity', planHold.includes('if (reviseKey && !target && !leadSource) return NextResponse.json({ error: NEED_LEAD_SOURCE, needLeadSource: true }'), true)
 eq('a client booking gets the portal or MCP source', fs.readFileSync('lib/clientBooking.ts', 'utf8').includes("opts.origination === 'mcp' ? MCP_LEAD_SOURCE : CLIENT_PORTAL_LEAD_SOURCE"), true)

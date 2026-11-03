@@ -236,6 +236,9 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
     studiesTotal: quote.best.reachOk ? studies.length * quote.best.studyCost : 0,
     transportCharge,
     successorImpact,
+    // How it was priced, so a revision reopens the same way (lib/bookings.ts reviseRows).
+    brandMarkupPct: markupPct,
+    ...(clientType ? { clientType } : {}),
     // Added to an existing opportunity: lapsing never closes it (expiryClosesOpportunity).
     ...(target ? { attachedToOpportunity: true } : {}),
   })

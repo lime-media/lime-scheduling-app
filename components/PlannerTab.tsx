@@ -176,9 +176,13 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     load(false)
       .then(b => {
         if (!alive) return
-        // Priced as it was booked: a recorded Brand Direct markup means it was
-        // quoted Brand Direct, whatever the account says now; else the account's.
-        if (b.account) { setAccount(b.account); setClientType(typeof b.brandMarkupPct === 'number' && b.brandMarkupPct > 0 ? 'Brand Direct' : b.account.clientType ?? 'Agency') }
+        // Priced as it was booked: the client type its holds record; on older
+        // holds, a recorded Brand Direct markup means Brand Direct; else the account's.
+        if (b.account) {
+          setAccount(b.account)
+          setClientType(b.clientType === 'Agency' || b.clientType === 'Brand Direct' ? b.clientType
+            : typeof b.brandMarkupPct === 'number' && b.brandMarkupPct > 0 ? 'Brand Direct' : b.account.clientType ?? 'Agency')
+        }
         setContact(b.contact)
         setBrand(b.brand ?? '')
         setRows(b.rows.map((r: { market: string; startDate: string; endDate: string; trucks: number; daysPerWeek: number; hours: number }) =>
@@ -365,6 +369,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         setHoldResult({ ok: false, message: 'No holds placed.' })
         return
       }
+      // The revised booking's opportunity is gone from Salesforce since it was
+      // opened, so a new one is made: show the lead source picker.
+      if (res.status === 400 && data.needLeadSource && revision) setRevision(r => r && { ...r, opportunityName: null })
       if (!res.ok) throw new Error(data.error || 'Holds could not be placed')
       setHoldResult({ ok: true, message: data.confirmation ?? data.message, sfdcFailure: data.sfdcFailure ?? null })
       setSfdcFailureOpen(Boolean(data.sfdcFailure))

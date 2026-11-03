@@ -226,8 +226,10 @@ async function handlePost(req: NextRequest) {
       if (refusal) return NextResponse.json({ error: refusal }, { status: 409 })
     }
     // A revised booking with no opportunity (none, or gone from Salesforce)
-    // gets a new one, so it needs a lead source like any new booking.
-    if (reviseKey && !target && !leadSource) return NextResponse.json({ error: NEED_LEAD_SOURCE }, { status: 400 })
+    // gets a new one, so it needs a lead source like any new booking. The
+    // planner may not know yet (it went after the booking was opened): the
+    // flag tells it to ask.
+    if (reviseKey && !target && !leadSource) return NextResponse.json({ error: NEED_LEAD_SOURCE, needLeadSource: true }, { status: 400 })
 
     const { lines: allLines, errors } = await resolveRows(body.rows)
     if (errors.length) return NextResponse.json({ error: 'Some markets need attention.', rowErrors: errors }, { status: 400 })
@@ -364,7 +366,7 @@ async function handlePost(req: NextRequest) {
         pricing_tier: tier,
         quoted_total: lq.total,
         daily_rate: lq.effectiveDailyRate,
-        features: JSON.stringify(withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct))),
+        features: JSON.stringify(withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType))),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(lq.id)!,
         expires_at: new Date(),
@@ -396,7 +398,7 @@ async function handlePost(req: NextRequest) {
         daily_rate: lq.effectiveDailyRate,
         // The line's quote, plus what this hold itself sells: a rotating truck's
         // weekly stint works only some of the line's days (lib/ledJobs.ts daysSold).
-        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct)), heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
+        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType)), heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(stint.lineId)!,
         expires_at: expiresAt,

@@ -316,7 +316,7 @@ Optional: `user_id`, `token_id`, `request_params`, `response_summary`.
 | `CRON_SECRET` | Bearer token for `GET /api/cron`. **Required in production** — without it the sweep returns 500 and holds never expire |
 | `SFDC_AUTOCLOSE` | `on` (default), `dry_run`, or `off`. Kill switch for writing `Closed Lost - Declined` back to an Opportunity when its last hold expires. `dry_run` logs what would close without writing |
 | `SFDC_CLOSED_LOST_STAGE` | Optional. Opportunity `StageName` set when the app releases an Opportunity's last hold. Defaults to `Closed Lost - Declined` — must match the Salesforce picklist or the write is rejected |
-| `SFDC_WRITES` | Optional. On a preview deployment (UAT shares production's Salesforce org) the app reads Salesforce but never creates or updates anything there: each write is refused with a message saying so. `on` turns writes on for a preview on purpose; `off` turns them off anywhere |
+| `SFDC_WRITES` | Optional. On a preview deployment (UAT shares production's Salesforce org) the app reads Salesforce but never creates or updates anything there: each write is refused with a message saying so. `on` turns writes on for a preview on purpose; `off` turns them off anywhere. On production `off` is an emergency stop: refused writes still have to be made, so reps are told what to fix in Salesforce by hand (a preview never tells them to) |
 | `EMAIL_REDIRECT_TO` | Optional, for UAT. Every email goes to this one address instead of its recipients, who are named in the subject. A preview deployment without it sends no email, except login codes, which always reach the person logging in. UAT shares production's SMTP |
 
 ---

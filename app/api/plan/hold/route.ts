@@ -45,7 +45,7 @@ import { prisma } from '@/lib/prisma'
 import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { bookingHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
-import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner, readOnlyPreview, WRITES_OFF_MESSAGE } from '@/lib/salesforceClient'
+import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner, readOnlyPreview, salesforceWritesOff, WRITES_OFF_MESSAGE, WRITES_STOPPED_ERROR } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
@@ -603,7 +603,11 @@ async function handlePost(req: NextRequest) {
     // there's nothing to do there by hand (an unreachable attach included). Say
     // so, as part of the confirmation rather than as a failure whose modal asks
     // the rep to fix it in Salesforce.
-    const writesOff = !sfdcOpportunityId && !!sfdcError && readOnlyPreview()
+    // Writes stopped on production (SFDC_WRITES=off): the rep still fixes it
+    // by hand, but is told why rather than that Salesforce rejected it.
+    const refused = !sfdcOpportunityId && !!sfdcError && salesforceWritesOff()
+    const writesOff = refused && readOnlyPreview()
+    if (refused && !writesOff) sfdcError = WRITES_STOPPED_ERROR
     const fixByHand = existingOpp
       ? ` Update ${target ? `"${target.Name}"` : existingOpp.Name} in Salesforce by hand with this booking (holds grouped under ${groupPrefix}*).`
       : ` Create the opportunity by hand (holds grouped under ${groupPrefix}*).`

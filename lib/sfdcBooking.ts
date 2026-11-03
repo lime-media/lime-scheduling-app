@@ -4,7 +4,7 @@
  * says what the fields become).
  */
 
-import { isSfdcConfigured, readOnlyPreview, sfdcQuery, updateOpportunity, updateOpportunityWithError, WRITES_OFF_MESSAGE } from '@/lib/salesforceClient'
+import { isSfdcConfigured, readOnlyPreview, salesforceWritesOff, sfdcQuery, updateOpportunity, updateOpportunityWithError, WRITES_OFF_MESSAGE, WRITES_STOPPED_ERROR } from '@/lib/salesforceClient'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { closedOpportunityBlocksReactivation, withAppHoldExp } from '@/lib/sfdcIntegration'
@@ -159,6 +159,9 @@ export async function syncOpportunityLedWindow(opportunityId: string | null): Pr
   let recorded: { id: string; features: string | null }[] = []
   try {
     fields = ledWindowFields(await loadOpportunityReservingHolds(opportunityId), centralDate(new Date()))
+    // Writes stopped on production: the write would be refused, so don't set
+    // (and then restore) the markers; tell the rep what to set by hand.
+    if (salesforceWritesOff()) return ledWindowWarning(fields, WRITES_STOPPED_ERROR)
     // A date is recorded; a Hold Exp cleared (nothing reserves a truck) clears
     // the record too, so a rep later entering that same date in Salesforce isn't
     // taken for an echo. Left out (all committed): Salesforce keeps its date, and

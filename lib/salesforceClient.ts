@@ -81,6 +81,8 @@ export function salesforceWritesOff(env: Record<string, string | undefined> = pr
  */
 export const readOnlyPreview = (env: Record<string, string | undefined> = process.env) =>
   env.VERCEL_ENV === 'preview' && salesforceWritesOff(env)
+/** Why a write failed on a deployment with writes stopped that isn't a preview (no trailing period: callers append). */
+export const WRITES_STOPPED_ERROR = 'Salesforce writes are stopped in this deployment (SFDC_WRITES=off)'
 export const WRITES_OFF_MESSAGE = 'Salesforce writes are off in this deployment (SFDC_WRITES=off, or a preview such as UAT, which reads production Salesforce but never changes it), so Salesforce was not changed.'
 
 /** The refusal a write gets while writes are off: Salesforce's error shape, status 403. Pure. */

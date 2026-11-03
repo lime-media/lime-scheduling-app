@@ -6,6 +6,7 @@
  */
 import fs from 'fs'
 import { eq, section } from './harness'
+import { parseMcpStaffPricing } from '@/lib/mcpActing'
 import { clientVisibleFeatures } from '@/lib/quoteFeatures'
 import { CLIENT_PORTAL_LEAD_SOURCE, LEAD_SOURCES, MCP_LEAD_SOURCE, NEED_LEAD_SOURCE, leadSourceOf, readLeadSource } from '@/lib/sfdcLeadSource'
 import { brandMarkupFor, chosenClientType } from '@/lib/pricing/brandMarkup'
@@ -46,3 +47,8 @@ eq('nor the deadhead cost or Salesforce bookkeeping', clientVisibleFeatures(JSON
 eq('nothing internal: unchanged', clientVisibleFeatures('{"dailyRate":1500}'), '{"dailyRate":1500}')
 eq('none', clientVisibleFeatures(null), null)
 eq('unparseable text as stored', clientVisibleFeatures('nope'), 'nope')
+
+section('staff MCP: client type is checked')
+eq('Brand Direct is taken', parseMcpStaffPricing({ client_type: 'Brand Direct' }), { sfdc_account_id: undefined, brand_markup_pct: undefined, client_type: 'Brand Direct' })
+eq('null is not given', parseMcpStaffPricing({ client_type: null }), { sfdc_account_id: undefined, brand_markup_pct: undefined, client_type: undefined })
+eq('anything else is refused', parseMcpStaffPricing({ client_type: 'brand' }), { error: 'client_type must be "Agency" or "Brand Direct"' })

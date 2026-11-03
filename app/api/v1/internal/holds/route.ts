@@ -115,7 +115,8 @@ export async function POST(req: NextRequest) {
     ...staff,
     sfdc_account_name: accountName,
     primary_contact_id: str(body.primary_contact_id), brand: str(body.brand), hold_days: body.hold_days, stage: str(body.stage),
-    notes: str(body.notes), expected_total: expectedTotal,
-  }, party.actor, { origination: 'mcp' })
+    lead_source: str(body.lead_source), notes: str(body.notes), expected_total: expectedTotal,
+    // A staff member picks the lead source of a new opportunity, as on the Quote page.
+  }, party.actor, { origination: 'mcp', requireLeadSource: true })
   return NextResponse.json(result.body, { status: result.status })
 }

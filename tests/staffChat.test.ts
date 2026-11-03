@@ -28,6 +28,9 @@ eq('another contact, another ref', withTerms({ primary_contact_id: '003A' }) ===
 eq('another hold length, another ref', withTerms({ hold_days: 3 }) === withTerms({ hold_days: 7 }), false)
 eq('another brand, another ref', withTerms({ brand: 'Nike' }) === withTerms({}), false)
 eq('another account name, another ref', withTerms({ sfdc_account_name: 'Acme' }) === withTerms({ sfdc_account_name: 'Acme West' }), false)
+eq('another lead source, another ref', withTerms({ lead_source: 'Phone Call' }) === withTerms({ lead_source: 'Trade Show' }), false)
+eq('a lead source as Salesforce spells it or not: the same ref', withTerms({ lead_source: 'phone call' }), withTerms({ lead_source: 'Phone Call' }))
+eq('another client type, another ref (Brand Direct pricing)', ref({ client_type: 'Agency' }) === ref({ client_type: 'Brand Direct' }), false)
 
 section('Staff chat: one engine')
 {
@@ -38,7 +41,7 @@ section('Staff chat: one engine')
   eq('current Opus', route.includes("model: 'claude-opus-5-5'"), true)
   eq('the shared hidden-truck list', route.includes("from '@/lib/hiddenTrucks'") && !/new Set\(\['0001'/.test(route), true)
   eq('quotes through the Quote page code', tools.includes('await staffQuote(q)'), true)
-  eq('bookings through the Quote page code', tools.includes('await placeStaffBooking(body, ctx.actor)'), true)
+  eq('bookings through the Quote page code, which requires a lead source', tools.includes('await placeStaffBooking(body, ctx.actor, { requireLeadSource: true })'), true)
   eq('availability through the engine', tools.includes('await checkAvailability('), true)
   eq('a booking checks the ref against inputs and total, then that the rep saw it',
     tools.indexOf('quoteRef(q, i.expected_total, terms) !== i.quote_ref.trim()') > -1

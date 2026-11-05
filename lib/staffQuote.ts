@@ -7,7 +7,7 @@
  */
 
 import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
-import { brandMarkupFor, withMarkup } from '@/lib/pricing/brandMarkup'
+import { brandMarkupFor, chosenClientType, withMarkup } from '@/lib/pricing/brandMarkup'
 import { checkAvailability, legsFromTrucks, overrideOptions, type AvailabilityResult } from '@/lib/availabilityEngine'
 import { insufficientSummary } from '@/lib/quoteAlternatives'
 import {
@@ -41,8 +41,10 @@ export type StaffQuoteInput = {
   operating_hours?: number
   sfdc_account_id?: string
   sfdc_account_name?: string
-  /** Seller's Brand Direct markup; applied only if Salesforce says the account is Brand Direct. */
+  /** Seller's Brand Direct markup; applied only to a Brand Direct quote (client_type, else the account's). */
   brand_markup_pct?: number
+  /** The seller's pick, Agency or Brand Direct (chosenClientType); else the account's. */
+  client_type?: string
   /** Price it even without enough trucks — it can then only be logged as a quote, never reserved. */
   quote_only?: boolean
 }
@@ -152,10 +154,13 @@ export async function staffQuote(body: StaffQuoteInput): Promise<CoreResult> {
     .slice(0, truck_count)
 
   // Brand Direct: folded into every price (see lib/pricing/brandMarkup.ts).
-  const accountInfo = body.sfdc_account_id && isSfdcConfigured()
+  // The seller's pick of client type, else the account's in Salesforce.
+  const chosen = chosenClientType(body.client_type)
+  const accountInfo = !chosen && body.sfdc_account_id && isSfdcConfigured()
     ? await getSfdcAccountInfo(body.sfdc_account_id).catch((err) => { console.error('[quote] account lookup failed:', err); return null })
     : null
-  const markupPct = brandMarkupFor(accountInfo?.clientType, body.brand_markup_pct)
+  const clientType = chosen ?? accountInfo?.clientType ?? null
+  const markupPct = brandMarkupFor(clientType, body.brand_markup_pct)
 
   const quote = computeQuote({
     truckCount: truck_count,
@@ -236,7 +241,7 @@ export async function staffQuote(body: StaffQuoteInput): Promise<CoreResult> {
       baseMedia: quote.good.baseMedia,
       pricingBasis: agreementName ? `agreement: ${agreementName}` : 'standard',
       // Internal page only: the Brand Direct markup folded into every price above.
-      clientType: accountInfo?.clientType ?? null,
+      clientType,
       // Not enough trucks free: priced on request, and can only be logged as a
       // quote (no reservation). Transport covers only the trucks that are free.
       quoteOnlyRequired: !availability.sufficient,
@@ -306,7 +311,7 @@ export async function staffQuote(body: StaffQuoteInput): Promise<CoreResult> {
  */
 export async function resolveQuoteMarket(market: string): Promise<{ formal: string } | CoreResult> {
   // Market resolution
-  // Resolve against the hardcoded map AND the 356-market list the team
+  // Resolve against the hardcoded map AND the standard market list the team
   // maintains — /api/markets autocompletes from the latter, so gating on the
   // former would reject markets the rep just picked from the dropdown.
   const marketMatches = await resolveMarketInputAll(market)

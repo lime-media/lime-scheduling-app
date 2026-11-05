@@ -8,6 +8,7 @@ import { ClientHoldRefusal, createClientHold } from '@/lib/holdRequestService'
 import { HoldClashError, HoldLockTimeoutError } from '@/lib/holdWriteLock'
 import { bookingKey } from '@/lib/bookings'
 import { holdExpDate } from '@/lib/dateOnly'
+import { clientVisibleFeatures } from '@/lib/quoteFeatures'
 
 export async function GET(req: NextRequest) {
   const session = getClientSession(req)
@@ -45,7 +46,8 @@ export async function GET(req: NextRequest) {
       pricing_tier:      r.pricing_tier ?? null,
       quoted_total:      r.quoted_total ?? null,
       daily_rate:        r.daily_rate ?? null,
-      features:          r.features ?? null,
+      // Never the internal keys (Brand Direct pricing, deadhead cost, Salesforce bookkeeping).
+      features:          clientVisibleFeatures(r.features),
       truck_count:       r.truck_count ?? null,
       campaign_group_id: r.campaign_group_id ?? null,
       expires_at:        r.expires_at?.toISOString() ?? null,

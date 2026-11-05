@@ -9,6 +9,7 @@
 import { prisma } from '@/lib/prisma'
 import type { ClientSession } from '@/lib/clientAuth'
 import type { StaffActor } from '@/lib/staffBooking'
+import { chosenClientType, type ClientType } from '@/lib/pricing/brandMarkup'
 
 export type McpParty =
   | { kind: 'client'; session: ClientSession }
@@ -90,13 +91,17 @@ export function parseMcpCampaign(body: Record<string, unknown>): McpCampaign | {
  * booking, so both price the same way: a markup that isn't a number is refused,
  * not ignored by one and coerced by the other ("20" or true).
  */
-export function parseMcpStaffPricing(body: Record<string, unknown>): { sfdc_account_id?: string; brand_markup_pct?: number } | { error: string } {
+export function parseMcpStaffPricing(body: Record<string, unknown>): { sfdc_account_id?: string; brand_markup_pct?: number; client_type?: ClientType } | { error: string } {
   // null is "not given" (tool callers send it for optional arguments).
   const sfdc_account_id = body.sfdc_account_id ?? undefined
   const brand_markup_pct = body.brand_markup_pct ?? undefined
+  // The seller's pick, as on the Quote page: it sets Brand Direct pricing.
+  // Blank is "not given" too, as a blank sfdc_account_id is.
+  const client_type = body.client_type === '' ? undefined : body.client_type ?? undefined
+  if (client_type !== undefined && !chosenClientType(client_type)) return { error: 'client_type must be "Agency" or "Brand Direct"' }
   if (sfdc_account_id !== undefined && typeof sfdc_account_id !== 'string') return { error: 'sfdc_account_id must be a Salesforce Account id' }
   if (brand_markup_pct !== undefined && (typeof brand_markup_pct !== 'number' || !Number.isFinite(brand_markup_pct))) {
     return { error: 'brand_markup_pct must be a number (a percentage)' }
   }
-  return { sfdc_account_id, brand_markup_pct }
+  return { sfdc_account_id, brand_markup_pct, client_type: chosenClientType(client_type) ?? undefined }
 }

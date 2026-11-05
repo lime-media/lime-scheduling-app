@@ -45,11 +45,13 @@ import { prisma } from '@/lib/prisma'
 import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { bookingHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
-import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner } from '@/lib/salesforceClient'
+import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner, readOnlyPreview, salesforceWritesOff, WRITES_OFF_MESSAGE, WRITES_STOPPED_ERROR } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
+import { chosenClientType } from '@/lib/pricing/brandMarkup'
+import { NEED_LEAD_SOURCE, readLeadSource } from '@/lib/sfdcLeadSource'
 import { loadBookingHolds } from '@/lib/bookingLoad'
 import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
-import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, reopenClosedLostOpportunity, type BookingOpportunity } from '@/lib/sfdcBooking'
+import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, CLIENT_TYPE_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, reopenClosedLostOpportunity, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { SFDC_SERVICE_USER_EMAIL, attachedToOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { rotationStints, type OrderLine } from '@/lib/planning/order'
 import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuote, type QuoteRequest } from '@/lib/planning/quote'
@@ -75,6 +77,8 @@ type HoldBody = QuoteRequest & {
   expectedTotal?: number
   /** Opportunity stage the seller chose: Cold, Warm or Hot (never closed). */
   stage?: string
+  /** A new opportunity's Lead Source, from Salesforce's picklist (lib/sfdcLeadSource.ts). Required for one. */
+  leadSource?: string
   /** Low conviction: log a priced opportunity, reserve nothing (lib/quoteOnly.ts). */
   quoteOnly?: boolean
   /** The opportunity's primary contact: a Contact on the account. Required. */
@@ -126,6 +130,12 @@ async function handlePost(req: NextRequest) {
   if (!body.requestId || !/^[A-Za-z0-9_-]{8,64}$/.test(body.requestId)) return NextResponse.json({ error: 'Missing booking request id.' }, { status: 400 })
   const holdDays = parseHoldDays(body.holdDays)
   if (holdDays === null) return NextResponse.json({ error: `Hold for 1 to ${MAX_HOLD_DAYS} days.` }, { status: 400 })
+  // A new opportunity's lead source: the seller picks one off Salesforce's
+  // picklist. A revision or an attach keeps the opportunity's own (a
+  // revision with no opportunity left makes one: checked once that's known).
+  const lead = readLeadSource(body.leadSource, !body.revise?.bookingKey && !body.attachOpportunityId)
+  if ('error' in lead) return NextResponse.json({ error: lead.error }, { status: 400 })
+  const { leadSource } = lead
   // Every opportunity needs its primary contact, on this account — checked
   // after the cheap local guards. A definite no refuses; Salesforce being
   // unreachable only warns (see checkPrimaryContact).
@@ -215,6 +225,11 @@ async function handlePost(req: NextRequest) {
       const refusal = attachUnreachable || (reviseKey && !target) ? null : opportunityRefusal(target, body.sfdcAccountId, { closedLostReopening: lost.kind === 'reopen' })
       if (refusal) return NextResponse.json({ error: refusal }, { status: 409 })
     }
+    // A revised booking with no opportunity (none, or gone from Salesforce)
+    // gets a new one, so it needs a lead source like any new booking. The
+    // planner may not know yet (it went after the booking was opened): the
+    // flag tells it to ask.
+    if (reviseKey && !target && !leadSource) return NextResponse.json({ error: NEED_LEAD_SOURCE, needLeadSource: true }, { status: 400 })
 
     const { lines: allLines, errors } = await resolveRows(body.rows)
     if (errors.length) return NextResponse.json({ error: 'Some markets need attention.', rowErrors: errors }, { status: 400 })
@@ -351,7 +366,7 @@ async function handlePost(req: NextRequest) {
         pricing_tier: tier,
         quoted_total: lq.total,
         daily_rate: lq.effectiveDailyRate,
-        features: JSON.stringify(withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct))),
+        features: JSON.stringify(withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType))),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(lq.id)!,
         expires_at: new Date(),
@@ -383,7 +398,7 @@ async function handlePost(req: NextRequest) {
         daily_rate: lq.effectiveDailyRate,
         // The line's quote, plus what this hold itself sells: a rotating truck's
         // weekly stint works only some of the line's days (lib/ledJobs.ts daysSold).
-        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct)), heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
+        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType)), heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(stint.lineId)!,
         expires_at: expiresAt,
@@ -463,7 +478,7 @@ async function handlePost(req: NextRequest) {
         } catch (err) {
           if (err instanceof HoldClashError || err instanceof HoldLockTimeoutError) {
             return NextResponse.json({
-              error: `${r.error} The revised booking was kept: the old one can't be put back (${err.message}). Reopen the opportunity in Salesforce by hand.`,
+              error: `${r.error} The revised booking was kept: the old one can't be put back (${err.message}).${readOnlyPreview() ? '' : ' Reopen the opportunity in Salesforce by hand.'}`,
             }, { status: 409 })
           }
           throw err
@@ -532,6 +547,7 @@ async function handlePost(req: NextRequest) {
             },
             by: (token.name as string | undefined) || (token.email as string | undefined) || 'the app',
             primaryContactId: body.primaryContactId,
+            clientType: chosenClientType(body.clientType) ?? undefined,
             // What the revised booking added to the opportunity, to take back off.
             ...(reviseKey ? { was: {
               amount: summarizeBooking(reviseHolds.map(h => ({ ...h, expires_at: null }))).total,
@@ -542,6 +558,7 @@ async function handlePost(req: NextRequest) {
           else sfdcError = 'Salesforce rejected the opportunity update'
           if (applied.ok && applied.amountLeft) sfdcWarnings.push(AMOUNT_LEFT_NOTE)
           if (applied.ok && applied.windowLeft) sfdcWarnings.push(WINDOW_LEFT_NOTE)
+          if (applied.ok && applied.clientTypeLeft) sfdcWarnings.push(CLIENT_TYPE_LEFT_NOTE)
         } else {
         // Owned by the rep who booked it (matched by email), else the account owner.
         const accountInfo = await getSfdcAccountInfo(body.sfdcAccountId).catch(() => null)
@@ -549,7 +566,9 @@ async function handlePost(req: NextRequest) {
         const result = await createAppOpportunity({
           accountId: body.sfdcAccountId,
           ownerId: owner.ownerId ?? undefined,
-          clientType: accountInfo?.clientType,
+          // The type the quote was priced as (the seller's pick, else the account's).
+          clientType: quote.clientType ?? accountInfo?.clientType,
+          leadSource: leadSource ?? undefined,
           name: opportunityName(brand, accountName, `Multi-market (${quote.summary.markets} markets) - ${starts[0]} to ${ends[ends.length - 1]}`),
           brand: brand || undefined,
           primaryContactId: body.primaryContactId,
@@ -599,6 +618,15 @@ async function handlePost(req: NextRequest) {
     // What the rep does when Salesforce wasn't updated: an existing opportunity
     // is updated by hand (creating one would duplicate it); otherwise one is created.
     const existingOpp = target ?? (attachUnreachable ? { Name: 'the opportunity you picked' } : null)
+    // Writes off (UAT): Salesforce wasn't asked, and is production's org, so
+    // there's nothing to do there by hand (an unreachable attach included). Say
+    // so, as part of the confirmation rather than as a failure whose modal asks
+    // the rep to fix it in Salesforce.
+    // Writes stopped on production (SFDC_WRITES=off): the rep still fixes it
+    // by hand, but is told why rather than that Salesforce rejected it.
+    const refused = !sfdcOpportunityId && !!sfdcError && salesforceWritesOff()
+    const writesOff = refused && readOnlyPreview()
+    if (refused && !writesOff) sfdcError = WRITES_STOPPED_ERROR
     const fixByHand = existingOpp
       ? ` Update ${target ? `"${target.Name}"` : existingOpp.Name} in Salesforce by hand with this booking (holds grouped under ${groupPrefix}*).`
       : ` Create the opportunity by hand (holds grouped under ${groupPrefix}*).`
@@ -610,10 +638,11 @@ async function handlePost(req: NextRequest) {
           + (bookingExpiry.cappedByStart ? ` (${STAFF_MIN_DAYS_BEFORE_START} days before the first market starts, ${bookingExpiry.startDate}: the latest a booking can be held)`
             : bookingExpiry.atMinimum ? ' (the 24-hour minimum: the first market starts too soon for a longer hold)' : '') : '')
         + '.'
-    const sfdcDone = !sfdcOpportunityId ? ''
+    const sfdcDone = writesOff ? ` ${WRITES_OFF_MESSAGE}`
+      : !sfdcOpportunityId ? ''
       : quoteOnly ? ` ${oppDone}.` + checkIt
       : ` ${oppDone}` + (leftOut ? ', with the markets not booked listed in its Description.' : '.') + checkIt
-    const sfdcFailure = sfdcOpportunityId || !sfdcError ? null
+    const sfdcFailure = sfdcOpportunityId || !sfdcError || writesOff ? null
       : quoteOnly ? `${sfdcError}.${fixByHand}` : `${sfdcError}; the holds are placed.${fixByHand}`
     return NextResponse.json({
       ok: true,

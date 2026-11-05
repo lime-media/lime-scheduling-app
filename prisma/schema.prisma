@@ -56,6 +56,9 @@ model Hold {
   // LED Trucks hasn't reached Salesforce yet; retried every sweep
   // (lib/ledTruckFollow.ts). Null: nothing waiting.
   led_follow_sync_pending DateTime?
+  // LED's standard market (dbo.standard_market_lookup) for the market text, set
+  // by the sweep (lib/standardMarkets.ts). Null: not located.
+  standard_market_uid String?     @db.UniqueIdentifier
   // Client user link (nullable — only set for CLIENT-sourced holds)
   client_user_id      String?
   // Pricing snapshot — locked at hold creation from the quote engine

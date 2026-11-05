@@ -17,6 +17,8 @@ export const HOLD_EXPIRATION_HOURS = 72
 // standard SLA above, but anchored to the campaign's start date instead of the submission time.
 // The default for every caller: the client portal, MCP and the Salesforce fallback.
 const MIN_PROCESSING_DAYS_BEFORE_START = 3
+/** A client's own limit when asking to extend (lib/expiryRules.ts): the same default runway. */
+export const CLIENT_MIN_DAYS_BEFORE_START = MIN_PROCESSING_DAYS_BEFORE_START
 // Staff (the quote tools and Reservations) may pinch that runway to 2 days when a seller needs
 // the longer hold. Staff callers pass it explicitly; nothing else does.
 export const STAFF_MIN_DAYS_BEFORE_START = 2

@@ -4,8 +4,11 @@
 
 import { useState, useRef, useCallback } from 'react'
 
-/** clientType is the account's Salesforce Client Type (blank = Agency). */
-export type SfdcAccount = { id: string; name: string; clientType?: 'Agency' | 'Brand Direct' }
+/**
+ * clientType is the account's Salesforce Client Type (blank = Agency);
+ * leadSource the one on its latest LED opportunity (a suggestion for a new quote).
+ */
+export type SfdcAccount = { id: string; name: string; clientType?: 'Agency' | 'Brand Direct'; leadSource?: string }
 
 function BrandBadge({ a }: { a: SfdcAccount }) {
   return a.clientType === 'Brand Direct'

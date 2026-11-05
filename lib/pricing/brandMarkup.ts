@@ -20,6 +20,15 @@ export function clientTypeOf(value: unknown): ClientType {
   return String(value ?? '').trim().toLowerCase() === 'brand direct' ? 'Brand Direct' : 'Agency'
 }
 
+/**
+ * The seller's pick of client type on a quote (exactly Agency or Brand
+ * Direct, as the Opportunity picklist has them), or null when none was sent
+ * or it isn't one of those; callers then use the account's. Pure.
+ */
+export function chosenClientType(value: unknown): ClientType | null {
+  return value === 'Agency' || value === 'Brand Direct' ? value : null
+}
+
 /** A seller-entered percentage, kept to a sane range; missing or invalid means the default. */
 export function clampBrandMarkup(pct: unknown): number {
   const n = typeof pct === 'number' ? pct : Number(pct)
@@ -34,8 +43,8 @@ export function withMarkup(price: number, pct: number): number {
 
 /**
  * The markup a quote gets: the seller's (or the default) percentage for a
- * Brand Direct account, nothing for an Agency. The account type always comes
- * from Salesforce on the server, never from the browser.
+ * Brand Direct quote, nothing for an Agency one. The type is the seller's
+ * pick on the quote (chosenClientType), else the Salesforce account's.
  */
 export function brandMarkupFor(clientType: ClientType | null | undefined, requestedPct?: unknown): number {
   return clientType === 'Brand Direct' ? clampBrandMarkup(requestedPct ?? DEFAULT_BRAND_MARKUP_PCT) : 0

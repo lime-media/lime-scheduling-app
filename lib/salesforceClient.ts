@@ -57,7 +57,47 @@ async function getAccessToken(): Promise<{ accessToken: string; instanceUrl: str
 // Generic REST helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether this deployment reads Salesforce but never changes it: SFDC_WRITES
+ * =off, or any preview deployment (UAT shares production's Salesforce org)
+ * unless SFDC_WRITES=on. Every create and update is then refused here, before
+ * a request is sent, with WRITES_OFF_MESSAGE as Salesforce's own error, so
+ * callers show and log it as a refusal. Reads (queries, record GETs) still go
+ * through.
+ */
+export function salesforceWritesOff(env: Record<string, string | undefined> = process.env): boolean {
+  const set = env.SFDC_WRITES?.trim().toLowerCase()
+  if (set === 'off') return true
+  if (set === 'on') return false
+  // Fail closed: a preview deployment (UAT, branch previews) never writes
+  // production's Salesforce unless someone turns writes on for it on purpose.
+  return env.VERCEL_ENV === 'preview'
+}
+/**
+ * A preview (UAT) reading another environment's org with writes off: a
+ * refused write there needs nothing done by hand, so reps aren't told to.
+ * SFDC_WRITES=off on production is an emergency stop instead: the writes it
+ * refuses still have to be made, and reps are told so as for any refusal.
+ */
+export const readOnlyPreview = (env: Record<string, string | undefined> = process.env) =>
+  env.VERCEL_ENV === 'preview' && salesforceWritesOff(env)
+/** Why a write failed on a deployment with writes stopped that isn't a preview (no trailing period: callers append). */
+export const WRITES_STOPPED_ERROR = 'Salesforce writes are stopped in this deployment (SFDC_WRITES=off)'
+export const WRITES_OFF_MESSAGE = 'Salesforce writes are off in this deployment (SFDC_WRITES=off, or a preview such as UAT, which reads production Salesforce but never changes it), so Salesforce was not changed.'
+
+/** The refusal a write gets while writes are off: Salesforce's error shape, status 403. Pure. */
+export function writesOffResponse(): Response {
+  return new Response(JSON.stringify([{ errorCode: 'WRITES_OFF', message: WRITES_OFF_MESSAGE, fields: [] }]), {
+    status: 403,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
 async function sfdcFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  if (salesforceWritesOff() && (options.method ?? 'GET').toUpperCase() !== 'GET') {
+    console.warn(`[sfdc] writes are off: ${options.method} ${path} not sent`)
+    return writesOffResponse()
+  }
   const { accessToken, instanceUrl } = await getAccessToken()
   const url = `${instanceUrl}/services/data/${API_VERSION}${path}`
   return fetch(url, {
@@ -101,6 +141,8 @@ export type CreateOpportunityInput = {
   ownerId?: string
   /** Opportunity Client Type (Agency / Brand Direct). */
   clientType?: 'Agency' | 'Brand Direct'
+  /** Opportunity Lead Source: a picklist value (lib/sfdcLeadSource.ts). */
+  leadSource?: string
   /** Brand_Job_Name__c (50 characters): the brand, already cleaned (lib/brand.ts). */
   brand?: string
   /**
@@ -174,6 +216,34 @@ export function reportFirstFailure(firstMarked: boolean, firstErrors: unknown, s
  * opportunity being made.
  */
 export async function createOpportunity(input: CreateOpportunityInput): Promise<SfdcOpportunityResult> {
+  const { refused, ...result } = await createOpportunityOnce(input)
+  // Lead Source is a picklist kept in step by hand (lib/sfdcLeadSource.ts): a
+  // value Salesforce has since retired or restricted can't stop the
+  // opportunity being made. Only a definite refusal (a 400 with an error
+  // list) naming the field is retried: that create made nothing, so the retry
+  // can't duplicate. A 5xx may have made it, so it never is.
+  if (!result.success && refused && input.leadSource && aboutLeadSource(result.errors)) {
+    console.warn('[sfdc] LeadSource refused; creating the opportunity without it:', JSON.stringify(result.errors))
+    const retry = await createOpportunityOnce({ ...input, leadSource: undefined })
+    if (retry.success) {
+      return { success: true, id: retry.id, errors: retry.errors, warnings: [...(retry.warnings ?? []), `Salesforce refused the lead source "${input.leadSource}", so the opportunity has none (set it in Salesforce)`] }
+    }
+  }
+  return result
+}
+
+/** Whether a refused create's errors name the Lead Source field. Pure. */
+function aboutLeadSource(errors: unknown): boolean {
+  if (!Array.isArray(errors)) return false
+  return errors.some(e => {
+    const fields = (e as { fields?: unknown })?.fields
+    if (Array.isArray(fields) && fields.some(f => String(f).toLowerCase() === 'leadsource')) return true
+    return /lead ?source/i.test(String((e as { message?: unknown })?.message ?? ''))
+  })
+}
+
+/** `refused`: Salesforce definitely refused it (a 400 with an error list), so nothing was made. */
+async function createOpportunityOnce(input: CreateOpportunityInput): Promise<SfdcOpportunityResult & { refused: boolean }> {
   const body: Record<string, unknown> = {
     AccountId: input.accountId,
     Name: input.name,
@@ -187,6 +257,7 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
   if (input.market) body.Markets__c = input.market
   if (input.ownerId) body.OwnerId = input.ownerId
   if (input.clientType) body.Client_Type__c = input.clientType
+  if (input.leadSource) body.LeadSource = input.leadSource
   if (input.brand) body.Brand_Job_Name__c = input.brand.slice(0, 50)
   if (input.primaryContactId) body.Primary_Contact__c = input.primaryContactId
   if (input.holdStart) body.LED_Hold_Start__c = input.holdStart
@@ -250,6 +321,7 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
     success: data.success ?? false,
     id: data.id,
     errors: data.errors,
+    refused: !data.success && res.status === 400 && Array.isArray(data.errors),
     ...(warnings.length ? { warnings } : {}),
   }
 }

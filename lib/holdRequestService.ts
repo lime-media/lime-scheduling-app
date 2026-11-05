@@ -130,8 +130,8 @@ async function clientHoldRow(session: ClientSession, params: CreateClientHoldPar
     if (refusal) throw new ClientHoldRefusal(refusal)
   }
 
-  // Canonical market name — holds carry no standard_market_uid, so this string
-  // is what resolves the hold's coordinates later.
+  // Canonical market name — a hold's standard_market_uid comes only from the
+  // sweep, so this string is what resolves the hold's coordinates later.
   const canonicalMarket = (await canonicalMarketName(market ?? '', state ?? undefined)) ?? (market ?? '')
 
   return {

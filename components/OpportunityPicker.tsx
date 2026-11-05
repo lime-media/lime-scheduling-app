@@ -9,7 +9,8 @@
 
 import { useEffect, useState } from 'react'
 
-export type OpenOpportunity = { id: string; name: string; stage: string; amount: number | null; holdStart: string | null; holdStop: string | null; hasProducts?: boolean }
+/** clientType: the opportunity's own Client Type, where the quote's picker starts when adding to it. */
+export type OpenOpportunity = { id: string; name: string; stage: string; amount: number | null; holdStart: string | null; holdStop: string | null; hasProducts?: boolean; clientType?: 'Agency' | 'Brand Direct' | null }
 
 const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
 

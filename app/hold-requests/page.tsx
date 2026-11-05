@@ -394,19 +394,25 @@ export default function HoldRequestsPage() {
   const runAction = useCallback(async (allIds: string[], action: 'approve' | 'reject' | 'approve_extension' | 'deny_extension' | 'reinstate', groupKey: string) => {
     setActing(groupKey)
     try {
-      const send = async (reopenOpportunity = false): Promise<{ ok: boolean; error?: string; reopenable?: Reopenable; holds?: number; sfdcWarning?: string | null }> => {
+      const send = async (reopenOpportunity = false, expiresAt?: string): Promise<{ ok: boolean; error?: string; reopenable?: Reopenable; lastDate?: string; holds?: number; sfdcWarning?: string | null }> => {
         const res = await fetch(`/api/hold-requests/${allIds[0]}`, {
           method:  'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ action, ...(reopenOpportunity ? { reopenOpportunity: true } : {}) }),
+          body:    JSON.stringify({ action, ...(reopenOpportunity ? { reopenOpportunity: true } : {}), ...(expiresAt ? { expires_at: expiresAt } : {}) }),
         })
         const body = await res.json().catch(() => ({}))
-        if (!res.ok) return { ok: false, error: body.error || 'Failed', reopenable: body.reopenable }
+        if (!res.ok) return { ok: false, error: body.error || 'Failed', reopenable: body.reopenable, lastDate: body.lastDate }
         return { ok: true, holds: body.holds, sfdcWarning: body.sfdcWarning ?? null }
       }
       let result = await send()
       // Reinstating onto a Closed Lost opportunity: ask once, then send it again.
       if (result.reopenable && await reopen.ask(result.reopenable.question)) result = await send(true)
+      // The client's date is past the staff limit (lib/expiryRules.ts refuses
+      // it rather than cutting it back): offer the limit, said out loud.
+      if (action === 'approve_extension' && result.lastDate
+        && confirm(`${result.error}\n\nApprove it until ${format(parseDateOnly(result.lastDate), 'EEE, MMM d')} instead? The client is emailed that date.`)) {
+        result = await send(false, result.lastDate)
+      }
 
       const actionLabel = action.replace('_', ' ')
       if (result.ok) {
@@ -1078,8 +1084,10 @@ export default function HoldRequestsPage() {
         const first = editingGroup[0]
         // A won deal: truck swaps only (lib/bookings.ts closedWonRefusal).
         const won = !!closedWonRefusal(editingGroup)
+        // A client's request waiting: its expiry changes only by Approve or Deny (lib/expiryRules.ts).
+        const requested = editingGroup.some(r => r.status === 'EXTENSION_REQUESTED')
         const currentExpDate = first.expires_at ? centralDate(new Date(first.expires_at)) : ''
-        const hasChanges = editingGroup.some(r => selectedTrucks.get(r.id) !== r.truck_number) || (!won && newExpiresAt !== currentExpDate)
+        const hasChanges = editingGroup.some(r => selectedTrucks.get(r.id) !== r.truck_number) || (!won && !requested && newExpiresAt !== currentExpDate)
         return (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
@@ -1218,12 +1226,17 @@ export default function HoldRequestsPage() {
                         <input
                           type="date"
                           value={newExpiresAt}
+                          min={centralDate(new Date())}
                           max={editLastDate || undefined}
+                          disabled={requested}
                           onChange={(e) => { setNewExpiresAt(e.target.value); setExpiryEdited(true) }}
                           className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                         />
                       ) : null}
-                      {first.expires_at && editLastDate && (
+                      {requested && (
+                        <p className="mt-1.5 text-xs text-gray-500">The client has asked to extend this reservation: approve or deny the request to change its expiry.</p>
+                      )}
+                      {first.expires_at && editLastDate && !requested && (
                         <p className={`mt-1.5 text-xs ${expiryEdited && newExpiresAt > editLastDate ? 'text-red-700 font-medium' : 'text-gray-500'}`}>
                           {expiryEdited && newExpiresAt > editLastDate ? 'Too late: ' : ''}
                           Held until {format(parseDateOnly(editLastDate), 'MMM d')} at the latest ({STAFF_MIN_DAYS_BEFORE_START} days before the first market starts). Every truck on this card gets the same date.

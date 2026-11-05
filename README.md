@@ -33,7 +33,7 @@ Gets the full active truck list, including trucks with no current schedule.
 
 **`CHAT_CONTEXT_QUERY`**
 A per-truck snapshot used by the AI. For each truck it returns:
-- `today_status` — `SCHEDULED` if there is a `program_schedule` row covering today, otherwise `AVAILABLE`
+- `today_status` — `SCHEDULED` if there is a `program_schedule` row covering today, otherwise `AVAILABLE`. Shifts an archived program never ran don't count (`liveProgram`, lib/scheduleQuery.ts): LED's archive leaves them in place, and only shifts that started before the archive are history
 - Current program name and market
 - Last known market from the most recent past shift (for context when a truck is idle)
 
@@ -97,7 +97,7 @@ Colours are shared across the internal and client views (`lib/statusColors.ts`):
 ## Availability Logic
 
 A truck is considered **available for a date range** if:
-- No `program_schedule` row in the LED database covers any day in that range
+- No `program_schedule` row in the LED database covers any day in that range (shifts an archived program never ran book nothing; LED's archive leaves its rows in place, and a lost deal's program is archived)
 - No HOLD, COMMITTED, or ATT_SOFT row in Prisma overlaps that range
 
 The AI checks both sources and reports conflicts from either. The Schedule Grid renders both as colored blocks on the same timeline.
@@ -252,7 +252,7 @@ Returns `401` if the token is missing, invalid, or revoked.
 
 Quotes one market, the way the app does, for whoever the call acts for (headers as for holds): a client gets the client portal's quote (`lib/clientQuote.ts`: their rate agreement, the lead-time minimum, real trucks), a staff member the Quote page's (`lib/staffQuote.ts`).
 
-**Body:** `market`, `start_date`, `end_date`, `truck_count`; optional `shadow_fencing`, `smart_directional`, `device_id`, `studies`, `days_per_week`, `operating_hours`; staff only: `sfdc_account_id`, `brand_markup_pct`. The response is the client portal's or the Quote page's quote.
+**Body:** `market`, `start_date`, `end_date`, `truck_count`; optional `shadow_fencing`, `smart_directional`, `device_id`, `studies`, `days_per_week`, `operating_hours`; staff only: `sfdc_account_id`, `brand_markup_pct`, `client_type` (`Agency` or `Brand Direct`: the seller's pick, which sets Brand Direct pricing; else the account's). The response is the client portal's or the Quote page's quote.
 
 ### `POST /api/v1/internal/holds`
 
@@ -270,7 +270,7 @@ If the same caller already has a live booking for these dates made in the last d
 - `X-Acting-User-Id: <user_id>` (resolved from validate-token)
 - `X-Acting-User-Type: app_user | client_user` (defaults to `app_user`)
 
-**Body:** `market`, `start_date`, `end_date`, `truck_count`; optional features as for the quote, `state`, `notes`, `brand`; staff: `sfdc_account_id`, `sfdc_account_name`, `primary_contact_id`, `hold_days`, `stage`, `brand_markup_pct`, `expected_total`; `confirm_duplicate` (see above).
+**Body:** `market`, `start_date`, `end_date`, `truck_count`; optional features as for the quote, `state`, `notes`, `brand`; staff: `sfdc_account_id`, `sfdc_account_name`, `primary_contact_id`, `hold_days`, `stage`, `brand_markup_pct`, `client_type`, `lead_source` (required: one of Salesforce's Lead Source values, `lib/sfdcLeadSource.ts`), `expected_total`; `confirm_duplicate` (see above).
 
 **Response:** the client portal's or Quote page's booking result (200), or its refusal (400 / 409).
 
@@ -316,6 +316,8 @@ Optional: `user_id`, `token_id`, `request_params`, `response_summary`.
 | `CRON_SECRET` | Bearer token for `GET /api/cron`. **Required in production** — without it the sweep returns 500 and holds never expire |
 | `SFDC_AUTOCLOSE` | `on` (default), `dry_run`, or `off`. Kill switch for writing `Closed Lost - Declined` back to an Opportunity when its last hold expires. `dry_run` logs what would close without writing |
 | `SFDC_CLOSED_LOST_STAGE` | Optional. Opportunity `StageName` set when the app releases an Opportunity's last hold. Defaults to `Closed Lost - Declined` — must match the Salesforce picklist or the write is rejected |
+| `SFDC_WRITES` | Optional. On a preview deployment (UAT shares production's Salesforce org) the app reads Salesforce but never creates or updates anything there: each write is refused with a message saying so. `on` turns writes on for a preview on purpose; `off` turns them off anywhere. On production `off` is an emergency stop: refused writes still have to be made, so reps are told what to fix in Salesforce by hand (a preview never tells them to) |
+| `EMAIL_REDIRECT_TO` | Optional, for UAT. Every email goes to this one address instead of its recipients, who are named in the subject. A preview deployment without it sends no email, except login codes, which always reach the person logging in. UAT shares production's SMTP |
 
 ---
 
@@ -338,6 +340,15 @@ keeps AT&T soft holds current (releases prior months, duplicates and stale
 holds; fills the current month and the next two), reconciles Salesforce Opportunity stages, expires
 holds past their `expires_at`, and re-runs conflict detection.
 
+**On UAT.** Vercel Cron only runs on production. UAT's sweep runs from GitHub
+Actions every 15 minutes (`.github/workflows/uat-sweep.yml`, repository secrets
+`UAT_URL` and `UAT_CRON_SECRET`, plus `VERCEL_AUTOMATION_BYPASS_SECRET` if UAT is
+protected). UAT shares production's Salesforce org and SMTP, so on a preview
+deployment Salesforce writes are off and email goes to `EMAIL_REDIRECT_TO` (or
+nowhere): the sweep reads Salesforce stages and job numbers as production does
+but never writes back, and refuses to run if writes were turned on there
+(`lib/sweepGuard.ts`).
+
 **Expiry reminders.** The sweep emails each rep, once per expiry, about their
 reservations (made in the app) that lapse within 24 hours (`lib/holdExpiryWarnings.ts`): one card per
 booking, with **Extend 1 day** / **Extend 2 days** buttons. A button opens a confirm page
@@ -347,6 +358,13 @@ Reservations (`lib/bookingExpiry.ts`: 2 days before the earliest start at most, 
 Exp synced). A link stops working when the expiry it warned about passes or changes, so each email
 extends once; the next reminder brings a new link, with no limit on how many times. Links use
 `NEXTAUTH_URL` as the app's address, or the branch URL on a preview deployment (UAT).
+
+**Standard market.** The sweep sets each live hold's `standard_market_uid` (LED's
+`standard_market_lookup`, the one market list) from its market text (`lib/standardMarkets.ts`):
+the standard market of that name, else the one whose area contains the town (the nearest centre
+where areas overlap), else none (a Salesforce "Multi-market: …" label, or a town outside every
+area). A row whose area isn't on its own city (a placeholder box) is matched by name only, with a
+warning in the log. An edited market moves it on the next sweep.
 
 **Opportunity stage reconcile.** Salesforce never tells us when an Opportunity
 closes — the hold webhook payload carries trucks and dates, no stage. So the sweep

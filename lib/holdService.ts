@@ -1,7 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
 import { query } from '@/lib/mssql'
-import { shiftDayIn } from '@/lib/scheduleQuery'
+import { liveProgram, shiftDayIn } from '@/lib/scheduleQuery'
 import { checkTruckFeasibility } from '@/lib/availabilityEngine'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { staffBookingRefusal } from '@/lib/bookingRefusals'
@@ -73,6 +73,7 @@ export async function createHold(params: CreateHoldParams): Promise<CreateHoldRe
       WHERE t.truck_number                   = @truck_number
         AND ${shiftDayIn({ from: 'CAST(@start_date AS DATE)', to: 'CAST(@end_date AS DATE)' })}
         AND COALESCE(t.is_deleted, 0) = 0
+        AND ${liveProgram()}
     `, { truck_number, start_date, end_date })
 
     if (schedConflict.length > 0) {
@@ -113,7 +114,7 @@ export async function createHold(params: CreateHoldParams): Promise<CreateHoldRe
   }
 
   // Store the canonical market name so this hold can resolve its own
-  // coordinates later — holds carry no standard_market_uid.
+  // coordinates later; its standard_market_uid comes from the sweep.
   const canonicalMarket = (await canonicalMarketName(market, state)) ?? market
 
   // Written under the truck's lock, re-checked for a hold placed since the

@@ -4,7 +4,7 @@ import { validateInternalApiKey } from '@/lib/internalAuth'
 import { query } from '@/lib/mssql'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere } from '@/lib/holdFilters'
-import { ALL_TRUCKS_QUERY, shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
+import { ALL_TRUCKS_QUERY, liveProgram, shiftDay, shiftDayIn } from '@/lib/scheduleQuery'
 import { centralDate } from '@/lib/dateOnly'
 import { getLiveVehicleLocations } from '@/lib/samsaraService'
 import { loadFleetTimelines } from '@/lib/fleetTimelines'
@@ -42,7 +42,10 @@ JOIN dbo.trucks t
     ON  t.truck_uid = ps.truck_uid
 LEFT JOIN dbo.client_program_markets cpm
     ON  cpm.client_program_market_uid = ps.client_program_market_uid
+LEFT JOIN dbo.client_programs cp
+    ON  cp.client_program_uid = ps.client_program_uid
 WHERE ${shiftDayIn({ from: '@startDate', to: '@endDate' })}
+  AND ${liveProgram()}
 ORDER BY t.truck_number, ps.start_time
 `
 

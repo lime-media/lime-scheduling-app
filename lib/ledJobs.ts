@@ -144,7 +144,7 @@ JOIN dbo.trucks t           ON t.truck_number = h.truck
 JOIN dbo.program_schedule ps ON ps.truck_uid = t.truck_uid
 JOIN dbo.client_programs cp ON cp.client_program_uid = ps.client_program_uid
 LEFT JOIN dbo.client_program_markets cpm ON cpm.client_program_market_uid = ps.client_program_market_uid
-WHERE COALESCE(cp.is_deleted, 0) = 0
+WHERE COALESCE(cp.is_deleted, 0) = 0  -- only a live program counts as the job scheduled
   AND ${shiftDayIn({ from: 'h.s', to: 'h.e' })}
   AND LTRIM(RTRIM(cp.job_number)) = h.job  -- the LED column's collation is case-insensitive
 `

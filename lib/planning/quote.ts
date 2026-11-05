@@ -13,7 +13,7 @@
  * start. Every figure comes from the same engine and pricing.
  */
 
-import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
+import { brandMarkupFor, chosenClientType } from '@/lib/pricing/brandMarkup'
 import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
 import {
   computeQuote, priceTransport,
@@ -59,8 +59,10 @@ export type QuoteRequest = {
   reserveSoftHolds?: boolean
   alloyRenews?: boolean
   hopLimitRoadMiles?: number
-  /** Seller's Brand Direct markup; applied only if Salesforce says the account is Brand Direct. */
+  /** Seller's Brand Direct markup; applied only to a Brand Direct quote (clientType). */
   brandMarkupPct?: number
+  /** The seller's pick, Agency or Brand Direct (chosenClientType); else the account's in Salesforce. */
+  clientType?: string
   /**
    * Revising an existing booking (lib/bookings.ts bookingKey): its holds are
    * left out of the fleet so its trucks are free to it, and while it is live
@@ -390,10 +392,12 @@ export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: O
   }
   const { overrides, basis } = await rateOverridesFor(req.sfdcAccountId)
   // Brand Direct: folded into every market's prices (lib/pricing/brandMarkup.ts).
-  const accountInfo = req.sfdcAccountId && isSfdcConfigured()
+  const chosen = chosenClientType(req.clientType)
+  const accountInfo = !chosen && req.sfdcAccountId && isSfdcConfigured()
     ? await getSfdcAccountInfo(req.sfdcAccountId).catch((err) => { console.error('[plan/quote] account lookup failed:', err); return null })
     : null
-  const markupPct = brandMarkupFor(accountInfo?.clientType, req.brandMarkupPct)
+  const clientType = chosen ?? accountInfo?.clientType ?? null
+  const markupPct = brandMarkupFor(clientType, req.brandMarkupPct)
   const s: EngineSettings = {
     ...DEFAULT_ENGINE,
     today,
@@ -437,7 +441,7 @@ export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: O
   }
 
   return {
-    quote: { lines: priced, summary, itineraries: itineraries(plan), alternatives, reserved: fleet.reserved, pricingBasis: basis, brandMarkupPct: markupPct, clientType: accountInfo?.clientType ?? null, warnings },
+    quote: { lines: priced, summary, itineraries: itineraries(plan), alternatives, reserved: fleet.reserved, pricingBasis: basis, brandMarkupPct: markupPct, clientType, warnings },
     lines,
     plan,
   }

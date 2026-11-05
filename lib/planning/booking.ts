@@ -13,7 +13,7 @@ import type { LineQuote, QuoteRequest } from './quote'
  * nothing internal: no truck origins, no transport we absorb, no fleet counts,
  * no other markets.
  */
-export function lineFeatures(l: LineQuote, f: QuoteRequest['features'], brandMarkupPct = 0): QuoteFeatures {
+export function lineFeatures(l: LineQuote, f: QuoteRequest['features'], brandMarkupPct = 0, clientType?: 'Agency' | 'Brand Direct' | null): QuoteFeatures {
   return {
     dailyRate: l.dailyRate,
     hourSurcharge: l.hourSurcharge,
@@ -34,6 +34,7 @@ export function lineFeatures(l: LineQuote, f: QuoteRequest['features'], brandMar
     requestedStart: l.startDate,
     requestedEnd: l.endDate,
     brandMarkupPct,
+    ...(clientType ? { clientType } : {}),
   }
 }
 

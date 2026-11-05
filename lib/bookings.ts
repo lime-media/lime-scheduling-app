@@ -12,6 +12,7 @@
 
 import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { centralDate } from '@/lib/dateOnly'
+import { chosenClientType, type ClientType } from '@/lib/pricing/brandMarkup'
 
 type BookingRow = {
   campaign_group_id: string | null
@@ -176,9 +177,12 @@ export function reinstateRefusal(clashes: { truck: string; client: string; start
  * a request may already be waiting, and an AT&T soft hold is never a
  * client's. Pure.
  */
+/** What a client is told about a won deal (no internal stage names or Salesforce steps). */
+export const CLIENT_CONFIRMED = 'This booking is confirmed; there is no hold to extend.'
+
 export function clientExtendRefusal(holds: { status: string }[]): string | null {
   const live = holds.filter(h => h.status !== 'EXPIRED')
-  if (live.some(h => h.status === 'COMMITTED')) return 'This booking is confirmed; there is no hold to extend.'
+  if (live.some(h => h.status === 'COMMITTED')) return CLIENT_CONFIRMED
   if (live.some(h => h.status === 'EXTENSION_REQUESTED')) return 'An extension has already been requested for this booking.'
   if (live.length === 0) return 'This booking has expired and can no longer be extended.'
   if (live.some(h => h.status !== 'HOLD')) return 'This booking cannot be extended.'
@@ -355,6 +359,8 @@ export function reviseRows(holds: RevisableHold[]): {
   quoteOnly: boolean
   /** The Brand Direct markup it was sold at, or null when the holds predate recording it. */
   brandMarkupPct: number | null
+  /** The client type the seller priced it as, or null when the holds predate recording it. */
+  clientType: ClientType | null
 } {
   const live = holds.some(h => h.live)
   const byGroup = new Map<string, RevisableHold[]>()
@@ -391,6 +397,7 @@ export function reviseRows(holds: RevisableHold[]): {
     live,
     quoteOnly: holds.every(h => h.origination === QUOTE_ONLY_ORIGINATION),
     brandMarkupPct: typeof f.brandMarkupPct === 'number' ? f.brandMarkupPct : null,
+    clientType: chosenClientType(f.clientType),
   }
 }
 

@@ -45,7 +45,7 @@ export type InfeasibleHold = {
 export type HoldAuditResult = {
   checked: number
   infeasible: InfeasibleHold[]
-  /** Holds skipped because their own market could not be geocoded. */
+  /** Holds whose own market could not be located: clash-checked, but their travel wasn't. */
   unresolvedMarkets: { holdId: string; market: string }[]
   /**
    * Holds whose PRIOR job market could not be geocoded, so distance fell back
@@ -81,12 +81,6 @@ export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
     if (h.status === 'ATT_SOFT') continue
     if (h.end_date < today) continue // already in the past — nothing to fix
 
-    const campaignCoords = await coordsFor(h.market)
-    if (!campaignCoords) {
-      unresolvedMarkets.push({ holdId: h.id, market: h.market })
-      continue
-    }
-
     // The hold under test must not appear in its own chain. (A won hold's own
     // LED program days are already out of the timelines: dropOwnProgramDays.)
     const jobs: TruckJob[] = (timelines.get(h.truck_number) ?? []).filter(
@@ -121,6 +115,15 @@ export async function auditHoldFeasibility(): Promise<HoldAuditResult> {
         overridable: clash.yieldable,
         clashWith: clash.source === 'SCHEDULE' ? 'SCHEDULE' : clash.yieldable ? 'SOFT_HOLD' : 'RESERVATION',
       })
+      continue
+    }
+
+    // Only the travel check needs the market located. The clash check above
+    // ran either way: a mirrored Salesforce hold kept as written ("Multi-market:
+    // ...", a venue) is still a truck sold twice if it overlaps.
+    const campaignCoords = await coordsFor(h.market)
+    if (!campaignCoords) {
+      unresolvedMarkets.push({ holdId: h.id, market: h.market })
       continue
     }
 

@@ -51,52 +51,20 @@ WHERE COALESCE(t.is_deleted, 0) = 0
 `
 
 /**
- * Where driver names live is not something this app has read before, so it is
- * found from the schema rather than assumed: a table (other than
- * program_schedule) with a driver_uid column and a name column. Cached per
- * process. Null when none is found; drivers then show by id.
+ * Drivers are LED users (program_schedule.driver_uid = users.user_uid, the
+ * join LED's program-schedule views use). Kept out of the shifts query so a
+ * failure here shows drivers by id instead of failing the whole planner.
  */
-type DriverSource = { table: string; uid: string; name: string } | null
-let driverSource: DriverSource | undefined
-
-async function findDriverSource(): Promise<DriverSource> {
-  if (driverSource !== undefined) return driverSource
+async function driverNames(): Promise<Map<string, string>> {
   try {
-    const cols = await query<{ table_name: string; column_name: string }[]>(`
-      SELECT c.TABLE_NAME AS table_name, c.COLUMN_NAME AS column_name
-      FROM INFORMATION_SCHEMA.COLUMNS c
-      WHERE c.TABLE_SCHEMA = 'dbo'
-        AND c.TABLE_NAME IN (
-          SELECT TABLE_NAME FROM INFORMATION_SCHEMA.COLUMNS
-          WHERE TABLE_SCHEMA = 'dbo' AND COLUMN_NAME = 'driver_uid' AND TABLE_NAME <> 'program_schedule'
-        )
-    `)
-    const byTable = new Map<string, Set<string>>()
-    for (const c of cols) byTable.set(c.table_name, (byTable.get(c.table_name) ?? new Set()).add(c.column_name.toLowerCase()))
-    // Prefer a table named like drivers; then any with a usable name column.
-    const tables = [...byTable.keys()].sort((a, b) => Number(!/driver/i.test(a)) - Number(!/driver/i.test(b)))
-    for (const table of tables) {
-      const c = byTable.get(table)!
-      const name = c.has('first_name') && c.has('last_name') ? "CONCAT(first_name, ' ', last_name)"
-        : c.has('driver_name') ? 'driver_name' : c.has('full_name') ? 'full_name' : c.has('name') ? 'name' : null
-      if (name) { driverSource = { table, uid: 'driver_uid', name }; return driverSource }
-    }
-    driverSource = null
+    const rows = await query<{ uid: string; name: string | null }[]>(
+      `SELECT CAST(user_uid AS NVARCHAR(64)) AS uid, NULLIF(LTRIM(RTRIM(user_name)), '') AS name FROM dbo.users`,
+    )
+    return new Map(rows.filter((r): r is { uid: string; name: string } => Boolean(r.uid && r.name)).map(r => [r.uid.toLowerCase(), r.name]))
   } catch (err) {
-    console.error('[planner] driver table lookup failed:', err)
-    driverSource = null
+    console.error('[planner] driver names failed:', err)
+    return new Map()
   }
-  return driverSource
-}
-
-async function driverNames(ids: string[]): Promise<Map<string, string>> {
-  const src = await findDriverSource()
-  if (!src || ids.length === 0) return new Map()
-  const rows = await query<{ uid: string; name: string }[]>(
-    `SELECT CAST(${src.uid} AS NVARCHAR(64)) AS uid, LTRIM(RTRIM(${src.name})) AS name FROM dbo.[${src.table.replace(/]/g, '')}]`,
-  )
-  const want = new Set(ids.map(i => i.toLowerCase()))
-  return new Map(rows.filter(r => r.uid && r.name && want.has(r.uid.toLowerCase())).map(r => [r.uid.toLowerCase(), r.name]))
 }
 
 async function opportunityNames(ids: string[]): Promise<Map<string, { name: string; jobNumber: string | null }>> {
@@ -136,7 +104,8 @@ export async function GET(req: NextRequest) {
     : plannerWindow(centralDate(new Date()))
 
   try {
-    const [trucksRaw, shiftsRaw, holds] = await Promise.all([
+    // Driver names don't depend on the shifts, so they load alongside them.
+    const [trucksRaw, shiftsRaw, holds, names] = await Promise.all([
       query<{ truck_number: string }[]>(ALL_TRUCKS_QUERY),
       query<{ truck_number: string; shift_date: Date | string; minutes: number | null; driver_uid: string | null; client: string; program: string; job_number: string | null; market: string }[]>(
         SHIFTS_QUERY, { from: window.from, to: window.to }),
@@ -144,12 +113,12 @@ export async function GET(req: NextRequest) {
         where: { ...activeHoldWhere(), start_date: { lte: new Date(window.to) }, end_date: { gte: new Date(window.from) } },
         select: { id: true, truck_number: true, start_date: true, end_date: true, status: true, source: true, client_name: true, market: true, state: true, features: true, sfdc_opportunity_id: true, campaign_group_id: true },
       }),
+      driverNames(),
     ])
 
     const trucks = [...new Set(trucksRaw.map(r => String(r.truck_number)))].filter(t => !HIDDEN_TRUCKS.has(t)).sort()
-    const driverIds = [...new Set(shiftsRaw.map(r => r.driver_uid).filter((x): x is string => Boolean(x)))]
     const oppIds = [...new Set(holds.map(h => h.sfdc_opportunity_id).filter((x): x is string => Boolean(x)))]
-    const [names, opps, src] = await Promise.all([driverNames(driverIds), opportunityNames(oppIds), findDriverSource()])
+    const opps = await opportunityNames(oppIds)
 
     const shifts: PlannerShift[] = shiftsRaw
       .filter(r => !HIDDEN_TRUCKS.has(String(r.truck_number)))
@@ -164,6 +133,8 @@ export async function GET(req: NextRequest) {
         jobNumber: r.job_number,
         market: r.market,
       }))
+    // Counted over the shifts the planner shows, so hidden trucks' drivers don't skew the banner.
+    const driverIds = new Set(shifts.map(s => s.driverId?.toLowerCase()).filter((x): x is string => Boolean(x)))
 
     const plannerHolds: PlannerHold[] = holds
       .filter(h => !HIDDEN_TRUCKS.has(h.truck_number) && (h.status === 'HOLD' || h.status === 'COMMITTED' || h.status === 'ATT_SOFT'))
@@ -192,9 +163,8 @@ export async function GET(req: NextRequest) {
       trucks,
       entries,
       meta: {
-        driverSource: src ? src.table : null,
-        driversNamed: names.size,
-        driversSeen: driverIds.length,
+        driversNamed: [...driverIds].filter(id => names.has(id)).length,
+        driversSeen: driverIds.size,
         opportunitiesNamed: opps.size,
         opportunitiesSeen: oppIds.length,
       },

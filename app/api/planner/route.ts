@@ -104,7 +104,8 @@ export async function GET(req: NextRequest) {
     : plannerWindow(centralDate(new Date()))
 
   try {
-    const [trucksRaw, shiftsRaw, holds] = await Promise.all([
+    // Driver names don't depend on the shifts, so they load alongside them.
+    const [trucksRaw, shiftsRaw, holds, names] = await Promise.all([
       query<{ truck_number: string }[]>(ALL_TRUCKS_QUERY),
       query<{ truck_number: string; shift_date: Date | string; minutes: number | null; driver_uid: string | null; client: string; program: string; job_number: string | null; market: string }[]>(
         SHIFTS_QUERY, { from: window.from, to: window.to }),
@@ -112,12 +113,12 @@ export async function GET(req: NextRequest) {
         where: { ...activeHoldWhere(), start_date: { lte: new Date(window.to) }, end_date: { gte: new Date(window.from) } },
         select: { id: true, truck_number: true, start_date: true, end_date: true, status: true, source: true, client_name: true, market: true, state: true, features: true, sfdc_opportunity_id: true, campaign_group_id: true },
       }),
+      driverNames(),
     ])
 
     const trucks = [...new Set(trucksRaw.map(r => String(r.truck_number)))].filter(t => !HIDDEN_TRUCKS.has(t)).sort()
-    const driverIds = new Set(shiftsRaw.map(r => r.driver_uid?.toLowerCase()).filter((x): x is string => Boolean(x)))
     const oppIds = [...new Set(holds.map(h => h.sfdc_opportunity_id).filter((x): x is string => Boolean(x)))]
-    const [names, opps] = await Promise.all([driverNames(), opportunityNames(oppIds)])
+    const opps = await opportunityNames(oppIds)
 
     const shifts: PlannerShift[] = shiftsRaw
       .filter(r => !HIDDEN_TRUCKS.has(String(r.truck_number)))
@@ -132,6 +133,8 @@ export async function GET(req: NextRequest) {
         jobNumber: r.job_number,
         market: r.market,
       }))
+    // Counted over the shifts the planner shows, so hidden trucks' drivers don't skew the banner.
+    const driverIds = new Set(shifts.map(s => s.driverId?.toLowerCase()).filter((x): x is string => Boolean(x)))
 
     const plannerHolds: PlannerHold[] = holds
       .filter(h => !HIDDEN_TRUCKS.has(h.truck_number) && (h.status === 'HOLD' || h.status === 'COMMITTED' || h.status === 'ATT_SOFT'))

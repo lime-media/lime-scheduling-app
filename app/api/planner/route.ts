@@ -32,7 +32,6 @@ SELECT
     ${shiftDay('ps.start_time')} AS shift_date,
     COALESCE(ps.shift_duration_in_mins, DATEDIFF(MINUTE, ps.start_time, ps.end_time)) AS minutes,
     CAST(ps.driver_uid AS NVARCHAR(64)) AS driver_uid,
-    NULLIF(LTRIM(RTRIM(du.user_name)), '') AS driver_name,
     COALESCE(cl.client,  '') AS client,
     COALESCE(cp.program, '') AS program,
     NULLIF(LTRIM(RTRIM(cp.job_number)), '') AS job_number,
@@ -46,13 +45,27 @@ LEFT JOIN dbo.clients cl
     ON  cl.client_uid = cp.client_uid
 LEFT JOIN dbo.client_program_markets cpm
     ON  cpm.client_program_market_uid = ps.client_program_market_uid
--- Drivers are LED users: the same join LED's program-schedule views use.
-LEFT JOIN dbo.users du
-    ON  du.user_uid = ps.driver_uid
 WHERE COALESCE(t.is_deleted, 0) = 0
   AND ${liveProgram()}
   AND ${shiftDayIn({ from: '@from', to: '@to' })}
 `
+
+/**
+ * Drivers are LED users (program_schedule.driver_uid = users.user_uid, the
+ * join LED's program-schedule views use). Kept out of the shifts query so a
+ * failure here shows drivers by id instead of failing the whole planner.
+ */
+async function driverNames(): Promise<Map<string, string>> {
+  try {
+    const rows = await query<{ uid: string; name: string | null }[]>(
+      `SELECT CAST(user_uid AS NVARCHAR(64)) AS uid, NULLIF(LTRIM(RTRIM(user_name)), '') AS name FROM dbo.users`,
+    )
+    return new Map(rows.filter((r): r is { uid: string; name: string } => Boolean(r.uid && r.name)).map(r => [r.uid.toLowerCase(), r.name]))
+  } catch (err) {
+    console.error('[planner] driver names failed:', err)
+    return new Map()
+  }
+}
 
 async function opportunityNames(ids: string[]): Promise<Map<string, { name: string; jobNumber: string | null }>> {
   if (ids.length === 0 || !isSfdcConfigured()) return new Map()
@@ -93,7 +106,7 @@ export async function GET(req: NextRequest) {
   try {
     const [trucksRaw, shiftsRaw, holds] = await Promise.all([
       query<{ truck_number: string }[]>(ALL_TRUCKS_QUERY),
-      query<{ truck_number: string; shift_date: Date | string; minutes: number | null; driver_uid: string | null; driver_name: string | null; client: string; program: string; job_number: string | null; market: string }[]>(
+      query<{ truck_number: string; shift_date: Date | string; minutes: number | null; driver_uid: string | null; client: string; program: string; job_number: string | null; market: string }[]>(
         SHIFTS_QUERY, { from: window.from, to: window.to }),
       prisma.hold.findMany({
         where: { ...activeHoldWhere(), start_date: { lte: new Date(window.to) }, end_date: { gte: new Date(window.from) } },
@@ -102,9 +115,9 @@ export async function GET(req: NextRequest) {
     ])
 
     const trucks = [...new Set(trucksRaw.map(r => String(r.truck_number)))].filter(t => !HIDDEN_TRUCKS.has(t)).sort()
-    const driverIds = [...new Set(shiftsRaw.map(r => r.driver_uid).filter((x): x is string => Boolean(x)))]
+    const driverIds = new Set(shiftsRaw.map(r => r.driver_uid?.toLowerCase()).filter((x): x is string => Boolean(x)))
     const oppIds = [...new Set(holds.map(h => h.sfdc_opportunity_id).filter((x): x is string => Boolean(x)))]
-    const opps = await opportunityNames(oppIds)
+    const [names, opps] = await Promise.all([driverNames(), opportunityNames(oppIds)])
 
     const shifts: PlannerShift[] = shiftsRaw
       .filter(r => !HIDDEN_TRUCKS.has(String(r.truck_number)))
@@ -113,7 +126,7 @@ export async function GET(req: NextRequest) {
         date: r.shift_date instanceof Date ? iso(r.shift_date) : String(r.shift_date).slice(0, 10),
         minutes: r.minutes === null ? null : Number(r.minutes),
         driverId: r.driver_uid,
-        driverName: r.driver_uid ? r.driver_name : null,
+        driverName: r.driver_uid ? names.get(r.driver_uid.toLowerCase()) ?? null : null,
         client: r.client,
         program: r.program,
         jobNumber: r.job_number,
@@ -147,8 +160,8 @@ export async function GET(req: NextRequest) {
       trucks,
       entries,
       meta: {
-        driversNamed: new Set(shiftsRaw.filter(r => r.driver_uid && r.driver_name).map(r => r.driver_uid!.toLowerCase())).size,
-        driversSeen: driverIds.length,
+        driversNamed: [...driverIds].filter(id => names.has(id)).length,
+        driversSeen: driverIds.size,
         opportunitiesNamed: opps.size,
         opportunitiesSeen: oppIds.length,
       },

@@ -38,7 +38,7 @@ type PlannerData = {
   window: { from: string; to: string; days: string[] }
   trucks: string[]
   entries: Entry[]
-  meta: { driverSource: string | null; driversNamed: number; driversSeen: number; opportunitiesNamed: number; opportunitiesSeen: number }
+  meta: { driversNamed: number; driversSeen: number; opportunitiesNamed: number; opportunitiesSeen: number }
 }
 
 // Planner kinds are the grid's statuses; colours and labels come from the shared palette.
@@ -272,7 +272,7 @@ export function OpsPlanner() {
 
       {(partialDrivers || partialOpps) && (
         <div className="px-4 py-2 text-xs text-amber-900 bg-amber-50 border-b border-amber-200 space-y-0.5" role="status">
-          {partialDrivers && <div>{data!.meta.driversNamed} of {data!.meta.driversSeen} driver names found{data!.meta.driverSource ? ` in ${data!.meta.driverSource}` : ''}; the rest show as “Driver” plus an id.</div>}
+          {partialDrivers && <div>{data!.meta.driversNamed} of {data!.meta.driversSeen} driver names found; the rest show as “Driver” plus an id.</div>}
           {partialOpps && <div>{data!.meta.opportunitiesNamed} of {data!.meta.opportunitiesSeen} Salesforce opportunity names found; the rest show as “Opportunity” plus an id.</div>}
         </div>
       )}

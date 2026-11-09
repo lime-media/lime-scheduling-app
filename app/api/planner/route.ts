@@ -55,11 +55,26 @@ WHERE COALESCE(t.is_deleted, 0) = 0
  * join LED's program-schedule views use). Kept out of the shifts query so a
  * failure here shows drivers by id instead of failing the whole planner.
  */
-async function driverNames(): Promise<Map<string, string>> {
+const DRIVER_NAMES_QUERY = `
+SELECT CAST(u.user_uid AS NVARCHAR(64)) AS uid, NULLIF(LTRIM(RTRIM(u.user_name)), '') AS name
+FROM dbo.users u
+WHERE u.user_uid IN (
+    -- Only the drivers of the window's shifts, not every LED user.
+    SELECT ps.driver_uid
+    FROM dbo.program_schedule ps
+    LEFT JOIN dbo.client_programs cp
+        ON  cp.client_program_uid = ps.client_program_uid
+    LEFT JOIN dbo.client_program_markets cpm
+        ON  cpm.client_program_market_uid = ps.client_program_market_uid
+    WHERE ps.driver_uid IS NOT NULL
+      AND ${shiftDayIn({ from: '@from', to: '@to' })}
+      AND ${liveProgram()}
+)
+`
+
+async function driverNames(window: { from: string; to: string }): Promise<Map<string, string>> {
   try {
-    const rows = await query<{ uid: string; name: string | null }[]>(
-      `SELECT CAST(user_uid AS NVARCHAR(64)) AS uid, NULLIF(LTRIM(RTRIM(user_name)), '') AS name FROM dbo.users`,
-    )
+    const rows = await query<{ uid: string; name: string | null }[]>(DRIVER_NAMES_QUERY, { from: window.from, to: window.to })
     return new Map(rows.filter((r): r is { uid: string; name: string } => Boolean(r.uid && r.name)).map(r => [r.uid.toLowerCase(), r.name]))
   } catch (err) {
     console.error('[planner] driver names failed:', err)
@@ -113,7 +128,7 @@ export async function GET(req: NextRequest) {
         where: { ...activeHoldWhere(), start_date: { lte: new Date(window.to) }, end_date: { gte: new Date(window.from) } },
         select: { id: true, truck_number: true, start_date: true, end_date: true, status: true, source: true, client_name: true, market: true, state: true, features: true, sfdc_opportunity_id: true, campaign_group_id: true },
       }),
-      driverNames(),
+      driverNames(window),
     ])
 
     const trucks = [...new Set(trucksRaw.map(r => String(r.truck_number)))].filter(t => !HIDDEN_TRUCKS.has(t)).sort()

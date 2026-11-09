@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { clearBookingCancel } from '@/lib/cancelBooking'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { SFDC_SERVICE_USER_EMAIL, appHasNotReleased, appHoldExpOf, opportunityMarketCandidates, pushedHoldExpiry, trucksToMirror, withAppHoldExp } from '@/lib/sfdcIntegration'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
@@ -267,6 +268,8 @@ export async function POST(req: NextRequest) {
           ...(expiredNow  && { status: 'EXPIRED' }),
         },
       })
+      // A cancelled booking brought back by the push: no longer cancelled anywhere in it.
+      if (reactivated && existing.cancelled_at) await clearBookingCancel(updated)
       results.push({ truck_number, hold_id: updated.id, action: 'updated' })
       await prisma.auditLog.create({
         data: {

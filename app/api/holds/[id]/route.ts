@@ -9,6 +9,7 @@ import { recordSwap, recordWon, winsToRecord } from '@/lib/transportMetricsRecor
 import { waitUntil } from '@vercel/functions'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
+import { clearBookingCancel } from '@/lib/cancelBooking'
 
 export async function PUT(
   req: NextRequest,
@@ -123,6 +124,9 @@ export async function PUT(
     if (err instanceof HoldLockTimeoutError) return NextResponse.json({ error: err.message }, { status: 409 })
     throw err
   }
+
+  // A cancelled booking brought back through this hold: no longer cancelled anywhere in it.
+  if (hold.cancelled_at && updated.status !== 'EXPIRED') await clearBookingCancel(updated)
 
   await prisma.auditLog.create({
     data: {

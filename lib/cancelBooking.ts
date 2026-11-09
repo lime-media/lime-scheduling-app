@@ -103,3 +103,20 @@ export async function cancelBooking(opts: { hold: Hold; userId: string; reason: 
   const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
   return reply({ ok: true, cancelled: taken.length, emailed, sfdcWarning })
 }
+
+/**
+ * A hold of a cancelled booking was brought back one at a time (the hold
+ * edit, a Salesforce push): the booking is no longer cancelled, so clear the
+ * mark from all its rows, as Reinstate does. Otherwise its other rows keep
+ * it and a later lapse of the booking reads as the old cancel (`cancelledOf`
+ * marks a card cancelled when any row is). Best-effort: a failure leaves only
+ * the label wrong, never a hold, so it is logged, not thrown.
+ */
+export async function clearBookingCancel(hold: Hold): Promise<void> {
+  try {
+    const ids = (await loadBooking(hold)).filter(h => h.cancelled_at).map(h => h.id)
+    if (ids.length) await prisma.hold.updateMany({ where: { id: { in: ids } }, data: { cancelled_at: null, cancel_reason: null, cancelled_by: null } })
+  } catch (err) {
+    console.error('[cancel] clearing a revived booking\'s cancel failed:', err)
+  }
+}

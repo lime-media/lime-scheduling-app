@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { brandChange, cleanBrand, opportunityName, readBrand } from '@/lib/brand'
+import { brandChange, cleanBrand, opportunityName, readBrand, savedBrand } from '@/lib/brand'
 
 section('brand: only the brand is saved')
 eq('a plain brand', cleanBrand('  Nike  '), 'Nike')
@@ -34,4 +34,6 @@ section('readBrand: the chat and MCP ask, never assume (F6)')
 eq('a brand', readBrand('Nike LED', true), { brand: 'Nike' })
 eq('"none" is an answer: no brand', [readBrand('none', true), readBrand(' No Brand ', true), readBrand('N/A', true)], [{ brand: '' }, { brand: '' }, { brand: '' }])
 eq('missing, when required: refused', 'error' in readBrand(undefined, true) && 'error' in readBrand('  ', true), true)
+eq('"none." and "n.a." are answers too', [readBrand('None.', true), readBrand('n.a.', true)], [{ brand: '' }, { brand: '' }])
 eq('missing on the Quote page: no brand', readBrand(undefined, false), { brand: '' })
+eq('savedBrand: none is no brand, a brand is cleaned', [savedBrand('None'), savedBrand('Nike LED'), savedBrand(undefined)], ['', 'Nike', ''])

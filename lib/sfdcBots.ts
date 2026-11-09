@@ -31,8 +31,11 @@ export const SFDC_BOT_USER_IDS: ReadonlySet<string> = new Set([
  * Who made a hold's opportunity: a bot, a person, or not known yet (the
  * reconcile hasn't filled it). Three answers, so a sender can't read "not
  * known" as "a person" and send a bot booking in the first sweep's window.
+ * A hold with no opportunity is never a bot's, and the reconcile never fills
+ * it, so it is 'person' rather than 'unknown' (which would wait forever).
  */
-export function opportunityCreator(h: { sfdc_created_by_id: string | null }): 'bot' | 'person' | 'unknown' {
+export function opportunityCreator(h: { sfdc_opportunity_id: string | null; sfdc_created_by_id: string | null }): 'bot' | 'person' | 'unknown' {
+  if (!h.sfdc_opportunity_id) return 'person'
   if (!h.sfdc_created_by_id) return 'unknown'
   return SFDC_BOT_USER_IDS.has(h.sfdc_created_by_id) ? 'bot' : 'person'
 }

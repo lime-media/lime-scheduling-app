@@ -140,8 +140,8 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
   // Job_Number__c only links holds to LED (lib/ledJobs.ts). If this org or the
   // integration user can't read it, the stages are still read without it:
   // losing the LED link must never stop deals being committed or released.
-  // AccountId (a standard field) is in both forms of the query, so it has no
-  // such fallback: a field added here that might be unreadable belongs in the
+  // AccountId and CreatedById (standard fields) are in both forms of the query,
+  // so they have no such fallback: a field added here that might be unreadable belongs in the
   // optional part, or an unreadable one fails the whole reconcile.
   // Opportunities read with Job_Number__c: only their holds' job numbers are updated.
   const readWithJob = new Set<string>()

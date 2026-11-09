@@ -7,9 +7,10 @@ import { eq, section } from './harness'
 import { isUserId, opportunityCreator } from '@/lib/sfdcBots'
 
 section('opportunityCreator')
-eq('the Leah Miles bot', opportunityCreator({ sfdc_created_by_id: '005VP00000MNXcvYAH' }), 'bot')
-eq('a person', opportunityCreator({ sfdc_created_by_id: '005f200000AN2iUAAT' }), 'person')
-eq('not known yet (before the reconcile fills it): unknown, not a person', opportunityCreator({ sfdc_created_by_id: null }), 'unknown')
+eq('the Leah Miles bot', opportunityCreator({ sfdc_opportunity_id: '006VP00000AbCdEYAX', sfdc_created_by_id: '005VP00000MNXcvYAH' }), 'bot')
+eq('a person', opportunityCreator({ sfdc_opportunity_id: '006VP00000AbCdEYAX', sfdc_created_by_id: '005f200000AN2iUAAT' }), 'person')
+eq('not known yet (before the reconcile fills it): unknown, not a person', opportunityCreator({ sfdc_opportunity_id: '006VP00000AbCdEYAX', sfdc_created_by_id: null }), 'unknown')
+eq('no opportunity: never a bot, never waits', opportunityCreator({ sfdc_opportunity_id: null, sfdc_created_by_id: null }), 'person')
 
 section('isUserId')
 eq('an 18-character user id', isUserId('005VP00000MNXcvYAH'), true)

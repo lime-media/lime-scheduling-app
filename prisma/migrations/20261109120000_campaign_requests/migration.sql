@@ -14,6 +14,11 @@
 -- column. Safe to re-run: guarded on the table. A new table only.
 -- No GO separators: works in sqlcmd, SSMS, Azure Data Studio or the portal.
 
+-- The filtered unique index below needs these on; classic sqlcmd turns
+-- QUOTED_IDENTIFIER off unless run with -I.
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+
 IF OBJECT_ID('dbo.app_campaign_requests', 'U') IS NULL
     CREATE TABLE [dbo].[app_campaign_requests] (
         [booking_key]      NVARCHAR(191)    NOT NULL CONSTRAINT [PK_app_campaign_requests] PRIMARY KEY,

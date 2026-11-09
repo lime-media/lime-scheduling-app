@@ -277,9 +277,10 @@ async function quote(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
     && !!q.client_type && !!terms.lead_source && !('error' in readBrand(terms.brand, true))
   // The summary is what the rep confirms when the reply leaves the ref out, so
   // it names everything the ref covers that changes the opportunity.
+  const savedAs = savedBrand(terms.brand)
   return {
     content: json({ ...body, quote_ref: ref }),
-    quote: bookable ? { ref, summary: `${body.market}, ${q.start_date} to ${q.end_date}, ${q.truck_count} truck${q.truck_count === 1 ? '' : 's'}${trucks ? ` (${trucks})` : ''}, ${money(body.grandTotal)}${terms.sfdc_account_name ? ` for ${terms.sfdc_account_name.trim()}` : ''}, ${q.client_type}, lead source ${terms.lead_source}, ${savedBrand(terms.brand) ? `brand ${savedBrand(terms.brand)}` : 'no brand'}, held ${terms.hold_days ?? DEFAULT_HOLD_DAYS} days` } : undefined,
+    quote: bookable ? { ref, summary: `${body.market}, ${q.start_date} to ${q.end_date}, ${q.truck_count} truck${q.truck_count === 1 ? '' : 's'}${trucks ? ` (${trucks})` : ''}, ${money(body.grandTotal)}${terms.sfdc_account_name ? ` for ${terms.sfdc_account_name.trim()}` : ''}, ${q.client_type}, lead source ${terms.lead_source}, ${savedAs ? `brand ${savedAs}` : 'no brand'}, held ${terms.hold_days ?? DEFAULT_HOLD_DAYS} days` } : undefined,
   }
 }
 

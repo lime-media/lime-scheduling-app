@@ -10,7 +10,7 @@ import { prisma } from '@/lib/prisma'
 import { centralDate, parseDateOnly } from '@/lib/dateOnly'
 import { loadBooking } from '@/lib/bookingExpiry'
 import { readCancelToken } from '@/lib/extendLink'
-import { closedWonRefusal } from '@/lib/bookings'
+import { bookingSummary, closedWonRefusal } from '@/lib/bookings'
 import { CancelConfirm } from './CancelConfirm'
 
 export const dynamic = 'force-dynamic'
@@ -37,6 +37,10 @@ export default async function CancelPage({ searchParams }: { searchParams: { t?:
   if (!claims || !hold || hold.created_by !== claims.userId) {
     return <Shell><p className="text-sm text-gray-700">This link has expired or isn&apos;t valid. You can still cancel the reservation on {reservations}.</p></Shell>
   }
+  // Cancelled already (from this link, or on Reservations): say so, not "changed".
+  if (hold.status === 'EXPIRED' && hold.cancelled_at) {
+    return <Shell><p className="text-sm text-gray-700">This reservation has already been cancelled. It&apos;s on {reservations} under Expired, where it can be reinstated.</p></Shell>
+  }
   if (hold.expires_at?.toISOString() !== claims.expiresAt || (hold.status !== 'HOLD' && hold.status !== 'EXTENSION_REQUESTED')) {
     return <Shell><p className="text-sm text-gray-700">This reservation has already been extended or changed since this email. You can cancel it on {reservations}.</p></Shell>
   }
@@ -47,9 +51,7 @@ export default async function CancelPage({ searchParams }: { searchParams: { t?:
     return <Shell><p className="text-sm text-gray-700">Part of this reservation is already committed (Closed Won), so it can&apos;t be cancelled here. Change it in Salesforce first, or see it on {reservations}.</p></Shell>
   }
   const booking = whole.filter(h => h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED')
-  const day = (d: Date) => d.toISOString().slice(0, 10)
-  const markets = [...new Set(booking.map(h => h.market))]
-  const trucks = [...new Set(booking.map(h => h.truck_number))]
+  const { markets, trucks, startDate, endDate } = bookingSummary(booking)
 
   return (
     <Shell>
@@ -60,7 +62,7 @@ export default async function CancelPage({ searchParams }: { searchParams: { t?:
       <dl className="text-sm grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
         <dt className="text-gray-500">{markets.length > 1 ? 'Markets' : 'Market'}</dt><dd className="text-gray-900">{markets.join(', ')}</dd>
         <dt className="text-gray-500">{trucks.length > 1 ? 'Trucks' : 'Truck'}</dt><dd className="text-gray-900">{trucks.join(', ')}</dd>
-        <dt className="text-gray-500">Dates</dt><dd className="text-gray-900">{longDate(booking.map(h => day(h.start_date)).sort()[0])} – {longDate(booking.map(h => day(h.end_date)).sort().reverse()[0])}</dd>
+        <dt className="text-gray-500">Dates</dt><dd className="text-gray-900">{longDate(startDate)} – {longDate(endDate)}</dd>
         <dt className="text-gray-500">Expires</dt><dd className="text-gray-900">{longDate(centralDate(new Date(claims.expiresAt)))}, end of day (Central)</dd>
       </dl>
       <p className="text-xs text-gray-500">Every market and truck of this reservation is released now. It stays on Reservations under Expired, where it can be reinstated.</p>

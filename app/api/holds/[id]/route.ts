@@ -83,6 +83,8 @@ export async function PUT(
 
   const data = {
     ...(status && { status }),
+    // Made live again: no longer cancelled (lib/cancelBooking.ts), or a later lapse would read as one.
+    ...(status && status !== 'EXPIRED' && { cancelled_at: null, cancel_reason: null, cancelled_by: null }),
     // Committed is booked, not held: no expiry left to show or sweep.
     ...(status === 'COMMITTED' && { expires_at: null, extension_until: null, extension_reason: null }),
     ...(notes !== undefined && { notes }),

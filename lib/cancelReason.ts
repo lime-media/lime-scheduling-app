@@ -12,3 +12,9 @@ export function cleanCancelReason(reason: unknown): string | null {
   const r = reason.trim().slice(0, CANCEL_REASON_MAX)
   return r || null
 }
+
+/** A cancelled booking's reason, from any of its rows that carries one; null when not cancelled. Pure. */
+export function cancelledOf(rows: { status: string; cancelled_at: string | null; cancel_reason: string | null }[]): { reason: string | null } | null {
+  const c = rows.find(r => r.status === 'EXPIRED' && r.cancelled_at)
+  return c ? { reason: c.cancel_reason } : null
+}

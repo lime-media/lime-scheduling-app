@@ -6,7 +6,7 @@ import { SERVICE_AREA_RADIUS_MILES } from '@/lib/pricing/config'
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 import toast from 'react-hot-toast'
-import { CANCEL_REASON_MAX } from '@/lib/cancelReason'
+import { CANCEL_REASON_MAX, cancelledOf } from '@/lib/cancelReason'
 import { Navbar } from '@/components/Navbar'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
 import { LedClientLink } from '@/components/LedClientLink'
@@ -217,12 +217,6 @@ function LedFollowBadge({ rows }: { rows: HoldRequest[] }) {
       )}
     </>
   )
-}
-
-/** A cancelled booking's reason, from any of its rows that carries one (lib/cancelBooking.ts). */
-const cancelledOf = (rows: { status: string; cancelled_at: string | null; cancel_reason: string | null }[]) => {
-  const c = rows.find(r => r.status === 'EXPIRED' && r.cancelled_at)
-  return c ? { reason: c.cancel_reason } : null
 }
 
 function ExpirationBadge({ expiresAt, status, cancelled }: { expiresAt: string | null; status: string; cancelled?: { reason: string | null } | null }) {

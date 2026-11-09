@@ -1,5 +1,6 @@
 'use client'
 
+import { cancelledOf } from '@/lib/cancelReason'
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
@@ -64,12 +65,6 @@ function fmtMoney(n: number): string {
 const EXP_DAY = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: APP_TIME_ZONE })
 const EXP_TIME = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: APP_TIME_ZONE, timeZoneName: 'short' })
 const EXP_FULL = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: APP_TIME_ZONE, timeZoneName: 'short' })
-
-/** A cancelled booking's reason, from any of its rows that carries one. */
-const cancelledOf = (rows: { status: string; cancelled_at: string | null; cancel_reason: string | null }[]) => {
-  const c = rows.find(r => r.status === 'EXPIRED' && r.cancelled_at)
-  return c ? { reason: c.cancel_reason } : null
-}
 
 function ExpirationBadge({ expiresAt, status, cancelled }: { expiresAt: string | null; status: string; cancelled?: { reason: string | null } | null }) {
   // Cancelled by Lime Media: say so, with the reason they were emailed.

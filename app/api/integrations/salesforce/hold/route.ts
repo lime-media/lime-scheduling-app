@@ -260,7 +260,8 @@ export async function POST(req: NextRequest) {
           // date on a committed row, which has no expiry to keep, leaves it).
           ...(holdExp && appHoldExpOf(existing.features) && appHoldExpOf(existing.features) !== holdExp.slice(0, 10) ? { features: withAppHoldExp(existing.features, null) } : {}),
           ...(isCommitted || committedNow || (reactivated && revivedAsCommitted) ? {} : { expires_at: effectiveExpiry }),
-          ...(reactivated && { status: revivedAsCommitted ? 'COMMITTED' : 'HOLD' }),
+          // Live again: no longer cancelled (lib/cancelBooking.ts), or a later lapse would read as one.
+          ...(reactivated && { status: revivedAsCommitted ? 'COMMITTED' : 'HOLD', cancelled_at: null, cancel_reason: null, cancelled_by: null }),
           ...(reactivated && revivedAsCommitted && { expires_at: null }),
           ...(committedNow && { status: 'COMMITTED', expires_at: null, extension_until: null, extension_reason: null }),
           ...(expiredNow  && { status: 'EXPIRED' }),

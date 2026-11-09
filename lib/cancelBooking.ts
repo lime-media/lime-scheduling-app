@@ -13,15 +13,13 @@
 
 import type { Hold } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { bookingKey, closedWonRefusal } from '@/lib/bookings'
+import { bookingKey, bookingSummary, closedWonRefusal } from '@/lib/bookings'
 import { loadBooking } from '@/lib/bookingExpiry'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { sendCancellationEmail } from '@/lib/email'
 import { reply, type CoreResult } from '@/lib/coreResult'
 import { cleanCancelReason } from '@/lib/cancelReason'
-
-const day = (d: Date) => d.toISOString().slice(0, 10)
 
 /**
  * Cancels `hold`'s whole booking as `userId`. `via` is recorded in the audit
@@ -51,8 +49,11 @@ export async function cancelBooking(opts: { hold: Hold; userId: string; reason: 
       data:  { status: 'EXPIRED', expires_at: now, extension_until: null, extension_reason: null, cancelled_at: now, cancel_reason: reason, cancelled_by: userId },
     })
     if (r.count > 0) {
+      // Audit only the holds this cancel took: one the sweep or another cancel
+      // took meanwhile already has its own record.
+      const took = new Set((await tx.hold.findMany({ where: { id: { in: ids }, cancelled_at: now, cancelled_by: userId }, select: { id: true } })).map(h => h.id))
       await tx.auditLog.createMany({
-        data: live.map(h => ({
+        data: live.filter(h => took.has(h.id)).map(h => ({
           action:       'CANCEL_HOLD',
           truck_number: h.truck_number,
           user_id:      userId,
@@ -69,14 +70,15 @@ export async function cancelBooking(opts: { hold: Hold; userId: string; reason: 
   let emailed = false
   const client = live.find(h => h.client_user?.email)?.client_user
   if (reason && client?.email) {
+    const s = bookingSummary(live)
     try {
       await sendCancellationEmail({
         to:           client.email,
         companyName:  client.company_name,
-        truckNumbers: [...new Set(live.map(h => h.truck_number))],
-        markets:      [...new Set(live.map(h => h.market))],
-        startDate:    live.map(h => day(h.start_date)).sort()[0],
-        endDate:      live.map(h => day(h.end_date)).sort().reverse()[0],
+        truckNumbers: s.trucks,
+        markets:      s.markets,
+        startDate:    s.startDate,
+        endDate:      s.endDate,
         reason,
       })
       emailed = true

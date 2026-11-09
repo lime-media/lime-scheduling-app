@@ -153,6 +153,17 @@ export function reinstatableHolds<H extends { status: string; end_date: Date | s
   return holds.filter(h => h.status === 'EXPIRED' && day(h.end_date) >= today)
 }
 
+/** A booking's markets, trucks and span, as the client's emails and the cancel page give them. Pure. */
+export function bookingSummary(holds: { market: string; truck_number: string; start_date: Date; end_date: Date }[]) {
+  const day = (d: Date) => d.toISOString().slice(0, 10)
+  return {
+    markets:   [...new Set(holds.map(h => h.market))],
+    trucks:    [...new Set(holds.map(h => h.truck_number))],
+    startDate: holds.map(h => day(h.start_date)).sort()[0],
+    endDate:   holds.map(h => day(h.end_date)).sort().reverse()[0],
+  }
+}
+
 /** What a rep is told when every lapsed market of a booking has already ended. */
 export const NOTHING_TO_REINSTATE = "Can't reinstate: every market of this booking has already ended. To book these trucks again, get a fresh quote."
 

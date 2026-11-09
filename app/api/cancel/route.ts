@@ -27,6 +27,9 @@ export async function POST(request: Request) {
   ])
   if (!hold || !user) return NextResponse.json({ error: 'This reservation no longer exists.' }, { status: 404 })
   if (hold.created_by !== user.id) return NextResponse.json({ error: "This link isn't for this reservation." }, { status: 403 })
+  if (hold.status === 'EXPIRED' && hold.cancelled_at) {
+    return NextResponse.json({ error: 'This reservation has already been cancelled.' }, { status: 409 })
+  }
   // The email's booking as it was warned about: once its expiry has moved
   // (extended, or changed on Reservations), this email no longer describes it.
   if (hold.expires_at?.toISOString() !== claims.expiresAt) {

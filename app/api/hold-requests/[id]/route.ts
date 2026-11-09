@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import type { Hold } from '@prisma/client'
 import { reinstateBlockedByRelease } from '@/lib/attSoftRules'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { getServerSession } from 'next-auth'
@@ -7,7 +6,7 @@ import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry } from '@/lib/holdExpiry'
-import { NOTHING_TO_REINSTATE, bookingKey, closedWonRefusal, reinstatableHolds, reinstateRefusal } from '@/lib/bookings'
+import { NOTHING_TO_REINSTATE, bookingKey, bookingSummary, closedWonRefusal, reinstatableHolds, reinstateRefusal } from '@/lib/bookings'
 import { capStarts, loadBooking, setBookingExpiry } from '@/lib/bookingExpiry'
 import { closeOpportunityAsLost, getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
@@ -35,16 +34,6 @@ const VALID_FROM: Record<Action, string[]> = {
 
 
 const day = (d: Date) => d.toISOString().slice(0, 10)
-
-/** The booking's span and markets, for the client's email. */
-function bookingSummary(holds: Hold[]) {
-  return {
-    markets:   [...new Set(holds.map(h => h.market))],
-    trucks:    [...new Set(holds.map(h => h.truck_number))],
-    startDate: holds.map(h => day(h.start_date)).sort()[0],
-    endDate:   holds.map(h => day(h.end_date)).sort().reverse()[0],
-  }
-}
 
 /**
  * PATCH /api/hold-requests/[id]
@@ -346,7 +335,17 @@ export async function PATCH(
     return NextResponse.json({ ok: true, status: newStatus, holds: reinstated.count, expires_at: newExpiresAt?.toISOString() ?? null, reopened, sfdcWarning })
   }
 
-  // ── The whole booking: cancel, extensions, expiry ──────────────────────────
+  // ── cancel_notify ───────────────────────────────────────────────────────
+  // Marked Expired and Cancelled, not deleted; the client emailed with a reason
+  // (lib/cancelBooking.ts, shared with the expiry email's Cancel link). It
+  // loads the booking and checks Closed Won itself, so it runs before the
+  // lookups below rather than repeating them.
+  if (action === 'cancel_notify') {
+    const r = await cancelBooking({ hold, userId: session.user.id, reason, via: 'reservations' })
+    return NextResponse.json(r.body, { status: r.status })
+  }
+
+  // ── The whole booking: extensions, expiry ────────────────────────────────
   const booking = await loadBooking(hold)
   // Its live, held reservations: what these actions change.
   const live = booking.filter(h => h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED')
@@ -358,14 +357,6 @@ export async function PATCH(
   const stage = !expiryChange && hold.sfdc_opportunity_id ? await getOpportunityStage(hold.sfdc_opportunity_id) : null
   const won = closedWonRefusal(booking, stage?.isClosed ? { isWon: stage.isWon } : null)
   if (won) return NextResponse.json({ error: won }, { status: 409 })
-
-  // ── cancel_notify ───────────────────────────────────────────────────────
-  // Marked Expired and Cancelled, not deleted; the client emailed with a reason
-  // (lib/cancelBooking.ts, shared with the expiry email's Cancel link).
-  if (action === 'cancel_notify') {
-    const r = await cancelBooking({ hold, userId: session.user.id, reason, via: 'reservations' })
-    return NextResponse.json(r.body, { status: r.status })
-  }
 
   // ── approve_extension ───────────────────────────────────────────────────
   if (action === 'approve_extension') {

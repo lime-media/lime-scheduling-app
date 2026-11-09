@@ -2,6 +2,7 @@
 
 import { MarketInput } from '@/components/MarketInput'
 import { BrandInput } from '@/components/BrandInput'
+import { ClientMultiMarketQuote } from '@/components/ClientMultiMarketQuote'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { ClientHeader } from '@/components/ClientHeader'
@@ -646,6 +647,9 @@ export default function ClientAiPage() {
   const [holdLoading, setHoldLoading] = useState(false)
   const [holdResult, setHoldResult] = useState<HoldResult | null>(null)
 
+  // One market (the quote form below) or several as one booking (ClientMultiMarketQuote).
+  const [mode, setMode] = useState<'one' | 'several'>('one')
+
   // Chat state
   const [chatOpen, setChatOpen] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
@@ -840,6 +844,18 @@ export default function ClientAiPage() {
       <ClientHeader clientUser={clientUser} authChecked={authChecked} />
 
       <div className="flex-1 flex flex-col min-h-0">
+        <div className="flex-shrink-0 bg-white border-b border-gray-100 px-4 pt-3 sm:px-6">
+          <div className="max-w-3xl mx-auto flex gap-1" role="tablist">
+            {([['one', 'One market'], ['several', 'Several markets']] as const).map(([m, label]) => (
+              <button key={m} type="button" role="tab" aria-selected={mode === m} onClick={() => setMode(m)}
+                className={`px-3 py-1.5 text-sm font-medium border-b-2 transition-colors ${mode === m ? 'border-green-600 text-green-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {mode === 'several' ? <ClientMultiMarketQuote /> : <>
         {/* Quote Box */}
         <QuoteBox
           form={quoteForm}
@@ -952,6 +968,7 @@ export default function ClientAiPage() {
             )}
           </div>
         </div>
+        </>}
 
         {/* Chat drawer */}
         <div className="flex-shrink-0 border-t border-gray-200 bg-white">

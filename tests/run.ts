@@ -50,6 +50,7 @@ import './shiftDay.test'
 import './ledTruckFollow.test'
 import './standardMarkets.test'
 import './clientPlan.test'
+import './clientPlanForm.test'
 import { report, settle } from './harness'
 
 // settle() lets a suite make assertions after a promise resolves; it is a

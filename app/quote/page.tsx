@@ -367,7 +367,7 @@ export default function InternalQuotePage() {
         {/* Step 1: Client selection */}
         <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 mb-4">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
-          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setClientType(a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setOpportunityType(a?.opportunityType ?? ''); setContact(null); setAttachTo(null); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
+          <AccountSearch suggestType selected={account} onSelect={(a) => { setAccount(a); setClientType(a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setOpportunityType(a?.opportunityType ?? ''); setContact(null); setAttachTo(null); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
           {account && (
             <div className="mt-3">
               {/* Sets Brand Direct pricing, so a change needs a fresh price. */}

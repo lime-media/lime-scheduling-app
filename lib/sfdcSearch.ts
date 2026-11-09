@@ -9,8 +9,12 @@ import { clientTypeOf } from '@/lib/pricing/brandMarkup'
 import { leadSourceOf } from '@/lib/sfdcLeadSource'
 import { suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
 
-/** Accounts whose name contains q (at least 2 characters), up to 20. */
-export async function searchAccounts(q: string) {
+/**
+ * Accounts whose name contains q (at least 2 characters), up to 20. With
+ * `suggestType` (the quote pages, which show the Opportunity Type picker),
+ * each carries its type suggestion, at the cost of one more query.
+ */
+export async function searchAccounts(q: string, opts: { suggestType?: boolean } = {}) {
   if (q.length < 2) return []
   // Typed % and _ are literal (an account name, not a pattern): the AI chat
   // passes its own text here, and "_" alone would match any account.
@@ -25,7 +29,7 @@ export async function searchAccounts(q: string) {
   // opportunityType: the suggestion for a new quote, Existing Client when the
   // account has won a deal (one more query for the page of accounts). Only a
   // suggestion: if that query fails, the search still answers and the seller picks.
-  const won = records.length
+  const won = !opts.suggestType ? null : records.length
     ? await sfdcQuery<{ AccountId: string }>(
         `SELECT AccountId FROM Opportunity WHERE IsWon = true AND AccountId IN (${records.map(r => `'${r.Id}'`).join(',')}) GROUP BY AccountId`,
       ).then(rows => new Set(rows.map(r => r.AccountId)), (err) => { console.error('[sfdc] won-deal lookup for account search failed:', err); return null })

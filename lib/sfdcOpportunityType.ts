@@ -37,6 +37,11 @@ export function readOpportunityType(value: unknown, required: boolean): { opport
   return { opportunityType: t }
 }
 
-/** The suggestion for an account: Existing Client once it has won a deal. Pure. */
-export const suggestedOpportunityType = (hasWon: boolean | null | undefined): OpportunityType =>
-  hasWon ? 'Existing Client' : 'New Client'
+/**
+ * The suggestion for an account: Existing Client once it has won a deal, New
+ * Client when it hasn't. None when that isn't known (the account read
+ * failed): the opportunity is then made with no Type rather than a wrong one,
+ * as before this field was written. Pure.
+ */
+export const suggestedOpportunityType = (hasWon: boolean | null | undefined): OpportunityType | undefined =>
+  hasWon === true ? 'Existing Client' : hasWon === false ? 'New Client' : undefined

@@ -17,7 +17,8 @@ function BrandBadge({ a }: { a: SfdcAccount }) {
     : null
 }
 
-export function AccountSearch({ selected, onSelect }: { selected: SfdcAccount | null; onSelect: (a: SfdcAccount | null) => void }) {
+/** `suggestType`: each account carries its Opportunity Type suggestion (the quote pages). */
+export function AccountSearch({ selected, onSelect, suggestType = false }: { selected: SfdcAccount | null; onSelect: (a: SfdcAccount | null) => void; suggestType?: boolean }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<SfdcAccount[]>([])
   const [searching, setSearching] = useState(false)
@@ -30,13 +31,13 @@ export function AccountSearch({ selected, onSelect }: { selected: SfdcAccount | 
     debounceRef.current = setTimeout(async () => {
       setSearching(true)
       try {
-        const res = await fetch(`/api/sfdc/accounts?q=${encodeURIComponent(q)}`)
+        const res = await fetch(`/api/sfdc/accounts?q=${encodeURIComponent(q)}${suggestType ? '&suggest=type' : ''}`)
         const data = await res.json()
         setResults(data.accounts || [])
       } catch { setResults([]) }
       finally { setSearching(false) }
     }, 300)
-  }, [])
+  }, [suggestType])
 
   if (selected) {
     return (

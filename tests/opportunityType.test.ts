@@ -19,4 +19,5 @@ eq('off the picklist: refused, not dropped', 'error' in readOpportunityType('Ren
 
 section('suggestedOpportunityType')
 eq('an account that has won a deal', suggestedOpportunityType(true), 'Existing Client')
-eq('one that hasn\'t, or unknown', [suggestedOpportunityType(false), suggestedOpportunityType(undefined)], ['New Client', 'New Client'])
+eq('one that hasn\'t', suggestedOpportunityType(false), 'New Client')
+eq('not known (the account read failed): none, not a guess', suggestedOpportunityType(undefined), undefined)

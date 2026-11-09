@@ -430,7 +430,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
       {/* 1. Client */}
       <div className={card}>
         <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
-        <AccountSearch selected={account} onSelect={a => {
+        <AccountSearch suggestType selected={account} onSelect={a => {
           // A booking is revised on its own account; another account is a new quote.
           // A booking that loaded without one (no Salesforce opportunity) needs
           // its account picked, and that keeps the revision.

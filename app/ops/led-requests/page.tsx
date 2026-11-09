@@ -64,7 +64,7 @@ export default function LedRequestsPage() {
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap text-gray-700">{day(b.start)} – {day(b.end)}</td>
                     <td className="px-3 py-2 text-gray-700">
-                      {b.markets.map(m => <div key={m.name}>{m.name} <span className="text-gray-500">· {m.trucks.join(', ')}</span></div>)}
+                      {b.markets.map((m, i) => <div key={i}>{m.name} <span className="text-gray-500">· {m.trucks.join(', ')}</span></div>)}
                     </td>
                     <td className="px-3 py-2 space-y-1">
                       {b.issues.map(i => (

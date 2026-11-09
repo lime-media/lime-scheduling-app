@@ -53,10 +53,14 @@ eq('external ref is the booking key', one.request.externalRef, 'cg_1')
 eq('one line price, not one per truck', one.request.soldAmount, 20000)
 eq('nothing for ops', one.issues, [])
 
+const kinds = (r: ReturnType<typeof buildRequest>) => r!.issues.map(i => `${i.kind}${i.blocking ? '!' : ''}`)
+
 section('buildRequest: dates')
 const asked = buildRequest([hold({ start_date: '2026-12-05', end_date: '2026-12-22', features: JSON.stringify({ daysPerWeek: 5, operatingHours: 8, requestedStart: '2026-12-07', requestedEnd: '2026-12-20' }) })], linked)!
 eq('the dates asked for, not the hold\'s travel days', [asked.request.markets[0].startDate, asked.request.markets[0].endDate], ['2026-12-07', '2026-12-20'])
 eq('8 hours → FULL_DAY', asked.request.markets[0].duration, 'FULL_DAY')
+eq('9 hours (staff chat) → the 10-hour shift that covers it, flagged', [buildRequest([hold({ features: JSON.stringify({ daysPerWeek: 5, operatingHours: 9 }) })], linked)!.request.markets[0].duration, kinds(buildRequest([hold({ features: JSON.stringify({ daysPerWeek: 5, operatingHours: 9 }) })], linked))], ['EXTENDED_FULL_DAY', ['hours_rounded']])
+eq('an unassigned truck isn\'t sent', buildRequest([hold(), hold({ truck_number: 'UNASSIGNED' })], linked)!.request.markets[0].trucks, ['0101'])
 
 section('buildRequest: multi-market')
 const mm = buildRequest([
@@ -71,7 +75,6 @@ const shared = buildRequest([hold({ campaign_group_id: 'mm_b2_1' }), hold({ camp
 eq('a truck in two markets is flagged, not blocking', shared.issues.map(i => [i.kind, i.blocking, i.trucks]), [['shared_truck', false, ['0101']]])
 
 section('buildRequest: what needs ops')
-const kinds = (r: ReturnType<typeof buildRequest>) => r!.issues.map(i => `${i.kind}${i.blocking ? '!' : ''}`)
 eq('no linked LED client blocks', kinds(buildRequest([hold({ sfdc_account_id: '001Hs00002zzzZZZZZ' })], linked)), ['no_led_client!'])
 eq('no account at all blocks', kinds(buildRequest([hold({ sfdc_account_id: null })], linked)), ['no_led_client!'])
 const label = buildRequest([
@@ -85,6 +88,7 @@ const town = buildRequest([hold({ market: 'Smallville', state: 'KS', standard_ma
 eq('a town off LED\'s list blocks and is sent by name', [kinds(town), town.request.markets[0].otherMarketName], [['no_standard_market!'], 'Smallville, KS'])
 eq('won without a job number blocks', kinds(buildRequest([hold({ status: 'COMMITTED' })], linked)), ['no_job_number!'])
 eq('the placeholder job number counts as none', kinds(buildRequest([hold({ status: 'COMMITTED', sfdc_job_number: '00-0000-000' })], linked)), ['no_job_number!'])
+eq('any all-zero placeholder counts as none', kinds(buildRequest([hold({ status: 'COMMITTED', sfdc_job_number: '00-0000-0000' })], linked)), ['no_job_number!'])
 const won = buildRequest([hold({ status: 'COMMITTED', sfdc_job_number: ' 26-1234-001 ' })], linked)!
 eq('won with a job number: sent trimmed, nothing for ops', [won.request.jobNumber, won.issues], ['26-1234-001', []])
 
@@ -100,3 +104,8 @@ eq('an expired hold isn\'t sent with live ones', buildRequest([hold(), hold({ tr
 section('requestFingerprint')
 eq('same request, same fingerprint', requestFingerprint(one.request) === requestFingerprint(buildRequest([hold(), hold({ truck_number: '0099' })], linked)!.request), true)
 eq('a changed truck changes it', requestFingerprint(one.request) === requestFingerprint(buildRequest([hold(), hold({ truck_number: '0098' })], linked)!.request), false)
+
+section('buildRequest: hours that are not an LED shift length')
+const eleven = buildRequest([hold({ features: JSON.stringify({ daysPerWeek: 5, operatingHours: 11 }) })], linked)!
+eq('11 hours: the 12-hour shift, flagged for ops', [eleven.request.markets[0].duration, eleven.issues.map(i => i.kind)], ['TWELVE_HOUR_SHIFT', ['hours_rounded']])
+eq('14 hours: not a shift; 8 hours sent and flagged unknown', buildRequest([hold({ features: JSON.stringify({ daysPerWeek: 5, operatingHours: 14 }) })], linked)!.issues.map(i => i.kind), ['hours_not_confirmed'])

@@ -18,6 +18,8 @@
 import { createHash } from 'crypto'
 import { bookingKey, isMultiMarket } from '@/lib/bookings'
 import { SHORT_RANGE_MAX_DAYS, billedDaysPerWeek, countCalendarDays } from '@/lib/pricing/schedule'
+import { realJobNumber } from '@/lib/jobNumber'
+import { QUOTE_ONLY_NO_TRUCK } from '@/lib/quoteOnly'
 
 /** A hold as the builder reads it. Dates YYYY-MM-DD. */
 export type RequestHold = {
@@ -41,6 +43,8 @@ export type RequestHold = {
 /** Core's shift lengths (CampaignDuration), by the quote's operating hours. */
 export type Duration = 'FULL_DAY' | 'EXTENDED_FULL_DAY' | 'TWELVE_HOUR_SHIFT'
 const DURATION: Record<number, Duration> = { 8: 'FULL_DAY', 10: 'EXTENDED_FULL_DAY', 12: 'TWELVE_HOUR_SHIFT' }
+/** The shortest Core shift that covers the hours sold (quotes allow any 8–12: 9 → 10, 11 → 12); null outside 8–12. */
+const shiftFor = (hours: number): Duration | null => hours >= 8 && hours <= 12 ? DURATION[[8, 10, 12].find(h => h >= hours)!] : null
 
 /** Sun–Sat, the same flags as LED's client_program_markets. */
 export type DayFlags = { sunday: boolean; monday: boolean; tuesday: boolean; wednesday: boolean; thursday: boolean; friday: boolean; saturday: boolean }
@@ -74,7 +78,7 @@ export type CampaignRequest = {
 
 export type IssueKind =
   | 'no_led_client' | 'market_label' | 'no_standard_market' | 'no_job_number'
-  | 'days_not_confirmed' | 'hours_not_confirmed' | 'shared_truck'
+  | 'days_not_confirmed' | 'hours_not_confirmed' | 'hours_rounded' | 'shared_truck'
 
 export type Issue = { kind: IssueKind; blocking: boolean; message: string; markets?: string[]; trucks?: string[] }
 
@@ -85,6 +89,8 @@ export type BookingRequest = { request: CampaignRequest; issues: Issue[]; won: b
 export const isMarketLabel = (market: string) => /^\s*multi-market\s*:/i.test(market)
 
 const LIVE = new Set(['HOLD', 'EXTENSION_REQUESTED', 'COMMITTED'])
+/** Placeholder truck numbers that aren't a truck to send. */
+const NO_TRUCK = new Set([QUOTE_ONLY_NO_TRUCK, ''])
 
 type Features = { daysPerWeek?: unknown; operatingHours?: unknown; requestedStart?: unknown; requestedEnd?: unknown }
 function featuresOf(h: RequestHold): Features {
@@ -151,6 +157,7 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
 
   const unconfirmedDays: string[] = []
   const unconfirmedHours: string[] = []
+  const roundedHours: string[] = []
   const names = new Map<string, string>()
   const markets: RequestMarket[] = [...byMarket].map(([key, rows]) => {
     const f = rows.map(featuresOf)
@@ -158,12 +165,13 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
     const startDate = asked('requestedStart')[0] ?? rows.map(r => r.start_date).sort()[0]
     const endDate = asked('requestedEnd').reverse()[0] ?? rows.map(r => r.end_date).sort().reverse()[0]
     const perWeek = f.map(x => x.daysPerWeek).find((d): d is number => d === 3 || d === 5 || d === 6 || d === 7) ?? null
-    const hours = f.map(x => x.operatingHours).find((h): h is number => typeof h === 'number' && h in DURATION) ?? null
+    const duration = f.map(x => (typeof x.operatingHours === 'number' ? shiftFor(x.operatingHours) : null)).find((d): d is Duration => d !== null) ?? null
     const { days, confirmed } = marketDays(startDate, endDate, perWeek)
     const name = placeName(rows[0])
     names.set(key, name)
     if (!confirmed) unconfirmedDays.push(name)
-    if (hours === null) unconfirmedHours.push(name)
+    if (duration === null) unconfirmedHours.push(name)
+    else if (!f.some(x => typeof x.operatingHours === 'number' && x.operatingHours in DURATION)) roundedHours.push(name)
     const uid = rows.find(r => r.standard_market_uid)?.standard_market_uid ?? null
     return {
       key,
@@ -171,9 +179,9 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
       otherMarketName: uid ? null : name,
       startDate,
       endDate,
-      duration: hours === null ? 'FULL_DAY' : DURATION[hours],
+      duration: duration ?? 'FULL_DAY',
       days,
-      trucks: [...new Set(rows.map(r => r.truck_number))].sort((a, b) => a.localeCompare(b, 'en', { numeric: true })),
+      trucks: [...new Set(rows.map(r => r.truck_number.trim()).filter(t => !NO_TRUCK.has(t)))].sort((a, b) => a.localeCompare(b, 'en', { numeric: true })),
     }
   }).sort((a, b) => a.startDate.localeCompare(b.startDate) || a.key.localeCompare(b.key))
 
@@ -187,12 +195,14 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
   const unlocated = markets.filter(m => m.otherMarketName && !isMarketLabel(m.otherMarketName))
   if (unlocated.length > 0) issues.push({ kind: 'no_standard_market', blocking: true, message: 'Not on LED\'s market list; ops assigns a standard market before it converts.', markets: unlocated.map(m => m.otherMarketName!) })
 
-  const jobNumber = live.map(h => h.sfdc_job_number?.trim()).find(j => j && j !== '00-0000-000') ?? null
+  const jobNumber = live.map(h => realJobNumber(h.sfdc_job_number)).find(Boolean) ?? null
   const won = live.some(h => h.status === 'COMMITTED')
   if (won && !jobNumber) issues.push({ kind: 'no_job_number', blocking: true, message: 'Won, but Salesforce has no job number for it yet.' })
 
   if (unconfirmedDays.length > 0) issues.push({ kind: 'days_not_confirmed', blocking: false, message: 'No schedule on the quote: every day is sent; narrow the days in LED.', markets: unconfirmedDays })
   if (unconfirmedHours.length > 0) issues.push({ kind: 'hours_not_confirmed', blocking: false, message: 'No hours on the quote: 8-hour shifts are sent; change them in LED if needed.', markets: unconfirmedHours })
+
+  if (roundedHours.length > 0) issues.push({ kind: 'hours_rounded', blocking: false, message: 'The hours sold aren\'t an LED shift length; the next longer shift is sent: set the shift times in LED.', markets: roundedHours })
 
   const marketsOf = new Map<string, number>()
   for (const m of markets) for (const t of m.trucks) marketsOf.set(t, (marketsOf.get(t) ?? 0) + 1)

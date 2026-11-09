@@ -4,7 +4,8 @@
  * The live bookings that won't convert cleanly into an LED program, and why
  * (lib/campaignRequests.ts): blocking issues stop the convert; warnings
  * convert with something assumed that ops should check in LED. Bookings
- * whose dates have all passed, and quote-only logs, are left out. Any
+ * whose dates have all passed, and quote-only logs, are left out; a booking
+ * still running is built whole, its finished markets included. Any
  * signed-in staff user.
  */
 
@@ -28,7 +29,7 @@ export async function GET() {
     const today = centralDate(new Date())
     const [holds, links] = await Promise.all([
       prisma.hold.findMany({
-        where: { status: { in: ['HOLD', 'EXTENSION_REQUESTED', 'COMMITTED'] }, origination: { not: QUOTE_ONLY_ORIGINATION }, end_date: { gte: new Date(today) } },
+        where: { status: { in: ['HOLD', 'EXTENSION_REQUESTED', 'COMMITTED'] }, origination: { not: QUOTE_ONLY_ORIGINATION } },
         select: {
           id: true, truck_number: true, market: true, state: true, client_name: true, start_date: true, end_date: true, status: true,
           campaign_group_id: true, sfdc_opportunity_id: true, sfdc_account_id: true, sfdc_job_number: true, standard_market_uid: true,
@@ -39,7 +40,7 @@ export async function GET() {
     ])
     const clientOf = new Map(links.map(l => [l.sfdc_account_id, l.client_uid]))
     const rows: RequestHold[] = holds.map(h => ({ ...h, start_date: day(h.start_date), end_date: day(h.end_date) }))
-    const all = buildRequests(rows, a => clientOf.get(a) ?? null)
+    const all = buildRequests(rows, a => clientOf.get(a) ?? null).filter(b => b.request.endDate >= today)
     const bookings = all
       .filter(b => b.issues.length > 0)
       .map(b => ({

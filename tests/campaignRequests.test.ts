@@ -110,6 +110,8 @@ const eleven = buildRequest([hold({ features: JSON.stringify({ daysPerWeek: 5, o
 eq('11 hours: the 12-hour shift, flagged for ops', [eleven.request.markets[0].duration, eleven.issues.map(i => i.kind)], ['TWELVE_HOUR_SHIFT', ['hours_rounded']])
 eq('14 hours: not a shift; 8 hours sent and flagged off-shift', buildRequest([hold({ features: JSON.stringify({ daysPerWeek: 5, operatingHours: 14 }) })], linked)!.issues.map(i => i.kind), ['hours_off_shift'])
 eq('mixed hours: the shift sent is the one judged for rounding', buildRequest([hold({ features: JSON.stringify({ daysPerWeek: 5, operatingHours: 9 }) }), hold({ truck_number: '0202', features: JSON.stringify({ daysPerWeek: 5, operatingHours: 8 }) })], linked)!.issues.map(i => i.kind), ['hours_rounded'])
+const mixed = buildRequest([hold({ features: JSON.stringify({ daysPerWeek: 5, operatingHours: 8 }) }), hold({ truck_number: '0202', features: JSON.stringify({ daysPerWeek: 5, operatingHours: 12 }) })], linked)!
+eq('mixed 8 and 12 hours: the 12-hour shift covers both, flagged', [mixed.request.markets[0].duration, mixed.issues.map(i => i.kind)], ['TWELVE_HOUR_SHIFT', ['hours_rounded']])
 
 section('buildRequest: a hold the sweep has not located yet')
 const unswept = buildRequest([hold(), hold({ truck_number: '0202', standard_market_uid: null })], linked)!
@@ -121,3 +123,9 @@ eq('holds re-dated after the quote: the holds\' dates are sent', [moved.request.
 
 section('buildRequest: sold amount groups as the Reservations card does')
 eq('holds with no campaign group share one price', buildRequest([hold({ campaign_group_id: null }), hold({ campaign_group_id: null, truck_number: '0202' })], linked)!.request.soldAmount, 20000)
+
+section('buildRequest: mixed schedules, no trucks, and when a booking leaves the list')
+const mixedDays = buildRequest([hold({ campaign_group_id: null }), hold({ campaign_group_id: null, truck_number: '0202', features: JSON.stringify({ daysPerWeek: 7, operatingHours: 10 }) })], linked)!
+eq('5 and 7 days in one market: every day sent, flagged', [on(mixedDays.request.markets[0].days), kinds(mixedDays)], ['sun mon tue wed thu fri sat', ['days_not_confirmed']])
+eq('a market with no real truck blocks', kinds(buildRequest([hold({ truck_number: '' })], linked)), ['no_trucks!'])
+eq('holdsEnd counts travel days past the asked-for end', buildRequest([hold({ end_date: '2026-12-22', features: JSON.stringify({ daysPerWeek: 5, operatingHours: 10, requestedStart: '2026-12-07', requestedEnd: '2026-12-20' }) })], linked)!.holdsEnd, '2026-12-22')

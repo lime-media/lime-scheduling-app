@@ -43,7 +43,7 @@ export async function GET() {
     ])
     const clientOf = new Map(links.map(l => [l.sfdc_account_id, l.client_uid]))
     const rows: RequestHold[] = holds.map(h => ({ ...h, start_date: day(h.start_date), end_date: day(h.end_date) }))
-    const all = buildRequests(rows, a => clientOf.get(a) ?? null).filter(b => b.request.endDate >= today)
+    const all = buildRequests(rows, a => clientOf.get(a) ?? null).filter(b => b.holdsEnd >= today)
     const bookings = all
       .filter(b => b.issues.length > 0)
       .map(b => ({

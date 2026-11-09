@@ -77,12 +77,16 @@ export type CampaignRequest = {
 
 export type IssueKind =
   | 'no_led_client' | 'market_label' | 'no_standard_market' | 'no_job_number'
-  | 'days_not_confirmed' | 'hours_not_confirmed' | 'hours_off_shift' | 'hours_rounded' | 'shared_truck'
+  | 'no_trucks' | 'days_not_confirmed' | 'hours_not_confirmed' | 'hours_off_shift' | 'hours_rounded' | 'shared_truck'
 
 export type Issue = { kind: IssueKind; blocking: boolean; message: string; markets?: string[]; trucks?: string[] }
 
-/** `won`: any hold is Closed Won. `marketNames`: each market as the holds name it, in `request.markets` order. */
-export type BookingRequest = { request: CampaignRequest; issues: Issue[]; won: boolean; marketNames: string[] }
+/**
+ * `won`: any hold is Closed Won. `marketNames`: each market as the holds name
+ * it, in `request.markets` order. `holdsEnd`: the last day any live hold
+ * reserves a truck (travel included), which can be after `request.endDate`.
+ */
+export type BookingRequest = { request: CampaignRequest; issues: Issue[]; won: boolean; marketNames: string[]; holdsEnd: string }
 
 /** A Salesforce hold that names several markets in one label ("Multi-market: Austin, Dallas"). */
 export const isMarketLabel = (market: string) => /^\s*multi-market\s*:/i.test(market)
@@ -180,17 +184,23 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
     const fits = askedStart && askedEnd && askedStart >= holdStart && askedEnd <= holdEnd && askedStart <= askedEnd
     const startDate = fits ? askedStart : holdStart
     const endDate = fits ? askedEnd : holdEnd
-    const perWeek = f.map(x => x.daysPerWeek).find((d): d is number => d === 3 || d === 5 || d === 6 || d === 7) ?? null
-    // The first hours sold that fit a shift; `rounded` when that shift isn't exactly them.
-    const hours = f.map(x => x.operatingHours).find((h): h is number => typeof h === 'number' && shiftFor(h) !== null) ?? null
+    // Holds of one market can disagree (a Salesforce-made booking): the
+    // widest schedule is sent, unconfirmed, so no sold day is lost.
+    const schedules = [...new Set(f.map(x => x.daysPerWeek).filter((d): d is number => d === 3 || d === 5 || d === 6 || d === 7))]
+    const perWeek = schedules.length === 0 ? null : Math.max(...schedules)
+    // The longest hours sold that fit a shift, so no truck's day is cut short;
+    // `rounded` when any hours sold aren't exactly that shift.
+    const sold = f.map(x => x.operatingHours).filter((h): h is number => typeof h === 'number')
+    const fitting = sold.filter(h => shiftFor(h) !== null)
+    const hours = fitting.length > 0 ? Math.max(...fitting) : null
     const duration = hours === null ? null : shiftFor(hours)
-    const offShift = f.some(x => typeof x.operatingHours === 'number')
+    const offShift = sold.length > 0
     const { days, confirmed } = marketDays(startDate, endDate, perWeek)
     const name = placeName(rows[0])
     names.set(key, name)
-    if (!confirmed) unconfirmedDays.push(name)
+    if (!confirmed || schedules.length > 1) unconfirmedDays.push(name)
     if (duration === null) (offShift ? offShiftHours : unconfirmedHours).push(name)
-    else if (!(hours! in DURATION)) roundedHours.push(name)
+    else if (sold.some(h => DURATION[h] !== duration)) roundedHours.push(name)
     const uid = rows.find(r => r.standard_market_uid)?.standard_market_uid ?? null
     return {
       key,
@@ -209,6 +219,9 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
   if (!clientUid) issues.push({ kind: 'no_led_client', blocking: true, message: accountId ? 'Its Salesforce account is not linked to an LED client: link it on Reservations.' : 'It has no Salesforce account to link to an LED client.' })
 
   const labelled = markets.filter(m => m.otherMarketName && isMarketLabel(m.otherMarketName))
+  const empty = markets.filter(m => m.trucks.length === 0)
+  if (empty.length > 0) issues.push({ kind: 'no_trucks', blocking: true, message: 'No truck is assigned; assign one before it converts.', markets: empty.map(m => names.get(m.key)!) })
+
   if (labelled.length > 0) issues.push({ kind: 'market_label', blocking: true, message: 'Salesforce gave one label for several markets; each truck needs its market.', markets: labelled.map(m => m.otherMarketName!), trucks: labelled.flatMap(m => m.trucks) })
 
   const unlocated = markets.filter(m => m.otherMarketName && !isMarketLabel(m.otherMarketName))
@@ -249,6 +262,7 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
     issues,
     won,
     marketNames: markets.map(m => names.get(m.key)!),
+    holdsEnd: live.map(h => h.end_date).sort().reverse()[0],
   }
 }
 

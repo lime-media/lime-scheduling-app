@@ -166,7 +166,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   // picked Brand Direct on the quote, or (no pick) Salesforce says the
   // account is. The seller's percentage is kept to 0-50%; it starts at 10%.
   const accountInfo = sfdc_account_id && isSfdcConfigured()
-    ? await getSfdcAccountInfo(sfdc_account_id).catch((err) => { console.error('[quote/hold] account lookup failed:', err); return null })
+    ? await getSfdcAccountInfo(sfdc_account_id, { withWon: true }).catch((err) => { console.error('[quote/hold] account lookup failed:', err); return null })
     : null
   const chosenType = chosenClientType(client_type)
   const clientType = chosenType ?? accountInfo?.clientType

@@ -193,6 +193,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         // A lead source is asked for only if a new opportunity is made; never
         // carry over one picked for an earlier quote's account.
         setLeadSource('')
+        setOpportunityType('')
         setContact(b.contact)
         setBrand(b.brand ?? '')
         setRows(b.rows.map((r: { market: string; startDate: string; endDate: string; trucks: number; daysPerWeek: number; hours: number }) =>

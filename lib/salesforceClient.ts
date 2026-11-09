@@ -224,25 +224,41 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
   // opportunity being made. Only a definite refusal (a 400 with an error
   // list) naming the field is retried: that create made nothing, so the retry
   // can't duplicate. A 5xx may have made it, so it never is.
-  if (!result.success && refused && input.leadSource && aboutLeadSource(result.errors)) {
-    console.warn('[sfdc] LeadSource refused; creating the opportunity without it:', JSON.stringify(result.errors))
-    const retry = await createOpportunityOnce({ ...input, leadSource: undefined })
-    if (retry.success) {
-      return { success: true, id: retry.id, errors: retry.errors, warnings: [...(retry.warnings ?? []), `Salesforce refused the lead source "${input.leadSource}", so the opportunity has none (set it in Salesforce)`] }
+  // Opportunity Type (lib/sfdcOpportunityType.ts) is kept in step by hand the
+  // same way, so a refused value is dropped the same way.
+  if (!result.success && refused) {
+    const dropLead = !!input.leadSource && aboutLeadSource(result.errors)
+    const dropType = !!input.opportunityType && aboutOpportunityType(result.errors)
+    if (dropLead || dropType) {
+      console.warn(`[sfdc] ${[dropLead && 'LeadSource', dropType && 'Type'].filter(Boolean).join(' and ')} refused; creating the opportunity without it:`, JSON.stringify(result.errors))
+      const retry = await createOpportunityOnce({ ...input, leadSource: dropLead ? undefined : input.leadSource, opportunityType: dropType ? undefined : input.opportunityType })
+      if (retry.success) {
+        const dropped = [
+          dropLead && `Salesforce refused the lead source "${input.leadSource}", so the opportunity has none (set it in Salesforce)`,
+          dropType && `Salesforce refused the opportunity type "${input.opportunityType}", so the opportunity has none (set it in Salesforce)`,
+        ].filter((w): w is string => !!w)
+        return { success: true, id: retry.id, errors: retry.errors, warnings: [...(retry.warnings ?? []), ...dropped] }
+      }
     }
   }
   return result
 }
 
-/** Whether a refused create's errors name the Lead Source field. Pure. */
-function aboutLeadSource(errors: unknown): boolean {
+/** Whether a refused create's errors name a field (by API name, or a pattern in the message). Pure. */
+function aboutField(errors: unknown, apiName: string, message: RegExp): boolean {
   if (!Array.isArray(errors)) return false
   return errors.some(e => {
     const fields = (e as { fields?: unknown })?.fields
-    if (Array.isArray(fields) && fields.some(f => String(f).toLowerCase() === 'leadsource')) return true
-    return /lead ?source/i.test(String((e as { message?: unknown })?.message ?? ''))
+    if (Array.isArray(fields) && fields.some(f => String(f).toLowerCase() === apiName)) return true
+    return message.test(String((e as { message?: unknown })?.message ?? ''))
   })
 }
+
+/** Whether a refused create's errors name the Lead Source field. Pure. */
+const aboutLeadSource = (errors: unknown) => aboutField(errors, 'leadsource', /lead ?source/i)
+
+/** Whether a refused create's errors name the Opportunity Type field. Pure. */
+const aboutOpportunityType = (errors: unknown) => aboutField(errors, 'type', /opportunity type/i)
 
 /** `refused`: Salesforce definitely refused it (a 400 with an error list), so nothing was made. */
 async function createOpportunityOnce(input: CreateOpportunityInput): Promise<SfdcOpportunityResult & { refused: boolean }> {
@@ -555,10 +571,16 @@ export async function checkPrimaryContact(contactId: unknown, accountId: string)
   }
 }
 
-export async function getSfdcAccountInfo(accountId: string): Promise<{ ownerId: string | null; clientType: 'Agency' | 'Brand Direct'; hasWon: boolean } | null> {
+/**
+ * An account's owner and client type. `withWon` also asks whether it has won a
+ * deal (`hasWon`, the Opportunity Type suggestion in lib/sfdcOpportunityType.ts):
+ * only the paths that create an opportunity need it, so quotes skip the subquery.
+ */
+export async function getSfdcAccountInfo(accountId: string, opts: { withWon?: boolean } = {}): Promise<{ ownerId: string | null; clientType: 'Agency' | 'Brand Direct'; hasWon?: boolean } | null> {
   if (!/^[A-Za-z0-9]{15,18}$/.test(accountId)) return null
+  const won = opts.withWon ? ', (SELECT Id FROM Opportunities WHERE IsWon = true LIMIT 1)' : ''
   const rows = await sfdcQuery<{ OwnerId: string | null; Owner?: { IsActive?: boolean } | null; Client_Type2__c: string | null; Opportunities?: { records?: unknown[] } | null }>(
-    `SELECT OwnerId, Owner.IsActive, Client_Type2__c, (SELECT Id FROM Opportunities WHERE IsWon = true LIMIT 1) FROM Account WHERE Id = '${accountId}' LIMIT 1`,
+    `SELECT OwnerId, Owner.IsActive, Client_Type2__c${won} FROM Account WHERE Id = '${accountId}' LIMIT 1`,
   )
   if (!rows[0]) return null
   return {
@@ -567,7 +589,7 @@ export async function getSfdcAccountInfo(accountId: string): Promise<{ ownerId: 
     ownerId: rows[0].Owner?.IsActive === false ? null : rows[0].OwnerId ?? null,
     clientType: String(rows[0].Client_Type2__c ?? '').trim().toLowerCase() === 'brand direct' ? 'Brand Direct' : 'Agency',
     // Has it won a deal before: suggests Existing Client (lib/sfdcOpportunityType.ts).
-    hasWon: (rows[0].Opportunities?.records?.length ?? 0) > 0,
+    ...(opts.withWon ? { hasWon: (rows[0].Opportunities?.records?.length ?? 0) > 0 } : {}),
   }
 }
 

@@ -567,7 +567,7 @@ async function handlePost(req: NextRequest) {
           if (applied.ok && applied.clientTypeLeft) sfdcWarnings.push(CLIENT_TYPE_LEFT_NOTE)
         } else {
         // Owned by the rep who booked it (matched by email), else the account owner.
-        const accountInfo = await getSfdcAccountInfo(body.sfdcAccountId).catch(() => null)
+        const accountInfo = await getSfdcAccountInfo(body.sfdcAccountId, { withWon: true }).catch(() => null)
         const owner = await resolveOpportunityOwner({ creatorEmail: token.email as string | undefined, accountOwnerId: accountInfo?.ownerId })
         const result = await createAppOpportunity({
           accountId: body.sfdcAccountId,

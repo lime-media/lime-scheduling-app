@@ -146,7 +146,7 @@ export async function placeClientBooking(
   // relink reaches the next booking rather than the next login.
   const { sfdcAccountId } = await liveClientLinks(session)
   const accountInfo = sfdcAccountId && isSfdcConfigured()
-    ? await getSfdcAccountInfo(sfdcAccountId).catch(() => null)
+    ? await getSfdcAccountInfo(sfdcAccountId, { withWon: true }).catch(() => null)
     : null
   const markupPct = brandMarkupFor(accountInfo?.clientType)
 

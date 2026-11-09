@@ -23,16 +23,17 @@ export async function searchAccounts(q: string) {
   // leadSource: the suggestion for a new quote, from the account's latest LED
   // opportunity that has one, only when it's still on the picklist.
   // opportunityType: the suggestion for a new quote, Existing Client when the
-  // account has won a deal (one more query for the page of accounts).
+  // account has won a deal (one more query for the page of accounts). Only a
+  // suggestion: if that query fails, the search still answers and the seller picks.
   const won = records.length
-    ? new Set((await sfdcQuery<{ AccountId: string }>(
+    ? await sfdcQuery<{ AccountId: string }>(
         `SELECT AccountId FROM Opportunity WHERE IsWon = true AND AccountId IN (${records.map(r => `'${r.Id}'`).join(',')}) GROUP BY AccountId`,
-      )).map(r => r.AccountId))
+      ).then(rows => new Set(rows.map(r => r.AccountId)), (err) => { console.error('[sfdc] won-deal lookup for account search failed:', err); return null })
     : new Set<string>()
   return records.map(r => ({
     id: r.Id, name: r.Name, clientType: clientTypeOf(r.Client_Type2__c),
     leadSource: leadSourceOf(r.Opportunities?.records?.[0]?.LeadSource) ?? undefined,
-    opportunityType: suggestedOpportunityType(won.has(r.Id)),
+    opportunityType: won ? suggestedOpportunityType(won.has(r.Id)) : undefined,
   }))
 }
 

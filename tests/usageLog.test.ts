@@ -39,7 +39,7 @@ eq('a chat', describeInputs({ message: 'Which trucks are free in Denver next wee
 eq('a result', describeResult({ total: 3800.4, holds: 1 }), '$3,800 · 1 hold')
 eq('a refusal', describeResult({ insufficient: true, error: 'Automatic quote not feasible' }), 'not enough trucks · Automatic quote not feasible')
 eq('an MCP result', describeResult({ best_total: 12000 }), '$12,000')
-eq('tool names', [toolLabel('quote_classic'), toolLabel('get_rate_quote'), toolLabel('something_new')], ['Quote (Classic)', 'MCP: rate quote', 'something_new'])
+eq('tool names', [toolLabel('quote_classic'), toolLabel('get_rate_quote'), toolLabel('something_new')], ['Quote (Quote Builder)', 'MCP: rate quote', 'something_new'])
 
 section('usage log: file uploads are redacted the same way')
 eq('the field kept, the key dropped, the file as name + size',

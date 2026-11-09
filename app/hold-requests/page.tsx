@@ -89,6 +89,9 @@ const STATUS_LABEL: Record<string, string> = {
   [WON_ENDED]: 'Won, ended',
 }
 
+/** Tab names where they differ from the status name. */
+const TAB_LABEL: Record<string, string> = { HOLD: 'Reservations', '': 'All' }
+
 const SOURCE_BADGE: Record<string, string> = {
   CLIENT:     'bg-green-50 text-green-700 border border-green-200',
   SALESFORCE: 'bg-blue-50 text-blue-700 border border-blue-200',
@@ -417,7 +420,7 @@ export default function HoldRequestsPage() {
       const actionLabel = action.replace('_', ' ')
       if (result.ok) {
         // A reinstated hold is no longer EXPIRED, so it leaves whichever expired view the
-        // button was clicked from. Follow it to Active rather than letting the row vanish.
+        // button was clicked from. Follow it to Reservations rather than letting the row vanish.
         if (action === 'reinstate') setFilterStatus('HOLD')
         const trucks = result.holds ?? allIds.length
         toast.success(`${actionLabel} — ${trucks} truck${trucks === 1 ? '' : 's'}`)
@@ -628,51 +631,49 @@ export default function HoldRequestsPage() {
     }
   }, [rowsByBooking])
 
-  // Bookings waiting on a client's extension request: counted on the
-  // Reservations tab, now that they have no tab of their own. Counted under
-  // the same owner and date filters as the list, so the badge never promises
-  // cards the list won't show.
-  const extensionRequests = useMemo(() => {
-    const waiting = requests.filter(r => r.status === 'EXTENSION_REQUESTED')
-    const counted = ownerShown !== 'all' || dateFrom || dateTo
-      ? wholeBookings(requests, r => ownedBy(r, ownerShown, meId) && runsBetween(r, dateFrom, dateTo))
-      : requests
-    const keys = new Set(counted.map(r => bookingKey(r) ?? r.id))
-    return new Set(waiting.map(r => bookingKey(r) ?? r.id).filter(k => keys.has(k))).size
-  }, [requests, ownerShown, meId, dateFrom, dateTo])
+  // Owner, dates and search pick whole bookings: a booking shows if any of
+  // it matches, so a card, its total and its Edit always cover the same
+  // reservations and a multi-market card never loses a market. The list and
+  // the Reservations tab's request count both read this, so they agree.
+  const narrowed = useMemo(() => {
+    let result = requests
+    if (ownerShown !== 'all' || dateFrom || dateTo) {
+      result = wholeBookings(result, r => ownedBy(r, ownerShown, meId) && runsBetween(r, dateFrom, dateTo))
+    }
+    const q = search.trim().toLowerCase()
+    if (q) {
+      result = wholeBookings(result, r => [r.company_name, r.truck_number, r.market, r.notes]
+        .filter(Boolean)
+        .some((field) => field!.toLowerCase().includes(q)))
+    }
+    return result
+  }, [requests, search, ownerShown, meId, dateFrom, dateTo])
 
+  // Bookings waiting on a client's extension request, counted on the
+  // Reservations tab now that they have no tab of their own. A booking with
+  // one is EXTENSION_REQUESTED (it outranks every other status), so a row's
+  // own status is enough.
+  const extensionRequests = useMemo(
+    () => new Set(narrowed.filter(r => r.status === 'EXTENSION_REQUESTED').map(r => bookingKey(r) ?? r.id)).size,
+    [narrowed],
+  )
+
+  // A filter picks whole bookings by the booking's status, never part of one.
   const filtered = useMemo(
-    () => {
-      // A filter picks whole bookings by the booking's status, never part of one.
-      const shown = (r: HoldRequest) => {
-        if (filterStatus === LED_SCHEDULED) return inLedOf(r) && !endedOf(r)
-        if (filterStatus === WON_ENDED) return endedOf(r)
-        // All is everything listed, scheduled-in-LED and ended included.
-        if (!filterStatus) return true
-        if (inLedOf(r) || endedOf(r)) return false
-        const { status } = statusOf(r)
-        return filterStatus === 'HOLD'
-          // A booking waiting on an extension request is still a reservation:
-          // listed here, its card marked Extension Requested (no tab of its own).
-          ? status === 'HOLD' || status === 'COMMITTED' || status === 'EXTENSION_REQUESTED'
-          : status === filterStatus
-      }
-      let result = requests.filter(shown)
-      // Owner, dates and search pick whole bookings: a booking shows if any of
-      // it matches, so a card, its total and its Edit always cover the same
-      // reservations and a multi-market card never loses a market.
-      if (ownerShown !== 'all' || dateFrom || dateTo) {
-        result = wholeBookings(result, r => ownedBy(r, ownerShown, meId) && runsBetween(r, dateFrom, dateTo))
-      }
-      const q = search.trim().toLowerCase()
-      if (q) {
-        result = wholeBookings(result, r => [r.company_name, r.truck_number, r.market, r.notes]
-          .filter(Boolean)
-          .some((field) => field!.toLowerCase().includes(q)))
-      }
-      return result
-    },
-    [requests, filterStatus, search, statusOf, inLedOf, endedOf, ownerShown, meId, dateFrom, dateTo]
+    () => narrowed.filter((r: HoldRequest) => {
+      if (filterStatus === LED_SCHEDULED) return inLedOf(r) && !endedOf(r)
+      if (filterStatus === WON_ENDED) return endedOf(r)
+      // All is everything listed, scheduled-in-LED and ended included.
+      if (!filterStatus) return true
+      if (inLedOf(r) || endedOf(r)) return false
+      const { status } = statusOf(r)
+      return filterStatus === 'HOLD'
+        // A booking waiting on an extension request is still a reservation:
+        // listed here, its card marked Extension Requested (no tab of its own).
+        ? status === 'HOLD' || status === 'COMMITTED' || status === 'EXTENSION_REQUESTED'
+        : status === filterStatus
+    }),
+    [narrowed, filterStatus, statusOf, inLedOf, endedOf]
   )
 
   // The last date the card being edited can be held to: a booking has one
@@ -812,7 +813,7 @@ export default function HoldRequestsPage() {
                 Showing expired reservations from the last {expiredWindowDays} days. Older ones are kept but not listed here.
               </p>
             )}
-            {filterStatus === WON_ENDED && (
+            {(filterStatus === WON_ENDED || filterStatus === '') && (
               <p className="text-xs text-gray-400 mt-1">
                 Won bookings are listed for {WON_ENDED_LISTED_DAYS.inLed} days after they end once LED has fully scheduled them, and {WON_ENDED_LISTED_DAYS.notInLed} days if it hasn&apos;t.
               </p>
@@ -830,7 +831,7 @@ export default function HoldRequestsPage() {
                     : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
                 }`}
               >
-                {s === 'HOLD' ? 'Reservations' : s ? (STATUS_LABEL[s] ?? s) : 'All'}
+                {TAB_LABEL[s] ?? STATUS_LABEL[s] ?? s}
                 {s === 'HOLD' && extensionRequests > 0 && (
                   <span className="ml-1.5 inline-flex items-center px-1.5 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-800" title="Bookings with a client extension request waiting">
                     {extensionRequests} extension request{extensionRequests === 1 ? '' : 's'}

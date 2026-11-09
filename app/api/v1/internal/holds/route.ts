@@ -115,13 +115,14 @@ export async function POST(req: NextRequest) {
 
   // Staff: the Quote page's booking, with only the fields it takes (checked
   // above; hold_days by placeStaffBooking). Notes go to the opportunity, not
-  // the hold (lib/staffBooking.ts).
+  // the hold (lib/staffBooking.ts). The brand is asked, not assumed: "none"
+  // when the person says there is none (lib/brand.ts readBrand).
   const result = await placeStaffBooking({
     ...booking,
     ...staff,
     sfdc_account_name: accountName,
     primary_contact_id: str(body.primary_contact_id), brand: str(body.brand), hold_days: body.hold_days, stage: str(body.stage),
     lead_source: lead?.leadSource ?? undefined, notes: str(body.notes), expected_total: expectedTotal,
-  }, party.actor, { origination: 'mcp', requireLeadSource: true })
+  }, party.actor, { origination: 'mcp', requireLeadSource: true, requireBrand: true })
   return NextResponse.json(result.body, { status: result.status })
 }

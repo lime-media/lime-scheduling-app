@@ -26,6 +26,7 @@ import { DEFAULT_HOLD_DAYS, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
 import { OPEN_STAGES } from '@/lib/sfdcStages'
 import { LEAD_SOURCES, readLeadSource } from '@/lib/sfdcLeadSource'
 import { chosenClientType } from '@/lib/pricing/brandMarkup'
+import { BRAND_REQUIRED, readBrand } from '@/lib/brand'
 import { isSfdcConfigured } from '@/lib/salesforceClient'
 import { isAccountId, searchAccounts, searchContacts } from '@/lib/sfdcSearch'
 import { resolveQuoteMarket, staffQuote, type StaffQuoteInput } from '@/lib/staffQuote'
@@ -60,7 +61,7 @@ const QUOTE_REQUIRED = ['market', 'start_date', 'end_date', 'truck_count']
 const BOOKING_TERMS = {
   sfdc_account_name: { type: 'string', description: 'The account name from find_account.' },
   primary_contact_id: { type: 'string', description: 'Salesforce Contact id from find_contacts.' },
-  brand: { type: 'string', description: 'The brand being advertised, if the rep gave one.' },
+  brand: { type: 'string', description: 'The brand being advertised. Ask the rep; pass "none" only when they say there is none. Required to book.' },
   hold_days: { type: 'integer', minimum: 1, maximum: MAX_HOLD_DAYS, description: 'Days to hold. Default 3; it never runs past 2 days before the start.' },
   stage: { type: 'string', enum: OPEN_STAGES.map(s => s.value), description: 'Opportunity stage. Default WARM.' },
   lead_source: { type: 'string', enum: [...LEAD_SOURCES], description: "The opportunity's Lead Source, exactly one of Salesforce's values. Suggest the account's leadSource (find_account) if it has one, else ask the rep. Required to book." },
@@ -314,6 +315,8 @@ async function book(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
   // The seller picks both on every quote, as on the Quote page: the ref covers them.
   if (!q.client_type) return fail('client_type is required: confirm Agency or Brand Direct with the rep, then get_quote with it.')
   if (!terms.lead_source) return fail('lead_source is required: confirm it with the rep, then get_quote with it.')
+  // Asked, never assumed: "none" only when the rep says so (lib/brand.ts readBrand).
+  if ('error' in readBrand(i.brand, true)) return fail(`${BRAND_REQUIRED} Then get_quote with it.`)
   if (!isStr(i.quote_ref) || typeof i.expected_total !== 'number' || !Number.isFinite(i.expected_total)) {
     return fail('quote_ref and expected_total come from get_quote.')
   }
@@ -357,7 +360,7 @@ async function book(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
   const started = Date.now()
   let result: Awaited<ReturnType<typeof placeStaffBooking>>
   try {
-    result = await placeStaffBooking(body, ctx.actor, { requireLeadSource: true })
+    result = await placeStaffBooking(body, ctx.actor, { requireLeadSource: true, requireBrand: true })
   } catch (err) {
     // Logged like the route's own failures, then the chat reports it.
     recordToolRun(ctx.actor, 'hold_chat', body, 500, withConv(ctx, { error: err instanceof Error ? err.message : String(err) }), Date.now() - started)

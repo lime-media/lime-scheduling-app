@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { brandChange, cleanBrand, opportunityName } from '@/lib/brand'
+import { brandChange, cleanBrand, opportunityName, readBrand } from '@/lib/brand'
 
 section('brand: only the brand is saved')
 eq('a plain brand', cleanBrand('  Nike  '), 'Nike')
@@ -29,3 +29,9 @@ eq('extra spaces are not a change', brandChange('  Nike  '), 'none')
 eq('words dropped', brandChange('Molytical August LED'), 'stripped')
 eq('only cut to 50 characters (nothing dropped)', brandChange('A'.repeat(60)), 'cut')
 eq('both: says what was dropped', brandChange('A'.repeat(60) + ' LED'), 'stripped')
+
+section('readBrand: the chat and MCP ask, never assume (F6)')
+eq('a brand', readBrand('Nike LED', true), { brand: 'Nike' })
+eq('"none" is an answer: no brand', [readBrand('none', true), readBrand(' No Brand ', true), readBrand('N/A', true)], [{ brand: '' }, { brand: '' }, { brand: '' }])
+eq('missing, when required: refused', 'error' in readBrand(undefined, true) && 'error' in readBrand('  ', true), true)
+eq('missing on the Quote page: no brand', readBrand(undefined, false), { brand: '' })

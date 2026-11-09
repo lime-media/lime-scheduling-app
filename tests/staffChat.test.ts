@@ -41,7 +41,7 @@ section('Staff chat: one engine')
   eq('current Opus', route.includes("model: 'claude-opus-5-5'"), true)
   eq('the shared hidden-truck list', route.includes("from '@/lib/hiddenTrucks'") && !/new Set\(\['0001'/.test(route), true)
   eq('quotes through the Quote page code', tools.includes('await staffQuote(q)'), true)
-  eq('bookings through the Quote page code, which requires a lead source', tools.includes('await placeStaffBooking(body, ctx.actor, { requireLeadSource: true })'), true)
+  eq('bookings through the Quote page code, which requires a lead source and a brand answer', tools.includes('await placeStaffBooking(body, ctx.actor, { requireLeadSource: true, requireBrand: true })'), true)
   eq('availability through the engine', tools.includes('await checkAvailability('), true)
   eq('a booking checks the ref against inputs and total, then that the rep saw it',
     tools.indexOf('quoteRef(q, i.expected_total, terms) !== i.quote_ref.trim()') > -1

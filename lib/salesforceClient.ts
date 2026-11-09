@@ -246,6 +246,12 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
     ].filter((w): w is string => !!w)
     return { success: true, id: attempt.id, errors: attempt.errors, warnings: [...(attempt.warnings ?? []), ...dropped] }
   }
+  // A retry that still failed: report its error, the one left to fix, not the
+  // refusal of a field it had already dropped.
+  if (dropLead || dropType) {
+    const { refused: _refused, ...last } = attempt // eslint-disable-line @typescript-eslint/no-unused-vars
+    return last
+  }
   return result
 }
 
@@ -579,14 +585,22 @@ export async function checkPrimaryContact(contactId: unknown, accountId: string)
 /**
  * An account's owner and client type. `withWon` also asks whether it has won a
  * deal (`hasWon`, the Opportunity Type suggestion in lib/sfdcOpportunityType.ts):
- * only the paths that create an opportunity need it, so quotes skip the subquery.
+ * only the paths that create an opportunity need it, so quotes skip that query.
+ * It's only a suggestion, so it runs on its own (in parallel) and a failure
+ * leaves `hasWon` unknown rather than losing the owner and client type, which
+ * price the booking.
  */
 export async function getSfdcAccountInfo(accountId: string, opts: { withWon?: boolean } = {}): Promise<{ ownerId: string | null; clientType: 'Agency' | 'Brand Direct'; hasWon?: boolean } | null> {
   if (!/^[A-Za-z0-9]{15,18}$/.test(accountId)) return null
-  const won = opts.withWon ? ', (SELECT Id FROM Opportunities WHERE IsWon = true LIMIT 1)' : ''
-  const rows = await sfdcQuery<{ OwnerId: string | null; Owner?: { IsActive?: boolean } | null; Client_Type2__c: string | null; Opportunities?: { records?: unknown[] } | null }>(
-    `SELECT OwnerId, Owner.IsActive, Client_Type2__c${won} FROM Account WHERE Id = '${accountId}' LIMIT 1`,
-  )
+  const [rows, hasWon] = await Promise.all([
+    sfdcQuery<{ OwnerId: string | null; Owner?: { IsActive?: boolean } | null; Client_Type2__c: string | null }>(
+      `SELECT OwnerId, Owner.IsActive, Client_Type2__c FROM Account WHERE Id = '${accountId}' LIMIT 1`,
+    ),
+    opts.withWon
+      ? sfdcQuery(`SELECT Id FROM Opportunity WHERE AccountId = '${accountId}' AND IsWon = true LIMIT 1`)
+          .then(r => r.length > 0, (err) => { console.error('[sfdc] won-deal lookup failed:', err); return undefined })
+      : Promise.resolve(undefined),
+  ])
   if (!rows[0]) return null
   return {
     // An inactive owner cannot own a new opportunity (Salesforce rejects it),
@@ -594,7 +608,7 @@ export async function getSfdcAccountInfo(accountId: string, opts: { withWon?: bo
     ownerId: rows[0].Owner?.IsActive === false ? null : rows[0].OwnerId ?? null,
     clientType: String(rows[0].Client_Type2__c ?? '').trim().toLowerCase() === 'brand direct' ? 'Brand Direct' : 'Agency',
     // Has it won a deal before: suggests Existing Client (lib/sfdcOpportunityType.ts).
-    ...(opts.withWon ? { hasWon: (rows[0].Opportunities?.records?.length ?? 0) > 0 } : {}),
+    ...(hasWon !== undefined ? { hasWon } : {}),
   }
 }
 

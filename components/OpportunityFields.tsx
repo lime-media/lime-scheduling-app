@@ -29,28 +29,24 @@ export function ClientTypePicker({ value, onChange }: { value: ClientType; onCha
   )
 }
 
-export function LeadSourcePicker({ value, onChange }: { value: string; onChange: (s: string) => void }) {
+/** A required Salesforce picklist as a select, amber until something is chosen. */
+function PicklistSelect({ label, options, value, onChange }: { label: string; options: readonly string[]; value: string; onChange: (v: string) => void }) {
   return (
     <label className="flex items-center gap-2 text-xs">
-      <span className="font-medium text-gray-600">Lead source <span className="text-red-500">*</span></span>
-      <select value={value} onChange={e => onChange(e.target.value)} aria-label="Lead source"
+      <span className="font-medium text-gray-600">{label} <span className="text-red-500">*</span></span>
+      <select value={value} onChange={e => onChange(e.target.value)} aria-label={label}
         className={`border rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-green-500 ${value ? 'border-gray-200 text-gray-900' : 'border-amber-300 text-gray-500'}`}>
         <option value="">Choose…</option>
-        {LEAD_SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
       </select>
     </label>
   )
 }
 
+export function LeadSourcePicker({ value, onChange }: { value: string; onChange: (s: string) => void }) {
+  return <PicklistSelect label="Lead source" options={LEAD_SOURCES} value={value} onChange={onChange} />
+}
+
 export function OpportunityTypePicker({ value, onChange }: { value: string; onChange: (t: string) => void }) {
-  return (
-    <label className="flex items-center gap-2 text-xs">
-      <span className="font-medium text-gray-600">Opportunity type <span className="text-red-500">*</span></span>
-      <select value={value} onChange={e => onChange(e.target.value)} aria-label="Opportunity type"
-        className={`border rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-green-500 ${value ? 'border-gray-200 text-gray-900' : 'border-amber-300 text-gray-500'}`}>
-        <option value="">Choose…</option>
-        {OPPORTUNITY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-      </select>
-    </label>
-  )
+  return <PicklistSelect label="Opportunity type" options={OPPORTUNITY_TYPES} value={value} onChange={onChange} />
 }

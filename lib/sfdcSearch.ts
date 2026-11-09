@@ -29,11 +29,11 @@ export async function searchAccounts(q: string, opts: { suggestType?: boolean } 
   // opportunityType: the suggestion for a new quote, Existing Client when the
   // account has won a deal (one more query for the page of accounts). Only a
   // suggestion: if that query fails, the search still answers and the seller picks.
-  const won = !opts.suggestType ? null : records.length
+  const won = opts.suggestType && records.length
     ? await sfdcQuery<{ AccountId: string }>(
         `SELECT AccountId FROM Opportunity WHERE IsWon = true AND AccountId IN (${records.map(r => `'${r.Id}'`).join(',')}) GROUP BY AccountId`,
       ).then(rows => new Set(rows.map(r => r.AccountId)), (err) => { console.error('[sfdc] won-deal lookup for account search failed:', err); return null })
-    : new Set<string>()
+    : null
   return records.map(r => ({
     id: r.Id, name: r.Name, clientType: clientTypeOf(r.Client_Type2__c),
     leadSource: leadSourceOf(r.Opportunities?.records?.[0]?.LeadSource) ?? undefined,

@@ -378,10 +378,22 @@ export default function ClientHoldRequestsPage() {
             ) : loading ? (
               <TableSkeleton />
             ) : shown === 0 ? (
-              <div className="text-center py-20 text-gray-400">
-                <p className="font-medium">No hold requests found</p>
-                <p className="text-sm mt-1">Use the AI Assistant to check availability, get a quote, and place a hold</p>
-              </div>
+              // The page opens on Reservations: a client whose bookings are all
+              // committed or expired has them on another tab, not none at all.
+              requests.length > 0 && filterStatus ? (
+                <div className="text-center py-20 text-gray-400">
+                  <p className="font-medium">Nothing under {TAB_LABEL[filterStatus] ?? statusLabel(filterStatus)}</p>
+                  <p className="text-sm mt-1">
+                    Your other bookings are under{' '}
+                    <button onClick={() => setFilterStatus('')} className="text-green-700 underline hover:text-green-800">All</button>
+                  </p>
+                </div>
+              ) : (
+                <div className="text-center py-20 text-gray-400">
+                  <p className="font-medium">No hold requests found</p>
+                  <p className="text-sm mt-1">Use the AI Assistant to check availability, get a quote, and place a hold</p>
+                </div>
+              )
             ) : (
               <div className="space-y-4">
                 <div className="flex justify-end">

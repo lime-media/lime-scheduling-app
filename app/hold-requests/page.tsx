@@ -629,12 +629,17 @@ export default function HoldRequestsPage() {
   }, [rowsByBooking])
 
   // Bookings waiting on a client's extension request: counted on the
-  // Reservations tab, now that they have no tab of their own.
+  // Reservations tab, now that they have no tab of their own. Counted under
+  // the same owner and date filters as the list, so the badge never promises
+  // cards the list won't show.
   const extensionRequests = useMemo(() => {
-    const keys = new Set<string>()
-    for (const r of requests) if (statusOf(r).status === 'EXTENSION_REQUESTED') keys.add(bookingKey(r) ?? r.id)
-    return keys.size
-  }, [requests, statusOf])
+    const waiting = requests.filter(r => r.status === 'EXTENSION_REQUESTED')
+    const counted = ownerShown !== 'all' || dateFrom || dateTo
+      ? wholeBookings(requests, r => ownedBy(r, ownerShown, meId) && runsBetween(r, dateFrom, dateTo))
+      : requests
+    const keys = new Set(counted.map(r => bookingKey(r) ?? r.id))
+    return new Set(waiting.map(r => bookingKey(r) ?? r.id).filter(k => keys.has(k))).size
+  }, [requests, ownerShown, meId, dateFrom, dateTo])
 
   const filtered = useMemo(
     () => {

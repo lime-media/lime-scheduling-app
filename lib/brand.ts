@@ -65,7 +65,13 @@ export function opportunityName(brand: string, account: string, rest: string): s
 }
 
 /** What a rep says when the booking has no brand of its own. */
-const NO_BRAND = /^(?:none|no brand|n\/?a|n\.a)\.?$/i
+// "n/a" needs its slash or dots: a brand really called "NA" is kept.
+const NO_BRAND = /^(?:none|no[ -]?brand|n\/a|n\.a)\.?$/i
+
+/** Whether the text says there is no brand ("none", "no brand", "n/a"). Pure. */
+export function isNoBrand(raw: unknown): boolean {
+  return typeof raw === 'string' && NO_BRAND.test(raw.replace(/\s+/g, ' ').trim())
+}
 
 /** Asked of the rep before a chat or MCP booking (lib/staffBooking.ts requireBrand). */
 export const BRAND_REQUIRED = 'brand is required: ask the rep for the brand being advertised, or pass "none" if they say there is none.'
@@ -79,7 +85,7 @@ export const BRAND_REQUIRED = 'brand is required: ask the rep for the brand bein
  */
 export function readBrand(raw: unknown, required: boolean): { brand: string } | { error: string } {
   const text = typeof raw === 'string' ? raw.trim() : ''
-  if (NO_BRAND.test(text)) return { brand: '' }
+  if (isNoBrand(text)) return { brand: '' }
   if (!text && required) return { error: BRAND_REQUIRED }
   return { brand: cleanBrand(text) }
 }

@@ -26,7 +26,7 @@ import { DEFAULT_HOLD_DAYS, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
 import { OPEN_STAGES } from '@/lib/sfdcStages'
 import { LEAD_SOURCES, readLeadSource } from '@/lib/sfdcLeadSource'
 import { chosenClientType } from '@/lib/pricing/brandMarkup'
-import { BRAND_REQUIRED, readBrand, savedBrand } from '@/lib/brand'
+import { BRAND_REQUIRED, isNoBrand, readBrand } from '@/lib/brand'
 import { isSfdcConfigured } from '@/lib/salesforceClient'
 import { isAccountId, searchAccounts, searchContacts } from '@/lib/sfdcSearch'
 import { resolveQuoteMarket, staffQuote, type StaffQuoteInput } from '@/lib/staffQuote'
@@ -178,7 +178,7 @@ function bookingTerms(i: Bag): BookingTerms | string {
   return {
     sfdc_account_name: i.sfdc_account_name as string | undefined, primary_contact_id: i.primary_contact_id as string | undefined,
     // In the ref as it will be saved: "None", "none" and "n/a" are one answer (no brand).
-    brand: typeof i.brand === 'string' && i.brand.trim() && !savedBrand(i.brand) ? 'none' : i.brand as string | undefined,
+    brand: isNoBrand(i.brand) ? 'none' : i.brand as string | undefined,
     hold_days: i.hold_days as number | undefined, stage: i.stage as string | undefined,
     lead_source: leadSource.leadSource ?? undefined,
   }

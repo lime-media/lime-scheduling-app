@@ -62,6 +62,8 @@ interface OpportunityStage {
   Job_Number__c?: string | null
   /** Whose LED client the program belongs to (lib/ledClients.ts). */
   AccountId?: string | null
+  /** Who made the opportunity: tells the Leah Miles bot's apart (lib/sfdcBots.ts). */
+  CreatedById?: string | null
 }
 
 export interface SfdcReconcileSummary {
@@ -146,7 +148,7 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
   for (const batch of chunk(uniqueIds, SOQL_ID_CHUNK)) {
     const list = batch.map((id) => `'${id}'`).join(',')
     const { rows, withField, refused }: { rows: OpportunityStage[]; withField: boolean; refused: boolean } = await sfdcQueryOptionalField<OpportunityStage>('Job_Number__c', (job) =>
-      `SELECT Id, StageName, IsClosed, IsWon, Amount, AccountId${job ? ', Job_Number__c' : ''} FROM Opportunity WHERE Id IN (${list})`, tryJob)
+      `SELECT Id, StageName, IsClosed, IsWon, Amount, AccountId, CreatedById${job ? ', Job_Number__c' : ''} FROM Opportunity WHERE Id IN (${list})`, tryJob)
     tryJob = !refused
     for (const row of rows) {
       stages.set(normalizeId(row.Id), row)
@@ -219,6 +221,15 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
     if (staleAccount.length) {
       await prisma.hold.updateMany({ where: { id: { in: staleAccount } }, data: { sfdc_account_id: accountId } })
         .catch((err) => console.error(`[sfdc-reconcile] account write failed for ${key}; carrying on:`, err))
+    }
+    // Who made it, the same way: the bot's opportunities are left out of what
+    // the app builds for LED (lib/sfdcBots.ts). A creator never changes, so
+    // this only fills holds that don't have it yet.
+    const createdBy = stage.CreatedById && /^005[A-Za-z0-9]{15}$/.test(stage.CreatedById) ? stage.CreatedById : null
+    const noCreator = createdBy ? group.filter(h => h.sfdc_created_by_id !== createdBy).map(h => h.id) : []
+    if (noCreator.length) {
+      await prisma.hold.updateMany({ where: { id: { in: noCreator } }, data: { sfdc_created_by_id: createdBy } })
+        .catch((err) => console.error(`[sfdc-reconcile] creator write failed for ${key}; carrying on:`, err))
     }
 
     for (const hold of group) {

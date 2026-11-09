@@ -628,16 +628,29 @@ export default function HoldRequestsPage() {
     }
   }, [rowsByBooking])
 
+  // Bookings waiting on a client's extension request: counted on the
+  // Reservations tab, now that they have no tab of their own.
+  const extensionRequests = useMemo(() => {
+    const keys = new Set<string>()
+    for (const r of requests) if (statusOf(r).status === 'EXTENSION_REQUESTED') keys.add(bookingKey(r) ?? r.id)
+    return keys.size
+  }, [requests, statusOf])
+
   const filtered = useMemo(
     () => {
       // A filter picks whole bookings by the booking's status, never part of one.
       const shown = (r: HoldRequest) => {
         if (filterStatus === LED_SCHEDULED) return inLedOf(r) && !endedOf(r)
         if (filterStatus === WON_ENDED) return endedOf(r)
+        // All is everything listed, scheduled-in-LED and ended included.
+        if (!filterStatus) return true
         if (inLedOf(r) || endedOf(r)) return false
         const { status } = statusOf(r)
-        return !filterStatus
-          || (filterStatus === 'HOLD' ? status === 'HOLD' || status === 'COMMITTED' : status === filterStatus)
+        return filterStatus === 'HOLD'
+          // A booking waiting on an extension request is still a reservation:
+          // listed here, its card marked Extension Requested (no tab of its own).
+          ? status === 'HOLD' || status === 'COMMITTED' || status === 'EXTENSION_REQUESTED'
+          : status === filterStatus
       }
       let result = requests.filter(shown)
       // Owner, dates and search pick whole bookings: a booking shows if any of
@@ -801,7 +814,8 @@ export default function HoldRequestsPage() {
             )}
           </div>
           <div className="flex gap-2 flex-shrink-0 flex-wrap">
-            {(['', 'HOLD', 'ATT_SOFT', 'EXTENSION_REQUESTED', 'EXPIRED', LED_SCHEDULED, WON_ENDED] as const).map((s) => (
+            {/* Opens on Reservations; All (everything listed) is last. */}
+            {(['HOLD', 'ATT_SOFT', 'EXPIRED', LED_SCHEDULED, WON_ENDED, ''] as const).map((s) => (
               <button
                 key={s}
                 onClick={() => setFilterStatus(s)}
@@ -811,7 +825,12 @@ export default function HoldRequestsPage() {
                     : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
                 }`}
               >
-                {s ? (STATUS_LABEL[s] ?? s) : 'All (not in LED or ended)'}
+                {s === 'HOLD' ? 'Reservations' : s ? (STATUS_LABEL[s] ?? s) : 'All'}
+                {s === 'HOLD' && extensionRequests > 0 && (
+                  <span className="ml-1.5 inline-flex items-center px-1.5 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-800" title="Bookings with a client extension request waiting">
+                    {extensionRequests} extension request{extensionRequests === 1 ? '' : 's'}
+                  </span>
+                )}
               </button>
             ))}
           </div>

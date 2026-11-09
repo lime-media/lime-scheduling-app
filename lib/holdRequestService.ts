@@ -50,7 +50,7 @@ export class ClientHoldRefusal extends Error {
 }
 
 /** The service user client holds are created by (Hold.created_by is a FK to app_users; clients aren't in it). */
-async function clientHoldCreator(): Promise<string> {
+export async function clientHoldCreator(): Promise<string> {
   const serviceUser = await prisma.user.findFirst({
     where: { email: SFDC_SERVICE_USER_EMAIL },
     select: { id: true },

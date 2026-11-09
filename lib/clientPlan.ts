@@ -11,6 +11,7 @@
  */
 
 import { CLIENT_MAX_TRUCKS, daysUntil, MIN_CLIENT_LEAD_DAYS } from '@/lib/pricing'
+import { isCalendarDate } from '@/lib/dateOnly'
 import type { LineQuote, QuoteRequest, QuoteRow } from '@/lib/planning/quote'
 
 /** The most markets in one client order. */
@@ -18,12 +19,12 @@ export const CLIENT_MAX_MARKETS = 10
 
 const CLIENT_SCHEDULES = [5, 6, 7]
 
-/** A YYYY-MM-DD string naming a day that exists (JS rolls 2026-02-31 over to March 3). */
-export const isCalendarDate = (s: unknown): s is string => {
-  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false
-  const t = Date.parse(s + 'T00:00:00Z')
-  return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === s
-}
+/**
+ * How far out a client market may end, in days. Not a sales rule: the router
+ * walks the fleet through the last end date, so a date decades out would
+ * keep a client request busy for minutes.
+ */
+export const CLIENT_MAX_DAYS_AHEAD = 730
 
 export type ClientPlanRequest = { rows: QuoteRow[]; features: QuoteRequest['features'] }
 
@@ -46,6 +47,7 @@ export function parseClientPlan(input: unknown, today = new Date()): ClientPlanR
     if (typeof market !== 'string' || !market.trim()) return { error: 'Each market needs a name.' }
     const name = market.trim()
     if (!isCalendarDate(startDate) || !isCalendarDate(endDate) || endDate < startDate) return { error: `Dates for ${name} must be a start and an end on or after it.` }
+    if (daysUntil(endDate, today) > CLIENT_MAX_DAYS_AHEAD) return { error: `${name} ends more than 2 years out. Submit a request and the Lime Media team will work on a solution.` }
     if (typeof trucks !== 'number' || !Number.isInteger(trucks) || trucks < 1) return { error: `Trucks for ${name} must be a whole number, at least 1.` }
     const daysPerWeek = r.daysPerWeek ?? 5
     if (typeof daysPerWeek !== 'number' || !CLIENT_SCHEDULES.includes(daysPerWeek)) return { error: `Schedule for ${name} must be Mon-Fri, Mon-Sat or every day.` }

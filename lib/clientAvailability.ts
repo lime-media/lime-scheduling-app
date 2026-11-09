@@ -13,7 +13,7 @@
 import type { ClientSession } from '@/lib/clientAuth'
 import { checkAvailability, type AvailabilityResult } from '@/lib/availabilityEngine'
 import { CLIENT_MAX_TRUCKS, daysUntil, MIN_CLIENT_LEAD_DAYS } from '@/lib/pricing'
-import { isCalendarDate } from '@/lib/clientPlan'
+import { isCalendarDate } from '@/lib/dateOnly'
 import {
   resolveMarketInputAll,
   resolveMarketSizeTierId,

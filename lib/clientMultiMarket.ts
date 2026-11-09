@@ -38,9 +38,8 @@ import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { CLIENT_PORTAL_LEAD_SOURCE } from '@/lib/sfdcLeadSource'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
-import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
-import { afterClientHolds } from '@/lib/holdRequestService'
+import { afterClientHolds, clientHoldCreator } from '@/lib/holdRequestService'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { legsFromArrivals } from '@/lib/transportMetrics'
@@ -174,17 +173,20 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
     const routed = await route(p)
     if ('status' in routed) return routed
     const { asked, fits } = routed
-    if (!fits) return reply({ error: 'No trucks can be booked for these markets and dates right now. Submit a request and the Lime Media team will work on a solution.' }, { status: 409 })
+    // A double submit whose routing read the fleet after the first one's holds
+    // were saved finds its trucks taken: answered as its retry, not as a change.
+    const refuse = async (r: CoreResult) => (await placedEarlier()) ?? r
+    if (!fits) return refuse(reply({ error: 'No trucks can be booked for these markets and dates right now. Submit a request and the Lime Media team will work on a solution.' }, { status: 409 }))
     const { quote, plan } = fits
     // What the client agreed to: these markets, these trucks, this total. The
     // same total can come from different markets when the fleet moves.
     if (Math.abs(quote.summary.grandTotal - expectedTotal) >= 1 || !sameTrucks(quote.lines, expectedTrucks as Record<string, number>)) {
-      return reply({
+      return refuse(reply({
         error: 'What can be booked changed since you were quoted. Nothing was booked; check the new quote.',
         priceChanged: { was: expectedTotal, now: quote.summary.grandTotal },
         short: asked.plan.shortfalls.length > 0,
         fits: view(fits),
-      }, { status: 409 })
+      }, { status: 409 }))
     }
 
     const lineById = new Map(quote.lines.map(l => [l.id, l]))
@@ -192,9 +194,8 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
     const stretches = planStretches(plan)
     // One expiry for the booking: the client's standard hold, capped by the earliest start.
     const expiry = bookingHoldExpiry(stretches.map(x => x.stint.start), DEFAULT_HOLD_DAYS, new Date())
-    const serviceUser = await prisma.user.findFirst({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } })
-    // Hold.created_by is a user; clients aren't users (lib/holdRequestService.ts).
-    if (!serviceUser) throw new Error('SFDC service user not found — cannot create client holds')
+    // Hold.created_by is a user; clients aren't users.
+    const createdBy = await clientHoldCreator()
     const f = p.req.features
     const tier = planTier(f)
     const groupOf = new Map(quote.lines.map((l, i) => [l.id, `${groupPrefix}${i + 1}`]))
@@ -216,7 +217,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
           + (partner ? ` Truck alternates weekly with ${partner}.` : '')
           + (stint.travelTo ? ` Last day is travel to ${stint.travelTo}.` : '')
           + (notes ? ` ${notes}` : ''),
-        created_by: serviceUser.id,
+        created_by: createdBy,
         client_user_id: session.id,
         pricing_tier: tier,
         quoted_total: lq.total,
@@ -313,7 +314,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
           holdStop: ends[ends.length - 1],
           holdExp: holdExpDate(expiry.expiresAt),
           truckNumbers,
-          activationNotes: `Multi-market (client portal): ${quote.lines.length} market${quote.lines.length === 1 ? '' : 's'} booked, ${money(total)}.`
+          activationNotes: `Multi-market (client portal): ${plural(quote.lines.length, 'market')} booked, ${money(total)}.`
             + (notBooked.length ? ` ${notBooked.length} asked for but no truck available.` : '')
             + ' Breakdown in Description.',
           description,
@@ -339,8 +340,8 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
       created: rows.length,
       expiresAt: expiry.expiresAt.toISOString(),
       notBooked: notBooked.length,
-      message: `Reserved ${truckNumbers.length} truck${truckNumbers.length === 1 ? '' : 's'} across ${markets.length} market${markets.length === 1 ? '' : 's'} (${money(total)}).`
-        + (notBooked.length ? ` ${notBooked.length} market${notBooked.length === 1 ? '' : 's'} couldn't be fully covered and ${notBooked.length === 1 ? 'was' : 'were'} booked short or left out, as quoted.` : ''),
+      message: `Reserved ${plural(truckNumbers.length, 'truck')} across ${plural(markets.length, 'market')} (${money(total)}).`
+        + (notBooked.length ? ` ${plural(notBooked.length, 'market')} couldn't be fully covered and ${notBooked.length === 1 ? 'was' : 'were'} booked short or left out, as quoted.` : ''),
     })
   } catch (err) {
     console.error('[client/plan/hold] failed:', err)

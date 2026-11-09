@@ -2,7 +2,8 @@
 -- copied onto its holds by the reconcile every sweep, like the job number and
 -- account. It tells the Leah Miles bot's opportunities apart from people's, so
 -- they can be left out of what the app sends to LED (lib/sfdcBots.ts).
--- Existing holds are filled within 15 minutes of deploy.
+-- Live holds (HOLD, EXTENSION_REQUESTED, COMMITTED) are filled within 15 minutes
+-- of deploy; released ones keep NULL (nothing reads them for this).
 --
 -- Run BEFORE deploying the code: Prisma selects every column of app_holds, so
 -- a deploy without it breaks every page that reads holds.

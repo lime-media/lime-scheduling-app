@@ -5,10 +5,13 @@
  * opportunities don't fit how the app books (one "Multi-market: city, city…"
  * label for every truck, no market per truck, no schedule), and it is to be
  * switched off once the app's own booking works well (Andrew, 2026-11-09).
- * So nothing new is built for its opportunities: they are left out of what
- * the app sends to LED (CampaignIQ requests, LED Readiness), rather than
- * handled. The reconcile records each opportunity's creator on its holds
- * (app_holds.sfdc_created_by_id). Pure.
+ * So nothing new is built for its opportunities: they are to be left out of
+ * what the app sends to LED (CampaignIQ requests, LED Readiness), rather than
+ * handled. Nothing calls madeByBot yet; those senders will. The reconcile
+ * records each opportunity's creator on its holds
+ * (app_holds.sfdc_created_by_id), so it is null until the first sweep after a
+ * hold is made: a sender must treat null as "not known yet", not "a person".
+ * Pure.
  */
 
 /**

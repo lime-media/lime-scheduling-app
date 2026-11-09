@@ -85,21 +85,25 @@ export function clientVisibleFeatures(features: string | null | undefined): stri
   }
 }
 
+const isIsoDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
+
 /**
- * A hold's features after staff re-date it (PUT /api/holds/[id]): the dates
- * asked for (requestedStart/requestedEnd) become the hold's new dates, which
- * staff chose. Left as they were, an extension still containing the old
- * dates would be revised and sent to LED as the old, shorter ones. Features
- * that never stored asked-for dates, or can't be read, come back unchanged:
- * readers fall back to the holds' own dates. Pure.
+ * A hold's features after staff re-date it (PUT /api/holds/[id]): the asked-for
+ * date (requestedStart/requestedEnd) on each side staff moved becomes the
+ * hold's new date there; a side passed as null keeps its asked-for date (the
+ * hold's own date there can include a shared truck's travel days). Left as
+ * they were, an extension still containing the old dates would be revised as
+ * the old, shorter ones. Features that never stored asked-for dates, or can't
+ * be read, come back unchanged: readers fall back to the holds' own dates. Pure.
  */
-export function withAskedDates(features: string | null, start: string, end: string): string | null {
+export function withAskedDates(features: string | null, start: string | null, end: string | null): string | null {
   if (!features) return features
   try {
     const f = JSON.parse(features) as Record<string, unknown>
     if (!f || typeof f !== 'object' || Array.isArray(f) || !('requestedStart' in f || 'requestedEnd' in f)) return features
-    if (f.requestedStart === start && f.requestedEnd === end) return features
-    return JSON.stringify({ ...f, requestedStart: start, requestedEnd: end })
+    const next = { ...f, ...(start !== null && { requestedStart: start }), ...(end !== null && { requestedEnd: end }) }
+    if (next.requestedStart === f.requestedStart && next.requestedEnd === f.requestedEnd) return features
+    return JSON.stringify(next)
   } catch {
     return features
   }
@@ -112,15 +116,14 @@ export function withAskedDates(features: string | null, start: string, end: stri
  * the line covers them all. Null when none stores both.
  */
 export function askedDates(features: (string | null)[]): { start: string; end: string } | null {
-  const isDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
   const starts: string[] = [], ends: string[] = []
   for (const raw of features) {
     if (!raw) continue
     try {
       const f = JSON.parse(raw) as Record<string, unknown> | null
       if (!f || typeof f !== 'object' || Array.isArray(f)) continue
-      if (isDate(f.requestedStart)) starts.push(f.requestedStart)
-      if (isDate(f.requestedEnd)) ends.push(f.requestedEnd)
+      if (isIsoDate(f.requestedStart)) starts.push(f.requestedStart)
+      if (isIsoDate(f.requestedEnd)) ends.push(f.requestedEnd)
     } catch { /* unreadable: not asked-for dates */ }
   }
   return starts.length && ends.length ? { start: starts.sort()[0], end: ends.sort().reverse()[0] } : null

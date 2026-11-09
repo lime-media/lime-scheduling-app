@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
 import { CLOSED_WON_READ_ONLY, closedWonRefusal } from '@/lib/bookings'
@@ -82,13 +83,10 @@ export async function PUT(
     }
   }
 
-  // Re-dated: the dates asked for follow, so revising and LED get the new
-  // dates, not the quote's (lib/quoteFeatures.ts withAskedDates).
-  const askedFeatures = start_date || end_date
-    ? withAskedDates(hold.features,
-        (start_date ? new Date(start_date) : hold.start_date).toISOString().slice(0, 10),
-        (end_date ? new Date(end_date) : hold.end_date).toISOString().slice(0, 10))
-    : hold.features
+  const effStart = (start_date ? new Date(start_date) : hold.start_date).toISOString().slice(0, 10)
+  const effEnd = (end_date ? new Date(end_date) : hold.end_date).toISOString().slice(0, 10)
+  const startMoved = effStart !== hold.start_date.toISOString().slice(0, 10)
+  const endMoved = effEnd !== hold.end_date.toISOString().slice(0, 10)
   const data = {
     ...(status && { status }),
     // Committed is booked, not held: no expiry left to show or sweep.
@@ -100,31 +98,41 @@ export async function PUT(
     ...(market && { market }),
     ...(state && { state }),
     ...(truck_number && { truck_number }),
-    ...(askedFeatures !== hold.features && { features: askedFeatures }),
   }
   // A change that puts a truck on dates (another truck, other dates, or an
   // expired hold made live again) is written under the truck's lock and
   // re-checked for any other live hold on those dates (lib/holdWriteLock.ts).
   // Before, only a truck swap was checked, and only before the write.
   const effTruck = truck_number || hold.truck_number
-  const effStart = (start_date ? new Date(start_date) : hold.start_date).toISOString().slice(0, 10)
-  const effEnd = (end_date ? new Date(end_date) : hold.end_date).toISOString().slice(0, 10)
   // Made live again: an EXPIRED hold given a live status, or one whose expiry
   // passed (unswept) committed, which clears the expiry (holdFilters.ts).
   const reservesAfter = holdReservesNow({ status: status ?? hold.status, expires_at: status === 'COMMITTED' ? null : hold.expires_at })
   const revived = reservesAfter && !holdReservesNow(hold)
   const reserves = (status ?? hold.status) !== 'EXPIRED'
-  const movesTruck = effTruck !== hold.truck_number || effStart !== hold.start_date.toISOString().slice(0, 10) || effEnd !== hold.end_date.toISOString().slice(0, 10) || revived
+  const movesTruck = effTruck !== hold.truck_number || startMoved || endMoved || revived
+  // Re-dated: the asked-for date on the side that moved follows, so revising
+  // reopens on the new dates, not the quote's (lib/quoteFeatures.ts
+  // withAskedDates). A side that didn't move keeps its asked-for date: the
+  // hold's own date can include a shared truck's travel days. Features are
+  // read again inside the write, so a concurrent features write (the Hold
+  // Exp marker, lib/sfdcBooking.ts) isn't overwritten with what was read
+  // at the start of the request.
+  const write = async (tx: Prisma.TransactionClient) => {
+    if (!startMoved && !endMoved) return tx.hold.update({ where: { id: params.id }, data })
+    const current = (await tx.hold.findUnique({ where: { id: params.id }, select: { features: true } }))?.features ?? null
+    const features = withAskedDates(current, startMoved ? effStart : null, endMoved ? effEnd : null)
+    return tx.hold.update({ where: { id: params.id }, data: features === current ? data : { ...data, features } })
+  }
   let updated: Awaited<ReturnType<typeof prisma.hold.update>>
   try {
     updated = reserves && movesTruck
-      ? await writeHoldsExclusive([{ truck: effTruck, start: effStart, end: effEnd }], tx => tx.hold.update({ where: { id: params.id }, data }),
+      ? await writeHoldsExclusive([{ truck: effTruck, start: effStart, end: effEnd }], write,
         // A live hold whose dates move on the same truck: an AT&T soft hold under
         // it gives way, as it did when the hold was placed. Another truck, or a
         // lapsed hold brought back (a new reservation): soft holds count, as the
         // swap check and reinstate always have.
         { ignoreHoldIds: [hold.id], excludeAttSoft: effTruck === hold.truck_number && !revived })
-      : await prisma.hold.update({ where: { id: params.id }, data })
+      : await prisma.$transaction(write)
   } catch (err) {
     if (err instanceof HoldClashError) return NextResponse.json({ error: err.message, clashes: err.clashes }, { status: 409 })
     if (err instanceof HoldLockTimeoutError) return NextResponse.json({ error: err.message }, { status: 409 })

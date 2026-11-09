@@ -189,6 +189,7 @@ const parsed = (s: string | null) => (s ? JSON.parse(s) as Record<string, unknow
 eq('an extension takes the new dates', [parsed(withAskedDates(asked, '2026-12-07', '2026-12-31'))?.requestedStart, parsed(withAskedDates(asked, '2026-12-07', '2026-12-31'))?.requestedEnd], ['2026-12-07', '2026-12-31'])
 eq('the rest of the quote is kept', parsed(withAskedDates(asked, '2026-12-07', '2026-12-31'))?.operatingHours, 10)
 eq('unchanged dates: the same text back', withAskedDates(asked, '2026-12-07', '2026-12-20'), asked)
+eq('only the side that moved follows (a travel day is not taken as asked)', [parsed(withAskedDates(asked, null, '2026-12-31'))?.requestedStart, parsed(withAskedDates(asked, null, '2026-12-31'))?.requestedEnd], ['2026-12-07', '2026-12-31'])
 eq('features with no asked-for dates are left alone', withAskedDates(feat(), '2027-01-04', '2027-01-17'), feat())
 eq('none, or unreadable: unchanged', [withAskedDates(null, '2027-01-04', '2027-01-17'), withAskedDates('{bad', '2027-01-04', '2027-01-17')], [null, '{bad'])
 eq('askedDates spans a line\'s holds', askedDates([asked, feat({ requestedStart: '2026-12-07', requestedEnd: '2026-12-31' }), null]), { start: '2026-12-07', end: '2026-12-31' })

@@ -194,6 +194,8 @@ eq('nothing moved: the same text back', withAskedDates(asked, { startDays: 0, en
 eq('a side not stored stays unstored', dates(withAskedDates(feat({ requestedStart: '2026-12-07' }), { startDays: 2, endDays: 2 })), ['2026-12-09', undefined])
 eq('features with no asked-for dates are left alone', withAskedDates(feat(), { startDays: 3, endDays: 3 }), feat())
 eq('none, or unreadable: unchanged', [withAskedDates(null, { startDays: 3, endDays: 3 }), withAskedDates('{bad', { startDays: 3, endDays: 3 })], [null, '{bad'])
+eq('start moved past the old asked end: kept inside the new span, never inverted', dates(withAskedDates(asked, { startDays: 16, endDays: 0 }, { start: '2026-12-21', end: '2026-12-22' })), ['2026-12-21', '2026-12-22'])
+eq('shortened inside the travel gap: asked end kept within the hold', dates(withAskedDates(asked, { startDays: 0, endDays: -5 }, { start: '2026-12-05', end: '2026-12-17' })), ['2026-12-07', '2026-12-15'])
 eq('askedDates spans a line\'s holds', askedDates([asked, feat({ requestedStart: '2026-12-07', requestedEnd: '2026-12-31' }), null]), { start: '2026-12-07', end: '2026-12-31' })
 eq('askedDates: none stored', askedDates([feat(), null, 'null']), { start: null, end: null })
 eq('askedDates: one side stored is kept on its own', askedDates([feat({ requestedStart: '2026-12-07' })]), { start: '2026-12-07', end: null })

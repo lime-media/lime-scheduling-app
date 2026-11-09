@@ -96,9 +96,12 @@ const isIsoDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-
  * were, an extension still containing the old dates would be revised as the
  * old, shorter ones. A side not stored, features that never stored asked-for
  * dates, or features that can't be read come back unchanged: readers fall
- * back to the holds' own dates. Pure.
+ * back to the holds' own dates. Given the hold's new span, the asked-for
+ * dates are kept inside it (each side moves alone, so a start moved past the
+ * old asked-for end would otherwise leave them inverted or outside the hold);
+ * if they still cross, they become the span. Pure.
  */
-export function withAskedDates(features: string | null, moved: { startDays: number; endDays: number }): string | null {
+export function withAskedDates(features: string | null, moved: { startDays: number; endDays: number }, span?: { start: string; end: string }): string | null {
   if (!features || (moved.startDays === 0 && moved.endDays === 0)) return features
   const shift = (v: unknown, days: number) => {
     if (!isIsoDate(v) || days === 0) return v
@@ -106,10 +109,17 @@ export function withAskedDates(features: string | null, moved: { startDays: numb
     d.setUTCDate(d.getUTCDate() + days)
     return d.toISOString().slice(0, 10)
   }
+  const clamp = (v: unknown) => (span && isIsoDate(v) ? (v < span.start ? span.start : v > span.end ? span.end : v) : v)
   try {
     const f = JSON.parse(features) as Record<string, unknown>
     if (!f || typeof f !== 'object' || Array.isArray(f) || !(isIsoDate(f.requestedStart) || isIsoDate(f.requestedEnd))) return features
-    return JSON.stringify({ ...f, requestedStart: shift(f.requestedStart, moved.startDays), requestedEnd: shift(f.requestedEnd, moved.endDays) })
+    let requestedStart = clamp(shift(f.requestedStart, moved.startDays))
+    let requestedEnd = clamp(shift(f.requestedEnd, moved.endDays))
+    if (span && isIsoDate(requestedStart) && isIsoDate(requestedEnd) && requestedStart > requestedEnd) {
+      requestedStart = span.start
+      requestedEnd = span.end
+    }
+    return JSON.stringify({ ...f, requestedStart, requestedEnd })
   } catch {
     return features
   }

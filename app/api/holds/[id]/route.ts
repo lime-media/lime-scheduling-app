@@ -11,6 +11,7 @@ import { waitUntil } from '@vercel/functions'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { withAskedDates } from '@/lib/quoteFeatures'
+import { daysBetween } from '@/lib/planning/planner'
 
 export async function PUT(
   req: NextRequest,
@@ -33,6 +34,15 @@ export async function PUT(
 
   const body = await req.json()
   const { status, notes, start_date, end_date, client_name, market, state, truck_number } = body
+
+  // A date that isn't one is refused, not a 500 from toISOString, and before
+  // Salesforce or the swap check are asked (REVIEW.md "Cheap checks before expensive calls").
+  if ([start_date, end_date].some(d => d !== undefined && d !== null && d !== '' && (typeof d !== 'string' || isNaN(Date.parse(d))))) {
+    return NextResponse.json({ error: 'start_date and end_date must be dates (YYYY-MM-DD).' }, { status: 400 })
+  }
+  const effStart = (start_date ? new Date(start_date) : hold.start_date).toISOString().slice(0, 10)
+  const effEnd = (end_date ? new Date(end_date) : hold.end_date).toISOString().slice(0, 10)
+  if (effStart > effEnd) return NextResponse.json({ error: 'The start date must be on or before the end date.' }, { status: 400 })
 
   // Only Salesforce commits a hold. Committed means Closed Won (lib/bookings.ts
   // closedWonRefusal), and the reconcile un-commits it if the deal leaves Closed
@@ -83,17 +93,9 @@ export async function PUT(
     }
   }
 
-  // A date that isn't one is refused, not a 500 from toISOString.
-  if ([start_date, end_date].some(d => d !== undefined && d !== null && d !== '' && (typeof d !== 'string' || isNaN(Date.parse(d))))) {
-    return NextResponse.json({ error: 'start_date and end_date must be dates (YYYY-MM-DD).' }, { status: 400 })
-  }
-  const effStart = (start_date ? new Date(start_date) : hold.start_date).toISOString().slice(0, 10)
-  const effEnd = (end_date ? new Date(end_date) : hold.end_date).toISOString().slice(0, 10)
-  if (effStart > effEnd) return NextResponse.json({ error: 'The start date must be on or before the end date.' }, { status: 400 })
-  const daysMoved = (from: Date, to: string) => Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from.toISOString().slice(0, 10) + 'T00:00:00Z')) / 86_400_000)
-  const datesMoved = { startDays: daysMoved(hold.start_date, effStart), endDays: daysMoved(hold.end_date, effEnd) }
-  const startMoved = datesMoved.startDays !== 0
-  const endMoved = datesMoved.endDays !== 0
+  const day = (d: Date) => d.toISOString().slice(0, 10)
+  const startMoved = effStart !== day(hold.start_date)
+  const endMoved = effEnd !== day(hold.end_date)
   const data = {
     ...(status && { status }),
     // Committed is booked, not held: no expiry left to show or sweep.
@@ -123,11 +125,15 @@ export async function PUT(
   // write that starts meanwhile waits for this one rather than being
   // overwritten. A writer that read earlier (lib/sfdcBooking.ts setFeatures)
   // can still overwrite it; that is setFeatures' own read-then-write.
+  // The move is measured from the locked row's dates, not the ones read
+  // before the lock, so two re-dates in a row don't both shift from the same
+  // starting point and double-move the asked-for dates.
   const write = async (tx: Prisma.TransactionClient) => {
     if (!startMoved && !endMoved) return tx.hold.update({ where: { id: params.id }, data })
-    const [row] = await tx.$queryRaw<{ features: string | null }[]>`SELECT features FROM dbo.app_holds WITH (UPDLOCK, ROWLOCK) WHERE id = ${params.id}`
+    const [row] = await tx.$queryRaw<{ features: string | null; start_date: Date; end_date: Date }[]>`SELECT features, start_date, end_date FROM dbo.app_holds WITH (UPDLOCK, ROWLOCK) WHERE id = ${params.id}`
     const current = row?.features ?? null
-    const features = withAskedDates(current, datesMoved)
+    const from = row ?? hold
+    const features = withAskedDates(current, { startDays: daysBetween(day(from.start_date), effStart), endDays: daysBetween(day(from.end_date), effEnd) }, { start: effStart, end: effEnd })
     return tx.hold.update({ where: { id: params.id }, data: features === current ? data : { ...data, features } })
   }
   let updated: Awaited<ReturnType<typeof prisma.hold.update>>

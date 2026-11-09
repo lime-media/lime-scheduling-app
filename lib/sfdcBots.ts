@@ -7,10 +7,11 @@
  * switched off once the app's own booking works well (Andrew, 2026-11-09).
  * So nothing new is built for its opportunities: they are to be left out of
  * what the app sends to LED (CampaignIQ requests, LED Readiness), rather than
- * handled. Nothing calls madeByBot yet; those senders will. The reconcile
+ * handled. Nothing calls opportunityCreator yet; those senders will. The reconcile
  * records each opportunity's creator on its holds
  * (app_holds.sfdc_created_by_id), so it is null until the first sweep after a
- * hold is made: a sender must treat null as "not known yet", not "a person".
+ * hold is made, which opportunityCreator reports as 'unknown': a sender
+ * waits on it rather than reading it as a person.
  * Pure.
  */
 
@@ -26,6 +27,12 @@ export const SFDC_BOT_USER_IDS: ReadonlySet<string> = new Set([
   '005VP00000MNXcvYAH', // Leah Miles
 ])
 
-/** Whether a hold's opportunity was made by a bot. */
-export const madeByBot = (h: { sfdc_created_by_id: string | null }): boolean =>
-  !!h.sfdc_created_by_id && SFDC_BOT_USER_IDS.has(h.sfdc_created_by_id)
+/**
+ * Who made a hold's opportunity: a bot, a person, or not known yet (the
+ * reconcile hasn't filled it). Three answers, so a sender can't read "not
+ * known" as "a person" and send a bot booking in the first sweep's window.
+ */
+export function opportunityCreator(h: { sfdc_created_by_id: string | null }): 'bot' | 'person' | 'unknown' {
+  if (!h.sfdc_created_by_id) return 'unknown'
+  return SFDC_BOT_USER_IDS.has(h.sfdc_created_by_id) ? 'bot' : 'person'
+}

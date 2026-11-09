@@ -13,8 +13,17 @@ export function cleanCancelReason(reason: unknown): string | null {
   return r || null
 }
 
-/** A cancelled booking's reason, from any of its rows that carries one; null when not cancelled. Pure. */
-export function cancelledOf(rows: { status: string; cancelled_at: string | null; cancel_reason: string | null }[]): { reason: string | null } | null {
-  const c = rows.find(r => r.status === 'EXPIRED' && r.cancelled_at)
-  return c ? { reason: c.cancel_reason } : null
+/**
+ * Whether a booking's expired rows read as cancelled, and why: when the
+ * booking's latest release was a cancel. Cancel sets expires_at to the moment
+ * it cancels, so the expired row released last carries the mark. Holds added
+ * to the booking later that then lapse on their own release after it, and the
+ * booking reads as an ordinary lapse; markets that ended before the cancel
+ * don't change it. Pure.
+ */
+export function cancelledOf(rows: { status: string; expires_at: string | null; cancelled_at: string | null; cancel_reason: string | null }[]): { reason: string | null } | null {
+  const expired = rows.filter(r => r.status === 'EXPIRED')
+  if (expired.length === 0) return null
+  const last = expired.reduce((a, b) => ((b.expires_at ?? '') > (a.expires_at ?? '') ? b : a))
+  return last.cancelled_at ? { reason: last.cancel_reason } : null
 }

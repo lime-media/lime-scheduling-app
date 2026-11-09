@@ -268,8 +268,9 @@ export async function POST(req: NextRequest) {
           ...(expiredNow  && { status: 'EXPIRED' }),
         },
       })
-      // A cancelled booking brought back by the push: no longer cancelled anywhere in it.
-      if (reactivated && existing.cancelled_at) await clearBookingCancel(updated)
+      // A booking brought back by the push: no longer cancelled anywhere in it,
+      // even when this row lapsed on its own and only the others carry the mark.
+      if (reactivated) await clearBookingCancel(updated)
       results.push({ truck_number, hold_id: updated.id, action: 'updated' })
       await prisma.auditLog.create({
         data: {

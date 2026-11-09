@@ -125,8 +125,9 @@ export async function PUT(
     throw err
   }
 
-  // A cancelled booking brought back through this hold: no longer cancelled anywhere in it.
-  if (hold.cancelled_at && updated.status !== 'EXPIRED') await clearBookingCancel(updated)
+  // A lapsed or cancelled hold brought back: its booking is no longer cancelled
+  // anywhere, even when this row lapsed on its own and only the others carry the mark.
+  if (hold.status === 'EXPIRED' && updated.status !== 'EXPIRED') await clearBookingCancel(updated)
 
   await prisma.auditLog.create({
     data: {

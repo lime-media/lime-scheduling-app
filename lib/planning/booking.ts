@@ -5,6 +5,7 @@
  */
 
 import type { QuoteFeatures } from '@/lib/quoteFeatures'
+import { rotationStints, type OrderPlan, type Stint } from './order'
 import type { LineQuote, QuoteRequest } from './quote'
 
 /**
@@ -48,4 +49,36 @@ export function fitNames(names: string[], max: number): string {
     out.push(names[i])
   }
   return out.join('; ')
+}
+
+export const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
+const scheduleText = (dpw: number) => (dpw === 3 ? '3 days/wk' : dpw === 7 ? 'every day' : dpw === 6 ? 'Mon-Sat' : 'Mon-Fri')
+
+/** A booked market as delivered: real working dates and days, with the request when it differs. */
+export function describeBooked(l: LineQuote, trucks = l.trucks): string {
+  const d = l.delivery
+  const base = `${l.market}: ${trucks} truck${trucks === 1 ? '' : 's'}, ${scheduleText(l.daysPerWeek)} x ${l.hours}h`
+  if (!d.firstDay || !d.lastDay) return `${base}, requested ${l.startDate} to ${l.endDate}`
+  const pw = d.partialWeek
+  return `${base}, ${d.firstDay} to ${d.lastDay}`
+    + (d.firstDay !== l.startDate || d.lastDay !== l.endDate ? ` (requested ${l.startDate} to ${l.endDate})` : '')
+    + `, ${d.days} ${trucks > 1 ? 'truck-days' : 'days'}`
+    + (pw ? ` (${d.fullWeeks} wk: ${d.fullWeekDays} + part-week ${pw.start} to ${pw.end}: ${pw.days})` : '')
+}
+
+/** A market quoted but not booked: the request as quoted. */
+export const describeQuoted = (l: LineQuote, trucks = l.trucks) =>
+  `${l.market}: ${trucks} truck${trucks === 1 ? '' : 's'}, ${l.startDate} to ${l.endDate}, ${scheduleText(l.daysPerWeek)} x ${l.hours}h`
+
+/**
+ * Every stretch a routed order holds: one per truck per job, or, for a truck
+ * that alternates between two markets, one per stretch it spends in each
+ * (rotationStints), with the market it alternates with.
+ */
+export function planStretches(plan: OrderPlan): { truckNumber: string; stint: Stint; partner: string | null }[] {
+  return plan.trucks.flatMap(t => t.jobs.flatMap(job => rotationStints(job).map(st => ({
+    truckNumber: t.truckNumber,
+    stint: st,
+    partner: job.lines.length > 1 ? job.lines.find(l => l.id !== st.lineId)!.market : null,
+  }))))
 }

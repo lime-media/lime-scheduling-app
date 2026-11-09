@@ -381,7 +381,12 @@ export type PreparedQuote = {
   plan: OrderPlan
 }
 
-export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: OrderLine[], opts: { alternatives?: boolean } = {}): Promise<PreparedQuote> {
+/**
+ * `rates`: the rate card to price on, when the caller has already resolved it
+ * (the client portal, from the client's own agreement: lib/clientMultiMarket.ts).
+ * Omitted, the account's agreement over the default card (rateOverridesFor).
+ */
+export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: OrderLine[], opts: { alternatives?: boolean; rates?: { overrides: RateOverrides | null; basis: string } } = {}): Promise<PreparedQuote> {
   const { lines, excludeHoldIds, kept } = await applyRevision(req, requestedLines)
   const today = centralDate(new Date())
   const planThrough = lines.reduce((m, l) => (l.endDate > m ? l.endDate : m), today)
@@ -390,7 +395,7 @@ export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: O
     reserveSoftHolds: req.reserveSoftHolds ?? DEFAULT_RULES.reserveSoftHolds,
     renewingPrograms: req.alloyRenews ? ['Alloy Build'] : [],
   }
-  const { overrides, basis } = await rateOverridesFor(req.sfdcAccountId)
+  const { overrides, basis } = opts.rates ?? await rateOverridesFor(req.sfdcAccountId)
   // Brand Direct: folded into every market's prices (lib/pricing/brandMarkup.ts).
   const chosen = chosenClientType(req.clientType)
   const accountInfo = !chosen && req.sfdcAccountId && isSfdcConfigured()
@@ -445,6 +450,26 @@ export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: O
     lines,
     plan,
   }
+}
+
+/**
+ * What can be booked of a routed order that falls short: the uncovered trucks
+ * dropped and the order routed and priced again (a few rounds, as dropping
+ * trucks can move others), so the holds and the amount are for exactly what
+ * is booked. Each market is priced on its own truck-days, so a market that
+ * loses trucks is priced at the rate for what it keeps. Null when nothing can
+ * be covered.
+ */
+export async function bookWhatFits(req: QuoteRequest, requested: OrderLine[], first: PreparedQuote, opts: { rates?: { overrides: RateOverrides | null; basis: string } } = {}): Promise<PreparedQuote | null> {
+  let booking = first
+  let lines: OrderLine[] = requested
+  for (let round = 0; round < 3 && booking.plan.shortfalls.length > 0; round++) {
+    const missing = new Map(booking.plan.shortfalls.map(s => [s.lineId, s.missing]))
+    lines = lines.map(l => ({ ...l, trucks: l.trucks - (missing.get(l.id) ?? 0) })).filter(l => l.trucks > 0)
+    if (lines.length === 0) return null
+    booking = await buildMultiMarketQuote(req, lines, { alternatives: false, rates: opts.rates })
+  }
+  return booking.plan.shortfalls.length > 0 || booking.plan.trucks.length === 0 ? null : booking
 }
 
 async function buildAlternatives(

@@ -197,7 +197,7 @@ export async function createClientHolds(session: ClientSession, all: CreateClien
 }
 
 /** After client holds are written: Firefly's sheet. */
-function afterClientHolds(session: ClientSession, all: CreateClientHoldParams[]) {
+export function afterClientHolds(session: ClientSession, all: CreateClientHoldParams[]) {
   if (!(session.companyName === 'Firefly' && session.username === 'firefly')) return
   for (const p of all) {
     appendHoldRequestToSheet({

@@ -53,9 +53,8 @@ import { loadBookingHolds } from '@/lib/bookingLoad'
 import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, CLIENT_TYPE_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, reopenClosedLostOpportunity, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { SFDC_SERVICE_USER_EMAIL, attachedToOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
-import { rotationStints, type OrderLine } from '@/lib/planning/order'
-import { buildMultiMarketQuote, resolveRows, validateQuoteRequest, type LineQuote, type QuoteRequest } from '@/lib/planning/quote'
-import { fitNames, lineFeatures } from '@/lib/planning/booking'
+import { bookWhatFits, buildMultiMarketQuote, resolveRows, validateQuoteRequest, type QuoteRequest } from '@/lib/planning/quote'
+import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches } from '@/lib/planning/booking'
 import { holdExpDate } from '@/lib/dateOnly'
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
@@ -98,23 +97,6 @@ type HoldBody = QuoteRequest & {
    */
   reopenOpportunity?: boolean
 }
-
-const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
-const scheduleText = (dpw: number) => (dpw === 3 ? '3 days/wk' : dpw === 7 ? 'every day' : dpw === 6 ? 'Mon-Sat' : 'Mon-Fri')
-/** A booked market as delivered: real working dates and days, with the request when it differs. */
-const describe = (l: LineQuote, trucks = l.trucks) => {
-  const d = l.delivery
-  const base = `${l.market}: ${trucks} truck${trucks === 1 ? '' : 's'}, ${scheduleText(l.daysPerWeek)} x ${l.hours}h`
-  if (!d.firstDay || !d.lastDay) return `${base}, requested ${l.startDate} to ${l.endDate}`
-  const pw = d.partialWeek
-  return `${base}, ${d.firstDay} to ${d.lastDay}`
-    + (d.firstDay !== l.startDate || d.lastDay !== l.endDate ? ` (requested ${l.startDate} to ${l.endDate})` : '')
-    + `, ${d.days} ${trucks > 1 ? 'truck-days' : 'days'}`
-    + (pw ? ` (${d.fullWeeks} wk: ${d.fullWeekDays} + part-week ${pw.start} to ${pw.end}: ${pw.days})` : '')
-}
-/** A market quoted but not booked: the request as quoted. */
-const describeQuoted = (l: LineQuote, trucks = l.trucks) =>
-  `${l.market}: ${trucks} truck${trucks === 1 ? '' : 's'}, ${l.startDate} to ${l.endDate}, ${scheduleText(l.daysPerWeek)} x ${l.hours}h`
 
 async function handlePost(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
@@ -249,18 +231,12 @@ async function handlePost(req: NextRequest) {
           shortfalls: booking.plan.shortfalls,
         }, { status: 409 })
       }
-      // Book what can be covered: drop the uncovered trucks and route again,
-      // so the holds and the amount are for exactly what is booked.
-      let lines: OrderLine[] = chosen
-      for (let round = 0; round < 3 && booking.plan.shortfalls.length > 0; round++) {
-        const missing = new Map(booking.plan.shortfalls.map(s => [s.lineId, s.missing]))
-        lines = lines.map(l => ({ ...l, trucks: l.trucks - (missing.get(l.id) ?? 0) })).filter(l => l.trucks > 0)
-        if (lines.length === 0) break
-        booking = await buildMultiMarketQuote(body, lines, { alternatives: false })
-      }
-      if (booking.plan.shortfalls.length > 0 || booking.plan.trucks.length === 0) {
+      // Book what can be covered, routed and priced again (bookWhatFits).
+      const fitted = await bookWhatFits(body, chosen, booking)
+      if (!fitted) {
         return NextResponse.json({ error: 'No trucks can be assigned to the selected markets right now.' }, { status: 409 })
       }
+      booking = fitted
     }
     const { quote, plan } = booking
 
@@ -291,11 +267,7 @@ async function handlePost(req: NextRequest) {
     // A revision never cuts back an expiry ops already extended. (A committed,
     // Closed Won booking is never revised: reviseRefusal / opportunityRefusal.)
     const keepUntil = reviseHolds.filter(x => x.live).map(h => h.expires_at).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0] ?? null
-    const stints = plan.trucks.flatMap(t => t.jobs.flatMap(job => rotationStints(job).map(st => ({
-      truckNumber: t.truckNumber,
-      stint: st,
-      partner: job.lines.length > 1 ? job.lines.find(l => l.id !== st.lineId)!.market : null,
-    }))))
+    const stints = planStretches(plan)
     // A multi-market booking is one quote with ONE expiry on every hold: the
     // seller's length, capped by the earliest start, or the later expiry the
     // revised booking already had, never past that cap (lib/holdExpiry.ts).
@@ -526,7 +498,7 @@ async function handlePost(req: NextRequest) {
           // Internal record only: every price below already includes it.
           ...(quote.brandMarkupPct ? [`Brand Direct pricing: +${quote.brandMarkupPct}% folded into every line item.`, ''] : []),
           quoteOnly ? 'Quoted (no reservation):' : 'Booked:',
-          ...quote.lines.map(l => `${describe(l)}, ${money(l.total)}`),
+          ...quote.lines.map(l => `${describeBooked(l)}, ${money(l.total)}`),
           ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(l.total)}`)] : []),
           ...(unavailable.length ? ['', 'Quoted but no truck available:', ...unavailable] : []),
         ].join('\n')

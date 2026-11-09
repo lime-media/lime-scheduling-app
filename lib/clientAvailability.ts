@@ -12,7 +12,7 @@
 
 import type { ClientSession } from '@/lib/clientAuth'
 import { checkAvailability, type AvailabilityResult } from '@/lib/availabilityEngine'
-import { daysUntil, MIN_CLIENT_LEAD_DAYS } from '@/lib/pricing'
+import { CLIENT_MAX_TRUCKS, daysUntil, MIN_CLIENT_LEAD_DAYS } from '@/lib/pricing'
 import {
   resolveMarketInputAll,
   resolveMarketSizeTierId,
@@ -57,7 +57,7 @@ function isCalendarDate(s: string): boolean {
 const refuse = (body: Record<string, unknown>, init?: { status: number }): ClientAvailability => ({ refused: { status: init?.status ?? 200, body } })
 
 /** The most trucks a client may book in one request, online (portal or MCP). */
-export const CLIENT_MAX_TRUCKS = 20
+export { CLIENT_MAX_TRUCKS }
 
 export async function clientAvailability(session: ClientSession, request: ClientAvailabilityRequest): Promise<ClientAvailability> {
   const { market, start_date, end_date, truck_count } = request

@@ -226,20 +226,25 @@ export async function createOpportunity(input: CreateOpportunityInput): Promise<
   // can't duplicate. A 5xx may have made it, so it never is.
   // Opportunity Type (lib/sfdcOpportunityType.ts) is kept in step by hand the
   // same way, so a refused value is dropped the same way.
-  if (!result.success && refused) {
-    const dropLead = !!input.leadSource && aboutLeadSource(result.errors)
-    const dropType = !!input.opportunityType && aboutOpportunityType(result.errors)
-    if (dropLead || dropType) {
-      console.warn(`[sfdc] ${[dropLead && 'LeadSource', dropType && 'Type'].filter(Boolean).join(' and ')} refused; creating the opportunity without it:`, JSON.stringify(result.errors))
-      const retry = await createOpportunityOnce({ ...input, leadSource: dropLead ? undefined : input.leadSource, opportunityType: dropType ? undefined : input.opportunityType })
-      if (retry.success) {
-        const dropped = [
-          dropLead && `Salesforce refused the lead source "${input.leadSource}", so the opportunity has none (set it in Salesforce)`,
-          dropType && `Salesforce refused the opportunity type "${input.opportunityType}", so the opportunity has none (set it in Salesforce)`,
-        ].filter((w): w is string => !!w)
-        return { success: true, id: retry.id, errors: retry.errors, warnings: [...(retry.warnings ?? []), ...dropped] }
-      }
-    }
+  // Each refusal names what it refused; a second one may name the other field,
+  // so up to two retries, each dropping only what was named so far.
+  let attempt: SfdcOpportunityResult & { refused: boolean } = { ...result, refused }
+  let dropLead = false, dropType = false
+  for (let i = 0; i < 2 && !attempt.success && attempt.refused; i++) {
+    const lead: boolean = !dropLead && !!input.leadSource && aboutLeadSource(attempt.errors)
+    const type: boolean = !dropType && !!input.opportunityType && aboutOpportunityType(attempt.errors)
+    if (!lead && !type) break
+    dropLead ||= lead
+    dropType ||= type
+    console.warn(`[sfdc] ${[lead && 'LeadSource', type && 'Type'].filter(Boolean).join(' and ')} refused; creating the opportunity without it:`, JSON.stringify(attempt.errors))
+    attempt = await createOpportunityOnce({ ...input, leadSource: dropLead ? undefined : input.leadSource, opportunityType: dropType ? undefined : input.opportunityType })
+  }
+  if ((dropLead || dropType) && attempt.success) {
+    const dropped = [
+      dropLead && `Salesforce refused the lead source "${input.leadSource}", so the opportunity has none (set it in Salesforce)`,
+      dropType && `Salesforce refused the opportunity type "${input.opportunityType}", so the opportunity has none (set it in Salesforce)`,
+    ].filter((w): w is string => !!w)
+    return { success: true, id: attempt.id, errors: attempt.errors, warnings: [...(attempt.warnings ?? []), ...dropped] }
   }
   return result
 }

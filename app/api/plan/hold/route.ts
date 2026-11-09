@@ -567,7 +567,7 @@ async function handlePost(req: NextRequest) {
           if (applied.ok && applied.clientTypeLeft) sfdcWarnings.push(CLIENT_TYPE_LEFT_NOTE)
         } else {
         // Owned by the rep who booked it (matched by email), else the account owner.
-        const accountInfo = await getSfdcAccountInfo(body.sfdcAccountId, { withWon: true }).catch(() => null)
+        const accountInfo = await getSfdcAccountInfo(body.sfdcAccountId, { withWon: !oppType.opportunityType }).catch(() => null)
         const owner = await resolveOpportunityOwner({ creatorEmail: token.email as string | undefined, accountOwnerId: accountInfo?.ownerId })
         const result = await createAppOpportunity({
           accountId: body.sfdcAccountId,
@@ -575,7 +575,7 @@ async function handlePost(req: NextRequest) {
           // The type the quote was priced as (the seller's pick, else the account's).
           clientType: quote.clientType ?? accountInfo?.clientType,
           leadSource: leadSource ?? undefined,
-          // As picked, else Existing Client once the account has won a deal (a revision making a new one).
+          // As picked (the planner asks for one whenever a new opportunity is made), else Existing Client once the account has won a deal.
           opportunityType: oppType.opportunityType ?? suggestedOpportunityType(accountInfo?.hasWon),
           name: opportunityName(brand, accountName, `Multi-market (${quote.summary.markets} markets) - ${starts[0]} to ${ends[ends.length - 1]}`),
           brand: brand || undefined,

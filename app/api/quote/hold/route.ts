@@ -21,7 +21,7 @@ async function handlePost(req: NextRequest) {
     id: token.id as string | undefined,
     name: token.name as string | undefined,
     email: token.email as string | undefined,
-  }, { requireLeadSource: true })
+  }, { requireLeadSource: true, requireOpportunityType: true })
   return NextResponse.json(result.body, { status: result.status })
 }
 

@@ -12,7 +12,7 @@ import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
 import { PlannerTab } from '@/components/PlannerTab'
-import { ClientTypePicker, LeadSourcePicker } from '@/components/OpportunityFields'
+import { ClientTypePicker, LeadSourcePicker, OpportunityTypePicker } from '@/components/OpportunityFields'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
 import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
@@ -117,6 +117,7 @@ export default function InternalQuotePage() {
   // starting from the account's (components/OpportunityFields.tsx).
   const [clientType, setClientType] = useState<ClientType>('Agency')
   const [leadSource, setLeadSource] = useState('')
+  const [opportunityType, setOpportunityType] = useState('')
   const isBrandDirect = clientType === 'Brand Direct'
   const markupPct = isBrandDirect ? clampBrandMarkup(brandMarkupPct) : 0
 
@@ -262,7 +263,7 @@ export default function InternalQuotePage() {
   }
 
   const placeHold = useCallback(async (expectedOverride?: number) => {
-    if (holdLoading || !quoteResult || !account || !contact || (!attachTo && !leadSource)) return
+    if (holdLoading || !quoteResult || !account || !contact || (!attachTo && (!leadSource || !opportunityType))) return
     setHoldLoading(true)
 
     try {
@@ -289,6 +290,7 @@ export default function InternalQuotePage() {
           brand_markup_pct: isBrandDirect ? markupPct : undefined,
           // Adding to an existing opportunity keeps its own lead source.
           lead_source: attachTo ? undefined : leadSource,
+          opportunity_type: attachTo ? undefined : opportunityType,
           stage,
           quote_only: quoteOnly,
           days_per_week: form.days_per_week,
@@ -311,7 +313,7 @@ export default function InternalQuotePage() {
     } finally {
       setHoldLoading(false)
     }
-  }, [holdLoading, quoteResult, account, contact, holdDays, attachTo, form, toggles, clientType, isBrandDirect, markupPct, leadSource, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [holdLoading, quoteResult, account, contact, holdDays, attachTo, form, toggles, clientType, isBrandDirect, markupPct, leadSource, opportunityType, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (status === 'loading' || !session) return null
 
@@ -365,7 +367,7 @@ export default function InternalQuotePage() {
         {/* Step 1: Client selection */}
         <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 mb-4">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
-          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setClientType(a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setContact(null); setAttachTo(null); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
+          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setClientType(a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setOpportunityType(a?.opportunityType ?? ''); setContact(null); setAttachTo(null); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
           {account && (
             <div className="mt-3">
               {/* Sets Brand Direct pricing, so a change needs a fresh price. */}
@@ -705,6 +707,7 @@ export default function InternalQuotePage() {
                   {!holdResult?.ok && !attachTo && (
                     <div className="mt-4">
                       <LeadSourcePicker value={leadSource} onChange={setLeadSource} />
+                      <div className="mt-2"><OpportunityTypePicker value={opportunityType} onChange={setOpportunityType} /></div>
                     </div>
                   )}
                   {/* Opportunity stage — open stages only */}
@@ -752,9 +755,9 @@ export default function InternalQuotePage() {
                       )}
                     </>
                   ) : (
-                    <button onClick={() => placeHold()} disabled={holdLoading || quoteLoading || markupPending || !account || !contact || (!attachTo && !leadSource) || holdResult?.ok === true}
+                    <button onClick={() => placeHold()} disabled={holdLoading || quoteLoading || markupPending || !account || !contact || (!attachTo && (!leadSource || !opportunityType)) || holdResult?.ok === true}
                       className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium transition-colors">
-                      {!account ? 'Select a client above to place hold' : !contact ? 'Choose the primary contact above' : !attachTo && !leadSource ? 'Choose the lead source above' : markupPending ? 'Update the price for the new markup first' : holdLoading ? 'Submitting...'
+                      {!account ? 'Select a client above to place hold' : !contact ? 'Choose the primary contact above' : !attachTo && !leadSource ? 'Choose the lead source above' : !attachTo && !opportunityType ? 'Choose the opportunity type above' : markupPending ? 'Update the price for the new markup first' : holdLoading ? 'Submitting...'
                         : quoteOnly ? `Log quote in Salesforce (no reservation) \u2014 ${fmtMoney(total)}`
                         : `Place Hold \u2014 ${fmtMoney(total)}`}
                     </button>

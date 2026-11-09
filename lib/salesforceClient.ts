@@ -143,6 +143,8 @@ export type CreateOpportunityInput = {
   clientType?: 'Agency' | 'Brand Direct'
   /** Opportunity Lead Source: a picklist value (lib/sfdcLeadSource.ts). */
   leadSource?: string
+  /** Opportunity Type: a picklist value (lib/sfdcOpportunityType.ts). */
+  opportunityType?: string
   /** Brand_Job_Name__c (50 characters): the brand, already cleaned (lib/brand.ts). */
   brand?: string
   /**
@@ -258,6 +260,7 @@ async function createOpportunityOnce(input: CreateOpportunityInput): Promise<Sfd
   if (input.ownerId) body.OwnerId = input.ownerId
   if (input.clientType) body.Client_Type__c = input.clientType
   if (input.leadSource) body.LeadSource = input.leadSource
+  if (input.opportunityType) body.Type = input.opportunityType
   if (input.brand) body.Brand_Job_Name__c = input.brand.slice(0, 50)
   if (input.primaryContactId) body.Primary_Contact__c = input.primaryContactId
   if (input.holdStart) body.LED_Hold_Start__c = input.holdStart
@@ -552,10 +555,10 @@ export async function checkPrimaryContact(contactId: unknown, accountId: string)
   }
 }
 
-export async function getSfdcAccountInfo(accountId: string): Promise<{ ownerId: string | null; clientType: 'Agency' | 'Brand Direct' } | null> {
+export async function getSfdcAccountInfo(accountId: string): Promise<{ ownerId: string | null; clientType: 'Agency' | 'Brand Direct'; hasWon: boolean } | null> {
   if (!/^[A-Za-z0-9]{15,18}$/.test(accountId)) return null
-  const rows = await sfdcQuery<{ OwnerId: string | null; Owner?: { IsActive?: boolean } | null; Client_Type2__c: string | null }>(
-    `SELECT OwnerId, Owner.IsActive, Client_Type2__c FROM Account WHERE Id = '${accountId}' LIMIT 1`,
+  const rows = await sfdcQuery<{ OwnerId: string | null; Owner?: { IsActive?: boolean } | null; Client_Type2__c: string | null; Opportunities?: { records?: unknown[] } | null }>(
+    `SELECT OwnerId, Owner.IsActive, Client_Type2__c, (SELECT Id FROM Opportunities WHERE IsWon = true LIMIT 1) FROM Account WHERE Id = '${accountId}' LIMIT 1`,
   )
   if (!rows[0]) return null
   return {
@@ -563,6 +566,8 @@ export async function getSfdcAccountInfo(accountId: string): Promise<{ ownerId: 
     // so it is not offered as a fallback owner.
     ownerId: rows[0].Owner?.IsActive === false ? null : rows[0].OwnerId ?? null,
     clientType: String(rows[0].Client_Type2__c ?? '').trim().toLowerCase() === 'brand direct' ? 'Brand Direct' : 'Agency',
+    // Has it won a deal before: suggests Existing Client (lib/sfdcOpportunityType.ts).
+    hasWon: (rows[0].Opportunities?.records?.length ?? 0) > 0,
   }
 }
 

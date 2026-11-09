@@ -36,6 +36,7 @@
 
 import { withUsageLog } from '@/lib/usageLog'
 import { cleanBrand, opportunityName } from '@/lib/brand'
+import { readOpportunityType, suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
 import { QUOTE_ONLY_GROUP_PREFIX, QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
 import { openStage } from '@/lib/sfdcStages'
 import { NextRequest, NextResponse } from 'next/server'
@@ -79,6 +80,8 @@ type HoldBody = QuoteRequest & {
   stage?: string
   /** A new opportunity's Lead Source, from Salesforce's picklist (lib/sfdcLeadSource.ts). Required for one. */
   leadSource?: string
+  /** Opportunity Type the seller picked (lib/sfdcOpportunityType.ts). */
+  opportunityType?: string
   /** Low conviction: log a priced opportunity, reserve nothing (lib/quoteOnly.ts). */
   quoteOnly?: boolean
   /** The opportunity's primary contact: a Contact on the account. Required. */
@@ -136,6 +139,9 @@ async function handlePost(req: NextRequest) {
   const lead = readLeadSource(body.leadSource, !body.revise?.bookingKey && !body.attachOpportunityId)
   if ('error' in lead) return NextResponse.json({ error: lead.error }, { status: 400 })
   const { leadSource } = lead
+  // Its Opportunity Type, the same way: picked by the seller for a new one.
+  const oppType = readOpportunityType(body.opportunityType, !body.revise?.bookingKey && !body.attachOpportunityId)
+  if ('error' in oppType) return NextResponse.json({ error: oppType.error }, { status: 400 })
   // Every opportunity needs its primary contact, on this account — checked
   // after the cheap local guards. A definite no refuses; Salesforce being
   // unreachable only warns (see checkPrimaryContact).
@@ -569,6 +575,8 @@ async function handlePost(req: NextRequest) {
           // The type the quote was priced as (the seller's pick, else the account's).
           clientType: quote.clientType ?? accountInfo?.clientType,
           leadSource: leadSource ?? undefined,
+          // As picked, else Existing Client once the account has won a deal (a revision making a new one).
+          opportunityType: oppType.opportunityType ?? suggestedOpportunityType(accountInfo?.hasWon),
           name: opportunityName(brand, accountName, `Multi-market (${quote.summary.markets} markets) - ${starts[0]} to ${ends[ends.length - 1]}`),
           brand: brand || undefined,
           primaryContactId: body.primaryContactId,

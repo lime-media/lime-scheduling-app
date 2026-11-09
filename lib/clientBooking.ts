@@ -7,6 +7,7 @@
  */
 
 import { cleanBrand, opportunityName } from '@/lib/brand'
+import { suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
@@ -300,6 +301,8 @@ export async function placeClientBooking(
         clientType: accountInfo?.clientType,
         // No seller to pick one: the website, or a partner booking through MCP.
         leadSource: opts.origination === 'mcp' ? MCP_LEAD_SOURCE : CLIENT_PORTAL_LEAD_SOURCE,
+        // Existing Client once the account has won a deal (lib/sfdcOpportunityType.ts).
+        opportunityType: suggestedOpportunityType(accountInfo?.hasWon),
         name: oppName,
         brand: brand || undefined,
         stageName: DEFAULT_STAGE, // a client's own request: no seller to choose

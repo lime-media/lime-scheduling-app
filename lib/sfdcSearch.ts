@@ -7,6 +7,7 @@
 import { soqlString, sfdcQuery } from '@/lib/salesforceClient'
 import { clientTypeOf } from '@/lib/pricing/brandMarkup'
 import { leadSourceOf } from '@/lib/sfdcLeadSource'
+import { suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
 
 /** Accounts whose name contains q (at least 2 characters), up to 20. */
 export async function searchAccounts(q: string) {
@@ -21,9 +22,17 @@ export async function searchAccounts(q: string) {
   // clientType: Account "Client Type" — Agency (also when blank) or Brand Direct.
   // leadSource: the suggestion for a new quote, from the account's latest LED
   // opportunity that has one, only when it's still on the picklist.
+  // opportunityType: the suggestion for a new quote, Existing Client when the
+  // account has won a deal (one more query for the page of accounts).
+  const won = records.length
+    ? new Set((await sfdcQuery<{ AccountId: string }>(
+        `SELECT AccountId FROM Opportunity WHERE IsWon = true AND AccountId IN (${records.map(r => `'${r.Id}'`).join(',')}) GROUP BY AccountId`,
+      )).map(r => r.AccountId))
+    : new Set<string>()
   return records.map(r => ({
     id: r.Id, name: r.Name, clientType: clientTypeOf(r.Client_Type2__c),
     leadSource: leadSourceOf(r.Opportunities?.records?.[0]?.LeadSource) ?? undefined,
+    opportunityType: suggestedOpportunityType(won.has(r.Id)),
   }))
 }
 

@@ -20,6 +20,7 @@ import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOppor
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, CLIENT_TYPE_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { brandMarkupFor, chosenClientType } from '@/lib/pricing/brandMarkup'
+import { readOpportunityType, suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
 import { readLeadSource } from '@/lib/sfdcLeadSource'
 import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
@@ -44,13 +45,13 @@ import { holdExpDate } from '@/lib/dateOnly'
 export type StaffActor = { id?: string; name?: string | null; email?: string | null }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the request body, read field by field as the route always has
-export async function placeStaffBooking(body: any, actor: StaffActor, opts: { origination?: 'frontend' | 'mcp'; requireLeadSource?: boolean } = {}): Promise<CoreResult> {
+export async function placeStaffBooking(body: any, actor: StaffActor, opts: { origination?: 'frontend' | 'mcp'; requireLeadSource?: boolean; requireOpportunityType?: boolean } = {}): Promise<CoreResult> {
   const {
     market, state, start_date, end_date, truck_count,
     sfdc_account_id, sfdc_account_name, brand: rawBrand, primary_contact_id,
     shadow_fencing, smart_directional, device_id, studies: rawStudies,
     days_per_week, operating_hours, brand_markup_pct, stage, quote_only, expected_total, hold_days,
-    attach_opportunity_id, client_type, lead_source,
+    attach_opportunity_id, client_type, lead_source, opportunity_type,
   } = body
   // How long the seller is holding the trucks (default 3 days; lib/holdExpiry.ts).
   const holdDays = parseHoldDays(hold_days)
@@ -80,6 +81,10 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   const lead = readLeadSource(lead_source, !!opts.requireLeadSource && !attach_opportunity_id)
   if ('error' in lead) return reply({ error: lead.error }, { status: 400 })
   const { leadSource } = lead
+  // The Opportunity Type: picked by the seller on the Quote page
+  // (requireOpportunityType); elsewhere the account's suggestion below.
+  const oppType = readOpportunityType(opportunity_type, !!opts.requireOpportunityType && !attach_opportunity_id)
+  if ('error' in oppType) return reply({ error: oppType.error }, { status: 400 })
   // Every opportunity needs its primary contact, on this account. A definite
   // no refuses; Salesforce being unreachable only warns (see checkPrimaryContact).
   const contact = await checkPrimaryContact(primary_contact_id, sfdc_account_id)
@@ -358,6 +363,8 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
         ownerId: owner.ownerId ?? undefined,
         clientType,
         leadSource: leadSource ?? undefined,
+        // As picked, else Existing Client once the account has won a deal (lib/sfdcOpportunityType.ts).
+        opportunityType: oppType.opportunityType ?? suggestedOpportunityType(accountInfo?.hasWon),
         // Internal record only (Salesforce): every price above already includes it.
         description: [
           quoteOnly ? `Quote only (low conviction): no trucks reserved. ${truck_count} truck${truck_count === 1 ? '' : 's'} quoted, ${start_date} to ${end_date}`

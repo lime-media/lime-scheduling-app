@@ -12,11 +12,12 @@ import { capStarts, loadBooking, setBookingExpiry } from '@/lib/bookingExpiry'
 import { closeOpportunityAsLost, getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { closedOpportunityBlocksReactivation, expiryClosesOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { reopenClosedLostOpportunity, syncOpportunityLedWindow } from '@/lib/sfdcBooking'
-import { sendCancellationEmail, sendExtensionDecisionEmail } from '@/lib/email'
+import { sendExtensionDecisionEmail } from '@/lib/email'
 import { centralDate, holdExpDate } from '@/lib/dateOnly'
 import { recordSwap } from '@/lib/transportMetricsRecord'
 import { waitUntil } from '@vercel/functions'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
+import { cancelBooking } from '@/lib/cancelBooking'
 
 type Action = 'swap_truck' | 'cancel_notify' | 'approve_extension' | 'deny_extension' | 'update_expiration' | 'reinstate'
 
@@ -251,7 +252,7 @@ export async function PATCH(
         async tx => {
           const result = await tx.hold.updateMany({
             where: { id: { in: ids }, status: 'EXPIRED' },
-            data:  { status: newStatus, expires_at: newExpiresAt, extension_until: null, extension_reason: null },
+            data:  { status: newStatus, expires_at: newExpiresAt, extension_until: null, extension_reason: null, cancelled_at: null, cancel_reason: null, cancelled_by: null },
           })
           if (!won && live.length) await tx.hold.updateMany({
             where: { id: { in: live.map(h => h.id) }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
@@ -308,7 +309,7 @@ export async function PATCH(
         await prisma.$transaction([
           ...lapsed.map(h => prisma.hold.update({
             where: { id: h.id },
-            data:  { status: 'EXPIRED', expires_at: h.expires_at, extension_until: h.extension_until, extension_reason: h.extension_reason },
+            data:  { status: 'EXPIRED', expires_at: h.expires_at, extension_until: h.extension_until, extension_reason: h.extension_reason, cancelled_at: h.cancelled_at, cancel_reason: h.cancel_reason, cancelled_by: h.cancelled_by },
           })),
           ...(!won ? live.map(h => prisma.hold.update({ where: { id: h.id }, data: { expires_at: h.expires_at } })) : []),
           prisma.auditLog.createMany({
@@ -359,44 +360,11 @@ export async function PATCH(
   if (won) return NextResponse.json({ error: won }, { status: 409 })
 
   // ── cancel_notify ───────────────────────────────────────────────────────
+  // Marked Expired and Cancelled, not deleted; the client emailed with a reason
+  // (lib/cancelBooking.ts, shared with the expiry email's Cancel link).
   if (action === 'cancel_notify') {
-    await prisma.$transaction([
-      prisma.auditLog.createMany({
-        data: live.map(h => ({
-          action:       'CANCEL_HOLD',
-          truck_number: h.truck_number,
-          user_id:      session.user.id,
-          hold_id:      h.id,
-          details:      JSON.stringify({ client_name: h.client_name, status: h.status, reason, booking: bookingKey(h) }),
-        })),
-      }),
-      prisma.hold.deleteMany({ where: { id: { in: live.map(h => h.id) } } }),
-    ])
-
-    // One email to the client for the whole booking, when there is a reason and an address.
-    let emailed = false
-    const client = live.find(h => h.client_user?.email)?.client_user
-    if (reason && client?.email) {
-      const s = bookingSummary(live)
-      try {
-        await sendCancellationEmail({
-          to:           client.email,
-          companyName:  client.company_name,
-          truckNumbers: s.trucks,
-          markets:      s.markets,
-          startDate:    s.startDate,
-          endDate:      s.endDate,
-          reason,
-        })
-        emailed = true
-      } catch (err) {
-        console.error('[cancel-notify] email send failed:', err)
-      }
-    }
-
-    // The released trucks come off Salesforce's LED Trucks, or its next push would mirror them.
-    const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
-    return NextResponse.json({ ok: true, cancelled: live.length, emailed, sfdcWarning })
+    const r = await cancelBooking({ hold, userId: session.user.id, reason, via: 'reservations' })
+    return NextResponse.json(r.body, { status: r.status })
   }
 
   // ── approve_extension ───────────────────────────────────────────────────

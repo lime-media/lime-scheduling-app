@@ -5,7 +5,8 @@
  */
 import crypto from 'crypto'
 import { eq, section } from './harness'
-import { addDays, extendOptions, isExtendDays, readExtendToken, signExtendToken } from '@/lib/extendLink'
+import { addDays, extendOptions, isExtendDays, readCancelToken, readExtendToken, signCancelToken, signExtendToken } from '@/lib/extendLink'
+import { CANCEL_REASON_MAX, cleanCancelReason } from '@/lib/cancelReason'
 
 const SECRET = 'test-secret'
 const claims = { holdId: 'h1', userId: 'u1', expiresAt: '2026-10-29T04:59:00.000Z' }
@@ -23,6 +24,19 @@ eq('a changed signature: refused', readExtendToken(`${data}.${sig.slice(0, -1)}x
 eq('garbage: refused', readExtendToken('nope', SECRET, before), null)
 eq('a client-session token signed with the same secret is not an extend link',
   readExtendToken(`${data}.${crypto.createHmac('sha256', SECRET).update(data).digest('base64url')}`, SECRET, before), null)
+
+section('cancel link token')
+const cancelToken = signCancelToken(claims, SECRET)
+eq('reads back before the expiry', readCancelToken(cancelToken, SECRET, before), claims)
+eq('stops working once the warned expiry passes', readCancelToken(cancelToken, SECRET, Date.parse('2026-10-29T05:00:00Z')), null)
+eq('an Extend link can\'t cancel', readCancelToken(token, SECRET, before), null)
+eq('a Cancel link can\'t extend', readExtendToken(cancelToken, SECRET, before), null)
+eq('Extend links already sent still work (same signing)', token.split('.')[1], crypto.createHmac('sha256', SECRET).update(`extend:${data}`).digest('base64url'))
+
+section('cleanCancelReason')
+eq('trimmed', cleanCancelReason('  client went another way  '), 'client went another way')
+eq('empty or not text: none', [cleanCancelReason('   '), cleanCancelReason(undefined), cleanCancelReason(42)], [null, null, null])
+eq('cut to the column', cleanCancelReason('x'.repeat(CANCEL_REASON_MAX + 5))?.length, CANCEL_REASON_MAX)
 
 section('addDays / isExtendDays')
 eq('one day', addDays('2026-10-28', 1), '2026-10-29')

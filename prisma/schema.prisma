@@ -73,6 +73,11 @@ model Hold {
   expires_at          DateTime?
   extension_reason    String?     @db.NVarChar(Max) // client's reason when requesting extension
   extension_until     DateTime? // requested extension date (client picks)
+  // Cancelled (lib/cancelBooking.ts): the holds are EXPIRED and stay listed;
+  // when, why and by which staff user. Reinstate clears them.
+  cancelled_at        DateTime?
+  cancel_reason       String?     @db.NVarChar(1000)
+  cancelled_by        String?     @db.NVarChar(191)
   // Relations
   user                User        @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
   client_user         ClientUser? @relation(fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)

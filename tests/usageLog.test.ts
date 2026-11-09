@@ -19,7 +19,7 @@ eq('review: every credential and personal-ID key is dropped',
 eq('...including inside list items', pruneInputs({ rows: [{ market: 'Dallas', apiKey: 'sk' }] }).rows, [{ market: 'Dallas' }])
 
 section('usage log: result headline')
-eq('a Classic quote', summarizeResult({ grandTotal: 3800, market: 'Ames, IA', presets: { good: { total: 2700 }, best: { total: 3800 } } }), { total: 3800, good: 2700, best: 3800, market: 'Ames, IA' })
+eq('a Quote Builder quote', summarizeResult({ grandTotal: 3800, market: 'Ames, IA', presets: { good: { total: 2700 }, best: { total: 3800 } } }), { total: 3800, good: 2700, best: 3800, market: 'Ames, IA' })
 eq('a multi-market quote', summarizeResult({ quote: { summary: { grandTotal: 41000, markets: 3, trucksUsed: 4 } } }), { total: 41000, markets: 3, trucks: 4 })
 eq('holds placed', summarizeResult({ created: [{}, {}], failed: [] }), { holds: 2, failed: 0 })
 eq('not enough trucks', summarizeResult({ insufficient: true, message: 'Automatic quote not feasible' }).insufficient, true)
@@ -54,7 +54,7 @@ eq('an assistance request the chat filed is kept', summarizeResult({ reply: 'ok'
 eq('an MCP quote reads like any other', describeInputs({ campaign_city: 'Phoenix, AZ', start_date: '2026-09-01', end_date: '2026-09-21' }), 'Phoenix, AZ · Sep 1–21')
 
 section('usage log: reportable columns')
-eq('a Classic quote', reportFields({ market: 'Ames, IA', sfdc_account_name: 'Acme' }, { total: 3800, holds: 1 }),
+eq('a Quote Builder quote', reportFields({ market: 'Ames, IA', sfdc_account_name: 'Acme' }, { total: 3800, holds: 1 }),
   { market: 'Ames, IA', account: 'Acme', total: 3800, holds: 1, conversation_id: null })
 eq('a Multi-market quote', reportFields({ rows: [{ market: 'Dallas, TX' }, { market: 'Austin, TX' }], sfdcAccountName: 'Acme' }, { total: 41000 }).market, '2 markets')
 eq('a client run is on its own account', reportFields({ market: 'Dallas, TX' }, {}, { type: 'client_user', id: 'c1', name: 'Firefly (firefly)' }).account, 'Firefly (firefly)')

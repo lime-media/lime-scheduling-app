@@ -142,6 +142,10 @@ section('revise: unchanged markets keep their booked price')
   eq('a market whose dates moved is priced today', [...keptPrices(booked, moved, opts).keys()], ['r2'])
   eq('a new market is priced today', [...keptPrices(booked, [...asBooked, { ...asBooked[1], id: 'r3', market: 'Boston, MA' }], opts).keys()], ['r1', 'r2'])
   eq('changing the options reprices every market', keptPrices(booked, asBooked, { ...opts, deviceId: false }).size, 0)
+  const redatedBooked = booked.map(h => h.id === 'a2' ? { ...h, features: withAskedDates(h.features, { startDays: 0, endDays: 0 }) ?? h.features } : h)
+  eq('nothing moved: still kept', [...keptPrices(redatedBooked, asBooked, opts).keys()], ['r1', 'r2'])
+  const extendedBooked = booked.map(h => h.id === 'a2' ? { ...h, features: JSON.stringify({ ...JSON.parse(h.features!), askedDatesMoved: true }) } : h)
+  eq('a market re-dated by staff since it was priced is repriced', [...keptPrices(extendedBooked, asBooked, opts).keys()], ['r2'])
   eq('an expired booking keeps no prices', keptPrices(booked.map(h => ({ ...h, live: false })), asBooked, opts).size, 0)
 
   const line = (o: Record<string, unknown>) => ({ id: 'r1', trucks: 2, total: 50000, media: 47000, missing: 0, transport: { outcome: 'BILLED', billed: 3000, absorbedCost: 0 },
@@ -196,9 +200,12 @@ eq('features with no asked-for dates are left alone', withAskedDates(feat(), { s
 eq('none, or unreadable: unchanged', [withAskedDates(null, { startDays: 3, endDays: 3 }), withAskedDates('{bad', { startDays: 3, endDays: 3 })], [null, '{bad'])
 eq('start moved past the old asked end: kept inside the new span, never inverted', dates(withAskedDates(asked, { startDays: 16, endDays: 0 }, { start: '2026-12-21', end: '2026-12-22' })), ['2026-12-21', '2026-12-22'])
 eq('shortened inside the travel gap: asked end kept within the hold', dates(withAskedDates(asked, { startDays: 0, endDays: -5 }, { start: '2026-12-05', end: '2026-12-17' })), ['2026-12-07', '2026-12-15'])
-eq('askedDates spans a line\'s holds', askedDates([asked, feat({ requestedStart: '2026-12-07', requestedEnd: '2026-12-31' }), null]), { start: '2026-12-07', end: '2026-12-31' })
-eq('askedDates: none stored', askedDates([feat(), null, 'null']), { start: null, end: null })
-eq('askedDates: one side stored is kept on its own', askedDates([feat({ requestedStart: '2026-12-07' })]), { start: '2026-12-07', end: null })
+const askLine = (features: string | null, start = '2026-12-05', end = '2027-01-02') => ({ features, start_date: start, end_date: end })
+eq('askedDates spans a line\'s holds', askedDates([askLine(asked), askLine(feat({ requestedStart: '2026-12-07', requestedEnd: '2026-12-31' })), askLine(null)]), { start: '2026-12-07', end: '2026-12-31' })
+eq('askedDates: none stored', askedDates([askLine(feat()), askLine(null), askLine('null')]), { start: null, end: null })
+eq('askedDates: one side stored is kept on its own', askedDates([askLine(feat({ requestedStart: '2026-12-07' }))]), { start: '2026-12-07', end: null })
+eq('askedDates: a hold vouches only for its own dates (a shortened stint)', askedDates([askLine(asked, '2026-12-05', '2026-12-12'), askLine(withAskedDates(asked, { startDays: 0, endDays: -6 }, { start: '2026-12-13', end: '2026-12-16' }), '2026-12-13', '2026-12-16')]), { start: '2026-12-07', end: '2026-12-14' })
+eq('a re-date is marked, so the old price isn\'t kept', parsed(withAskedDates(asked, { startDays: 0, endDays: 11 }))?.askedDatesMoved, true)
 const redated = reviseRows([
   hold({ id: 'c1', start_date: '2026-12-05', end_date: '2026-12-22', features: asked }),
   hold({ id: 'c2', truck_number: '0912', start_date: '2026-12-05', end_date: '2027-01-02', features: withAskedDates(asked, { startDays: 0, endDays: 11 }) }),

@@ -67,7 +67,14 @@ export type QuoteFeatures = {
  * pricing (markup, client type), the deadhead cost a booking adds to the next
  * job, and the app's Salesforce bookkeeping.
  */
-const INTERNAL_KEYS = ['brandMarkupPct', 'clientType', 'successorImpact', APP_HOLD_EXP_KEY] as const
+/**
+ * Set on a hold's features when staff re-dated it after it was priced
+ * (withAskedDates): its quoted_total is for the old dates, so a revision
+ * reprices it instead of keeping that price (lib/bookings.ts keptPrices).
+ */
+export const ASKED_DATES_MOVED_KEY = 'askedDatesMoved'
+
+const INTERNAL_KEYS = ['brandMarkupPct', 'clientType', 'successorImpact', APP_HOLD_EXP_KEY, ASKED_DATES_MOVED_KEY] as const
 
 /**
  * A hold's `features` as a client may see them: the internal keys removed
@@ -119,7 +126,7 @@ export function withAskedDates(features: string | null, moved: { startDays: numb
       requestedStart = span.start
       requestedEnd = span.end
     }
-    return JSON.stringify({ ...f, requestedStart, requestedEnd })
+    return JSON.stringify({ ...f, requestedStart, requestedEnd, [ASKED_DATES_MOVED_KEY]: true })
   } catch {
     return features
   }
@@ -127,20 +134,25 @@ export function withAskedDates(features: string | null, moved: { startDays: numb
 
 /**
  * The dates asked for across one market line's holds: the earliest start and
- * latest end any of them stores. A line's holds share their features when
- * booked; after a hold is re-dated alone (withAskedDates) they can differ, and
- * the line covers them all. Each side is null when no hold stores it (readers
- * fall back to the holds' own date on that side only).
+ * latest end any of them stores, each hold's first kept inside its own dates.
+ * A line's holds share their features when booked; after a hold is re-dated
+ * alone (withAskedDates) they can differ, and the line covers them all. A
+ * hold's own span bounds what it vouches for, so a stint that wasn't edited
+ * can't hold the line open past what its holds still cover. Each side is null
+ * when no hold stores it (readers fall back to the holds' own date on that
+ * side only). Dates YYYY-MM-DD.
  */
-export function askedDates(features: (string | null)[]): { start: string | null; end: string | null } {
+export function askedDates(holds: { features: string | null; start_date: string; end_date: string }[]): { start: string | null; end: string | null } {
   const starts: string[] = [], ends: string[] = []
-  for (const raw of features) {
-    if (!raw) continue
+  for (const h of holds) {
+    if (!h.features) continue
+    const lo = h.start_date.slice(0, 10), hi = h.end_date.slice(0, 10)
+    const inside = (v: string) => (v < lo ? lo : v > hi ? hi : v)
     try {
-      const f = JSON.parse(raw) as Record<string, unknown> | null
+      const f = JSON.parse(h.features) as Record<string, unknown> | null
       if (!f || typeof f !== 'object' || Array.isArray(f)) continue
-      if (isIsoDate(f.requestedStart)) starts.push(f.requestedStart)
-      if (isIsoDate(f.requestedEnd)) ends.push(f.requestedEnd)
+      if (isIsoDate(f.requestedStart)) starts.push(inside(f.requestedStart))
+      if (isIsoDate(f.requestedEnd)) ends.push(inside(f.requestedEnd))
     } catch { /* unreadable: not asked-for dates */ }
   }
   return { start: starts.sort()[0] ?? null, end: ends.sort().reverse()[0] ?? null }

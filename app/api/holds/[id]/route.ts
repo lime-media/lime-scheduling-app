@@ -133,7 +133,11 @@ export async function PUT(
     const [row] = await tx.$queryRaw<{ features: string | null; start_date: Date; end_date: Date }[]>`SELECT features, start_date, end_date FROM dbo.app_holds WITH (UPDLOCK, ROWLOCK) WHERE id = ${params.id}`
     const current = row?.features ?? null
     const from = row ?? hold
-    const features = withAskedDates(current, { startDays: daysBetween(day(from.start_date), effStart), endDays: daysBetween(day(from.end_date), effEnd) }, { start: effStart, end: effEnd })
+    // A side this request doesn't send keeps the locked row's date (another
+    // edit may have moved it since the read above): it hasn't moved here.
+    const newStart = start_date ? effStart : day(from.start_date)
+    const newEnd = end_date ? effEnd : day(from.end_date)
+    const features = withAskedDates(current, { startDays: daysBetween(day(from.start_date), newStart), endDays: daysBetween(day(from.end_date), newEnd) }, { start: newStart, end: newEnd })
     return tx.hold.update({ where: { id: params.id }, data: features === current ? data : { ...data, features } })
   }
   let updated: Awaited<ReturnType<typeof prisma.hold.update>>

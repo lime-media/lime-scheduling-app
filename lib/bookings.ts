@@ -13,7 +13,7 @@
 import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { centralDate } from '@/lib/dateOnly'
 import { chosenClientType, type ClientType } from '@/lib/pricing/brandMarkup'
-import { askedDates } from '@/lib/quoteFeatures'
+import { ASKED_DATES_MOVED_KEY, askedDates } from '@/lib/quoteFeatures'
 
 type BookingRow = {
   campaign_group_id: string | null
@@ -376,7 +376,7 @@ export function reviseRows(holds: RevisableHold[]): {
     // across the line's holds (askedDates). Older holds don't store them:
     // their span is the best there is (a shared truck's travel days can
     // widen or shift it).
-    const asked = askedDates(group.map(h => h.features))
+    const asked = askedDates(group)
     return {
       market: group[0].market,
       startDate: asked.start ?? group.map(h => h.start_date).sort()[0],
@@ -439,6 +439,8 @@ export function keptPrices(
     const group = holds.filter(h => (h.campaign_group_id ?? h.id) === b.campaignGroup && h.live)
     const total = group.find(h => h.quoted_total != null)?.quoted_total
     if (total == null) continue
+    // Re-dated by staff since it was priced: the price is for the old dates.
+    if (group.some(h => parseFeatures(h.features)[ASKED_DATES_MOVED_KEY] === true)) continue
     const features = group.find(h => h.features)?.features ?? null
     const markup = parseFeatures(features).brandMarkupPct
     out.set(row.id, { total, features, trucks: b.keepTrucks, truckCount: b.trucks, markupPct: typeof markup === 'number' ? markup : null })

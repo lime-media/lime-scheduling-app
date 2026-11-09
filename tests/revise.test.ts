@@ -6,6 +6,7 @@
  */
 import { eq, section } from './harness'
 import { keptPrices, reviseRefusal, reviseRows, type RevisableHold } from '@/lib/bookings'
+import { askedDates, withAskedDates } from '@/lib/quoteFeatures'
 import { keepBookedPrices } from '@/lib/planning/quote'
 import { mergedOpportunityFields, type LinkedHold } from '@/lib/opportunityMerge'
 import { planOrder, DEFAULT_ENGINE, type OrderLine } from '@/lib/planning/order'
@@ -181,3 +182,19 @@ section('revise: a market reopens on the dates the client asked for')
   eq('the stored requested dates win over the hold span', [reviseRows(shared).rows[0].startDate, reviseRows(shared).rows[0].endDate], ['2026-11-09', '2026-12-04'])
   eq('older holds without them fall back to the span', reviseRows([hold()]).rows[0].endDate, '2026-12-04')
 }
+
+section('asked-for dates after a hold is re-dated (withAskedDates, askedDates)')
+const asked = feat({ requestedStart: '2026-12-07', requestedEnd: '2026-12-20' })
+const parsed = (s: string | null) => (s ? JSON.parse(s) as Record<string, unknown> : null)
+eq('an extension takes the new dates', [parsed(withAskedDates(asked, '2026-12-07', '2026-12-31'))?.requestedStart, parsed(withAskedDates(asked, '2026-12-07', '2026-12-31'))?.requestedEnd], ['2026-12-07', '2026-12-31'])
+eq('the rest of the quote is kept', parsed(withAskedDates(asked, '2026-12-07', '2026-12-31'))?.operatingHours, 10)
+eq('unchanged dates: the same text back', withAskedDates(asked, '2026-12-07', '2026-12-20'), asked)
+eq('features with no asked-for dates are left alone', withAskedDates(feat(), '2027-01-04', '2027-01-17'), feat())
+eq('none, or unreadable: unchanged', [withAskedDates(null, '2027-01-04', '2027-01-17'), withAskedDates('{bad', '2027-01-04', '2027-01-17')], [null, '{bad'])
+eq('askedDates spans a line\'s holds', askedDates([asked, feat({ requestedStart: '2026-12-07', requestedEnd: '2026-12-31' }), null]), { start: '2026-12-07', end: '2026-12-31' })
+eq('askedDates: none stored', askedDates([feat(), null, 'null']), null)
+const redated = reviseRows([
+  hold({ id: 'c1', start_date: '2026-12-05', end_date: '2026-12-22', features: asked }),
+  hold({ id: 'c2', truck_number: '0912', start_date: '2026-12-07', end_date: '2026-12-31', features: withAskedDates(asked, '2026-12-07', '2026-12-31') }),
+])
+eq('revise: one truck extended, the market runs to its new end', [redated.rows[0].startDate, redated.rows[0].endDate], ['2026-12-07', '2026-12-31'])

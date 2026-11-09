@@ -9,6 +9,7 @@ import { recordSwap, recordWon, winsToRecord } from '@/lib/transportMetricsRecor
 import { waitUntil } from '@vercel/functions'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
+import { withAskedDates } from '@/lib/quoteFeatures'
 
 export async function PUT(
   req: NextRequest,
@@ -81,6 +82,13 @@ export async function PUT(
     }
   }
 
+  // Re-dated: the dates asked for follow, so revising and LED get the new
+  // dates, not the quote's (lib/quoteFeatures.ts withAskedDates).
+  const askedFeatures = start_date || end_date
+    ? withAskedDates(hold.features,
+        (start_date ? new Date(start_date) : hold.start_date).toISOString().slice(0, 10),
+        (end_date ? new Date(end_date) : hold.end_date).toISOString().slice(0, 10))
+    : hold.features
   const data = {
     ...(status && { status }),
     // Committed is booked, not held: no expiry left to show or sweep.
@@ -92,6 +100,7 @@ export async function PUT(
     ...(market && { market }),
     ...(state && { state }),
     ...(truck_number && { truck_number }),
+    ...(askedFeatures !== hold.features && { features: askedFeatures }),
   }
   // A change that puts a truck on dates (another truck, other dates, or an
   // expired hold made live again) is written under the truck's lock and

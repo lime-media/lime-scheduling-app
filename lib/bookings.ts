@@ -13,6 +13,7 @@
 import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { centralDate } from '@/lib/dateOnly'
 import { chosenClientType, type ClientType } from '@/lib/pricing/brandMarkup'
+import { askedDates } from '@/lib/quoteFeatures'
 
 type BookingRow = {
   campaign_group_id: string | null
@@ -371,14 +372,15 @@ export function reviseRows(holds: RevisableHold[]): {
   const rows = [...byGroup.entries()].map(([campaignGroup, group]) => {
     const f = parseFeatures(group[0].features)
     const trucks = [...new Set(group.map(h => h.truck_number).filter(t => !NO_TRUCK.has(t)))]
-    // The dates the client asked for, as booked. Older holds don't store
-    // them: their span is the best there is (a shared truck's travel days
-    // can widen or shift it).
-    const asked = (k: string) => (typeof f[k] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(f[k] as string) ? f[k] as string : null)
+    // The dates the client asked for, as booked or as staff re-dated them,
+    // across the line's holds (askedDates). Older holds don't store them:
+    // their span is the best there is (a shared truck's travel days can
+    // widen or shift it).
+    const asked = askedDates(group.map(h => h.features))
     return {
       market: group[0].market,
-      startDate: asked('requestedStart') ?? group.map(h => h.start_date).sort()[0],
-      endDate: asked('requestedEnd') ?? group.map(h => h.end_date).sort().reverse()[0],
+      startDate: asked?.start ?? group.map(h => h.start_date).sort()[0],
+      endDate: asked?.end ?? group.map(h => h.end_date).sort().reverse()[0],
       trucks: Math.max(1, group[0].truck_count ?? (Number(f.truckCount) || trucks.length || 1)),
       daysPerWeek: Number(f.daysPerWeek) || 5,
       hours: Number(f.operatingHours) || 8,

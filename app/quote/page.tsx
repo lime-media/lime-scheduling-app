@@ -12,6 +12,7 @@ import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
 import { PlannerTab } from '@/components/PlannerTab'
+import { MARKET_SIZE_TIERS } from '@/lib/pricing/config'
 import { ClientTypePicker, LeadSourcePicker } from '@/components/OpportunityFields'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
@@ -35,7 +36,7 @@ type QuoteResponse = {
     softHoldWarnings?: { truckNumber: string; warning: string }[]
     requiresOverride?: OverrideOption[]
   }
-  pricing: { quoteOnlyRequired?: boolean; brandMarkupPct?: number; clientType?: string | null; dailyRate: number; effectiveDailyRate: number; hourSurcharge: number; truckDays: number; days: number; calendarDays: number; truckCount: number; baseMedia: number; pricingBasis: string; marketSizeTier: { id: number; label: string }; schedule: { daysPerWeek: number; operatingHours: number; activationDays: number } }
+  pricing: { quoteOnlyRequired?: boolean; brandMarkupPct?: number; clientType?: string | null; dailyRate: number; effectiveDailyRate: number; hourSurcharge: number; truckDays: number; days: number; calendarDays: number; truckCount: number; baseMedia: number; pricingBasis: string; marketSizeTier: { id: number; label: string; dailyA18: number }; schedule: { daysPerWeek: number; operatingHours: number; activationDays: number } }
   features: {
     shadowFencing: { included: boolean; cost: number; floored: boolean; digitalImpressions: number }
     smartDirectional: { included: boolean; cost: number }
@@ -663,6 +664,13 @@ export default function InternalQuotePage() {
                   <div><p className="text-sm font-medium text-gray-900">Lift Studies</p><p className="text-xs text-gray-500">{fmtMoney(quoteResult.features.studies.costPerStudy)} per study</p></div>
                   {!quoteResult.features.studies.available && <span className="text-[10px] text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">Requires {quoteResult.features.studies.reachMinimum.toLocaleString()}+ impressions</span>}
                 </div>
+                {/* How the reach behind the lift-study gate is estimated (lib/pricing/engine.ts): trucks × working days × the market tier's daily A18+ impressions per truck. */}
+                <p className="text-xs text-gray-500 mb-2" title={`Daily A18+ impressions per truck by market tier: ${MARKET_SIZE_TIERS.map(t => `tier ${t.id} ${t.label} ${t.dailyA18.toLocaleString('en-US')}`).join('; ')}. Tiers 1-3 are the top 50 DMAs; every other market is tier 4.`}>
+                  Estimated reach: {Math.round(quoteResult.features.studies.estimatedImpressions).toLocaleString('en-US')} impressions
+                  {' '}= {quoteResult.pricing.truckCount} truck{quoteResult.pricing.truckCount === 1 ? '' : 's'} × {quoteResult.pricing.days} working day{quoteResult.pricing.days === 1 ? '' : 's'}
+                  {' '}× {quoteResult.pricing.marketSizeTier.dailyA18.toLocaleString('en-US')} per truck per day ({quoteResult.pricing.marketSizeTier.label}, tier {quoteResult.pricing.marketSizeTier.id}).
+                  {' '}Studies need {quoteResult.features.studies.reachMinimum.toLocaleString('en-US')}.
+                </p>
                 <div className="grid grid-cols-2 gap-2">
                   {VALID_STUDIES.map(s => {
                     const sel = toggles.studies.includes(s)

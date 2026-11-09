@@ -1,6 +1,9 @@
 import { getSetting } from '@/lib/appSettings'
-import { expiringHoldsHtml, expiringHoldsText, otpHtml, type ExpiringBooking } from '@/lib/emailTemplates'
+import { prisma } from '@/lib/prisma'
+import { askerEmail, assistanceRequestText, expiringHoldsHtml, expiringHoldsText, otpHtml, type AssistanceRequestEmailData, type Asker, type ExpiringBooking } from '@/lib/emailTemplates'
 import { redirectingTransport } from '@/lib/mailRedirect'
+
+export type { AssistanceRequestEmailData } from '@/lib/emailTemplates'
 
 // Email notifications — wire up SMTP credentials in .env when ready.
 // Required env vars: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
@@ -77,16 +80,12 @@ export async function sendHoldRequestEmail(data: HoldRequestEmailData): Promise<
   })
 }
 
-export interface AssistanceRequestEmailData {
-  companyName: string
-  market?:     string
-  state?:      string
-  startDate?:  string
-  endDate?:    string
-  details:     string
-}
-
 export async function sendAssistanceRequestEmail(data: AssistanceRequestEmailData): Promise<void> {
+  // Best-effort: a failed lookup still sends the request, unsigned.
+  const user = await prisma.clientUser.findUnique({ where: { id: data.clientUserId }, select: { username: true, email: true } })
+    .catch((err) => { console.error('[email] assistance request: client lookup failed:', err); return null })
+  const asker: Asker | null = user ? { username: user.username, email: askerEmail(user) } : null
+
   const { SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
     console.log('[email] SMTP not configured — assistance request received (not emailed):', data)
@@ -96,21 +95,12 @@ export async function sendAssistanceRequestEmail(data: AssistanceRequestEmailDat
   const transporter = await smtpTransport()
 
   const subject = `Assistance Request — ${data.companyName}${data.market ? ' · ' + data.market : ''}`
-  const text = [
-    `${data.companyName} asked the client view assistant to relay a question/need to the Lime Media team.`,
-    ``,
-    data.market                    ? `Market:  ${data.market}${data.state ? ', ' + data.state : ''}` : null,
-    data.startDate && data.endDate ? `Dates:   ${data.startDate} → ${data.endDate}` : null,
-    `Details: ${data.details}`,
-    ``,
-    `Log in at https://led.lime-media.com to review.`,
-  ].filter(Boolean).join('\n')
-
   await transporter.sendMail({
     from:    SMTP_FROM ?? SMTP_USER,
     to:      await getSetting('notify.assist'),
+    ...(asker?.email && { replyTo: asker.email }),
     subject,
-    text,
+    text:    assistanceRequestText(data, asker),
   })
 }
 

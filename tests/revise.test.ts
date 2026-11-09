@@ -186,16 +186,19 @@ section('revise: a market reopens on the dates the client asked for')
 section('asked-for dates after a hold is re-dated (withAskedDates, askedDates)')
 const asked = feat({ requestedStart: '2026-12-07', requestedEnd: '2026-12-20' })
 const parsed = (s: string | null) => (s ? JSON.parse(s) as Record<string, unknown> : null)
-eq('an extension takes the new dates', [parsed(withAskedDates(asked, '2026-12-07', '2026-12-31'))?.requestedStart, parsed(withAskedDates(asked, '2026-12-07', '2026-12-31'))?.requestedEnd], ['2026-12-07', '2026-12-31'])
-eq('the rest of the quote is kept', parsed(withAskedDates(asked, '2026-12-07', '2026-12-31'))?.operatingHours, 10)
-eq('unchanged dates: the same text back', withAskedDates(asked, '2026-12-07', '2026-12-20'), asked)
-eq('only the side that moved follows (a travel day is not taken as asked)', [parsed(withAskedDates(asked, null, '2026-12-31'))?.requestedStart, parsed(withAskedDates(asked, null, '2026-12-31'))?.requestedEnd], ['2026-12-07', '2026-12-31'])
-eq('features with no asked-for dates are left alone', withAskedDates(feat(), '2027-01-04', '2027-01-17'), feat())
-eq('none, or unreadable: unchanged', [withAskedDates(null, '2027-01-04', '2027-01-17'), withAskedDates('{bad', '2027-01-04', '2027-01-17')], [null, '{bad'])
+const dates = (s: string | null) => [parsed(s)?.requestedStart, parsed(s)?.requestedEnd]
+eq('extended 11 days: the asked-for end moves 11 days', dates(withAskedDates(asked, { startDays: 0, endDays: 11 })), ['2026-12-07', '2026-12-31'])
+eq('moved a week: both move a week, travel gap kept', dates(withAskedDates(asked, { startDays: 7, endDays: 7 })), ['2026-12-14', '2026-12-27'])
+eq('the rest of the quote is kept', parsed(withAskedDates(asked, { startDays: 0, endDays: 11 }))?.operatingHours, 10)
+eq('nothing moved: the same text back', withAskedDates(asked, { startDays: 0, endDays: 0 }), asked)
+eq('a side not stored stays unstored', dates(withAskedDates(feat({ requestedStart: '2026-12-07' }), { startDays: 2, endDays: 2 })), ['2026-12-09', undefined])
+eq('features with no asked-for dates are left alone', withAskedDates(feat(), { startDays: 3, endDays: 3 }), feat())
+eq('none, or unreadable: unchanged', [withAskedDates(null, { startDays: 3, endDays: 3 }), withAskedDates('{bad', { startDays: 3, endDays: 3 })], [null, '{bad'])
 eq('askedDates spans a line\'s holds', askedDates([asked, feat({ requestedStart: '2026-12-07', requestedEnd: '2026-12-31' }), null]), { start: '2026-12-07', end: '2026-12-31' })
-eq('askedDates: none stored', askedDates([feat(), null, 'null']), null)
+eq('askedDates: none stored', askedDates([feat(), null, 'null']), { start: null, end: null })
+eq('askedDates: one side stored is kept on its own', askedDates([feat({ requestedStart: '2026-12-07' })]), { start: '2026-12-07', end: null })
 const redated = reviseRows([
   hold({ id: 'c1', start_date: '2026-12-05', end_date: '2026-12-22', features: asked }),
-  hold({ id: 'c2', truck_number: '0912', start_date: '2026-12-07', end_date: '2026-12-31', features: withAskedDates(asked, '2026-12-07', '2026-12-31') }),
+  hold({ id: 'c2', truck_number: '0912', start_date: '2026-12-05', end_date: '2027-01-02', features: withAskedDates(asked, { startDays: 0, endDays: 11 }) }),
 ])
 eq('revise: one truck extended, the market runs to its new end', [redated.rows[0].startDate, redated.rows[0].endDate], ['2026-12-07', '2026-12-31'])

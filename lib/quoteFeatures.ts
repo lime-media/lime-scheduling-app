@@ -88,22 +88,28 @@ export function clientVisibleFeatures(features: string | null | undefined): stri
 const isIsoDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
 
 /**
- * A hold's features after staff re-date it (PUT /api/holds/[id]): the asked-for
- * date (requestedStart/requestedEnd) on each side staff moved becomes the
- * hold's new date there; a side passed as null keeps its asked-for date (the
- * hold's own date there can include a shared truck's travel days). Left as
- * they were, an extension still containing the old dates would be revised as
- * the old, shorter ones. Features that never stored asked-for dates, or can't
- * be read, come back unchanged: readers fall back to the holds' own dates. Pure.
+ * A hold's features after staff re-date it (PUT /api/holds/[id]): each
+ * asked-for date (requestedStart/requestedEnd) moves by as many days as the
+ * hold's own date on that side moved. The hold's dates can include a shared
+ * truck's travel days around the asked-for ones; moving by the same amount
+ * keeps that gap, so travel days never become campaign days. Left as they
+ * were, an extension still containing the old dates would be revised as the
+ * old, shorter ones. A side not stored, features that never stored asked-for
+ * dates, or features that can't be read come back unchanged: readers fall
+ * back to the holds' own dates. Pure.
  */
-export function withAskedDates(features: string | null, start: string | null, end: string | null): string | null {
-  if (!features) return features
+export function withAskedDates(features: string | null, moved: { startDays: number; endDays: number }): string | null {
+  if (!features || (moved.startDays === 0 && moved.endDays === 0)) return features
+  const shift = (v: unknown, days: number) => {
+    if (!isIsoDate(v) || days === 0) return v
+    const d = new Date(v + 'T00:00:00Z')
+    d.setUTCDate(d.getUTCDate() + days)
+    return d.toISOString().slice(0, 10)
+  }
   try {
     const f = JSON.parse(features) as Record<string, unknown>
-    if (!f || typeof f !== 'object' || Array.isArray(f) || !('requestedStart' in f || 'requestedEnd' in f)) return features
-    const next = { ...f, ...(start !== null && { requestedStart: start }), ...(end !== null && { requestedEnd: end }) }
-    if (next.requestedStart === f.requestedStart && next.requestedEnd === f.requestedEnd) return features
-    return JSON.stringify(next)
+    if (!f || typeof f !== 'object' || Array.isArray(f) || !(isIsoDate(f.requestedStart) || isIsoDate(f.requestedEnd))) return features
+    return JSON.stringify({ ...f, requestedStart: shift(f.requestedStart, moved.startDays), requestedEnd: shift(f.requestedEnd, moved.endDays) })
   } catch {
     return features
   }
@@ -113,9 +119,10 @@ export function withAskedDates(features: string | null, start: string | null, en
  * The dates asked for across one market line's holds: the earliest start and
  * latest end any of them stores. A line's holds share their features when
  * booked; after a hold is re-dated alone (withAskedDates) they can differ, and
- * the line covers them all. Null when none stores both.
+ * the line covers them all. Each side is null when no hold stores it (readers
+ * fall back to the holds' own date on that side only).
  */
-export function askedDates(features: (string | null)[]): { start: string; end: string } | null {
+export function askedDates(features: (string | null)[]): { start: string | null; end: string | null } {
   const starts: string[] = [], ends: string[] = []
   for (const raw of features) {
     if (!raw) continue
@@ -126,7 +133,7 @@ export function askedDates(features: (string | null)[]): { start: string; end: s
       if (isIsoDate(f.requestedEnd)) ends.push(f.requestedEnd)
     } catch { /* unreadable: not asked-for dates */ }
   }
-  return starts.length && ends.length ? { start: starts.sort()[0], end: ends.sort().reverse()[0] } : null
+  return { start: starts.sort()[0] ?? null, end: ends.sort().reverse()[0] ?? null }
 }
 
 /**

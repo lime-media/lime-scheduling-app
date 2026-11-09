@@ -83,10 +83,17 @@ export async function PUT(
     }
   }
 
+  // A date that isn't one is refused, not a 500 from toISOString.
+  if ([start_date, end_date].some(d => d !== undefined && d !== null && d !== '' && (typeof d !== 'string' || isNaN(Date.parse(d))))) {
+    return NextResponse.json({ error: 'start_date and end_date must be dates (YYYY-MM-DD).' }, { status: 400 })
+  }
   const effStart = (start_date ? new Date(start_date) : hold.start_date).toISOString().slice(0, 10)
   const effEnd = (end_date ? new Date(end_date) : hold.end_date).toISOString().slice(0, 10)
-  const startMoved = effStart !== hold.start_date.toISOString().slice(0, 10)
-  const endMoved = effEnd !== hold.end_date.toISOString().slice(0, 10)
+  if (effStart > effEnd) return NextResponse.json({ error: 'The start date must be on or before the end date.' }, { status: 400 })
+  const daysMoved = (from: Date, to: string) => Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from.toISOString().slice(0, 10) + 'T00:00:00Z')) / 86_400_000)
+  const datesMoved = { startDays: daysMoved(hold.start_date, effStart), endDays: daysMoved(hold.end_date, effEnd) }
+  const startMoved = datesMoved.startDays !== 0
+  const endMoved = datesMoved.endDays !== 0
   const data = {
     ...(status && { status }),
     // Committed is booked, not held: no expiry left to show or sweep.
@@ -110,17 +117,17 @@ export async function PUT(
   const revived = reservesAfter && !holdReservesNow(hold)
   const reserves = (status ?? hold.status) !== 'EXPIRED'
   const movesTruck = effTruck !== hold.truck_number || startMoved || endMoved || revived
-  // Re-dated: the asked-for date on the side that moved follows, so revising
-  // reopens on the new dates, not the quote's (lib/quoteFeatures.ts
-  // withAskedDates). A side that didn't move keeps its asked-for date: the
-  // hold's own date can include a shared truck's travel days. Features are
-  // read again inside the write, so a concurrent features write (the Hold
-  // Exp marker, lib/sfdcBooking.ts) isn't overwritten with what was read
-  // at the start of the request.
+  // Re-dated: the asked-for dates move with the hold's, so revising reopens
+  // on the new dates, not the quote's (lib/quoteFeatures.ts withAskedDates).
+  // Features are read under an update lock inside the write, so a features
+  // write that starts meanwhile waits for this one rather than being
+  // overwritten. A writer that read earlier (lib/sfdcBooking.ts setFeatures)
+  // can still overwrite it; that is setFeatures' own read-then-write.
   const write = async (tx: Prisma.TransactionClient) => {
     if (!startMoved && !endMoved) return tx.hold.update({ where: { id: params.id }, data })
-    const current = (await tx.hold.findUnique({ where: { id: params.id }, select: { features: true } }))?.features ?? null
-    const features = withAskedDates(current, startMoved ? effStart : null, endMoved ? effEnd : null)
+    const [row] = await tx.$queryRaw<{ features: string | null }[]>`SELECT features FROM dbo.app_holds WITH (UPDLOCK, ROWLOCK) WHERE id = ${params.id}`
+    const current = row?.features ?? null
+    const features = withAskedDates(current, datesMoved)
     return tx.hold.update({ where: { id: params.id }, data: features === current ? data : { ...data, features } })
   }
   let updated: Awaited<ReturnType<typeof prisma.hold.update>>
@@ -132,7 +139,8 @@ export async function PUT(
         // lapsed hold brought back (a new reservation): soft holds count, as the
         // swap check and reinstate always have.
         { ignoreHoldIds: [hold.id], excludeAttSoft: effTruck === hold.truck_number && !revived })
-      : await prisma.$transaction(write)
+      // Only a re-date reads and rewrites features: anything else is one update.
+      : startMoved || endMoved ? await prisma.$transaction(write) : await prisma.hold.update({ where: { id: params.id }, data })
   } catch (err) {
     if (err instanceof HoldClashError) return NextResponse.json({ error: err.message, clashes: err.clashes }, { status: 409 })
     if (err instanceof HoldLockTimeoutError) return NextResponse.json({ error: err.message }, { status: 409 })

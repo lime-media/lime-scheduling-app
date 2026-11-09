@@ -379,8 +379,8 @@ export function reviseRows(holds: RevisableHold[]): {
     const asked = askedDates(group.map(h => h.features))
     return {
       market: group[0].market,
-      startDate: asked?.start ?? group.map(h => h.start_date).sort()[0],
-      endDate: asked?.end ?? group.map(h => h.end_date).sort().reverse()[0],
+      startDate: asked.start ?? group.map(h => h.start_date).sort()[0],
+      endDate: asked.end ?? group.map(h => h.end_date).sort().reverse()[0],
       trucks: Math.max(1, group[0].truck_count ?? (Number(f.truckCount) || trucks.length || 1)),
       daysPerWeek: Number(f.daysPerWeek) || 5,
       hours: Number(f.operatingHours) || 8,

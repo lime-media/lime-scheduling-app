@@ -62,6 +62,7 @@ type HoldRequest = {
   cancelled_at: string | null
   cancel_reason: string | null
   client_emailable: boolean
+  client_portal: boolean
   extension_until: string | null
   created_at: string
 }
@@ -1298,7 +1299,9 @@ export default function HoldRequestsPage() {
                     <p className="text-xs text-gray-500">
                       {editingGroup.some(r => r.client_emailable)
                         ? 'The client is emailed this reason, and sees it on the cancelled reservation in their portal.'
-                        : 'No client account on this reservation: the reason is kept on it here only.'}
+                        : editingGroup.some(r => r.client_portal)
+                          ? 'No client email on file: the client is not emailed, but sees this reason on the cancelled reservation in their portal.'
+                          : 'No client account on this reservation: the reason is kept on it here only.'}
                     </p>
                   </div>
                 )}

@@ -43,48 +43,46 @@ export async function cancelBooking(opts: { hold: Hold; userId: string; reason: 
   const now = new Date()
   const ids = live.map(h => h.id)
   const data = { status: 'EXPIRED', expires_at: now, extension_until: null, extension_reason: null, cancelled_at: now, cancel_reason: reason, cancelled_by: userId }
-  const cancelled = await prisma.$transaction(async tx => {
+  const taken = await prisma.$transaction(async tx => {
     // The email's link: only the booking it warned about. Conditional on the
     // expiry the caller checked, so an extension (staff, the email's Extend,
     // a client's request) landing since that check makes this miss.
-    let first = 0
     if (opts.expectExpiresAt) {
-      first = (await tx.hold.updateMany({
+      const { count } = await tx.hold.updateMany({
         where: { id: hold.id, expires_at: new Date(opts.expectExpiresAt), status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
         data,
-      })).count
-      if (first === 0) return -1
+      })
+      if (count === 0) return null
     }
     // Only what is still held: a hold the sweep expired, or another cancel
     // took, meanwhile is left as it is.
-    const r = { count: first + (await tx.hold.updateMany({
+    await tx.hold.updateMany({
       where: { id: { in: ids }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
       data,
-    })).count }
-    if (r.count > 0) {
-      // Audit only the holds this cancel took: one the sweep or another cancel
-      // took meanwhile already has its own record.
-      const took = new Set((await tx.hold.findMany({ where: { id: { in: ids }, cancelled_at: now, cancelled_by: userId }, select: { id: true } })).map(h => h.id))
-      await tx.auditLog.createMany({
-        data: live.filter(h => took.has(h.id)).map(h => ({
-          action:       'CANCEL_HOLD',
-          truck_number: h.truck_number,
-          user_id:      userId,
-          hold_id:      h.id,
-          details:      JSON.stringify({ client_name: h.client_name, status: h.status, reason, booking: bookingKey(h), via, previous_expires_at: h.expires_at?.toISOString() ?? null }),
-        })),
-      })
-    }
-    return r.count
+    })
+    // Only the holds this cancel took: one the sweep or another cancel took
+    // meanwhile already has its own record, and isn't in the client's email.
+    const tookIds = new Set((await tx.hold.findMany({ where: { id: { in: ids }, cancelled_at: now, cancelled_by: userId }, select: { id: true } })).map(h => h.id))
+    const took = live.filter(h => tookIds.has(h.id))
+    if (took.length) await tx.auditLog.createMany({
+      data: took.map(h => ({
+        action:       'CANCEL_HOLD',
+        truck_number: h.truck_number,
+        user_id:      userId,
+        hold_id:      h.id,
+        details:      JSON.stringify({ client_name: h.client_name, status: h.status, reason, booking: bookingKey(h), via, previous_expires_at: h.expires_at?.toISOString() ?? null }),
+      })),
+    })
+    return took
   })
-  if (cancelled === -1) return reply({ error: EXTEND_STALE_MESSAGE }, { status: 409 })
-  if (cancelled === 0) return reply({ error: 'This reservation is no longer held, so there is nothing to cancel.' }, { status: 409 })
+  if (taken === null) return reply({ error: EXTEND_STALE_MESSAGE }, { status: 409 })
+  if (taken.length === 0) return reply({ error: 'This reservation is no longer held, so there is nothing to cancel.' }, { status: 409 })
 
   // One email to the client for the whole booking, when there is a reason and an address.
   let emailed = false
-  const client = live.find(h => h.client_user?.email)?.client_user
+  const client = taken.find(h => h.client_user?.email)?.client_user
   if (reason && client?.email) {
-    const s = bookingSummary(live)
+    const s = bookingSummary(taken)
     try {
       await sendCancellationEmail({
         to:           client.email,
@@ -103,5 +101,5 @@ export async function cancelBooking(opts: { hold: Hold; userId: string; reason: 
 
   // The released trucks come off Salesforce's LED Trucks, or its next push would mirror them.
   const sfdcWarning = await syncOpportunityLedWindow(hold.sfdc_opportunity_id)
-  return reply({ ok: true, cancelled, emailed, sfdcWarning })
+  return reply({ ok: true, cancelled: taken.length, emailed, sfdcWarning })
 }

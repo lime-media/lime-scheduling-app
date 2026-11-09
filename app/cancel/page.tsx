@@ -42,7 +42,9 @@ export default async function CancelPage({ searchParams }: { searchParams: { t?:
     return <Shell><p className="text-sm text-gray-700">This reservation has already been cancelled. It&apos;s on {reservations} under Expired, where it can be reinstated.</p></Shell>
   }
   if (hold.expires_at?.toISOString() !== claims.expiresAt || (hold.status !== 'HOLD' && hold.status !== 'EXTENSION_REQUESTED')) {
-    return <Shell><p className="text-sm text-gray-700">This reservation has already been extended or changed since this email. You can cancel it on {reservations}.</p></Shell>
+    return <Shell><p className="text-sm text-gray-700">{hold.status === 'EXPIRED'
+      ? <>This reservation has already been released, so there is nothing to cancel. See it on {reservations}.</>
+      : <>This reservation has already been extended or changed since this email. You can cancel it on {reservations}.</>}</p></Shell>
   }
 
   const whole = await loadBooking(hold)
@@ -66,7 +68,7 @@ export default async function CancelPage({ searchParams }: { searchParams: { t?:
         <dt className="text-gray-500">Expires</dt><dd className="text-gray-900">{longDate(centralDate(new Date(claims.expiresAt)))}, end of day (Central)</dd>
       </dl>
       <p className="text-xs text-gray-500">Every market and truck of this reservation is released now. It stays on Reservations under Expired, where it can be reinstated.</p>
-      <CancelConfirm token={searchParams.t!} clientEmailed={booking.some(h => h.client_user?.email)} />
+      <CancelConfirm token={searchParams.t!} clientEmailed={booking.some(h => h.client_user?.email)} clientPortal={booking.some(h => h.client_user_id)} />
     </Shell>
   )
 }

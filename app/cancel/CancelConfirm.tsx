@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { CANCEL_REASON_MAX } from '@/lib/cancelReason'
 
 /** The button that actually cancels (POST /api/cancel), with an optional reason. */
-export function CancelConfirm({ token, clientEmailed }: { token: string; clientEmailed: boolean }) {
+export function CancelConfirm({ token, clientEmailed, clientPortal }: { token: string; clientEmailed: boolean; clientPortal: boolean }) {
   const [reason, setReason] = useState('')
   const [state, setState] = useState<{ kind: 'idle' | 'saving' } | { kind: 'done'; emailed: boolean; warning?: string } | { kind: 'error'; message: string }>({ kind: 'idle' })
 
@@ -33,7 +33,7 @@ export function CancelConfirm({ token, clientEmailed }: { token: string; clientE
   return (
     <div className="space-y-3">
       <label className="block text-xs text-gray-600">
-        Reason (optional{clientEmailed ? '; with one, the client is emailed it' : ''})
+        Reason (optional{clientEmailed ? '; with one, the client is emailed it' : clientPortal ? '; the client sees it in their portal' : ''})
         <textarea value={reason} onChange={e => setReason(e.target.value)} maxLength={CANCEL_REASON_MAX} rows={3}
           className="mt-1 block w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-400" />
       </label>

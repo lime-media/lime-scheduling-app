@@ -186,6 +186,8 @@ export async function GET() {
     cancel_reason:     h.cancel_reason ?? null,
     // A client account with an email: a cancel reason is emailed to it and shown in its portal.
     client_emailable:  Boolean(h.client_user?.email),
+    // Any client account, emailable or not: its portal shows the cancel reason.
+    client_portal:     Boolean(h.client_user_id),
     created_at:        h.created_at.toISOString(),
   }))
 

@@ -51,6 +51,10 @@ export function fitNames(names: string[], max: number): string {
   return out.join('; ')
 }
 
+/** A multi-market booking's pricing tier, from its features: Better (shadow fencing only), Good (none) or Custom. */
+export const planTier = (f: QuoteRequest['features']) =>
+  f.shadowFencing && !f.smartDirectional && !f.deviceId ? 'Better' : !f.shadowFencing && !f.smartDirectional && !f.deviceId ? 'Good' : 'Custom'
+
 export const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
 const scheduleText = (dpw: number) => (dpw === 3 ? '3 days/wk' : dpw === 7 ? 'every day' : dpw === 6 ? 'Mon-Sat' : 'Mon-Fri')
 

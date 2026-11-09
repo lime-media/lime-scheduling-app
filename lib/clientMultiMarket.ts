@@ -30,7 +30,6 @@ import type { ClientSession } from '@/lib/clientAuth'
 import { liveClientLinks } from '@/lib/clientLinks'
 import { reply, type CoreResult } from '@/lib/coreResult'
 import { cleanBrand, opportunityName } from '@/lib/brand'
-import { canonicalMarketName } from '@/lib/marketBounds'
 import { bookingHoldExpiry, DEFAULT_HOLD_DAYS } from '@/lib/holdExpiry'
 import { holdExpDate } from '@/lib/dateOnly'
 import { clientRateCard } from '@/lib/pricing/resolvers'
@@ -45,9 +44,14 @@ import { afterClientHolds } from '@/lib/holdRequestService'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { legsFromArrivals } from '@/lib/transportMetrics'
-import { bookWhatFits, buildMultiMarketQuote, resolveRows, type PreparedQuote, type QuoteRequest } from '@/lib/planning/quote'
-import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches } from '@/lib/planning/booking'
+import { bookWhatFits, buildMultiMarketQuote, holdPlaces, resolveRows, type PreparedQuote, type QuoteRequest } from '@/lib/planning/quote'
+import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches, planTier } from '@/lib/planning/booking'
 import { clientLine, parseClientPlan, sameTrucks } from '@/lib/clientPlan'
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+/** Thrown inside the write when this booking's id already has holds (a double submit). Nothing was written. */
+class AlreadyPlaced extends Error {}
 
 type AccountInfo = Awaited<ReturnType<typeof getSfdcAccountInfo>>
 type Rates = { overrides: RateOverrides | null; basis: string }
@@ -140,28 +144,33 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
   const notes = typeof body.notes === 'string' ? body.notes.trim().slice(0, 1000) : ''
   const brand = cleanBrand(typeof body.brand === 'string' ? body.brand : undefined)
 
-  const p = await prepare(session, body)
-  if (p.refused) return p.refused
   const groupPrefix = `mm_${requestId}_`
-
-  try {
-    // A retry of an attempt that went through: what it booked. Another
-    // client's booking under the same id is never answered from.
+  // A retry of an attempt that went through: what it booked. Another
+  // client's booking under the same id is never answered from. Null: nothing
+  // booked under this id yet.
+  const placedEarlier = async (): Promise<CoreResult | null> => {
     const earlier = await prisma.hold.findMany({
       where: { campaign_group_id: { startsWith: groupPrefix } },
       select: { market: true, client_user_id: true },
     })
-    if (earlier.length > 0) {
-      if (earlier.some(h => h.client_user_id !== session.id)) return reply({ error: 'That booking request id is taken. Get a fresh quote and book again.' }, { status: 409 })
-      const markets = [...new Set(earlier.map(h => h.market))]
-      return reply({
-        ok: true,
-        alreadyPlaced: true,
-        markets,
-        message: `This booking was already placed (${markets.length} market${markets.length === 1 ? '' : 's'}). Nothing new was booked.`,
-      })
-    }
+    if (earlier.length === 0) return null
+    if (earlier.some(h => h.client_user_id !== session.id)) return reply({ error: 'That booking request id is taken. Get a fresh quote and book again.' }, { status: 409 })
+    const markets = [...new Set(earlier.map(h => h.market))]
+    return reply({
+      ok: true,
+      alreadyPlaced: true,
+      markets,
+      message: `This booking was already placed (${plural(markets.length, 'market')}). Nothing new was booked.`,
+    })
+  }
 
+  try {
+    // Before the account read and the routing: a retry costs one query.
+    const retried = await placedEarlier()
+    if (retried) return retried
+
+    const p = await prepare(session, body)
+    if (p.refused) return p.refused
     const routed = await route(p)
     if ('status' in routed) return routed
     const { asked, fits } = routed
@@ -179,13 +188,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
     }
 
     const lineById = new Map(quote.lines.map(l => [l.id, l]))
-    const orderLine = new Map(plan.trucks.flatMap(t => t.jobs.flatMap(j => j.lines)).map(l => [l.id, l]))
-    const place = new Map<string, { market: string; state: string }>()
-    await Promise.all(quote.lines.map(async l => {
-      const name = orderLine.get(l.id)?.standardMarket ?? l.market
-      const state = name.split(',')[1]?.trim() ?? ''
-      place.set(l.id, { market: (await canonicalMarketName(name, state || undefined)) ?? name, state })
-    }))
+    const place = await holdPlaces(fits)
     const stretches = planStretches(plan)
     // One expiry for the booking: the client's standard hold, capped by the earliest start.
     const expiry = bookingHoldExpiry(stretches.map(x => x.stint.start), DEFAULT_HOLD_DAYS, new Date())
@@ -193,7 +196,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
     // Hold.created_by is a user; clients aren't users (lib/holdRequestService.ts).
     if (!serviceUser) throw new Error('SFDC service user not found — cannot create client holds')
     const f = p.req.features
-    const tier = f.shadowFencing && !f.smartDirectional && !f.deviceId ? 'Better' : !f.shadowFencing && !f.smartDirectional && !f.deviceId ? 'Good' : 'Custom'
+    const tier = planTier(f)
     const groupOf = new Map(quote.lines.map((l, i) => [l.id, `${groupPrefix}${i + 1}`]))
     const company = session.companyName
     const rows: Prisma.HoldCreateManyInput[] = stretches.map(({ truckNumber, stint, partner }) => {
@@ -227,11 +230,28 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
     })
     try {
       // Re-checked under each truck's lock, AT&T soft holds included.
+      // A double submit with this id, routed onto other trucks while the first
+      // was saving, waits on the id's own lock and then finds the first's holds.
       await writeHoldsExclusive(
         stretches.map(x => ({ truck: x.truckNumber, start: x.stint.start, end: x.stint.end })),
-        tx => tx.hold.createMany({ data: rows }),
+        async tx => {
+          const [lock] = await tx.$queryRaw<{ r: number }[]>`
+            DECLARE @r int;
+            EXEC @r = sp_getapplock @Resource = ${`hold-request:${groupPrefix}`}, @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = 15000;
+            SELECT @r AS r;`
+          // Not held: the first submit is still saving. Nothing is written; trying again answers from it.
+          if (!lock || lock.r < 0) throw new HoldLockTimeoutError('of this booking')
+          if (await tx.hold.count({ where: { campaign_group_id: { startsWith: groupPrefix } } }) > 0) throw new AlreadyPlaced()
+          return tx.hold.createMany({ data: rows })
+        },
       )
     } catch (err) {
+      // A double submit of this booking: answered as its retry, not as a clash
+      // with the client's own holds.
+      if (err instanceof AlreadyPlaced || err instanceof HoldClashError) {
+        const retried = await placedEarlier()
+        if (retried) return retried
+      }
       // Not err.message: it names the trucks, which a client never sees (clientLine).
       if (err instanceof HoldClashError) {
         return reply({ error: 'Some of these trucks were booked by someone else since you were quoted. Nothing was booked. Get a fresh quote and try again.' }, { status: 409 })
@@ -261,7 +281,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
     await sendHoldRequestEmail({
       companyName: company,
       truckNumbers,
-      market: `${markets.length} markets: ${markets.join('; ')}`,
+      market: `${plural(markets.length, 'market')}: ${markets.join('; ')}`,
       startDate: starts[0],
       endDate: ends[ends.length - 1],
       notes: [brand ? `Brand: ${brand}` : null, notes || null, `Multi-market at ${money(total)}`, notBooked.length ? `Not booked (no truck): ${notBooked.join('; ')}` : null].filter(Boolean).join(' | '),
@@ -283,7 +303,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
           ownerId: accountInfo?.ownerId ?? undefined,
           clientType: quote.clientType ?? accountInfo?.clientType,
           leadSource: CLIENT_PORTAL_LEAD_SOURCE,
-          name: opportunityName(brand, company, `Multi-market (${markets.length} markets) - ${starts[0]} to ${ends[ends.length - 1]}`),
+          name: opportunityName(brand, company, `Multi-market (${plural(markets.length, 'market')}) - ${starts[0]} to ${ends[ends.length - 1]}`),
           brand: brand || undefined,
           stageName: DEFAULT_STAGE,
           closeDate: starts[0],

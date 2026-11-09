@@ -43,7 +43,6 @@ import { getToken } from 'next-auth/jwt'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
-import { canonicalMarketName } from '@/lib/marketBounds'
 import { bookingHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
 import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner, readOnlyPreview, salesforceWritesOff, WRITES_OFF_MESSAGE, WRITES_STOPPED_ERROR } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
@@ -53,8 +52,8 @@ import { loadBookingHolds } from '@/lib/bookingLoad'
 import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, CLIENT_TYPE_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, reopenClosedLostOpportunity, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { SFDC_SERVICE_USER_EMAIL, attachedToOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
-import { bookWhatFits, buildMultiMarketQuote, resolveRows, validateQuoteRequest, type QuoteRequest } from '@/lib/planning/quote'
-import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches } from '@/lib/planning/booking'
+import { bookWhatFits, buildMultiMarketQuote, holdPlaces, resolveRows, validateQuoteRequest, type QuoteRequest } from '@/lib/planning/quote'
+import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches, planTier } from '@/lib/planning/booking'
 import { holdExpDate } from '@/lib/dateOnly'
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
@@ -250,13 +249,7 @@ async function handlePost(req: NextRequest) {
 
     // Every stretch to hold, with its market resolved for the hold record.
     const lineById = new Map(quote.lines.map(l => [l.id, l]))
-    const orderLine = new Map(plan.trucks.flatMap(t => t.jobs.flatMap(j => j.lines)).map(l => [l.id, l]))
-    const place = new Map<string, { market: string; state: string }>()
-    for (const l of quote.lines) {
-      const name = orderLine.get(l.id)?.standardMarket ?? l.market
-      const state = name.split(',')[1]?.trim() ?? ''
-      place.set(l.id, { market: (await canonicalMarketName(name, state || undefined)) ?? name, state })
-    }
+    const place = await holdPlaces(booking)
     // One clock for every hold, so equal lengths give equal expiries (the
     // confirmation compares them to say whether markets lapse at different times).
     const holdClock = new Date()
@@ -307,8 +300,7 @@ async function handlePost(req: NextRequest) {
     const linkedClient = await prisma.clientUser.findFirst({ where: { sfdc_account_id: body.sfdcAccountId }, select: { id: true } })
     const serviceUser = await prisma.user.findFirst({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } })
     const createdBy = (token.id as string) || serviceUser?.id || 'system'
-    const tier = body.features.shadowFencing && !body.features.smartDirectional && !body.features.deviceId
-      ? 'Better' : !body.features.shadowFencing && !body.features.smartDirectional && !body.features.deviceId ? 'Good' : 'Custom'
+    const tier = planTier(body.features)
     // One campaign group per market, so each market reads as its own campaign
     // with its own total wherever holds are grouped.
     const groupOf = new Map(quote.lines.map((l, i) => [l.id, `${groupPrefix}${i + 1}`]))

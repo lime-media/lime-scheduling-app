@@ -472,6 +472,20 @@ export async function bookWhatFits(req: QuoteRequest, requested: OrderLine[], fi
   return booking.plan.shortfalls.length > 0 || booking.plan.trucks.length === 0 ? null : booking
 }
 
+/**
+ * Where each market of a routed order is held (by line id): its standard
+ * market (a ZIP-list area's nearest) under its canonical name, so the hold
+ * resolves to a place for later availability checks, and its state.
+ */
+export async function holdPlaces({ quote, plan }: PreparedQuote): Promise<Map<string, { market: string; state: string }>> {
+  const orderLine = new Map(plan.trucks.flatMap(t => t.jobs.flatMap(j => j.lines)).map(l => [l.id, l]))
+  return new Map(await Promise.all(quote.lines.map(async l => {
+    const name = orderLine.get(l.id)?.standardMarket ?? l.market
+    const state = name.split(',')[1]?.trim() ?? ''
+    return [l.id, { market: (await canonicalMarketName(name, state || undefined)) ?? name, state }] as const
+  })))
+}
+
 async function buildAlternatives(
   lines: OrderLine[],
   plan: OrderPlan,

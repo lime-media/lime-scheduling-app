@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { sfdcQuery, sfdcQueryOptionalField, updateOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { isLinkableAccount } from '@/lib/sfdcSearch'
+import { isUserId } from '@/lib/sfdcBots'
 import { SFDC_SERVICE_USER_EMAIL, reconcileTarget } from '@/lib/sfdcIntegration'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry } from '@/lib/holdExpiry'
 import { centralDate } from '@/lib/dateOnly'
@@ -223,12 +224,13 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
         .catch((err) => console.error(`[sfdc-reconcile] account write failed for ${key}; carrying on:`, err))
     }
     // Who made it, the same way: the bot's opportunities are left out of what
-    // the app builds for LED (lib/sfdcBots.ts). A creator never changes, so
-    // this only fills holds that don't have it yet.
-    const createdBy = stage.CreatedById && /^005[A-Za-z0-9]{15}$/.test(stage.CreatedById) ? stage.CreatedById : null
-    const noCreator = createdBy ? group.filter(h => h.sfdc_created_by_id !== createdBy).map(h => h.id) : []
-    if (noCreator.length) {
-      await prisma.hold.updateMany({ where: { id: { in: noCreator } }, data: { sfdc_created_by_id: createdBy } })
+    // the app builds for LED (lib/sfdcBots.ts). A creator never changes, so in
+    // practice this fills holds that don't have it yet; one that differs is
+    // corrected. An unreadable creator leaves the stored one alone.
+    const createdBy = stage.CreatedById && isUserId(stage.CreatedById) ? stage.CreatedById : null
+    const staleCreator = createdBy ? group.filter(h => h.sfdc_created_by_id !== createdBy).map(h => h.id) : []
+    if (staleCreator.length) {
+      await prisma.hold.updateMany({ where: { id: { in: staleCreator } }, data: { sfdc_created_by_id: createdBy } })
         .catch((err) => console.error(`[sfdc-reconcile] creator write failed for ${key}; carrying on:`, err))
     }
 

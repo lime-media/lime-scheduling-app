@@ -11,6 +11,13 @@
  * (app_holds.sfdc_created_by_id). Pure.
  */
 
+/**
+ * A user id the reconcile stores as a hold's opportunity creator: 18
+ * characters, as SOQL returns Opportunity.CreatedById, so it compares equal to
+ * the ids below. Pure.
+ */
+export const isUserId = (id: string): boolean => /^005[A-Za-z0-9]{15}$/.test(id)
+
 /** User ids (18-character) of bots that create opportunities. */
 export const SFDC_BOT_USER_IDS: ReadonlySet<string> = new Set([
   '005VP00000MNXcvYAH', // Leah Miles

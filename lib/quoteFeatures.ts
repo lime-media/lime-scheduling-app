@@ -63,17 +63,17 @@ export type QuoteFeatures = {
 }
 
 /**
- * Keys in `features` that are internal, never sent to a client: Brand Direct
- * pricing (markup, client type), the deadhead cost a booking adds to the next
- * job, and the app's Salesforce bookkeeping.
- */
-/**
  * Set on a hold's features when staff re-dated it after it was priced
  * (withAskedDates): its quoted_total is for the old dates, so a revision
  * reprices it instead of keeping that price (lib/bookings.ts keptPrices).
  */
 export const ASKED_DATES_MOVED_KEY = 'askedDatesMoved'
 
+/**
+ * Keys in `features` that are internal, never sent to a client: Brand Direct
+ * pricing (markup, client type), the deadhead cost a booking adds to the next
+ * job, and the app's Salesforce bookkeeping.
+ */
 const INTERNAL_KEYS = ['brandMarkupPct', 'clientType', 'successorImpact', APP_HOLD_EXP_KEY, ASKED_DATES_MOVED_KEY] as const
 
 /**
@@ -101,9 +101,9 @@ const isIsoDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-
  * truck's travel days around the asked-for ones; moving by the same amount
  * keeps that gap, so travel days never become campaign days. Left as they
  * were, an extension still containing the old dates would be revised as the
- * old, shorter ones. A side not stored, features that never stored asked-for
- * dates, or features that can't be read come back unchanged: readers fall
- * back to the holds' own dates. Given the hold's new span, the asked-for
+ * old, shorter ones. A side not stored is left unstored, and features that
+ * never stored asked-for dates are only marked (ASKED_DATES_MOVED_KEY):
+ * readers fall back to the holds' own dates. None, or unreadable: unchanged. Given the hold's new span, the asked-for
  * dates are kept inside it (each side moves alone, so a start moved past the
  * old asked-for end would otherwise leave them inverted or outside the hold);
  * if they still cross, they become the span. Pure.
@@ -119,7 +119,10 @@ export function withAskedDates(features: string | null, moved: { startDays: numb
   const clamp = (v: unknown) => (span && isIsoDate(v) ? (v < span.start ? span.start : v > span.end ? span.end : v) : v)
   try {
     const f = JSON.parse(features) as Record<string, unknown>
-    if (!f || typeof f !== 'object' || Array.isArray(f) || !(isIsoDate(f.requestedStart) || isIsoDate(f.requestedEnd))) return features
+    if (!f || typeof f !== 'object' || Array.isArray(f)) return features
+    // No asked-for dates stored (an older hold): nothing to move, but its
+    // price is still for the old dates, so it is marked all the same.
+    if (!(isIsoDate(f.requestedStart) || isIsoDate(f.requestedEnd))) return JSON.stringify({ ...f, [ASKED_DATES_MOVED_KEY]: true })
     let requestedStart = clamp(shift(f.requestedStart, moved.startDays))
     let requestedEnd = clamp(shift(f.requestedEnd, moved.endDays))
     if (span && isIsoDate(requestedStart) && isIsoDate(requestedEnd) && requestedStart > requestedEnd) {
@@ -168,7 +171,7 @@ export function parseQuoteFeatures(features: string | null | undefined): QuoteFe
   if (!features) return null
   try {
     const f = JSON.parse(features) as QuoteFeatures
-    return f && typeof f === 'object' && Object.keys(f).some(k => k !== APP_HOLD_EXP_KEY) ? f : null
+    return f && typeof f === 'object' && Object.keys(f).some(k => k !== APP_HOLD_EXP_KEY && k !== ASKED_DATES_MOVED_KEY) ? f : null
   } catch {
     return null
   }

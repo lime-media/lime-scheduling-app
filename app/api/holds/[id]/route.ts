@@ -37,7 +37,11 @@ export async function PUT(
 
   // A date that isn't one is refused, not a 500 from toISOString, and before
   // Salesforce or the swap check are asked (REVIEW.md "Cheap checks before expensive calls").
-  if ([start_date, end_date].some(d => d !== undefined && d !== null && d !== '' && (typeof d !== 'string' || isNaN(Date.parse(d))))) {
+  // Strict: Date.parse takes 2026-02-30 as March 2 and other formats in server
+  // time. A date, or the same date as UTC midnight (how a Date serialises).
+  const isDate = (d: unknown) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}(T00:00:00(\.000)?Z)?$/.test(d)
+    && new Date(d.slice(0, 10) + 'T00:00:00Z').toISOString().slice(0, 10) === d.slice(0, 10)
+  if ([start_date, end_date].some(d => d !== undefined && d !== null && d !== '' && !isDate(d))) {
     return NextResponse.json({ error: 'start_date and end_date must be dates (YYYY-MM-DD).' }, { status: 400 })
   }
   const effStart = (start_date ? new Date(start_date) : hold.start_date).toISOString().slice(0, 10)

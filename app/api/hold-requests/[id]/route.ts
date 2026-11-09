@@ -183,6 +183,10 @@ export async function PATCH(
       .filter(h => h.origination !== QUOTE_ONLY_ORIGINATION && !reinstateBlockedByRelease(h.origination))
     if (lapsed.length === 0) return NextResponse.json({ error: NOTHING_TO_REINSTATE }, { status: 400 })
     const ids = lapsed.map(h => h.id)
+    // Markets of a cancelled booking that ended meanwhile stay Expired, but the
+    // booking is no longer cancelled: cleared with the rest, or a later lapse
+    // would read as the old cancel (lib/cancelReason.ts cancelledOf).
+    const endedCancelled = booking.filter(h => h.status === 'EXPIRED' && h.cancelled_at && !ids.includes(h.id))
     // Holds still marked live whose expiry has passed but the sweep hasn't
     // reached yet reserve nothing either: re-dating them below brings them
     // back, so they're clash-checked like the lapsed ones.
@@ -247,6 +251,10 @@ export async function PATCH(
             where: { id: { in: live.map(h => h.id) }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
             data:  { expires_at: newExpiresAt },
           })
+          if (endedCancelled.length) await tx.hold.updateMany({
+            where: { id: { in: endedCancelled.map(h => h.id) } },
+            data:  { cancelled_at: null, cancel_reason: null, cancelled_by: null },
+          })
           if (mirrored.length) {
             await tx.hold.deleteMany({ where: { id: { in: mirrored.map(m => m.id) } } })
             await tx.auditLog.createMany({
@@ -301,6 +309,7 @@ export async function PATCH(
             data:  { status: 'EXPIRED', expires_at: h.expires_at, extension_until: h.extension_until, extension_reason: h.extension_reason, cancelled_at: h.cancelled_at, cancel_reason: h.cancel_reason, cancelled_by: h.cancelled_by },
           })),
           ...(!won ? live.map(h => prisma.hold.update({ where: { id: h.id }, data: { expires_at: h.expires_at } })) : []),
+          ...endedCancelled.map(h => prisma.hold.update({ where: { id: h.id }, data: { cancelled_at: h.cancelled_at, cancel_reason: h.cancel_reason, cancelled_by: h.cancelled_by } })),
           prisma.auditLog.createMany({
             data: lapsed.map(h => ({
               action:       'REINSTATE_REVERTED',

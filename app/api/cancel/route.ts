@@ -36,6 +36,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: EXTEND_STALE_MESSAGE }, { status: 409 })
   }
 
-  const r = await cancelBooking({ hold, userId: user.id, reason: body?.reason, via: 'expiry_email' })
+  const r = await cancelBooking({ hold, userId: user.id, reason: body?.reason, via: 'expiry_email', expectExpiresAt: claims.expiresAt })
   return NextResponse.json(r.body, { status: r.status })
 }

@@ -20,13 +20,14 @@ import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { sendCancellationEmail } from '@/lib/email'
 import { reply, type CoreResult } from '@/lib/coreResult'
 import { cleanCancelReason } from '@/lib/cancelReason'
+import { EXTEND_STALE_MESSAGE } from '@/lib/extendLink'
 
 /**
  * Cancels `hold`'s whole booking as `userId`. `via` is recorded in the audit
  * log (reservations, expiry_email). With a reason, the client is emailed it
  * when the booking is theirs. Returns the route's status and body.
  */
-export async function cancelBooking(opts: { hold: Hold; userId: string; reason: unknown; via: 'reservations' | 'expiry_email' }): Promise<CoreResult> {
+export async function cancelBooking(opts: { hold: Hold; userId: string; reason: unknown; via: 'reservations' | 'expiry_email'; expectExpiresAt?: string }): Promise<CoreResult> {
   const { hold, userId, via } = opts
   const reason = cleanCancelReason(opts.reason)
   const booking = await loadBooking(hold)
@@ -41,13 +42,25 @@ export async function cancelBooking(opts: { hold: Hold; userId: string; reason: 
 
   const now = new Date()
   const ids = live.map(h => h.id)
+  const data = { status: 'EXPIRED', expires_at: now, extension_until: null, extension_reason: null, cancelled_at: now, cancel_reason: reason, cancelled_by: userId }
   const cancelled = await prisma.$transaction(async tx => {
+    // The email's link: only the booking it warned about. Conditional on the
+    // expiry the caller checked, so an extension (staff, the email's Extend,
+    // a client's request) landing since that check makes this miss.
+    let first = 0
+    if (opts.expectExpiresAt) {
+      first = (await tx.hold.updateMany({
+        where: { id: hold.id, expires_at: new Date(opts.expectExpiresAt), status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
+        data,
+      })).count
+      if (first === 0) return -1
+    }
     // Only what is still held: a hold the sweep expired, or another cancel
     // took, meanwhile is left as it is.
-    const r = await tx.hold.updateMany({
+    const r = { count: first + (await tx.hold.updateMany({
       where: { id: { in: ids }, status: { in: ['HOLD', 'EXTENSION_REQUESTED'] } },
-      data:  { status: 'EXPIRED', expires_at: now, extension_until: null, extension_reason: null, cancelled_at: now, cancel_reason: reason, cancelled_by: userId },
-    })
+      data,
+    })).count }
     if (r.count > 0) {
       // Audit only the holds this cancel took: one the sweep or another cancel
       // took meanwhile already has its own record.
@@ -58,12 +71,13 @@ export async function cancelBooking(opts: { hold: Hold; userId: string; reason: 
           truck_number: h.truck_number,
           user_id:      userId,
           hold_id:      h.id,
-          details:      JSON.stringify({ client_name: h.client_name, status: h.status, reason, booking: bookingKey(h), via }),
+          details:      JSON.stringify({ client_name: h.client_name, status: h.status, reason, booking: bookingKey(h), via, previous_expires_at: h.expires_at?.toISOString() ?? null }),
         })),
       })
     }
     return r.count
   })
+  if (cancelled === -1) return reply({ error: EXTEND_STALE_MESSAGE }, { status: 409 })
   if (cancelled === 0) return reply({ error: 'This reservation is no longer held, so there is nothing to cancel.' }, { status: 409 })
 
   // One email to the client for the whole booking, when there is a reason and an address.

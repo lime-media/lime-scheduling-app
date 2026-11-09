@@ -200,7 +200,8 @@ export interface AssistanceRequestEmailData {
 /** Who asked, as the email names them; `email` is where Reply goes (null: no address on file). */
 export type Asker = { username: string; email: string | null }
 
-const looksLikeEmail = (s: string | null | undefined): s is string => !!s && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)
+// One plain address: no list separators or display-name syntax, so Reply-To can't name a second recipient.
+const looksLikeEmail = (s: string | null | undefined): s is string => !!s && /^[^\s@,;<>"()]+@[^\s@,;<>"()]+\.[^\s@,;<>"()]+$/.test(s)
 
 /** The client's address for Reply: their email on file, else their username when it is one. Pure. */
 export function askerEmail(user: { username: string; email: string | null }): string | null {
@@ -223,7 +224,9 @@ export function assistanceRequestText(data: AssistanceRequestEmailData, asker: A
     data.startDate && data.endDate ? `Dates:   ${data.startDate} → ${data.endDate}` : null,
     `Details: ${data.details}`,
     ``,
-    asker?.email ? `Reply to this email to answer ${asker.email} directly.` : `No email address is on file for this client; reach them through their account manager.`,
+    asker?.email ? `Reply to this email to answer ${asker.email} directly.`
+      : asker ? `No email address is on file for this client; reach them through their account manager.`
+      : `Who asked couldn't be looked up; reach ${data.companyName} through their account manager.`,
     data.actionUrl ? `Act on it: ${data.actionUrl}` : null,
   ].filter(v => v !== null).join('\n')
 }

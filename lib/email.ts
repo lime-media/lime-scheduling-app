@@ -81,16 +81,16 @@ export async function sendHoldRequestEmail(data: HoldRequestEmailData): Promise<
 }
 
 export async function sendAssistanceRequestEmail(data: AssistanceRequestEmailData): Promise<void> {
-  // Best-effort: a failed lookup still sends the request, unsigned.
-  const user = await prisma.clientUser.findUnique({ where: { id: data.clientUserId }, select: { username: true, email: true } })
-    .catch((err) => { console.error('[email] assistance request: client lookup failed:', err); return null })
-  const asker: Asker | null = user ? { username: user.username, email: askerEmail(user) } : null
-
   const { SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
     console.log('[email] SMTP not configured — assistance request received (not emailed):', data)
     return
   }
+
+  // Best-effort: a failed lookup still sends the request, unsigned.
+  const user = await prisma.clientUser.findUnique({ where: { id: data.clientUserId }, select: { username: true, email: true } })
+    .catch((err) => { console.error('[email] assistance request: client lookup failed:', err); return null })
+  const asker: Asker | null = user ? { username: user.username, email: askerEmail(user) } : null
 
   const transporter = await smtpTransport()
 

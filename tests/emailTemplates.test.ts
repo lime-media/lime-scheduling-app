@@ -38,4 +38,6 @@ section('assistance request email (F13)')
   eq('askerEmail: the email on file', askerEmail({ username: 'acme-pat', email: ' pat@acme.com ' }), 'pat@acme.com')
   eq('askerEmail: else a username that is an email', askerEmail({ username: 'pat@acme.com', email: null }), 'pat@acme.com')
   eq('askerEmail: neither', askerEmail({ username: 'acme-pat', email: 'not an email' }), null)
+  eq('askerEmail: a list is not one address', askerEmail({ username: 'acme-pat', email: 'x,evil@other.com' }), null)
+  eq('lookup failed: says so, not "no email on file"', assistanceRequestText(data, null).includes("Who asked couldn't be looked up"), true)
 }

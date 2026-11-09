@@ -108,4 +108,16 @@ eq('a changed truck changes it', requestFingerprint(one.request) === requestFing
 section('buildRequest: hours that are not an LED shift length')
 const eleven = buildRequest([hold({ features: JSON.stringify({ daysPerWeek: 5, operatingHours: 11 }) })], linked)!
 eq('11 hours: the 12-hour shift, flagged for ops', [eleven.request.markets[0].duration, eleven.issues.map(i => i.kind)], ['TWELVE_HOUR_SHIFT', ['hours_rounded']])
-eq('14 hours: not a shift; 8 hours sent and flagged unknown', buildRequest([hold({ features: JSON.stringify({ daysPerWeek: 5, operatingHours: 14 }) })], linked)!.issues.map(i => i.kind), ['hours_not_confirmed'])
+eq('14 hours: not a shift; 8 hours sent and flagged off-shift', buildRequest([hold({ features: JSON.stringify({ daysPerWeek: 5, operatingHours: 14 }) })], linked)!.issues.map(i => i.kind), ['hours_off_shift'])
+eq('mixed hours: the shift sent is the one judged for rounding', buildRequest([hold({ features: JSON.stringify({ daysPerWeek: 5, operatingHours: 9 }) }), hold({ truck_number: '0202', features: JSON.stringify({ daysPerWeek: 5, operatingHours: 8 }) })], linked)!.issues.map(i => i.kind), ['hours_rounded'])
+
+section('buildRequest: a hold the sweep has not located yet')
+const unswept = buildRequest([hold(), hold({ truck_number: '0202', standard_market_uid: null })], linked)!
+eq('stays in its booking\'s located market, not split off and blocked', [unswept.request.markets.map(m => [m.standardMarketUid, m.trucks]), unswept.issues], [[[DALLAS, ['0101', '0202']]], []])
+
+section('buildRequest: stale asked-for dates')
+const moved = buildRequest([hold({ start_date: '2027-01-04', end_date: '2027-01-17', features: JSON.stringify({ daysPerWeek: 5, operatingHours: 8, requestedStart: '2026-12-07', requestedEnd: '2026-12-20' }) })], linked)!
+eq('holds re-dated after the quote: the holds\' dates are sent', [moved.request.markets[0].startDate, moved.request.markets[0].endDate], ['2027-01-04', '2027-01-17'])
+
+section('buildRequest: sold amount groups as the Reservations card does')
+eq('holds with no campaign group share one price', buildRequest([hold({ campaign_group_id: null }), hold({ campaign_group_id: null, truck_number: '0202' })], linked)!.request.soldAmount, 20000)

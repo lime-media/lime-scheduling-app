@@ -29,7 +29,10 @@ export async function GET() {
     const today = centralDate(new Date())
     const [holds, links] = await Promise.all([
       prisma.hold.findMany({
-        where: { status: { in: ['HOLD', 'EXTENSION_REQUESTED', 'COMMITTED'] }, origination: { not: QUOTE_ONLY_ORIGINATION } },
+        // Won holds stay COMMITTED for good, so history is cut at a year: no
+        // booking's markets run a year apart, and a running booking still
+        // comes back whole.
+        where: { status: { in: ['HOLD', 'EXTENSION_REQUESTED', 'COMMITTED'] }, origination: { not: QUOTE_ONLY_ORIGINATION }, end_date: { gte: new Date(Date.parse(today + 'T00:00:00Z') - 365 * 86_400_000) } },
         select: {
           id: true, truck_number: true, market: true, state: true, client_name: true, start_date: true, end_date: true, status: true,
           campaign_group_id: true, sfdc_opportunity_id: true, sfdc_account_id: true, sfdc_job_number: true, standard_market_uid: true,

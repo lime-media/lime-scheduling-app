@@ -32,7 +32,7 @@ import {
   VALID_STUDIES,
   type StudyType,
 } from '@/lib/pricing'
-import { resolveMarketSizeTierId, resolveRateOverrides, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
+import { resolveMarketSizeTierId, clientRateCard } from '@/lib/pricing/resolvers'
 import { liveClientLinks } from '@/lib/clientLinks'
 import { holdExpDate } from '@/lib/dateOnly'
 import { reply, type CoreResult } from '@/lib/coreResult'
@@ -96,14 +96,10 @@ export async function placeClientBooking(
   // The client's agreement over the editable default rate card, merged exactly
   // as the quote merges them (lib/clientAvailability.ts), so the booking is
   // priced and picked on the rates the client was just quoted.
-  const [marketSizeTierId, clientOverrides, defaultOverrides] = await Promise.all([
+  const [marketSizeTierId, { overrides: rateOverrides }] = await Promise.all([
     resolveMarketSizeTierId(market),
-    resolveRateOverrides(session),
-    resolveDefaultRateOverrides(),
+    clientRateCard(session),
   ])
-  const rateOverrides = clientOverrides
-    ? { ...defaultOverrides, ...clientOverrides, daily_rates: { ...defaultOverrides?.daily_rates, ...clientOverrides.daily_rates } }
-    : defaultOverrides
 
   const { selectedTrucks, availability } = await selectTrucksForHold({
     market,

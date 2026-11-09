@@ -33,7 +33,8 @@ import { cleanBrand, opportunityName } from '@/lib/brand'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { bookingHoldExpiry, DEFAULT_HOLD_DAYS } from '@/lib/holdExpiry'
 import { holdExpDate } from '@/lib/dateOnly'
-import { resolveDefaultRateOverrides, resolveRateOverrides } from '@/lib/pricing/resolvers'
+import { clientRateCard } from '@/lib/pricing/resolvers'
+import type { RateOverrides } from '@/lib/pricing/config'
 import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { CLIENT_PORTAL_LEAD_SOURCE } from '@/lib/sfdcLeadSource'
@@ -46,34 +47,35 @@ import { recordBooking } from '@/lib/transportMetricsRecord'
 import { legsFromArrivals } from '@/lib/transportMetrics'
 import { bookWhatFits, buildMultiMarketQuote, resolveRows, type PreparedQuote, type QuoteRequest } from '@/lib/planning/quote'
 import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches } from '@/lib/planning/booking'
-import { clientLine, parseClientPlan } from '@/lib/clientPlan'
+import { clientLine, parseClientPlan, sameTrucks } from '@/lib/clientPlan'
+
+type AccountInfo = Awaited<ReturnType<typeof getSfdcAccountInfo>>
+type Rates = { overrides: RateOverrides | null; basis: string }
 
 type Prepared =
   | { refused: CoreResult }
-  | { refused: null; req: QuoteRequest; rates: { overrides: Awaited<ReturnType<typeof resolveDefaultRateOverrides>>; basis: string }; sfdcAccountId?: string }
+  | { refused: null; req: QuoteRequest; rates: Rates; sfdcAccountId?: string; accountInfo: AccountInfo }
 
 /** The request by the client rules, priced on the client's rate card. */
 async function prepare(session: ClientSession, input: unknown): Promise<Prepared> {
   const parsed = parseClientPlan(input)
   if ('error' in parsed) return { refused: reply({ error: parsed.error }, { status: 400 }) }
-  // The client's agreement over the editable default card, merged as the
-  // single-market client quote merges them (lib/clientAvailability.ts).
-  const [clientOverrides, defaultOverrides, links] = await Promise.all([
-    resolveRateOverrides(session),
-    resolveDefaultRateOverrides(),
-    liveClientLinks(session),
-  ])
-  const overrides = clientOverrides
-    ? { ...defaultOverrides, ...clientOverrides, daily_rates: { ...defaultOverrides?.daily_rates, ...clientOverrides.daily_rates } }
-    : defaultOverrides
+  const [card, links] = await Promise.all([clientRateCard(session), liveClientLinks(session)])
+  // The account read once, for the price and the opportunity's owner: every
+  // routing round prices with the same client type. Unreachable, the quote
+  // engine tries again itself, as the single-market quote degrades.
+  const accountInfo = links.sfdcAccountId && isSfdcConfigured()
+    ? await getSfdcAccountInfo(links.sfdcAccountId).catch((err) => { console.error('[client/plan] account lookup failed:', err); return null })
+    : null
   return {
     refused: null,
     // No client type or markup from the client: the account's Brand Direct
     // type and the default markup apply (buildMultiMarketQuote). AT&T's
     // soft-hold trucks are always held back.
-    req: { rows: parsed.rows, features: parsed.features, sfdcAccountId: links.sfdcAccountId, reserveSoftHolds: true },
-    rates: { overrides, basis: clientOverrides ? 'agreement' : 'standard' },
+    req: { rows: parsed.rows, features: parsed.features, sfdcAccountId: links.sfdcAccountId, reserveSoftHolds: true, ...(accountInfo ? { clientType: accountInfo.clientType } : {}) },
+    rates: { overrides: card.overrides, basis: card.agreement ? 'agreement' : 'standard' },
     sfdcAccountId: links.sfdcAccountId,
+    accountInfo,
   }
 }
 
@@ -113,6 +115,8 @@ export type ClientPlanHoldInput = {
   requestId?: unknown
   /** The total the client was shown for what fits; the booking stops if it differs. */
   expectedTotal?: unknown
+  /** The trucks the client was shown per market (row id), for what fits; the booking stops if they differ. */
+  expectedTrucks?: unknown
   brand?: unknown
   notes?: unknown
 }
@@ -121,10 +125,17 @@ export type ClientPlanHoldInput = {
 export async function placeClientMultiMarketBooking(session: ClientSession, input: ClientPlanHoldInput): Promise<CoreResult> {
   const body = (input && typeof input === 'object' ? input : {}) as ClientPlanHoldInput
   const requestId = body.requestId
-  if (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(requestId)) return reply({ error: 'Missing booking request id.' }, { status: 400 })
+  // No underscore: holds are found by the prefix `mm_<id>_`, so an id with
+  // one could match another booking's (`abcdefgh` would find `abcdefgh_2`'s).
+  if (typeof requestId !== 'string' || !/^[A-Za-z0-9-]{8,64}$/.test(requestId)) return reply({ error: 'Missing booking request id.' }, { status: 400 })
   // The client books only at a price it was shown.
   const expectedTotal = body.expectedTotal
   if (typeof expectedTotal !== 'number' || !Number.isFinite(expectedTotal)) return reply({ error: 'Missing the total you were quoted. Get a quote first.' }, { status: 400 })
+  const expectedTrucks = body.expectedTrucks
+  if (!expectedTrucks || typeof expectedTrucks !== 'object' || Array.isArray(expectedTrucks)
+    || !Object.values(expectedTrucks).every(n => typeof n === 'number' && Number.isInteger(n) && n > 0)) {
+    return reply({ error: 'Missing the markets you were quoted. Get a quote first.' }, { status: 400 })
+  }
   if (body.notes !== undefined && typeof body.notes !== 'string') return reply({ error: 'Notes must be text.' }, { status: 400 })
   const notes = typeof body.notes === 'string' ? body.notes.trim().slice(0, 1000) : ''
   const brand = cleanBrand(typeof body.brand === 'string' ? body.brand : undefined)
@@ -156,9 +167,11 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
     const { asked, fits } = routed
     if (!fits) return reply({ error: 'No trucks can be booked for these markets and dates right now. Submit a request and the Lime Media team will work on a solution.' }, { status: 409 })
     const { quote, plan } = fits
-    if (Math.abs(quote.summary.grandTotal - expectedTotal) >= 1) {
+    // What the client agreed to: these markets, these trucks, this total. The
+    // same total can come from different markets when the fleet moves.
+    if (Math.abs(quote.summary.grandTotal - expectedTotal) >= 1 || !sameTrucks(quote.lines, expectedTrucks as Record<string, number>)) {
       return reply({
-        error: 'The price changed since you were quoted. Nothing was booked.',
+        error: 'What can be booked changed since you were quoted. Nothing was booked; check the new quote.',
         priceChanged: { was: expectedTotal, now: quote.summary.grandTotal },
         short: asked.plan.shortfalls.length > 0,
         fits: view(fits),
@@ -168,11 +181,11 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
     const lineById = new Map(quote.lines.map(l => [l.id, l]))
     const orderLine = new Map(plan.trucks.flatMap(t => t.jobs.flatMap(j => j.lines)).map(l => [l.id, l]))
     const place = new Map<string, { market: string; state: string }>()
-    for (const l of quote.lines) {
+    await Promise.all(quote.lines.map(async l => {
       const name = orderLine.get(l.id)?.standardMarket ?? l.market
       const state = name.split(',')[1]?.trim() ?? ''
       place.set(l.id, { market: (await canonicalMarketName(name, state || undefined)) ?? name, state })
-    }
+    }))
     const stretches = planStretches(plan)
     // One expiry for the booking: the client's standard hold, capped by the earliest start.
     const expiry = bookingHoldExpiry(stretches.map(x => x.stint.start), DEFAULT_HOLD_DAYS, new Date())
@@ -219,8 +232,12 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
         tx => tx.hold.createMany({ data: rows }),
       )
     } catch (err) {
-      if (err instanceof HoldClashError || err instanceof HoldLockTimeoutError) {
-        return reply({ error: `${err.message} Nothing was booked. Get a fresh quote and try again.` }, { status: 409 })
+      // Not err.message: it names the trucks, which a client never sees (clientLine).
+      if (err instanceof HoldClashError) {
+        return reply({ error: 'Some of these trucks were booked by someone else since you were quoted. Nothing was booked. Get a fresh quote and try again.' }, { status: 409 })
+      }
+      if (err instanceof HoldLockTimeoutError) {
+        return reply({ error: 'Another booking of these trucks is being saved right now. Nothing was booked. Try again in a moment.' }, { status: 409 })
       }
       throw err
     }
@@ -254,7 +271,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
     // client's own request has no rep), as the single-market booking does.
     if (p.sfdcAccountId && isSfdcConfigured()) {
       try {
-        const accountInfo = await getSfdcAccountInfo(p.sfdcAccountId).catch(() => null)
+        const accountInfo = p.accountInfo ?? await getSfdcAccountInfo(p.sfdcAccountId).catch(() => null)
         const description = [
           ...(quote.brandMarkupPct ? [`Brand Direct pricing: +${quote.brandMarkupPct}% folded into every line item.`, ''] : []),
           'Booked by the client in the portal:',

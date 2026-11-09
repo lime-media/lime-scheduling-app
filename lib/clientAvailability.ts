@@ -13,11 +13,12 @@
 import type { ClientSession } from '@/lib/clientAuth'
 import { checkAvailability, type AvailabilityResult } from '@/lib/availabilityEngine'
 import { CLIENT_MAX_TRUCKS, daysUntil, MIN_CLIENT_LEAD_DAYS } from '@/lib/pricing'
+import { isCalendarDate } from '@/lib/clientPlan'
 import {
   resolveMarketInputAll,
   resolveMarketSizeTierId,
   resolveRateOverrides,
-  resolveDefaultRateOverrides,
+  clientRateCard,
 } from '@/lib/pricing/resolvers'
 
 export type ClientAvailabilityRequest = { market: string; start_date: string; end_date: string; truck_count: number }
@@ -45,13 +46,6 @@ export function parseClientAvailabilityRequest(input: Record<string, unknown>): 
   if (typeof market !== 'string' || !market.trim() || typeof start_date !== 'string' || typeof end_date !== 'string'
     || typeof truck_count !== 'number' || !Number.isInteger(truck_count) || truck_count < 1) return null
   return { market: market.trim(), start_date, end_date, truck_count }
-}
-
-/** A YYYY-MM-DD string naming a day that exists. */
-function isCalendarDate(s: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false
-  const t = Date.parse(s + 'T00:00:00Z')
-  return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === s
 }
 
 const refuse = (body: Record<string, unknown>, init?: { status: number }): ClientAvailability => ({ refused: { status: init?.status ?? 200, body } })
@@ -128,15 +122,10 @@ export async function clientAvailability(session: ClientSession, request: Client
   }
 
   // Resolve rate overrides first — service_area_miles affects availability classification
-  const [clientOverrides, defaultOverrides, marketSizeTierId] = await Promise.all([
-    resolveRateOverrides(session),
-    resolveDefaultRateOverrides(),
+  const [{ overrides: rateOverrides }, marketSizeTierId] = await Promise.all([
+    clientRateCard(session),
     resolveMarketSizeTierId(formalMarket),
   ])
-
-  const rateOverrides = clientOverrides
-    ? { ...defaultOverrides, ...clientOverrides, daily_rates: { ...defaultOverrides?.daily_rates, ...clientOverrides.daily_rates } }
-    : defaultOverrides
 
   const availability = await checkAvailability({
     market: formalMarket,

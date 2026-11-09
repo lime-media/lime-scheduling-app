@@ -18,8 +18,8 @@ export const CLIENT_MAX_MARKETS = 10
 
 const CLIENT_SCHEDULES = [5, 6, 7]
 
-/** A YYYY-MM-DD string naming a day that exists. */
-const isCalendarDate = (s: unknown): s is string => {
+/** A YYYY-MM-DD string naming a day that exists (JS rolls 2026-02-31 over to March 3). */
+export const isCalendarDate = (s: unknown): s is string => {
   if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false
   const t = Date.parse(s + 'T00:00:00Z')
   return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === s
@@ -106,3 +106,7 @@ export function clientLine(l: LineQuote) {
 }
 
 export type ClientLine = ReturnType<typeof clientLine>
+
+/** Whether a routed order books exactly these trucks per market (row id). */
+export const sameTrucks = (lines: { id: string; trucks: number }[], expected: Record<string, number>) =>
+  lines.length === Object.keys(expected).length && lines.every(l => expected[l.id] === l.trucks)

@@ -5,7 +5,7 @@
  */
 import fs from 'fs'
 import { eq, section } from './harness'
-import { parseClientPlan, clientLine, CLIENT_MAX_MARKETS } from '@/lib/clientPlan'
+import { parseClientPlan, clientLine, sameTrucks, CLIENT_MAX_MARKETS } from '@/lib/clientPlan'
 import { CLIENT_MAX_TRUCKS } from '@/lib/pricing'
 import { buildJobs, planOrder, DEFAULT_ENGINE, type EngineSettings, type OrderLine } from '@/lib/planning/order'
 import { planStretches, describeBooked, describeQuoted } from '@/lib/planning/booking'
@@ -82,6 +82,11 @@ section('client multi-market: the booking path')
   const src = fs.readFileSync('lib/clientMultiMarket.ts', 'utf8')
   eq('writes under the trucks\' locks, AT&T soft holds counted (no excludeAttSoft)', src.includes('writeHoldsExclusive(') && !src.includes('excludeAttSoft'), true)
   eq('books only at the total the client was shown', src.includes('Math.abs(quote.summary.grandTotal - expectedTotal) >= 1'), true)
+  eq('and only the markets and trucks shown', src.includes('!sameTrucks(quote.lines, expectedTrucks'), true)
+  eq('same trucks per market', sameTrucks([{ id: 'aus', trucks: 1 }, { id: 'den', trucks: 2 }], { aus: 1, den: 2 }), true)
+  eq('another market at the same total is not what was shown', sameTrucks([{ id: 'den', trucks: 1 }], { aus: 1 }), false)
+  eq('a market dropped', sameTrucks([{ id: 'aus', trucks: 1 }], { aus: 1, den: 1 }), false)
+  eq('fewer trucks in a market', sameTrucks([{ id: 'aus', trucks: 1 }], { aus: 2 }), false)
   eq('a retry never answers from another client\'s booking', src.includes('h.client_user_id !== session.id'), true)
   eq('one expiry for the booking, the client\'s standard hold', src.includes('bookingHoldExpiry(stretches.map(x => x.stint.start), DEFAULT_HOLD_DAYS'), true)
   const staff = fs.readFileSync('app/api/plan/hold/route.ts', 'utf8')

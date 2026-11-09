@@ -226,7 +226,7 @@ export function assistanceRequestText(data: AssistanceRequestEmailData, asker: A
     ``,
     asker?.email ? `Reply to this email to answer ${asker.email} directly.`
       : asker ? `No email address is on file for this client; reach them through their account manager.`
-      : `Who asked couldn't be looked up; reach ${data.companyName} through their account manager.`,
+      : `Who asked isn't known (their client account couldn't be read or no longer exists); reach ${data.companyName} through their account manager.`,
     data.actionUrl ? `Act on it: ${data.actionUrl}` : null,
   ].filter(v => v !== null).join('\n')
 }

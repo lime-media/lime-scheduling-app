@@ -140,7 +140,7 @@ export async function POST(
     market:      markets.join(', '),
     startDate:   held.map(h => h.start_date.toISOString().slice(0, 10)).sort()[0],
     endDate:     held.map(h => h.end_date.toISOString().slice(0, 10)).sort().reverse()[0],
-    details:     `Hold extension requested for the whole booking: ${trucks.length} truck${trucks.length === 1 ? '' : 's'} (${trucks.join(', ')}) across ${markets.length} market${markets.length === 1 ? '' : 's'}. Extend until: ${extend_until}.${reason ? ` Reason: ${reason}` : ''} Approve or deny it on Reservations.`,
+    details:     `Hold extension requested for the whole booking: ${trucks.length} truck${trucks.length === 1 ? '' : 's'} (${trucks.join(', ')}) across ${markets.length} market${markets.length === 1 ? '' : 's'}. Extend until: ${extend_until}.${reason ? ` Reason: ${reason}` : ''}`,
     actionUrl:   `${appUrl()}/hold-requests`,
   }).catch((e) => console.error('[hold-extend] email failed:', e))
 

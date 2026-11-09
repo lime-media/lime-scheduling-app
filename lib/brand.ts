@@ -70,7 +70,10 @@ const NO_BRAND = /^(?:none|no[ -]?brand|n\/a|n\.a)\.?$/i
 
 /** Whether the text says there is no brand ("none", "no brand", "n/a"). Pure. */
 export function isNoBrand(raw: unknown): boolean {
-  return typeof raw === 'string' && NO_BRAND.test(raw.replace(/\s+/g, ' ').trim())
+  if (typeof raw !== 'string') return false
+  // Also once trailing descriptors are cleaned off: "N/A LED" or "None 2026"
+  // would otherwise be saved as the brand "N/A" or "None".
+  return [raw, stripBrand(raw)].some(t => NO_BRAND.test(t.replace(/\s+/g, ' ').trim()))
 }
 
 /** Asked of the rep before a chat or MCP booking (lib/staffBooking.ts requireBrand). */

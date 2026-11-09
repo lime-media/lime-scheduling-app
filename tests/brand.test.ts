@@ -40,3 +40,4 @@ eq('savedBrand: none is no brand, a brand is cleaned', [savedBrand('None'), save
 eq('"no  brand" and "no-brand" are answers too (spacing, hyphen)', [readBrand('no  brand', true), readBrand('No-Brand', true)], [{ brand: '' }, { brand: '' }])
 eq('isNoBrand: only the no-brand answers', [isNoBrand('None'), isNoBrand(' n/a '), isNoBrand('Nike'), isNoBrand(''), isNoBrand(undefined)], [true, true, false, false, false])
 eq('a brand called NA is kept', savedBrand('NA'), 'NA')
+eq('a no-brand answer with a trailing descriptor is still no brand', [savedBrand('N/A LED'), savedBrand('None 2026')], ['', ''])

@@ -26,7 +26,7 @@ import { DEFAULT_HOLD_DAYS, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
 import { OPEN_STAGES } from '@/lib/sfdcStages'
 import { LEAD_SOURCES, readLeadSource } from '@/lib/sfdcLeadSource'
 import { chosenClientType } from '@/lib/pricing/brandMarkup'
-import { BRAND_REQUIRED, isNoBrand, readBrand } from '@/lib/brand'
+import { BRAND_REQUIRED, isNoBrand, readBrand, savedBrand } from '@/lib/brand'
 import { isSfdcConfigured } from '@/lib/salesforceClient'
 import { isAccountId, searchAccounts, searchContacts } from '@/lib/sfdcSearch'
 import { resolveQuoteMarket, staffQuote, type StaffQuoteInput } from '@/lib/staffQuote'
@@ -79,7 +79,7 @@ export const CHAT_TOOLS: Anthropic.Beta.BetaTool[] = [
   },
   {
     name: 'get_quote',
-    description: 'Price one market exactly as the internal Quote page does: trucks picked, media, features, transport, total. Returns quote_ref when the trucks are there to book it. When the rep may book, include sfdc_account_id (agreement and Brand Direct pricing) and the booking terms (account name, primary contact, brand, hold days, stage, lead source) and client_type: the ref covers them, so place_hold books exactly what the rep confirmed.',
+    description: 'Price one market exactly as the internal Quote page does: trucks picked, media, features, transport, total. Returns quote_ref when the trucks are there to book it. When the rep may book, include sfdc_account_id (agreement and Brand Direct pricing) and the booking terms (account name, primary contact, brand (or "none"; place_hold needs one), hold days, stage, lead source) and client_type: the ref covers them, so place_hold books exactly what the rep confirmed.',
     input_schema: { type: 'object', properties: { ...QUOTE_PROPERTIES, ...BOOKING_TERMS }, required: QUOTE_REQUIRED },
   },
   {
@@ -271,15 +271,15 @@ async function quote(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
   const ref = quoteRef({ ...q, market: String(body.market) }, body.grandTotal, terms)
   const trucks = Array.isArray(body.selectedTrucks) ? body.selectedTrucks.join(', ') : ''
   // Only a quote place_hold could book (account, its name, the contact, the
-  // client type and the lead source) is offered as bookable; without them its
+  // client type, the lead source and a brand answer) is offered as bookable; without them its
   // ref can never match a booking.
   const bookable = !!q.sfdc_account_id && isStr(terms.sfdc_account_name) && isStr(terms.primary_contact_id)
-    && !!q.client_type && !!terms.lead_source
+    && !!q.client_type && !!terms.lead_source && !('error' in readBrand(terms.brand, true))
   // The summary is what the rep confirms when the reply leaves the ref out, so
   // it names everything the ref covers that changes the opportunity.
   return {
     content: json({ ...body, quote_ref: ref }),
-    quote: bookable ? { ref, summary: `${body.market}, ${q.start_date} to ${q.end_date}, ${q.truck_count} truck${q.truck_count === 1 ? '' : 's'}${trucks ? ` (${trucks})` : ''}, ${money(body.grandTotal)}${terms.sfdc_account_name ? ` for ${terms.sfdc_account_name.trim()}` : ''}, ${q.client_type}, lead source ${terms.lead_source}, held ${terms.hold_days ?? DEFAULT_HOLD_DAYS} days` } : undefined,
+    quote: bookable ? { ref, summary: `${body.market}, ${q.start_date} to ${q.end_date}, ${q.truck_count} truck${q.truck_count === 1 ? '' : 's'}${trucks ? ` (${trucks})` : ''}, ${money(body.grandTotal)}${terms.sfdc_account_name ? ` for ${terms.sfdc_account_name.trim()}` : ''}, ${q.client_type}, lead source ${terms.lead_source}, ${savedBrand(terms.brand) ? `brand ${savedBrand(terms.brand)}` : 'no brand'}, held ${terms.hold_days ?? DEFAULT_HOLD_DAYS} days` } : undefined,
   }
 }
 

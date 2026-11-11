@@ -26,7 +26,7 @@ import { DEFAULT_HOLD_DAYS, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
 import { OPEN_STAGES } from '@/lib/sfdcStages'
 import { LEAD_SOURCES, readLeadSource } from '@/lib/sfdcLeadSource'
 import { chosenClientType } from '@/lib/pricing/brandMarkup'
-import { BRAND_REQUIRED, isNoBrand, readBrand, savedBrand } from '@/lib/brand'
+import { BRAND_REQUIRED, readBrand, savedBrand } from '@/lib/brand'
 import { isSfdcConfigured } from '@/lib/salesforceClient'
 import { isAccountId, searchAccounts, searchContacts } from '@/lib/sfdcSearch'
 import { resolveQuoteMarket, staffQuote, type StaffQuoteInput } from '@/lib/staffQuote'
@@ -179,9 +179,9 @@ export function bookingTerms(i: Bag): BookingTerms | string {
     sfdc_account_name: i.sfdc_account_name as string | undefined, primary_contact_id: i.primary_contact_id as string | undefined,
     // In the ref as it will be saved (savedBrand), as the summary names it:
     // "Molytical August LED" and "Molytical" are one brand, and "None", "n/a"
-    // or a name that cleans to nothing are one answer (no brand). Left out or
-    // blank stays as given, so the brand requirement still refuses it.
-    brand: isNoBrand(i.brand) ? 'none' : typeof i.brand === 'string' && i.brand.trim() ? savedBrand(i.brand) || 'none' : i.brand as string | undefined,
+    // are one answer (no brand: savedBrand gives ''). Left out or blank stays
+    // as given, so the brand requirement still refuses it.
+    brand: typeof i.brand === 'string' && i.brand.trim() ? savedBrand(i.brand) || 'none' : i.brand as string | undefined,
     hold_days: i.hold_days as number | undefined, stage: i.stage as string | undefined,
     lead_source: leadSource.leadSource ?? undefined,
   }
@@ -280,7 +280,9 @@ async function quote(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
     && !!q.client_type && !!terms.lead_source && !('error' in readBrand(terms.brand, true))
   // The summary is what the rep confirms when the reply leaves the ref out, so
   // it names everything the ref covers that changes the opportunity.
-  const savedAs = savedBrand(terms.brand)
+  // terms.brand is already the saved brand (bookingTerms): cleaning it again
+  // could cut more (cleanBrand isn't idempotent past its 50-character cut).
+  const savedAs = terms.brand === 'none' ? '' : terms.brand ?? ''
   return {
     content: json({ ...body, quote_ref: ref }),
     quote: bookable ? { ref, summary: `${body.market}, ${q.start_date} to ${q.end_date}, ${q.truck_count} truck${q.truck_count === 1 ? '' : 's'}${trucks ? ` (${trucks})` : ''}, ${money(body.grandTotal)}${terms.sfdc_account_name ? ` for ${terms.sfdc_account_name.trim()}` : ''}, ${q.client_type}, lead source ${terms.lead_source}, ${savedAs ? `brand ${savedAs}` : 'no brand'}, held ${terms.hold_days ?? DEFAULT_HOLD_DAYS} days` } : undefined,

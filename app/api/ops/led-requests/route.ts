@@ -6,7 +6,9 @@
  * convert with something assumed that ops should check in LED. Bookings
  * whose dates have all passed, and quote-only logs, are left out; a booking
  * still running is built whole, its finished markets included. Any
- * signed-in staff user.
+ * signed-in staff user. Bookings the Salesforce bot user made are never sent
+ * to LED (lib/sfdcBots.ts): they come back apart, as `excluded`, not as
+ * issues to fix.
  */
 
 import { NextResponse } from 'next/server'
@@ -35,7 +37,7 @@ export async function GET() {
         where: { status: { in: ['HOLD', 'EXTENSION_REQUESTED', 'COMMITTED'] }, origination: { not: QUOTE_ONLY_ORIGINATION }, end_date: { gte: new Date(Date.parse(today + 'T00:00:00Z') - 365 * 86_400_000) } },
         select: {
           id: true, truck_number: true, market: true, state: true, client_name: true, start_date: true, end_date: true, status: true,
-          campaign_group_id: true, sfdc_opportunity_id: true, sfdc_account_id: true, sfdc_job_number: true, standard_market_uid: true,
+          campaign_group_id: true, sfdc_opportunity_id: true, sfdc_account_id: true, sfdc_job_number: true, sfdc_created_by_id: true, standard_market_uid: true,
           quoted_total: true, features: true,
         },
       }),
@@ -45,20 +47,22 @@ export async function GET() {
     const clientOf = new Map(links.map(l => [l.sfdc_account_id, l.client_uid]))
     const rows: RequestHold[] = holds.map(h => ({ ...h, start_date: day(h.start_date), end_date: day(h.end_date) }))
     const refOf = new Map(sent.map(r => [r.booking_key, r.external_ref]))
-    const all = buildRequests(rows, a => clientOf.get(a) ?? null, k => refOf.get(k) ?? null).filter(b => b.holdsEnd >= today)
+    const current = buildRequests(rows, a => clientOf.get(a) ?? null, k => refOf.get(k) ?? null).filter(b => b.holdsEnd >= today)
+    const all = current.filter(b => b.creator !== 'bot')
+    const summary = (b: (typeof current)[number]) => ({
+      key: b.bookingKey,
+      client: b.request.campaignName,
+      won: b.won,
+      start: b.request.startDate,
+      end: b.request.endDate,
+      markets: b.request.markets.map((m, i) => ({ name: b.marketNames[i], trucks: m.trucks })),
+    })
+    const excluded = current.filter(b => b.creator === 'bot').map(summary).sort((a, b) => a.start.localeCompare(b.start))
     const bookings = all
       .filter(b => b.issues.length > 0)
-      .map(b => ({
-        key: b.bookingKey,
-        client: b.request.campaignName,
-        won: b.won,
-        start: b.request.startDate,
-        end: b.request.endDate,
-        markets: b.request.markets.map((m, i) => ({ name: b.marketNames[i], trucks: m.trucks })),
-        issues: b.issues,
-      }))
+      .map(b => ({ ...summary(b), issues: b.issues }))
       .sort((a, b) => Number(b.issues.some(i => i.blocking)) - Number(a.issues.some(i => i.blocking)) || a.start.localeCompare(b.start))
-    return NextResponse.json({ total: all.length, blocked: bookings.filter(b => b.issues.some(i => i.blocking)).length, bookings })
+    return NextResponse.json({ total: all.length, blocked: bookings.filter(b => b.issues.some(i => i.blocking)).length, bookings, excluded })
   } catch (err) {
     console.error('[led-requests] read failed:', err)
     return NextResponse.json({ error: "Bookings couldn't be read. Try again shortly." }, { status: 502 })

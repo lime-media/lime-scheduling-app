@@ -12,13 +12,20 @@
  * It also says what stops a booking converting cleanly, for the "needs ops"
  * list. Blocking: Core would refuse the convert, or the app can't say which
  * market a truck works. Warnings: it converts, but something was assumed that
- * ops should check in LED. Pure.
+ * ops should check in LED.
+ *
+ * Bookings whose Salesforce opportunity the bot user made (lib/sfdcBots.ts)
+ * are left out of LED rather than handled: `creator` says so, and the builder
+ * still builds them so the list can show them as excluded. A booking whose
+ * creator the reconcile hasn't read yet waits (a blocking issue), so the
+ * first sweep's window can't send a bot booking. Pure.
  */
 
 import { createHash } from 'crypto'
 import { NO_TRUCK, bookingKey, isMultiMarket } from '@/lib/bookings'
 import { SHORT_RANGE_MAX_DAYS, billedDaysPerWeek, countCalendarDays } from '@/lib/pricing/schedule'
 import { realJobNumber } from '@/lib/jobNumber'
+import { opportunityCreator } from '@/lib/sfdcBots'
 
 /** A hold as the builder reads it. Dates YYYY-MM-DD. */
 export type RequestHold = {
@@ -34,6 +41,8 @@ export type RequestHold = {
   sfdc_opportunity_id: string | null
   sfdc_account_id: string | null
   sfdc_job_number: string | null
+  /** Who made its Salesforce opportunity (the reconcile fills it; null until then). */
+  sfdc_created_by_id: string | null
   standard_market_uid: string | null
   quoted_total: number | null
   features: string | null
@@ -81,7 +90,7 @@ export type CampaignRequest = {
 
 export type IssueKind =
   | 'no_led_client' | 'market_label' | 'no_standard_market' | 'no_job_number'
-  | 'no_trucks' | 'days_not_confirmed' | 'hours_not_confirmed' | 'hours_off_shift' | 'hours_rounded' | 'shared_truck'
+  | 'no_trucks' | 'creator_unknown' | 'days_not_confirmed' | 'hours_not_confirmed' | 'hours_off_shift' | 'hours_rounded' | 'shared_truck'
 
 export type Issue = { kind: IssueKind; blocking: boolean; message: string; markets?: string[]; trucks?: string[] }
 
@@ -89,8 +98,20 @@ export type Issue = { kind: IssueKind; blocking: boolean; message: string; marke
  * `bookingKey`: the booking's key now. `won`: any hold is Closed Won. `marketNames`: each market as the holds name
  * it, in `request.markets` order. `holdsEnd`: the last day any live hold
  * reserves a truck (travel included), which can be after `request.endDate`.
+ * `creator`: who made its Salesforce opportunity (bookingCreator); a 'bot'
+ * booking is never sent to LED.
  */
-export type BookingRequest = { bookingKey: string; request: CampaignRequest; issues: Issue[]; won: boolean; marketNames: string[]; holdsEnd: string }
+export type BookingRequest = { bookingKey: string; request: CampaignRequest; issues: Issue[]; won: boolean; marketNames: string[]; holdsEnd: string; creator: 'bot' | 'person' | 'unknown' }
+
+/**
+ * Who made a booking's Salesforce opportunity: 'bot' when any of its holds'
+ * opportunities is the bot user's (a booking is one opportunity, so one says
+ * it for all), else 'unknown' while any isn't read yet, else 'person'. Pure.
+ */
+export function bookingCreator(holds: Pick<RequestHold, 'sfdc_opportunity_id' | 'sfdc_created_by_id'>[]): 'bot' | 'person' | 'unknown' {
+  const each = holds.map(opportunityCreator)
+  return each.includes('bot') ? 'bot' : each.includes('unknown') ? 'unknown' : 'person'
+}
 
 /** A Salesforce hold that names several markets in one label ("Multi-market: Austin, Dallas"). */
 export const isMarketLabel = (market: string) => /^\s*multi-market\s*:/i.test(market)
@@ -220,6 +241,9 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
     }
   }).sort((a, b) => a.startDate.localeCompare(b.startDate) || a.key.localeCompare(b.key))
 
+  const creator = bookingCreator(live)
+  if (creator === 'unknown') issues.push({ kind: 'creator_unknown', blocking: true, message: 'Waiting for the next sweep (15 minutes) to read who made its Salesforce opportunity.' })
+
   const accountId = live.map(h => h.sfdc_account_id).find(Boolean) ?? null
   const clientUid = accountId ? clientUidOf(accountId) : null
   if (!clientUid) issues.push({ kind: 'no_led_client', blocking: true, message: accountId ? 'Its Salesforce account is not linked to an LED client: link it on Reservations.' : 'It has no Salesforce account to link to an LED client.' })
@@ -271,6 +295,7 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
     won,
     marketNames: markets.map(m => names.get(m.key)!),
     holdsEnd: live.map(h => h.end_date).sort().reverse()[0],
+    creator,
   }
 }
 

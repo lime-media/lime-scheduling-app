@@ -7,8 +7,8 @@
  * switched off once the app's own booking works well (Andrew, 2026-11-09).
  * So nothing new is built for its opportunities: they are to be left out of
  * what the app sends to LED (CampaignIQ requests, LED Readiness), rather than
- * handled. Nothing calls opportunityCreator yet; those senders will. The reconcile
- * records each opportunity's creator on its holds
+ * handled (lib/campaignRequests.ts bookingCreator, for LED Readiness and the
+ * send). The reconcile records each opportunity's creator on its holds
  * (app_holds.sfdc_created_by_id), so it is null until the first sweep after a
  * hold is made, which opportunityCreator reports as 'unknown': a sender
  * waits on it rather than reading it as a person.

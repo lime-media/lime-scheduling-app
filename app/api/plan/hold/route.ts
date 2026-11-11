@@ -55,7 +55,7 @@ import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, CLIENT_TYPE_LEFT_NOTE, applyBooking
 import { SFDC_SERVICE_USER_EMAIL, attachedToOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { bookWhatFits, buildMultiMarketQuote, holdPlaces, resolveRows, validateQuoteRequest, type QuoteRequest } from '@/lib/planning/quote'
 import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches, planTier } from '@/lib/planning/booking'
-import { holdExpDate } from '@/lib/dateOnly'
+import { centralDate, holdExpDate } from '@/lib/dateOnly'
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { legsFromArrivals } from '@/lib/transportMetrics'
@@ -93,6 +93,8 @@ type HoldBody = QuoteRequest & {
    * reviseHoldExpiry). Used instead of holdDays.
    */
   holdUntil?: string
+  /** With holdUntil: the booking's expiry (ISO) the revise form opened on, so an unchanged date keeps the expiry the booking has now. */
+  holdUntilFrom?: string
   /**
    * Add this booking to an existing open opportunity of the account instead
    * of creating one. (Revising a booking — QuoteRequest.revise — always goes
@@ -124,6 +126,8 @@ async function handlePost(req: NextRequest) {
   if (body.holdUntil !== undefined && (typeof body.holdUntil !== 'string' || !body.revise?.bookingKey)) {
     return NextResponse.json({ error: 'A hold expiry date is only set when revising a booking.' }, { status: 400 })
   }
+  if (body.holdUntil !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(body.holdUntil)) return NextResponse.json({ error: 'Choose a valid hold expiry date.' }, { status: 400 })
+  const holdUntilFrom = typeof body.holdUntilFrom === 'string' && !isNaN(new Date(body.holdUntilFrom).getTime()) ? new Date(body.holdUntilFrom) : null
   // A new opportunity's lead source: the seller picks one off Salesforce's
   // picklist. A revision or an attach keeps the opportunity's own (a
   // revision with no opportunity left makes one: checked once that's known).
@@ -284,8 +288,10 @@ async function handlePost(req: NextRequest) {
     // revised booking already had, never past that cap (lib/holdExpiry.ts).
     // A revision that shows the expiry date keeps it unless the rep changed it.
     const heldStarts = stints.map(x => x.stint.start)
-    const revisedExpiry = heldStarts.length && reviseKey && body.holdUntil !== undefined
-      ? reviseHoldExpiry(heldStarts, body.holdUntil, keepUntil, holdClock, STAFF_MIN_DAYS_BEFORE_START)
+    // A quote-only revision holds nothing, so it has no expiry to check.
+    const revisedExpiry = heldStarts.length > 0 && reviseKey && !quoteOnly && body.holdUntil !== undefined
+      ? reviseHoldExpiry(heldStarts, body.holdUntil, keepUntil, holdClock, STAFF_MIN_DAYS_BEFORE_START,
+        holdUntilFrom ? centralDate(holdUntilFrom) : keepUntil ? centralDate(keepUntil) : null)
       : null
     if (revisedExpiry && 'error' in revisedExpiry) return NextResponse.json({ error: revisedExpiry.error, lastDate: revisedExpiry.lastDate }, { status: 400 })
     const bookingExpiry = revisedExpiry ?? (heldStarts.length ? bookingHoldExpiry(heldStarts, holdDays, holdClock, keepUntil, STAFF_MIN_DAYS_BEFORE_START) : null)

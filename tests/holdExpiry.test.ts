@@ -164,4 +164,9 @@ section('reviseHoldExpiry: a revision keeps the expiry unless the rep changes it
   const bad = staff(['2026-11-10'], '2026-02-31')
   eq('an impossible date is refused', 'error' in bad, true)
   eq('no current expiry: the date is a change', at(staff(['2026-11-10'], '2026-10-24', null)), endOfDayCentral('2026-10-24').toISOString())
+  const soon = new Date('2026-10-20T14:00:00Z') // 2 hours from now
+  eq('unchanged but lapsing within a day: the 24-hour floor applies', at(staff(['2026-11-10'], '2026-10-20', soon)), new Date('2026-10-21T12:00:00Z').toISOString())
+  const extended = new Date('2026-10-28T17:30:00Z') // ops extended after the form opened on Oct 24
+  eq('unchanged on the form, extended since: the current expiry is kept, not cut back',
+    at(reviseHoldExpiry(['2026-11-10'], '2026-10-24', extended, now, STAFF_MIN_DAYS_BEFORE_START, '2026-10-24')), extended.toISOString())
 }

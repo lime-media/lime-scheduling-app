@@ -209,8 +209,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         setQuoteOnly(b.quoteOnly === true)
         if (typeof b.brandMarkupPct === 'number') { revisedMarkup.current = b.brandMarkupPct; setBrandMarkupPct(b.brandMarkupPct) }
         setAttachTo(null)
-        const heldTrucks = b.live && !b.quoteOnly ? new Set((b.rows as { keepTrucks?: string[] }[]).flatMap(r => r.keepTrucks ?? [])).size : 0
-        setRevision({ key: b.key, opportunityName: b.opportunityName, clientName: b.clientName, live: b.live, heldUntil: b.heldUntil ?? null, committedMarkets: Array.isArray(b.committedMarkets) ? b.committedMarkets : [], reopenOpportunity: reopenAgreed, heldTrucks, heldMarkets: heldTrucks ? b.rows.length : 0 })
+        const heldRows = b.live && !b.quoteOnly ? (b.rows as { keepTrucks?: string[] }[]).filter(r => (r.keepTrucks ?? []).length > 0) : []
+        const heldTrucks = new Set(heldRows.flatMap(r => r.keepTrucks ?? [])).size
+        setRevision({ key: b.key, opportunityName: b.opportunityName, clientName: b.clientName, live: b.live, heldUntil: b.heldUntil ?? null, committedMarkets: Array.isArray(b.committedMarkets) ? b.committedMarkets : [], reopenOpportunity: reopenAgreed, heldTrucks, heldMarkets: heldRows.length })
         setHoldUntil(b.live && b.heldUntil ? centralDate(new Date(b.heldUntil)) : null)
       })
       .catch(e => { if (alive) setReviseError(e instanceof Error ? e.message : 'That booking could not be opened.') })
@@ -365,7 +366,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: keepsOpportunity ? undefined : leadSource, opportunityType: keepsOpportunity ? undefined : opportunityType, quoteOnly, brand, primaryContactId: contact.id, holdDays, holdUntil: revision && holdUntil && !quoteOnly ? holdUntil : undefined, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: keepsOpportunity ? undefined : leadSource, opportunityType: keepsOpportunity ? undefined : opportunityType, quoteOnly, brand, primaryContactId: contact.id, holdDays, holdUntil: revision && holdUntil && !quoteOnly ? holdUntil : undefined, holdUntilFrom: revision && holdUntil && !quoteOnly ? revision.heldUntil ?? undefined : undefined, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
       })
       const data = await readJson(res)
       // The opportunity went Closed Lost after the booking was opened: ask now.

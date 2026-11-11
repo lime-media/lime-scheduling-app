@@ -111,13 +111,20 @@ export function bookingHoldExpiry(
 export function reviseHoldExpiry(
   startDates: string[], holdUntil: string, heldUntil: Date | null, now: Date = new Date(),
   minDaysBeforeStart: number = MIN_PROCESSING_DAYS_BEFORE_START,
+  /** The date the form opened on (YYYY-MM-DD). Defaults to `heldUntil`'s; the server passes the form's own, so an expiry changed elsewhere since it opened is kept, not cut back. */
+  openedOn: string | null = heldUntil ? centralDate(heldUntil) : null,
 ): { expiresAt: Date; cappedByStart: boolean; atMinimum: boolean; startDate: string } | { error: string; lastDate: string } {
   const startDate = startDates.filter(Boolean).sort()[0]
   const lastDate = lastExpiryDate(startDate, now, minDaysBeforeStart)
-  if (heldUntil && centralDate(heldUntil) === holdUntil) {
+  if (heldUntil && openedOn === holdUntil) {
     const cap = latestHoldMoment(startDate, minDaysBeforeStart)
-    if (heldUntil <= cap) return { expiresAt: heldUntil, cappedByStart: false, atMinimum: false, startDate }
     const floor = addHours(now, MIN_HOLD_WINDOW_HOURS)
+    // The 24-hour floor wins, as for every new hold (holdExpiry).
+    if (heldUntil <= cap) {
+      return heldUntil < floor
+        ? { expiresAt: floor, cappedByStart: false, atMinimum: true, startDate }
+        : { expiresAt: heldUntil, cappedByStart: false, atMinimum: false, startDate }
+    }
     return cap < floor
       ? { expiresAt: floor, cappedByStart: false, atMinimum: true, startDate }
       : { expiresAt: cap, cappedByStart: true, atMinimum: false, startDate }

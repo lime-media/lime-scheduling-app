@@ -18,8 +18,8 @@ import { isReady, loadLedBookings, type SentRow } from '@/lib/ledReadiness'
 export type SendDeps = {
   env: Record<string, string | undefined>
   load: () => Promise<{ bookings: BookingRequest[]; sent: Map<string, SentRow> }>
-  /** Create the booking's row with its first reference, or keep the one there. */
-  ensureRow: (bookingKey: string, externalRef: string) => Promise<SentRow>
+  /** Create the booking's row with its first reference, or keep the one there; null when another booking's row already has that reference. */
+  ensureRow: (bookingKey: string, externalRef: string) => Promise<SentRow | null>
   saveSent: (bookingKey: string, created: CoreCreated, fingerprint: string) => Promise<void>
   saveError: (bookingKey: string, message: string) => Promise<void>
   create: (body: CorePayload) => Promise<CoreCreated>
@@ -46,6 +46,9 @@ export async function sendBookingToCore(bookingKey: string, deps: SendDeps): Pro
 
   // The reference is fixed by the row, so a resend (or two at once) sends the same one.
   const row = await deps.ensureRow(bookingKey, payload.body.externalRef)
+  // A booking revised away from this key keeps it as its reference: sending
+  // it again would return that booking's request, so this one is refused.
+  if (!row) return { status: 409, body: { error: `Another booking already went to LED as ${payload.body.externalRef}. Revise this booking to give it its own reference.` } }
   if (row.core_uid) return { status: 200, body: { sent: true, already: true, coreUid: row.core_uid, requestId: row.request_id } }
   const body = { ...payload.body, externalRef: row.external_ref }
 
@@ -85,6 +88,9 @@ export function liveSendDeps(userId: string): SendDeps {
         // Two sends at once: the other created it. Read what it wrote.
         const row = await prisma.campaignRequestSync.findUnique({ where: { booking_key: bookingKey }, select: ROW_SELECT })
         if (row) return row
+        // No row of its own: the reference belongs to another booking's row.
+        const taken = await prisma.campaignRequestSync.findUnique({ where: { external_ref: externalRef }, select: { booking_key: true } })
+        if (taken) return null
         throw err
       }
     },

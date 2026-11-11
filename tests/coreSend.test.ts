@@ -154,6 +154,10 @@ defer((async () => {
   await sendBookingToCore(two.bookingKey, re.d)
   eq('resend uses the stored reference', re.posted[0]?.externalRef, 'mm_original')
 
+  const taken = deps({ ensureRow: async () => null })
+  const r5 = await sendBookingToCore(two.bookingKey, taken.d)
+  eq("reference already another booking's: refused, nothing posted", [r5.status, taken.posted.length], [409, 0])
+
   const failing = deps({ create: async () => { throw new CoreError('LED refused it: no timezone', 400) } })
   const r4 = await sendBookingToCore(two.bookingKey, failing.d)
   eq("Core refuses: 502 with its message, recorded on the row", [r4.status, r4.body.error, failing.rows.get(two.bookingKey)?.last_error],

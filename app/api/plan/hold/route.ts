@@ -35,7 +35,7 @@
  */
 
 import { withUsageLog } from '@/lib/usageLog'
-import { cleanBrand, opportunityName } from '@/lib/brand'
+import { opportunityName, savedBrand } from '@/lib/brand'
 import { readOpportunityType, suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
 import { QUOTE_ONLY_GROUP_PREFIX, QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
 import { openStage } from '@/lib/sfdcStages'
@@ -184,6 +184,8 @@ async function handlePost(req: NextRequest) {
   // booking can never be mistaken for an earlier quote-only log of the same
   // quote (or the reverse) and answered "already placed" with nothing held.
   const groupPrefix = `${quoteOnly ? QUOTE_ONLY_GROUP_PREFIX : 'mm_'}${body.requestId}_`
+  // The new booking's key (lib/bookings.ts bookingKey of its holds).
+  const newKey = groupPrefix.replace(/_$/, '')
 
   try {
     // A retry of an attempt that already went through: return what it did.
@@ -337,7 +339,7 @@ async function handlePost(req: NextRequest) {
     }
 
     const accountName = body.sfdcAccountName || 'Client'
-    const brand = cleanBrand(body.brand)
+    const brand = savedBrand(body.brand) // "none" means no brand, as everywhere
     const linkedClient = await prisma.clientUser.findFirst({ where: { sfdc_account_id: body.sfdcAccountId }, select: { id: true } })
     const serviceUser = await prisma.user.findFirst({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } })
     const createdBy = (token.id as string) || serviceUser?.id || 'system'
@@ -427,12 +429,17 @@ async function handlePost(req: NextRequest) {
           truck_number: truckNumbers[0] ?? reviseHolds[0]?.truck_number ?? '',
           user_id: createdBy,
           details: JSON.stringify({
-            booking: reviseKey, now: groupPrefix.replace(/_$/, ''), opportunity: target?.Id ?? null,
+            booking: reviseKey, now: newKey, opportunity: target?.Id ?? null,
             was, trucks: truckNumbers, total: quote.summary.grandTotal,
           }),
         },
       })
       if (reviseIds.length) await tx.hold.deleteMany({ where: { id: { in: reviseIds } } })
+      // Its CampaignIQ request follows it to the new key, keeping the ref Core
+      // was first sent (lib/campaignRequests.ts), so Core keeps one request.
+      // A quote-only log reserves nothing: the request stays under the old
+      // key, with no live holds left, to be declined.
+      if (reviseKey && !quoteOnly) await tx.campaignRequestSync.updateMany({ where: { booking_key: reviseKey }, data: { booking_key: newKey } })
       for (let i = 0; i < rows.length; i += CHUNK) await tx.hold.createMany({ data: rows.slice(i, i + CHUNK) })
     }
     try {
@@ -470,6 +477,8 @@ async function handlePost(req: NextRequest) {
             async tx => {
               await tx.hold.deleteMany({ where: { campaign_group_id: { startsWith: groupPrefix } } })
               if (was.length) await tx.hold.createMany({ data: was })
+              // Its CampaignIQ request goes back with it to the old key.
+              await tx.campaignRequestSync.updateMany({ where: { booking_key: newKey }, data: { booking_key: reviseKey } })
               await tx.auditLog.create({
                 data: {
                   action: 'REVISE_REVERTED',

@@ -85,6 +85,8 @@ export type ExpiringBooking = {
   hoursLeft:  number
   /** The Extend buttons (lib/extendLink.ts); none when it can't be extended from email. */
   extend:     { days: number; label: string; url: string }[]
+  /** The Cancel link (lib/extendLink.ts, signed for cancelling); null when it can't be cancelled from email. */
+  cancelUrl:  string | null
 }
 export type ExpiringHoldsEmailFields = { name: string; bookings: ExpiringBooking[]; reservationsUrl: string }
 
@@ -100,8 +102,9 @@ function expiringLead(data: ExpiringHoldsEmailFields): string {
 
 /**
  * The expiry reminder: one card per booking (a booking is extended as one),
- * each with Extend buttons. The buttons open a confirm page (app/extend), so a
- * mail scanner that follows links can't extend anything. Mail-client HTML, as
+ * each with Extend buttons and a Cancel link. They open a confirm page
+ * (app/extend, app/cancel), so a mail scanner that follows links can't
+ * extend or cancel anything. Mail-client HTML, as
  * otpHtml.
  */
 export function expiringHoldsHtml(data: ExpiringHoldsEmailFields): string {
@@ -117,8 +120,9 @@ export function expiringHoldsHtml(data: ExpiringHoldsEmailFields): string {
                       ${b.trucks.length > 1 ? 'Trucks' : 'Truck'} ${esc(b.trucks.join(', '))} &middot; ${esc(b.startDate)} &rarr; ${esc(b.endDate)}<br>
                       <strong style="color:#b45309;">Expires ${esc(b.expiresAt)}</strong> (${b.hoursLeft}h)
                     </div>
-                    ${b.extend.length ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:14px;"><tr>
+                    ${b.extend.length || b.cancelUrl ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:14px;"><tr>
                       ${b.extend.map(x => `<td style="padding-right:8px;"><a href="${esc(x.url)}" style="display:inline-block;background:#2d6b22;color:#ffffff;text-decoration:none;font-size:13px;font-weight:600;padding:9px 14px;border-radius:8px;">Extend ${x.days} day${x.days > 1 ? 's' : ''} &middot; ${esc(x.label)}</a></td>`).join('')}
+                      ${b.cancelUrl ? `<td style="padding-right:8px;"><a href="${esc(b.cancelUrl)}" style="display:inline-block;background:#ffffff;color:#b91c1c;border:1px solid #fca5a5;text-decoration:none;font-size:13px;font-weight:600;padding:8px 14px;border-radius:8px;">Cancel reservation</a></td>` : ''}
                     </tr></table>` : ''}
                   </td>
                 </tr>
@@ -147,7 +151,7 @@ export function expiringHoldsHtml(data: ExpiringHoldsEmailFields): string {
           <tr>
             <td style="padding:4px 28px 28px;">
               <p style="margin:0;font-size:12px;line-height:1.6;color:#6b7280;border-top:1px solid #f3f4f6;padding-top:14px;">
-                Extend opens a page to confirm; no sign-in needed. To commit or change it otherwise, open <a href="${esc(data.reservationsUrl)}" style="color:#2d6b22;">Reservations</a>. Anything not committed or extended by its expiry is released automatically and the truck becomes available to everyone else.
+                Extend and Cancel open a page to confirm; no sign-in needed. To commit or change it otherwise, open <a href="${esc(data.reservationsUrl)}" style="color:#2d6b22;">Reservations</a>. Anything not committed or extended by its expiry is released automatically and the truck becomes available to everyone else.
               </p>
             </td>
           </tr>
@@ -170,6 +174,7 @@ export function expiringHoldsText(data: ExpiringHoldsEmailFields): string {
       `  Dates:   ${b.startDate} → ${b.endDate}`,
       `  Expires: ${b.expiresAt} (${b.hoursLeft}h)`,
       ...b.extend.map(x => `  Extend ${x.days} day${x.days > 1 ? 's' : ''} (to ${x.label}): ${x.url}`),
+      ...(b.cancelUrl ? [`  Cancel reservation: ${b.cancelUrl}`] : []),
       '',
     )
   }
@@ -180,4 +185,53 @@ export function expiringHoldsText(data: ExpiringHoldsEmailFields): string {
     'becomes available to everyone else.',
   )
   return lines.join('\n')
+}
+
+// ── Client assistance requests (lib/email.ts sendAssistanceRequestEmail) ──
+
+export interface AssistanceRequestEmailData {
+  /** The client user asking (app_client_users.id): named in the email, and Reply goes to them. */
+  clientUserId: string
+  companyName: string
+  market?:     string
+  state?:      string
+  startDate?:  string
+  endDate?:    string
+  details:     string
+  /** Where staff act on it, when there is a page for it (an extension request: Reservations). */
+  actionUrl?:  string
+}
+
+/** Who asked, as the email names them; `email` is where Reply goes (null: no address on file). */
+export type Asker = { username: string; email: string | null }
+
+// One plain address: no list separators or display-name syntax, so Reply-To can't name a second recipient.
+const looksLikeEmail = (s: string | null | undefined): s is string => !!s && /^[^\s@,;<>"()]+@[^\s@,;<>"()]+\.[^\s@,;<>"()]+$/.test(s)
+
+/** The client's address for Reply: their email on file, else their username when it is one. Pure. */
+export function askerEmail(user: { username: string; email: string | null }): string | null {
+  const email = user.email?.trim(), username = user.username.trim()
+  return looksLikeEmail(email) ? email : looksLikeEmail(username) ? username : null
+}
+
+/**
+ * The assistance request as the team reads it: who asked and how to reach
+ * them, what they asked, and where to act on it if there is a page. The app
+ * keeps no list of these, so the email itself is the whole request: Reply
+ * goes to the client (sendAssistanceRequestEmail sets Reply-To). Pure.
+ */
+export function assistanceRequestText(data: AssistanceRequestEmailData, asker: Asker | null): string {
+  return [
+    `${data.companyName} asked the client view assistant to relay a question/need to the Lime Media team.`,
+    ``,
+    asker ? `From:    ${asker.username}${asker.email && asker.email !== asker.username ? ` <${asker.email}>` : ''}` : null,
+    data.market                    ? `Market:  ${data.market}${data.state ? ', ' + data.state : ''}` : null,
+    data.startDate && data.endDate ? `Dates:   ${data.startDate} → ${data.endDate}` : null,
+    `Details: ${data.details}`,
+    ``,
+    asker?.email ? `Reply to this email to answer ${asker.email} directly.`
+      : asker ? `No email address is on file for this client; reach them through their account manager.`
+      : `Who asked isn't known (their client account couldn't be read or no longer exists); reach ${data.companyName} through their account manager.`,
+    data.actionUrl ? `Act on it: ${data.actionUrl}` : null,
+  ].filter(v => v !== null).join('\n')
 }

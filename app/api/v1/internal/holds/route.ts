@@ -7,6 +7,7 @@ import { resolveQuoteMarket } from '@/lib/staffQuote'
 import { placeClientBooking } from '@/lib/clientBooking'
 import { placeStaffBooking } from '@/lib/staffBooking'
 import { readLeadSource } from '@/lib/sfdcLeadSource'
+import { readBrand } from '@/lib/brand'
 
 /**
  * POST /api/v1/internal/holds: the MCP server's booking.
@@ -62,6 +63,10 @@ export async function POST(req: NextRequest) {
   // page: checked here, before the market lookup and the duplicate query.
   const lead = party.kind === 'staff' ? readLeadSource(body.lead_source, true) : null
   if (lead && 'error' in lead) return NextResponse.json({ error: lead.error }, { status: 400 })
+  // And the brand: asked, not assumed ("none" when there is none). Checked
+  // here too so a missing brand is refused before the lookups below.
+  const brandRead = party.kind === 'staff' ? readBrand(body.brand, true) : null
+  if (brandRead && 'error' in brandRead) return NextResponse.json({ error: brandRead.error }, { status: 400 })
   if (party.kind === 'staff') {
     if (!accountName) return NextResponse.json({ error: 'sfdc_account_name is required: the Salesforce Account the booking is for' }, { status: 400 })
     if (expectedTotal !== undefined && (typeof expectedTotal !== 'number' || !Number.isFinite(expectedTotal))) {
@@ -115,13 +120,14 @@ export async function POST(req: NextRequest) {
 
   // Staff: the Quote page's booking, with only the fields it takes (checked
   // above; hold_days by placeStaffBooking). Notes go to the opportunity, not
-  // the hold (lib/staffBooking.ts).
+  // the hold (lib/staffBooking.ts). The brand is asked, not assumed: "none"
+  // when the person says there is none (lib/brand.ts readBrand).
   const result = await placeStaffBooking({
     ...booking,
     ...staff,
     sfdc_account_name: accountName,
     primary_contact_id: str(body.primary_contact_id), brand: str(body.brand), hold_days: body.hold_days, stage: str(body.stage),
     lead_source: lead?.leadSource ?? undefined, notes: str(body.notes), expected_total: expectedTotal,
-  }, party.actor, { origination: 'mcp', requireLeadSource: true })
+  }, party.actor, { origination: 'mcp', requireLeadSource: true, requireBrand: true })
   return NextResponse.json(result.body, { status: result.status })
 }

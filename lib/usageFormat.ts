@@ -9,11 +9,13 @@ export type UsageTool =
   | 'ai_chat_staff' | 'ai_chat_client' | 'ai_plan_areas' | 'ai_plan_review'
 
 export const TOOL_LABELS: Record<UsageTool, string> = {
-  quote_classic: 'Quote (Classic)',
+  // The Quote Builder's /api/quote and /api/quote/hold; the key predates the
+  // Classic Quote Tool's removal and stays so older rows keep their label.
+  quote_classic: 'Quote (Quote Builder)',
   quote_multi: 'Quote (Multi-market)',
   quote_client: 'Quote (client portal)',
   quote_chat: 'Quote (AI chat)',
-  hold_classic: 'Hold placed (Classic)',
+  hold_classic: 'Hold placed (Quote Builder)',
   hold_multi: 'Hold placed (Multi-market)',
   hold_client: 'Hold placed (client portal)',
   hold_chat: 'Hold placed (AI chat)',

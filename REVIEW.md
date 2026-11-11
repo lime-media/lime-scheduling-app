@@ -270,8 +270,8 @@ after deploy.
 
 - `node_modules/`, `package-lock.json`, `tsconfig.tsbuildinfo`
 - Images and icons in `public/` (`*.png`, `*.ico`). The `public/*.html` files
-  are live tools loaded in the app (the classic quote tool's rate card and
-  pricing math, the saturation calculator) and are reviewed like any other code.
+  are live tools loaded in the app (the saturation calculator) and are
+  reviewed like any other code.
 - Styling-only changes in Tailwind classes, unless they hide information
 - Behavior the PR description explicitly calls out as intended, unless it
   breaks a rule above

@@ -9,7 +9,7 @@
  * Returns the route's status and JSON body.
  */
 
-import { cleanBrand, opportunityName } from '@/lib/brand'
+import { opportunityName, readBrand } from '@/lib/brand'
 import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
 import { openStage } from '@/lib/sfdcStages'
 import { prisma } from '@/lib/prisma'
@@ -45,7 +45,7 @@ import { holdExpDate } from '@/lib/dateOnly'
 export type StaffActor = { id?: string; name?: string | null; email?: string | null }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the request body, read field by field as the route always has
-export async function placeStaffBooking(body: any, actor: StaffActor, opts: { origination?: 'frontend' | 'mcp'; requireLeadSource?: boolean; requireOpportunityType?: boolean } = {}): Promise<CoreResult> {
+export async function placeStaffBooking(body: any, actor: StaffActor, opts: { origination?: 'frontend' | 'mcp'; requireLeadSource?: boolean; requireBrand?: boolean; requireOpportunityType?: boolean } = {}): Promise<CoreResult> {
   const {
     market, state, start_date, end_date, truck_count,
     sfdc_account_id, sfdc_account_name, brand: rawBrand, primary_contact_id,
@@ -58,7 +58,11 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   // Low conviction: log a priced opportunity, reserve nothing (lib/quoteOnly.ts).
   const quoteOnly = quote_only === true
   // The brand, as Salesforce gets it (Brand / Job Name, and first in the name).
-  const brand = cleanBrand(typeof rawBrand === 'string' ? rawBrand : '')
+  // The chat and MCP must ask for it (requireBrand): "none" is an answer, a
+  // missing brand isn't. Adding to an existing opportunity keeps its own.
+  const brandRead = readBrand(rawBrand, !!opts.requireBrand && !attach_opportunity_id)
+  if ('error' in brandRead) return reply({ error: brandRead.error }, { status: 400 })
+  const { brand } = brandRead
   // Notes from the caller (MCP passes them; the Quote page doesn't). Internal:
   // they go in the Salesforce opportunity's Description, never on the hold,
   // whose notes the linked client sees in the portal.

@@ -28,7 +28,7 @@ import { APP_TIME_ZONE, centralDate } from '@/lib/dateOnly'
 import { bookingKey, closedWonRefusal } from '@/lib/bookings'
 import { bookingLastDate, heldThrough } from '@/lib/expiryRules'
 import { loadBooking } from '@/lib/bookingExpiry'
-import { extendOptions, signExtendToken } from '@/lib/extendLink'
+import { extendOptions, signCancelToken, signExtendToken } from '@/lib/extendLink'
 
 /** When a hold lapses, as reps read it (Central time). */
 const EXPIRES_AT = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: APP_TIME_ZONE, timeZoneName: 'short' })
@@ -71,9 +71,9 @@ export const cardKey = (h: Hold) => bookingKey(h) ?? `hold:${h.id}`
  * One reminder card per booking (lib/bookings.ts bookingKey; a hold with none
  * is its own): a booking is extended as one. Each card carries Extend links
  * for the days the server would accept (lib/expiryRules.ts, actor 'email'),
- * judged on the whole booking (`whole`, by cardKey) when
- * given, signed for the rep (lib/extendLink.ts); none when the signing
- * secret isn't set. Exported for tests.
+ * and a Cancel link while none of it is won, both judged on the whole booking
+ * (`whole`, by cardKey) when given and signed for the rep (lib/extendLink.ts);
+ * none when the signing secret isn't set. Exported for tests.
  */
 export function expiringBookings(holds: Hold[], now: Date, secret: string | undefined = process.env.NEXTAUTH_SECRET, whole?: Map<string, Hold[]>): ExpiringBooking[] {
   const groups = new Map<string, Hold[]>()
@@ -101,6 +101,11 @@ export function expiringBookings(holds: Hold[], now: Date, secret: string | unde
     const extend = token && expiresOn && !blocked
       ? extendOptions(expiresOn, lastDate, latestOn).map(o => ({ days: o.days, label: o.label, url: `${appUrl()}/extend?t=${encodeURIComponent(token)}&d=${o.days}` }))
       : []
+    // Cancel: anything still held and not won, extension request or not
+    // (Cancel on Reservations allows both; lib/cancelBooking.ts).
+    const cancelToken = secret && first.expires_at && !closedWonRefusal(booking)
+      ? signCancelToken({ holdId: first.id, userId: first.created_by, expiresAt: first.expires_at.toISOString() }, secret)
+      : null
     return {
       clientName: first.client_name,
       markets:    [...new Set(group.map(h => h.market).filter(Boolean))],
@@ -111,6 +116,7 @@ export function expiringBookings(holds: Hold[], now: Date, secret: string | unde
       expiresAt:  first.expires_at ? EXPIRES_AT.format(first.expires_at) : 'unknown',
       hoursLeft:  first.expires_at ? hoursLeft(first.expires_at, now) : 0,
       extend,
+      cancelUrl: cancelToken ? `${appUrl()}/cancel?t=${encodeURIComponent(cancelToken)}` : null,
     }
   })
 }

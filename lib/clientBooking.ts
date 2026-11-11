@@ -6,7 +6,7 @@
  * opportunity is created. Returns the route's status and JSON body.
  */
 
-import { cleanBrand, opportunityName } from '@/lib/brand'
+import { opportunityName, savedBrand } from '@/lib/brand'
 import { suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
@@ -71,7 +71,7 @@ export async function placeClientBooking(
   const {
     market, state, start_date, end_date, truck_count, notes,
   } = body
-  const brand = cleanBrand(body.brand)
+  const brand = savedBrand(body.brand) // "none" means no brand, as everywhere
 
   // A whole number, as the quote requires (lib/clientAvailability.ts): 2.5,
   // "2" or true would hold one count of trucks and bill another.

@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
       // knew that still carry a hold count: drop it, so "2 holds" never sits
       // next to "no reservation".
       const result = isQuoteOnlyRun(r.tool, parsed, inputs) && parsed && typeof parsed === 'object'
-        ? { ...parsed, holds: undefined, quote_only: true } : parsed
+        ? { ...parsed, holds: undefined, hold_count: undefined, quote_only: true } : parsed
       return {
         id: r.id, at: r.created_at.toISOString(), source: r.tool.startsWith('mcp_') ? 'mcp' as const : 'app' as const,
         tool: r.tool, toolLabel: runLabel(r.tool, result, inputs),

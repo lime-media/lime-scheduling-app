@@ -45,7 +45,8 @@ export const toolLabel = (tool: string) =>
  * One run's label. A quote-only submit goes through the same hold route as a
  * real hold, but it reserves nothing: "Quote only, no reservation (Quote
  * Builder)", not "Hold placed". It doesn't claim the Salesforce log worked:
- * the row's outcome says whether the run succeeded. The result's quote_only
+ * the outcome shows a run that errored, and a Salesforce failure on a run that
+ * otherwise succeeded is in the row's result text. The result's quote_only
  * (lib/usageLog.ts summarizeResult) marks it; rows logged before that fall
  * back to the request's own quote-only flag, or the backfill's note.
  */

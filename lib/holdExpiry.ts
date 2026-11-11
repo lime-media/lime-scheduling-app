@@ -65,8 +65,17 @@ export function parseHoldDays(value: unknown): number | null {
 export function holdExpiry(
   startDate: string, holdDays: number = DEFAULT_HOLD_DAYS, now: Date = new Date(), minDaysBeforeStart: number = MIN_PROCESSING_DAYS_BEFORE_START,
 ): { expiresAt: Date; cappedByStart: boolean; atMinimum: boolean } {
-  const requested = addHours(now, holdDays * 24)
+  return clampHold(addHours(now, holdDays * 24), startDate, now, minDaysBeforeStart)
+}
 
+/**
+ * `requested`, capped by the latest moment `startDate` allows and never sooner
+ * than MIN_HOLD_WINDOW_HOURS from now (the floor wins), with the reason, as
+ * holdExpiry documents. Pure.
+ */
+function clampHold(
+  requested: Date, startDate: string, now: Date, minDaysBeforeStart: number,
+): { expiresAt: Date; cappedByStart: boolean; atMinimum: boolean } {
   const latestByStart = latestHoldMoment(startDate, minDaysBeforeStart)
 
   const startDecides = latestByStart < requested
@@ -104,9 +113,9 @@ export function bookingHoldExpiry(
  * revise form (`holdUntil`, YYYY-MM-DD Central, opened on `heldUntil`'s date).
  * Left as it opened, the revision keeps `heldUntil` exactly, capped (with the
  * 24-hour floor) by the revised booking's earliest start as bookingHoldExpiry
- * caps it. Changed, it is that date's end, as Reservations → Edit stores one,
- * and a date in the past or past the limit (lastExpiryDate) is refused, never
- * quietly cut back. Pure (pass `now`).
+ * caps it. Changed, it is that date's end, as Reservations → Edit stores one
+ * (never under the 24-hour floor), and a date in the past or past the limit
+ * (lastExpiryDate) is refused, never quietly cut back. Pure (pass `now`).
  */
 export function reviseHoldExpiry(
   startDates: string[], holdUntil: string, heldUntil: Date | null, now: Date = new Date(),
@@ -116,19 +125,8 @@ export function reviseHoldExpiry(
 ): { expiresAt: Date; cappedByStart: boolean; atMinimum: boolean; startDate: string } | { error: string; lastDate: string } {
   const startDate = startDates.filter(Boolean).sort()[0]
   const lastDate = lastExpiryDate(startDate, now, minDaysBeforeStart)
-  if (heldUntil && openedOn === holdUntil) {
-    const cap = latestHoldMoment(startDate, minDaysBeforeStart)
-    const floor = addHours(now, MIN_HOLD_WINDOW_HOURS)
-    // The 24-hour floor wins, as for every new hold (holdExpiry).
-    if (heldUntil <= cap) {
-      return heldUntil < floor
-        ? { expiresAt: floor, cappedByStart: false, atMinimum: true, startDate }
-        : { expiresAt: heldUntil, cappedByStart: false, atMinimum: false, startDate }
-    }
-    return cap < floor
-      ? { expiresAt: floor, cappedByStart: false, atMinimum: true, startDate }
-      : { expiresAt: cap, cappedByStart: true, atMinimum: false, startDate }
-  }
+  // Unchanged: the current expiry, capped by the start with the 24-hour floor, as for every new hold (holdExpiry).
+  if (heldUntil && openedOn === holdUntil) return { ...clampHold(heldUntil, startDate, now, minDaysBeforeStart), startDate }
   // Round-tripped: Date rolls 2026-02-31 over to March 3.
   const parsed = new Date(`${holdUntil}T00:00:00Z`)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(holdUntil) || isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== holdUntil) {
@@ -139,7 +137,12 @@ export function reviseHoldExpiry(
   if (holdUntil > lastDate) {
     return { error: `The latest this booking can be held is ${lastDate}: ${minDaysBeforeStart} days before its first market starts.`, lastDate }
   }
-  return { expiresAt: endOfDayCentral(holdUntil), cappedByStart: false, atMinimum: false, startDate }
+  // Today late in the day would end within hours: the 24-hour floor still wins, as for every new hold.
+  const floor = addHours(now, MIN_HOLD_WINDOW_HOURS)
+  const chosen = endOfDayCentral(holdUntil)
+  return chosen < floor
+    ? { expiresAt: floor, cappedByStart: false, atMinimum: true, startDate }
+    : { expiresAt: chosen, cappedByStart: false, atMinimum: false, startDate }
 }
 
 /**

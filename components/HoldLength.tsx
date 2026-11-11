@@ -54,7 +54,7 @@ export function HoldLength({ days, onChange, startDates }: {
             <span className="text-amber-700"> · cut short: a booking is held until {STAFF_MIN_DAYS_BEFORE_START} days before its first market starts</span>
           )}
           {lapse.atMinimum && (
-            <span className="text-amber-700"> · the 24-hour minimum: the first market starts too soon for a longer hold</span>
+            <span className="text-amber-700"> · the 24-hour minimum: a hold always runs at least a day</span>
           )}
         </span>
       )}
@@ -101,7 +101,7 @@ export function HoldUntil({ date, onChange, heldUntil, startDates }: {
               <span className="text-amber-700"> · cut short: a booking is held until {STAFF_MIN_DAYS_BEFORE_START} days before its first market starts</span>
             )}
             {result.atMinimum && (
-              <span className="text-amber-700"> · the 24-hour minimum: the first market starts too soon for a longer hold</span>
+              <span className="text-amber-700"> · the 24-hour minimum: a hold always runs at least a day</span>
             )}
           </span>
         ))}

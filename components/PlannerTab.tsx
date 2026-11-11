@@ -23,6 +23,7 @@ import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
 import { HoldLength, HoldUntil, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
 import { centralDate } from '@/lib/dateOnly'
+import { STAFF_MIN_DAYS_BEFORE_START, reviseHoldExpiry } from '@/lib/holdExpiry'
 import { OpportunityPicker, type OpenOpportunity } from '@/components/OpportunityPicker'
 import { BrandInput } from '@/components/BrandInput'
 import { SalesforceFailureModal } from '@/components/SalesforceFailureModal'
@@ -435,7 +436,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
             {revision.live
               ? 'Markets that stay keep their current trucks where those can still do the dates.'
               : 'It has expired, so trucks are picked and priced fresh.'}
-            {revision.live && revision.heldUntil && ` Its holds run to ${new Date(revision.heldUntil).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Chicago' })}; the revision keeps that expiry unless you change the date below.`}
+            {revision.live && revision.heldUntil && ` Its holds run to ${new Date(revision.heldUntil).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Chicago' })}${quoteOnly ? '.' : '; the revision keeps that expiry unless you change the date below.'}`}
             {revision.committedMarkets.length > 0 && ` ${revision.committedMarkets.length} market${revision.committedMarkets.length === 1 ? ' is' : 's are'} committed and stay${revision.committedMarkets.length === 1 ? 's' : ''} committed.`}
           </p>
         </div>
@@ -787,6 +788,11 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
   const chosenTotal = chosen.reduce((s, l) => s + l.total, 0)
   const booked = holdResult?.ok === true
   const outOfMarket = quote.lines.flatMap(l => l.arrivals).filter(a => a.outOfMarket)
+  // The trucks this booking would hold: committed markets keep their own expiry.
+  const holdStarts = holdStartDates(chosen.filter(l => !committedMarkets.includes(l.market.trim().toLowerCase())))
+  // A revision's expiry date the server would refuse (past, or past the limit): HoldUntil says why.
+  const holdUntilRefused = !quoteOnly && holdUntil !== null && holdStarts.length > 0
+    && 'error' in reviseHoldExpiry(holdStarts, holdUntil.date, new Date(holdUntil.heldUntil), new Date(), STAFF_MIN_DAYS_BEFORE_START)
 
   return (
     <>
@@ -882,18 +888,17 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
           <>
             {/* Hold length: a reservation only (a quote-only log holds nothing). */}
             {!quoteOnly && (holdUntil
-              ? <HoldUntil date={holdUntil.date} onChange={onHoldUntil} heldUntil={holdUntil.heldUntil}
-                  startDates={holdStartDates(chosen.filter(l => !committedMarkets.includes(l.market.trim().toLowerCase())))} />
-              : <HoldLength days={holdDays} onChange={onHoldDays}
-                  startDates={holdStartDates(chosen.filter(l => !committedMarkets.includes(l.market.trim().toLowerCase())))} />
+              ? <HoldUntil date={holdUntil.date} onChange={onHoldUntil} heldUntil={holdUntil.heldUntil} startDates={holdStarts} />
+              : <HoldLength days={holdDays} onChange={onHoldDays} startDates={holdStarts} />
             )}
-            <button onClick={onPlaceHolds} disabled={holding || !account || !contact || needsLeadSource || needsOpportunityType || chosen.length === 0}
+            <button onClick={onPlaceHolds} disabled={holding || !account || !contact || needsLeadSource || needsOpportunityType || chosen.length === 0 || holdUntilRefused}
               className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium">
               {!account ? 'Select a client above to place holds'
                 : !contact ? 'Choose the primary contact above'
                 : needsLeadSource ? 'Choose the lead source above'
                 : needsOpportunityType ? 'Choose the opportunity type above'
                 : chosen.length === 0 ? 'Select at least one market to book'
+                : holdUntilRefused ? 'Choose a hold expiry date the booking can be held to'
                 : holding ? (quoteOnly ? 'Logging the quote…' : 'Re-checking trucks and placing holds…')
                 : revising ? `Update booking${quoteOnly ? ' (quote only, no reservation)' : ''} — ${chosen.length} of ${quote.lines.length} markets, ${fmtMoney(chosenTotal)}`
                 : quoteOnly ? `Log quote in Salesforce (no reservation)${attachName ? ' on the chosen opportunity' : ''} — ${chosen.length} of ${quote.lines.length} markets, ${fmtMoney(chosenTotal)}`

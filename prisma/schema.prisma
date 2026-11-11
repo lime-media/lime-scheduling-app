@@ -398,7 +398,7 @@ model LedClientLink {
 /// external_ref is the key first sent to Core and never changes.
 model CampaignRequestSync {
   booking_key    String    @id @db.NVarChar(191)
-  external_ref   String    @unique(map: "UX_app_campaign_requests_external_ref") @db.NVarChar(100)
+  external_ref   String    @unique(map: "UX_app_campaign_requests_external_ref") @db.NVarChar(191)
   core_uid       String?   @unique(map: "UX_app_campaign_requests_core_uid") @db.UniqueIdentifier
   request_id     String?   @db.NVarChar(20)
   core_status    String?   @db.NVarChar(20)

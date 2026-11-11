@@ -467,6 +467,8 @@ async function handlePost(req: NextRequest) {
             async tx => {
               await tx.hold.deleteMany({ where: { campaign_group_id: { startsWith: groupPrefix } } })
               if (was.length) await tx.hold.createMany({ data: was })
+              // Its CampaignIQ request goes back with it to the old key.
+              await tx.campaignRequestSync.updateMany({ where: { booking_key: groupPrefix.replace(/_$/, '') }, data: { booking_key: reviseKey } })
               await tx.auditLog.create({
                 data: {
                   action: 'REVISE_REVERTED',

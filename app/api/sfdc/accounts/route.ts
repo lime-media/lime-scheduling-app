@@ -4,7 +4,7 @@ import { searchAccounts } from '@/lib/sfdcSearch'
 import { getToken } from 'next-auth/jwt'
 
 /**
- * GET /api/sfdc/accounts?q=search_term
+ * GET /api/sfdc/accounts?q=search_term[&suggest=type]
  *
  * Search Salesforce Accounts by name. Used by the internal quote page
  * to let staff pick a client before quoting.
@@ -19,7 +19,8 @@ export async function GET(req: NextRequest) {
 
   const q = req.nextUrl.searchParams.get('q')?.trim() ?? ''
   try {
-    return NextResponse.json({ accounts: await searchAccounts(q) })
+    // suggest=type: the quote pages' Opportunity Type suggestion (lib/sfdcSearch.ts).
+    return NextResponse.json({ accounts: await searchAccounts(q, { suggestType: req.nextUrl.searchParams.get('suggest') === 'type' }) })
   } catch (err) {
     console.error('[sfdc/accounts] search failed:', err)
     return NextResponse.json({ error: 'Search failed' }, { status: 500 })

@@ -18,7 +18,7 @@ import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, chosenClientType, clampBrandMarkup, type ClientType } from '@/lib/pricing/brandMarkup'
 import { useEffect, useRef, useState } from 'react'
 import { copyDatesDown, holdStartDates } from '@/lib/planner/rows'
-import { ClientTypePicker, LeadSourcePicker } from '@/components/OpportunityFields'
+import { ClientTypePicker, LeadSourcePicker, OpportunityTypePicker } from '@/components/OpportunityFields'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
 import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
@@ -142,6 +142,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
   // starting from the account's (components/OpportunityFields.tsx).
   const [clientType, setClientType] = useState<ClientType>('Agency')
   const [leadSource, setLeadSource] = useState('')
+  const [opportunityType, setOpportunityType] = useState('')
   const isBrandDirect = clientType === 'Brand Direct'
   // A revised booking that loaded without an account: the client type it was
   // priced as, applied when the seller picks its account.
@@ -192,6 +193,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         // A lead source is asked for only if a new opportunity is made; never
         // carry over one picked for an earlier quote's account.
         setLeadSource('')
+        setOpportunityType('')
         setContact(b.contact)
         setBrand(b.brand ?? '')
         setRows(b.rows.map((r: { market: string; startDate: string; endDate: string; trucks: number; daysPerWeek: number; hours: number }) =>
@@ -356,7 +358,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: keepsOpportunity ? undefined : leadSource, quoteOnly, brand, primaryContactId: contact.id, holdDays, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: keepsOpportunity ? undefined : leadSource, opportunityType: keepsOpportunity ? undefined : opportunityType, quoteOnly, brand, primaryContactId: contact.id, holdDays, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
       })
       const data = await readJson(res)
       // The opportunity went Closed Lost after the booking was opened: ask now.
@@ -428,14 +430,14 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
       {/* 1. Client */}
       <div className={card}>
         <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
-        <AccountSearch selected={account} onSelect={a => {
+        <AccountSearch suggestType selected={account} onSelect={a => {
           // A booking is revised on its own account; another account is a new quote.
           // A booking that loaded without one (no Salesforce opportunity) needs
           // its account picked, and that keeps the revision.
           const changingClient = !!revision && !!account
           if (changingClient && !window.confirm('Changing the client stops revising this booking and starts a new quote. Continue?')) return
           if (changingClient) stopRevising()
-          setAccount(a); setClientType((revision && !account ? revisedClientType.current : null) ?? a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setContact(null); setAttachTo(null); setQuote(null); setHoldResult(null)
+          setAccount(a); setClientType((revision && !account ? revisedClientType.current : null) ?? a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setOpportunityType(a?.opportunityType ?? ''); setContact(null); setAttachTo(null); setQuote(null); setHoldResult(null)
         }} />
         {account && (
           <div className="mt-3">
@@ -568,6 +570,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         {!keepsOpportunity && (
           <div className="mt-3">
             <LeadSourcePicker value={leadSource} onChange={setLeadSource} />
+            <div className="mt-2"><OpportunityTypePicker value={opportunityType} onChange={setOpportunityType} /></div>
           </div>
         )}
         <div className="mt-3 flex items-center gap-2 text-xs">
@@ -616,6 +619,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           contact={contact}
           revising={revision !== null}
           needsLeadSource={!keepsOpportunity && !leadSource}
+          needsOpportunityType={!keepsOpportunity && !opportunityType}
           committedMarkets={revision?.committedMarkets ?? []}
           attachName={revision ? null : attachTo?.name ?? null}
           holdDays={holdDays}
@@ -734,7 +738,7 @@ function ImportPanel(p: {
 /** A booking's outcome; sfdcFailure is set when the holds saved but Salesforce didn't. */
 type HoldResult = { ok: boolean; message: string; sfdcFailure?: string | null }
 
-function QuoteResult({ quote, account, contact, revising, needsLeadSource, committedMarkets, attachName, holdDays, onHoldDays, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
+function QuoteResult({ quote, account, contact, revising, needsLeadSource, needsOpportunityType, committedMarkets, attachName, holdDays, onHoldDays, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
   quote: MultiMarketQuote
   account: SfdcAccount | null
   contact: SfdcContact | null
@@ -742,6 +746,7 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, commi
   revising: boolean
   /** A new opportunity with no lead source picked yet: booking waits for one. */
   needsLeadSource: boolean
+  needsOpportunityType: boolean
   /** On a revision, the markets (lower-cased) that stay committed: they hold nothing, so they don't cap the expiry. */
   committedMarkets: string[]
   /** Booking is added to this existing opportunity. */
@@ -861,11 +866,12 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, commi
               <HoldLength days={holdDays} onChange={onHoldDays}
                 startDates={holdStartDates(chosen.filter(l => !committedMarkets.includes(l.market.trim().toLowerCase())))} />
             )}
-            <button onClick={onPlaceHolds} disabled={holding || !account || !contact || needsLeadSource || chosen.length === 0}
+            <button onClick={onPlaceHolds} disabled={holding || !account || !contact || needsLeadSource || needsOpportunityType || chosen.length === 0}
               className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium">
               {!account ? 'Select a client above to place holds'
                 : !contact ? 'Choose the primary contact above'
                 : needsLeadSource ? 'Choose the lead source above'
+                : needsOpportunityType ? 'Choose the opportunity type above'
                 : chosen.length === 0 ? 'Select at least one market to book'
                 : holding ? (quoteOnly ? 'Logging the quote…' : 'Re-checking trucks and placing holds…')
                 : revising ? `Update booking${quoteOnly ? ' (quote only, no reservation)' : ''} — ${chosen.length} of ${quote.lines.length} markets, ${fmtMoney(chosenTotal)}`

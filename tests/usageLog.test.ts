@@ -4,7 +4,7 @@
  */
 import { eq, section } from './harness'
 import { outcomeFor, pruneFormEntries, pruneInputs, reportFields, summarizeResult } from '@/lib/usageLog'
-import { describeInputs, describeResult, runLabel, toolLabel } from '@/lib/usageFormat'
+import { describeInputs, describeResult, isQuoteOnlyRun, runLabel, toolLabel } from '@/lib/usageFormat'
 
 section('usage log: inputs kept')
 eq('primitives kept', pruneInputs({ market: 'Ames, IA', truck_count: 2, shadow_fencing: true }), { market: 'Ames, IA', truck_count: 2, shadow_fencing: true })
@@ -80,3 +80,4 @@ eq('only hold tools are relabelled', runLabel('quote_classic', null, { quote_onl
 eq('a quote-only log counts no holds', summarizeResult({ ok: true, created: 1, quoteOnly: true }).holds, undefined)
 eq('a flag the route ignores does not relabel', [runLabel('hold_client', { holds: 1 }, { quote_only: true }), runLabel('hold_classic', { holds: 1 }, { quoteOnly: true })],
   ['Hold placed (client portal)', 'Hold placed (Quote Builder)'])
+eq('older quote-only rows are recognised from the request', [isQuoteOnlyRun('hold_classic', { holds: 1 }, { quote_only: true }), isQuoteOnlyRun('hold_client', { holds: 1 }, { quote_only: true })], [true, false])

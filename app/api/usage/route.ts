@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { runLabel } from '@/lib/usageFormat'
+import { isQuoteOnlyRun, runLabel } from '@/lib/usageFormat'
 
 const MAX_ROWS = 1000
 const parse = (v: string | null) => { if (!v) return null; try { return JSON.parse(v) } catch { return v } }
@@ -52,7 +52,12 @@ export async function GET(req: NextRequest) {
 
     const rows: UsageRow[] = logRows.map(r => {
       const inputs = parse(r.inputs)
-      const result = parse(r.result)
+      const parsed = parse(r.result)
+      // A quote-only run reserved nothing. Rows logged before summarizeResult
+      // knew that still carry a hold count: drop it, so "2 holds" never sits
+      // next to "no reservation".
+      const result = isQuoteOnlyRun(r.tool, parsed, inputs) && parsed && typeof parsed === 'object'
+        ? { ...parsed, holds: undefined, quote_only: true } : parsed
       return {
         id: r.id, at: r.created_at.toISOString(), source: r.tool.startsWith('mcp_') ? 'mcp' as const : 'app' as const,
         tool: r.tool, toolLabel: runLabel(r.tool, result, inputs),

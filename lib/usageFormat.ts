@@ -49,17 +49,23 @@ export const toolLabel = (tool: string) =>
  * recorded fall back to the request's own quote-only flag.
  */
 export function runLabel(tool: string, result?: Bag | null, inputs?: Bag | null): string {
-  // Only the two routes that honour the flag: each reads its own spelling, so a
-  // flag sent to a route that ignores it (client portal, chat) never relabels a real hold.
-  const asked = tool === 'hold_classic' ? inputs?.quote_only === true : tool === 'hold_multi' ? inputs?.quoteOnly === true : false
-  const quoteOnly = result?.quote_only === true || asked
-  return (quoteOnly && QUOTE_ONLY_LABELS[tool]) || toolLabel(tool)
+  return isQuoteOnlyRun(tool, result, inputs) ? QUOTE_ONLY_RUNS[tool].label : toolLabel(tool)
 }
 
-/** The hold routes that can log a quote only, and how such a run reads. */
-const QUOTE_ONLY_LABELS: Record<string, string> = {
-  hold_classic: 'Quote logged to Salesforce, no reservation (Quote Builder)',
-  hold_multi: 'Quote logged to Salesforce, no reservation (Multi-market)',
+/**
+ * Whether a run logged a quote only. Only the two routes that honour the flag
+ * count, each by its own spelling of it, so a flag sent to a route that
+ * ignores it (client portal, chat) never relabels a real hold.
+ */
+export function isQuoteOnlyRun(tool: string, result?: Bag | null, inputs?: Bag | null): boolean {
+  const run = QUOTE_ONLY_RUNS[tool]
+  return !!run && (result?.quote_only === true || inputs?.[run.flag] === true)
+}
+
+/** The hold routes that can log a quote only: the request flag each reads, and how such a run reads. */
+const QUOTE_ONLY_RUNS: Record<string, { flag: string; label: string }> = {
+  hold_classic: { flag: 'quote_only', label: 'Quote logged to Salesforce, no reservation (Quote Builder)' },
+  hold_multi: { flag: 'quoteOnly', label: 'Quote logged to Salesforce, no reservation (Multi-market)' },
 }
 
 type Bag = Record<string, unknown>

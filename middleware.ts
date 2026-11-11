@@ -25,6 +25,9 @@ const ALWAYS_PUBLIC = [
   // The expiry email's Extend link: authenticated by its signed token (lib/extendLink.ts).
   '/extend',
   '/api/extend',
+  // Its Cancel link, the same way, signed for cancelling.
+  '/cancel',
+  '/api/cancel',
 ]
 
 export async function middleware(req: NextRequest) {

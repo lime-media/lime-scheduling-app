@@ -86,6 +86,7 @@ export function Navbar() {
     { href: '/rate-cards', label: 'Rate Cards' },
     { href: '/ops/transport', label: 'Transport' },
     { href: '/ops/opportunities', label: 'Opp Origins' },
+    { href: '/ops/led-requests', label: 'LED Readiness' },
     { href: '/users', label: 'Users' },
     ...(session?.user?.role === 'OPERATIONS' ? [{ href: '/usage', label: 'Usage' }] : []),
     { href: '/settings', label: 'Settings' },

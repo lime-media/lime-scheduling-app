@@ -270,7 +270,7 @@ If the same caller already has a live booking for these dates made in the last d
 - `X-Acting-User-Id: <user_id>` (resolved from validate-token)
 - `X-Acting-User-Type: app_user | client_user` (defaults to `app_user`)
 
-**Body:** `market`, `start_date`, `end_date`, `truck_count`; optional features as for the quote, `state`, `notes`, `brand`; staff: `sfdc_account_id`, `sfdc_account_name`, `primary_contact_id`, `hold_days`, `stage`, `brand_markup_pct`, `client_type`, `lead_source` (required: one of Salesforce's Lead Source values, `lib/sfdcLeadSource.ts`), `expected_total`; `confirm_duplicate` (see above).
+**Body:** `market`, `start_date`, `end_date`, `truck_count`; optional features as for the quote, `state`, `notes`, `brand` (optional for a client; required for staff: the brand being advertised, or `"none"` when there is none, `lib/brand.ts` `readBrand`); staff: `sfdc_account_id`, `sfdc_account_name`, `primary_contact_id`, `hold_days`, `stage`, `brand_markup_pct`, `client_type`, `lead_source` (required: one of Salesforce's Lead Source values, `lib/sfdcLeadSource.ts`), `expected_total`; `confirm_duplicate` (see above).
 
 **Response:** the client portal's or Quote page's booking result (200), or its refusal (400 / 409).
 

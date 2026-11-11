@@ -1,5 +1,6 @@
 'use client'
 
+import { cancelledOf } from '@/lib/cancelReason'
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
@@ -35,6 +36,8 @@ type HoldRequest = {
   expires_at: string | null
   extension_until: string | null
   extension_reason: string | null
+  cancelled_at: string | null
+  cancel_reason: string | null
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -52,7 +55,16 @@ const STATUS_LABEL: Record<string, string> = {
   EXPIRED: 'Expired',
 }
 
-const FILTERS = ['', 'HOLD', 'EXTENSION_REQUESTED', 'COMMITTED', 'EXPIRED'] as const
+/**
+ * The page's tabs, first to last; it opens on Reservations. A booking waiting
+ * on an extension request is still a reservation: it stays under Reservations,
+ * its card marked Extension Requested, not on a tab of its own. All is last.
+ */
+const FILTERS = ['HOLD', 'COMMITTED', 'EXPIRED', ''] as const
+const TAB_LABEL: Record<string, string> = { HOLD: 'Reservations', '': 'All' }
+/** Whether a booking in `status` shows under the tab `filter`. Pure. */
+const inTab = (filter: string, status: string) =>
+  !filter || status === filter || (filter === 'HOLD' && status === 'EXTENSION_REQUESTED')
 
 function fmtMoney(n: number): string {
   return '$' + Math.round(n).toLocaleString('en-US')
@@ -63,7 +75,11 @@ const EXP_DAY = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric
 const EXP_TIME = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: APP_TIME_ZONE, timeZoneName: 'short' })
 const EXP_FULL = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: APP_TIME_ZONE, timeZoneName: 'short' })
 
-function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; status: string }) {
+function ExpirationBadge({ expiresAt, status, cancelled }: { expiresAt: string | null; status: string; cancelled?: { reason: string | null } | null }) {
+  // Cancelled by Lime Media: say so, with the reason they were emailed.
+  if (status === 'EXPIRED' && cancelled) {
+    return <span className="text-xs text-red-700" title={cancelled.reason ?? undefined}>Cancelled{cancelled.reason ? `: ${cancelled.reason}` : ''}</span>
+  }
   // A confirmed booking is booked, not held: it has no expiry to show.
   if (!expiresAt || status === 'COMMITTED') return null
   const expDate = new Date(expiresAt)
@@ -158,7 +174,7 @@ export default function ClientHoldRequestsPage() {
   const [requests,     setRequests]     = useState<HoldRequest[]>([])
   const [loading,      setLoading]      = useState(true)
   const [error,        setError]        = useState('')
-  const [filterStatus, setFilterStatus] = useState<string>('')
+  const [filterStatus, setFilterStatus] = useState<string>('HOLD')
   // The booking (or single hold) whose extension form is open.
   const [extending,     setExtending]     = useState<string | null>(null)
   const [extendReason,  setExtendReason]  = useState('')
@@ -227,7 +243,7 @@ export default function ClientHoldRequestsPage() {
       if (r.booking) grouped.set(r.booking, [...(grouped.get(r.booking) ?? []), r])
       else ungrouped.push(r)
     }
-    const keep = (status: string) => !filterStatus || status === filterStatus
+    const keep = (status: string) => inTab(filterStatus, status)
     const groups = Array.from(grouped.entries()).filter(([, rows]) => keep(bookingStatus(rows).status))
     const singles = ungrouped.filter(r => keep(r.status))
     return {
@@ -355,7 +371,7 @@ export default function ClientHoldRequestsPage() {
                         : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
                     }`}
                   >
-                    {s ? statusLabel(s) : 'All'}
+                    {TAB_LABEL[s] ?? statusLabel(s)}
                   </button>
                 ))}
               </div>
@@ -369,10 +385,22 @@ export default function ClientHoldRequestsPage() {
             ) : loading ? (
               <TableSkeleton />
             ) : shown === 0 ? (
-              <div className="text-center py-20 text-gray-400">
-                <p className="font-medium">No hold requests found</p>
-                <p className="text-sm mt-1">Use the AI Assistant to check availability, get a quote, and place a hold</p>
-              </div>
+              // The page opens on Reservations: a client whose bookings are all
+              // committed or expired has them on another tab, not none at all.
+              requests.length > 0 && filterStatus ? (
+                <div className="text-center py-20 text-gray-400">
+                  <p className="font-medium">Nothing under {TAB_LABEL[filterStatus] ?? statusLabel(filterStatus)}</p>
+                  <p className="text-sm mt-1">
+                    Your other bookings are under{' '}
+                    <button onClick={() => setFilterStatus('')} className="text-green-700 underline hover:text-green-800">All</button>
+                  </p>
+                </div>
+              ) : (
+                <div className="text-center py-20 text-gray-400">
+                  <p className="font-medium">No hold requests found</p>
+                  <p className="text-sm mt-1">Use the AI Assistant to check availability, get a quote, and place a hold</p>
+                </div>
+              )
             ) : (
               <div className="space-y-4">
                 <div className="flex justify-end">
@@ -400,7 +428,7 @@ export default function ClientHoldRequestsPage() {
                         </div>
                         <div className="flex items-center gap-3">
                           <PricingBadge tier={summary.tier} total={summary.total} />
-                          <ExpirationBadge expiresAt={summarizeBooking(live.map(r => ({ ...r, sfdc_opportunity_id: null }))).earliestExpiry} status={status} />
+                          <ExpirationBadge expiresAt={summarizeBooking(live.map(r => ({ ...r, sfdc_opportunity_id: null }))).earliestExpiry} status={status} cancelled={cancelledOf(live)} />
                           <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.HOLD}`}>
                             {statusLabel(status)}
                           </span>
@@ -484,7 +512,7 @@ export default function ClientHoldRequestsPage() {
                                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[r.status] ?? STATUS_BADGE.HOLD}`}>
                                         {statusLabel(r.status)}
                                       </span>
-                                      <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
+                                      <ExpirationBadge expiresAt={r.expires_at} status={r.status} cancelled={cancelledOf([r])} />
                                     </div>
                                   </td>
                                   <td className="px-4 py-3">

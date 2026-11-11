@@ -192,6 +192,29 @@ export async function resolveRateOverridesBySfdcAccount(sfdcAccountId: string): 
 export type CampaignCoords = { lat: number; lng: number; source: 'coords_map' | 'standard_market' | 'us_place' | 'top_dma' }
 
 /**
+ * A market's place on the standard market list: its exact entry, or, when the
+ * market names no state ("Allentown"), the entry with that city name. Sorted so
+ * an ambiguous city resolves the same way every time rather than following Map
+ * insertion order.
+ *
+ * A market that names a state matches only in that state. The city-only match
+ * used to ignore the state, so "Dallas, PA" was placed at "Dallas, TX" (and
+ * "Canton, TX" in Ohio): wrong distances, transport and impressions tier. Such
+ * a town falls through to the US place list instead. Pure.
+ */
+export function standardMarketCoords<T>(market: string, standardMarkets: ReadonlyMap<string, T>): T | null {
+  const key = normalizeMarketKey(withStateComma(market))
+  const exact = standardMarkets.get(key)
+  if (exact) return exact
+  const [city, state] = key.split(',').map(p => p.trim())
+  if (!city || state) return null
+  const hits = [...standardMarkets.entries()]
+    .filter(([name]) => name.split(',')[0].trim() === city)
+    .sort(([a], [b]) => a.localeCompare(b))
+  return hits.length > 0 ? hits[0][1] : null
+}
+
+/**
  * Resolve a campaign market string to lat/lng coordinates.
  *
  * Tries in order:
@@ -211,22 +234,8 @@ export async function resolveCampaignCoords(market: string): Promise<CampaignCoo
 
   // Then the authoritative market list, which covers everything schedulable
   try {
-    const standardMarkets = await loadStandardMarketCoords()
-    const key = normalizeMarketKey(market)
-    const exact = standardMarkets.get(key)
-    if (exact) return { ...exact, source: 'standard_market' }
-
-    // City-only match, for "Allentown" against "Allentown, PA"
-    // City-only, e.g. "Allentown" against "Allentown, PA". Sorted so an
-    // ambiguous city resolves the same way every time rather than following
-    // Map insertion order.
-    const city = key.split(',')[0].trim()
-    if (city) {
-      const hits = [...standardMarkets.entries()]
-        .filter(([name]) => name.split(',')[0].trim() === city)
-        .sort(([a], [b]) => a.localeCompare(b))
-      if (hits.length > 0) return { ...hits[0][1], source: 'standard_market' }
-    }
+    const standard = standardMarketCoords(market, await loadStandardMarketCoords())
+    if (standard) return { ...standard, source: 'standard_market' }
   } catch (err) {
     console.error('[resolvers] standard market coord lookup failed:', err)
   }

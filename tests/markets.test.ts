@@ -10,7 +10,8 @@
  */
 import { defer, eq, section } from './harness'
 import { matchMarketKey, titleCaseMarket, normalizeMarketKey } from '@/lib/marketBounds'
-import { matchTopDma, resolveMarketSizeTierId } from '@/lib/pricing/resolvers'
+import { matchTopDma, resolveMarketSizeTierId, standardMarketCoords } from '@/lib/pricing/resolvers'
+import { placeCoords } from '@/lib/geo/places'
 import { TOP_DMAS } from '@/lib/pricing/topDmas'
 import { validateEmailList } from '@/lib/appSettings'
 import { marketSizeTierFromDmaCode, NON_DMA_MARKET_TIER, MARKET_SIZE_TIERS } from '@/lib/pricing/config'
@@ -61,6 +62,28 @@ section('key normalization')
 eq('leading space stripped', normalizeMarketKey(' Boston, MA'), 'boston, ma')
 eq('comma spacing normalized', normalizeMarketKey('Boston,MA'), 'boston, ma')
 eq('inner whitespace collapsed', normalizeMarketKey('  North   Palm Beach ,  FL '), 'north palm beach, fl')
+
+section('standard market coordinates: a stated state is never swapped')
+// A stand-in for the standard list's centroids: one Dallas, Canton, Greenville
+// and Allentown each, in the states the real list has them.
+const STANDARD = new Map([
+  ['dallas, tx', 'Dallas TX'],
+  ['canton, oh', 'Canton OH'],
+  ['greenville, sc', 'Greenville SC'],
+  ['allentown, pa', 'Allentown PA'],
+])
+eq('exact entry', standardMarketCoords('Dallas, TX', STANDARD), 'Dallas TX')
+eq('exact entry without the comma', standardMarketCoords('Dallas TX', STANDARD), 'Dallas TX')
+eq('a city alone takes its entry', standardMarketCoords('Allentown', STANDARD), 'Allentown PA')
+// These were located in the wrong state: wrong distances, transport and tier.
+eq('Dallas, PA is not Dallas, TX', standardMarketCoords('Dallas, PA', STANDARD), null)
+eq('Canton, TX is not Canton, OH', standardMarketCoords('Canton, TX', STANDARD), null)
+eq('Greenville, TX is not Greenville, SC', standardMarketCoords('Greenville, TX', STANDARD), null)
+eq('a stated state with no comma is still a state', standardMarketCoords('Dallas PA', STANDARD), null)
+// What they fall through to: the US place list, in the right state.
+eq('Dallas, PA is located in Pennsylvania', (placeCoords('Dallas, PA')?.lng ?? 0) > -80, true)
+eq('Canton, TX is located in Texas', (placeCoords('Canton, TX')?.lng ?? 0) < -94, true)
+eq('Greenville, TX is located in Texas', (placeCoords('Greenville, TX')?.lng ?? 0) < -95, true)
 
 section('top-50 DMA matching (market size tier)')
 eq('exact city + state', matchTopDma('Chicago, IL', TOP_DMAS)?.dma_code, 'DMA-602')

@@ -53,6 +53,9 @@ export async function GET(req: NextRequest) {
       expires_at:        r.expires_at?.toISOString() ?? null,
       extension_until:   r.extension_until ? holdExpDate(r.extension_until) : null,
       extension_reason:  r.extension_reason ?? null,
+      // Cancelled by staff (lib/cancelBooking.ts): the reason is the one the client is emailed.
+      cancelled_at:      r.cancelled_at?.toISOString() ?? null,
+      cancel_reason:     r.cancel_reason ?? null,
     })),
   })
 }

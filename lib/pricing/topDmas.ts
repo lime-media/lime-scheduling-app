@@ -4,7 +4,8 @@
  * Markets are LED's standard markets (dbo.standard_market_lookup); a market
  * takes the tier of the top-50 DMA it is named for or sits in
  * (lib/pricing/dmaArea.ts); the tier of each code is in lib/pricing/config.ts.
- * Copied from app_accepted_markets (all 50 rows active), which this replaces.
+ * Copied from the former app_accepted_markets table (all 50 rows active),
+ * which this replaced; the table was dropped (migration 20261109150000).
  *
  * `also` lists a polycentric DMA's other principal cities, where the ring
  * around its centre misses them (San Jose is 47 miles from San Francisco's

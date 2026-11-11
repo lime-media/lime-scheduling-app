@@ -8,7 +8,7 @@ import type { Hold } from '@prisma/client'
 import { eq, section } from './harness'
 import { appUrl, cardKey, expiringBookings } from '@/lib/holdExpiryWarnings'
 import { expiringHoldsHtml, expiringHoldsText } from '@/lib/emailTemplates'
-import { readExtendToken } from '@/lib/extendLink'
+import { readCancelToken, readExtendToken } from '@/lib/extendLink'
 
 const NOW = new Date('2026-10-28T15:00:00Z')
 const EXP = new Date('2026-10-29T04:59:00.000Z') // end of Oct 28, Central
@@ -42,6 +42,14 @@ const lone = hold({ id: 'w1', campaign_group_id: 'mm_w_1' })
 eq('the whole booking caps the buttons', expiringBookings([lone], NOW, 's', new Map([[cardKey(lone), [lone, hold({ id: 'w2', campaign_group_id: 'mm_w_2', start_date: new Date('2026-11-01T00:00:00Z'), expires_at: null })]]]))[0].extend.map(x => x.days), [1])
 eq('a won market: no buttons', expiringBookings([lone], NOW, 's', new Map([[cardKey(lone), [lone, hold({ id: 'w3', status: 'COMMITTED', sfdc_opportunity_id: '006000000000001AAA' })]]]))[0].extend, [])
 
+section('expiringBookings: the Cancel link')
+const c = new URL(multi[0].cancelUrl!)
+eq('a Cancel link to the confirm page', c.pathname, '/cancel')
+eq('signed for cancelling, for the rep and the warned expiry', readCancelToken(c.searchParams.get('t')!, 'secret', NOW.getTime()), { holdId: 'a', userId: 'u1', expiresAt: EXP.toISOString() })
+eq('a client extension request waiting: still cancellable', expiringBookings([hold({ status: 'EXTENSION_REQUESTED' })], NOW, 's')[0].cancelUrl !== null, true)
+eq('a won market: no Cancel link', expiringBookings([lone], NOW, 's', new Map([[cardKey(lone), [lone, hold({ id: 'w3', status: 'COMMITTED', sfdc_opportunity_id: '006000000000001AAA' })]]]))[0].cancelUrl, null)
+eq('no secret: no Cancel link', expiringBookings([hold({})], NOW, undefined)[0].cancelUrl, null)
+
 section('expiry email template')
 const fields = { name: 'Pat', bookings: multi, reservationsUrl: 'https://x/hold-requests' }
 const html = expiringHoldsHtml(fields)
@@ -49,6 +57,9 @@ eq('a button per offered day', (html.match(/>Extend \d day/g) ?? []).length, 4)
 eq('links are attribute-escaped', html.includes('&amp;d=1'), true)
 eq('names are escaped', expiringHoldsHtml({ ...fields, bookings: [{ ...multi[1], clientName: '<b>x</b>' }] }).includes('&lt;b&gt;x'), true)
 eq('the text version carries the links too', expiringHoldsText(fields).includes(multi[0].extend[0].url), true)
+eq('a Cancel button per card', (html.match(/>Cancel reservation</g) ?? []).length, 2)
+eq('none without a Cancel link', expiringHoldsHtml({ ...fields, bookings: [{ ...multi[1], cancelUrl: null }] }).includes('Cancel reservation'), false)
+eq('the text version carries the Cancel link', expiringHoldsText(fields).includes(`Cancel reservation: ${multi[0].cancelUrl}`), true)
 eq('one booking: says hours left', expiringHoldsText({ ...fields, bookings: [multi[1]] }).includes('expires in 14 hours'), true)
 
 section('appUrl')

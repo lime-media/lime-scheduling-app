@@ -124,6 +124,7 @@ async function executeRequestAssistance(
 
   try {
     await sendAssistanceRequestEmail({
+      clientUserId: session.id,
       companyName: session.companyName,
       market:      fields.market,
       state:       fields.state,

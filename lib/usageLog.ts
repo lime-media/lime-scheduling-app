@@ -86,7 +86,7 @@ export function summarizeResult(json: unknown, replyChars = 300): Record<string,
   if (!json || typeof json !== 'object') return {}
   const j = json as Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
   const out: Record<string, unknown> = {
-    // Classic: grandTotal. Multi-market (/api/plan/quote returns the quote itself): summary.grandTotal.
+    // Quote Builder: grandTotal. Multi-market (/api/plan/quote returns the quote itself): summary.grandTotal.
     // The client's multi-market quote (lib/clientMultiMarket.ts): what can be booked, else the order as asked.
     total: num(j.grandTotal) ?? num(j.summary?.grandTotal) ?? num(j.quote?.summary?.grandTotal) ?? num(j.pricing?.grandTotal) ?? num(j.quote?.grandTotal)
       ?? num(j.fits?.total) ?? num(j.asked?.total),

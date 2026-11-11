@@ -6,6 +6,7 @@
 import fs from 'fs'
 import { eq, section } from './harness'
 import { quoteRef } from '@/lib/quoteRef'
+import { bookingTerms } from '@/lib/staffChatTools'
 
 const base = { market: 'Dallas, TX', start_date: '2026-11-02', end_date: '2026-11-08', truck_count: 2, sfdc_account_id: '001000000000001AAA' }
 const ref = (q: Partial<typeof base> & Record<string, unknown>, total = 12345.67) => quoteRef({ ...base, ...q } as typeof base, total, {}, 'test-secret')
@@ -27,6 +28,10 @@ eq('terms left out = terms at their defaults (3 days, WARM)', withTerms({}), wit
 eq('another contact, another ref', withTerms({ primary_contact_id: '003A' }) === withTerms({ primary_contact_id: '003B' }), false)
 eq('another hold length, another ref', withTerms({ hold_days: 3 }) === withTerms({ hold_days: 7 }), false)
 eq('another brand, another ref', withTerms({ brand: 'Nike' }) === withTerms({}), false)
+const termsOf = (brand: unknown) => bookingTerms({ lead_source: 'Phone Call', brand }) as { brand?: string }
+eq('the ref takes the brand as it will be saved, as the summary names it', [termsOf('Molytical August LED').brand, termsOf('Molytical').brand], ['Molytical', 'Molytical'])
+eq('every no-brand answer is one', [termsOf('n/a').brand, termsOf('None').brand], ['none', 'none'])
+eq('a blank or missing brand stays unanswered, for the requirement to refuse', [termsOf('  ').brand, termsOf(undefined).brand], ['  ', undefined])
 eq('another account name, another ref', withTerms({ sfdc_account_name: 'Acme' }) === withTerms({ sfdc_account_name: 'Acme West' }), false)
 eq('another lead source, another ref', withTerms({ lead_source: 'Phone Call' }) === withTerms({ lead_source: 'Trade Show' }), false)
 eq('a lead source as Salesforce spells it or not: the same ref', withTerms({ lead_source: 'phone call' }), withTerms({ lead_source: 'Phone Call' }))
@@ -41,7 +46,7 @@ section('Staff chat: one engine')
   eq('current Opus', route.includes("model: 'claude-opus-5-5'"), true)
   eq('the shared hidden-truck list', route.includes("from '@/lib/hiddenTrucks'") && !/new Set\(\['0001'/.test(route), true)
   eq('quotes through the Quote page code', tools.includes('await staffQuote(q)'), true)
-  eq('bookings through the Quote page code, which requires a lead source', tools.includes('await placeStaffBooking(body, ctx.actor, { requireLeadSource: true })'), true)
+  eq('bookings through the Quote page code, which requires a lead source and a brand answer', tools.includes('await placeStaffBooking(body, ctx.actor, { requireLeadSource: true, requireBrand: true })'), true)
   eq('availability through the engine', tools.includes('await checkAvailability('), true)
   eq('a booking checks the ref against inputs and total, then that the rep saw it',
     tools.indexOf('quoteRef(q, i.expected_total, terms) !== i.quote_ref.trim()') > -1

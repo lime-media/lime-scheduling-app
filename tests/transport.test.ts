@@ -60,7 +60,7 @@ eq('outcome ABSORBED', inc.outcome, 'ABSORBED')
 eq('charge 0', inc.charge, 0)
 
 section('truck count NEVER blocks a quote (regression: PR #62/#64)')
-// #62 refused any order exceeding a market's base_concurrency. Every market is
+// #62 refused any order exceeding a market's base_concurrency. Every market was
 // seeded at 1, so that refused every multi-truck request everywhere. Concurrency
 // is no longer part of the model at all — only real unavailability blocks a sale.
 const multi = priceTransport({

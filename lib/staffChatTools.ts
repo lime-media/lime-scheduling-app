@@ -167,8 +167,8 @@ function quoteInput(i: Bag): StaffQuoteInput | string {
   }
 }
 
-/** The booking terms, type-checked; a string saying what's wrong otherwise. */
-function bookingTerms(i: Bag): BookingTerms | string {
+/** The booking terms, type-checked; a string saying what's wrong otherwise. Pure. */
+export function bookingTerms(i: Bag): BookingTerms | string {
   for (const k of ['sfdc_account_name', 'primary_contact_id', 'brand', 'stage'] as const) {
     if (i[k] !== undefined && typeof i[k] !== 'string') return `${k} is text`
   }
@@ -177,8 +177,11 @@ function bookingTerms(i: Bag): BookingTerms | string {
   if (i.hold_days !== undefined && (typeof i.hold_days !== 'number' || !Number.isInteger(i.hold_days) || i.hold_days < 1 || i.hold_days > MAX_HOLD_DAYS)) return `hold_days is a whole number of days from 1 to ${MAX_HOLD_DAYS}`
   return {
     sfdc_account_name: i.sfdc_account_name as string | undefined, primary_contact_id: i.primary_contact_id as string | undefined,
-    // In the ref as it will be saved: "None", "none" and "n/a" are one answer (no brand).
-    brand: isNoBrand(i.brand) ? 'none' : i.brand as string | undefined,
+    // In the ref as it will be saved (savedBrand), as the summary names it:
+    // "Molytical August LED" and "Molytical" are one brand, and "None", "n/a"
+    // or a name that cleans to nothing are one answer (no brand). Left out or
+    // blank stays as given, so the brand requirement still refuses it.
+    brand: isNoBrand(i.brand) ? 'none' : typeof i.brand === 'string' && i.brand.trim() ? savedBrand(i.brand) || 'none' : i.brand as string | undefined,
     hold_days: i.hold_days as number | undefined, stage: i.stage as string | undefined,
     lead_source: leadSource.leadSource ?? undefined,
   }

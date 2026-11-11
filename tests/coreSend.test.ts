@@ -110,6 +110,8 @@ section('sendBookingToCore: refusals and idempotency')
 function deps(over: Partial<SendDeps> & { bookings?: BookingRequest[]; rows?: Map<string, SentRow> } = {}) {
   const rows = over.rows ?? new Map<string, SentRow>()
   const posted: CorePayload[] = []
+  const saved: (string | null)[] = []
+  const audited: unknown[] = []
   const d: SendDeps = {
     env: ON,
     load: async () => ({ bookings: over.bookings ?? [two], sent: rows }),
@@ -120,13 +122,13 @@ function deps(over: Partial<SendDeps> & { bookings?: BookingRequest[]; rows?: Ma
       rows.set(key, row)
       return row
     },
-    saveSent: async (key, created) => { rows.set(key, { ...rows.get(key)!, core_uid: created.coreUid, request_id: created.requestId }) },
+    saveSent: async (key, created, fingerprint) => { saved.push(fingerprint); rows.set(key, { ...rows.get(key)!, core_uid: created.coreUid, request_id: created.requestId }) },
     saveError: async (key, message) => { rows.set(key, { ...rows.get(key)!, last_error: message }) },
     create: async b => { posted.push(b); return { coreUid: 'UID-9', requestId: 'REQ-2026-0009', status: 'SUBMITTED' } },
-    audit: async () => {},
+    audit: async (_b, details) => { audited.push(details) },
     ...over,
   }
-  return { d, rows, posted }
+  return { d, rows, posted, saved, audited }
 }
 
 defer((async () => {
@@ -157,6 +159,14 @@ defer((async () => {
   const taken = deps({ ensureRow: async () => null })
   const r5 = await sendBookingToCore(two.bookingKey, taken.d)
   eq("reference already another booking's: refused, nothing posted", [r5.status, taken.posted.length], [409, 0])
+
+  const unsaved = deps({ saveSent: async () => { throw new Error('db down') } })
+  const r6 = await sendBookingToCore(two.bookingKey, unsaved.d)
+  eq("Core created it but the save failed: still reported sent, with a note and the audit row",
+    [r6.status, r6.body.sent, r6.body.coreUid, /couldn't record it/.test(String(r6.body.note)), unsaved.audited.length], [200, true, 'UID-9', true, 1])
+
+  eq('first send stores the fingerprint', typeof ok.saved[0], 'string')
+  eq('a send after an earlier attempt leaves the fingerprint unknown', re.saved[0], null)
 
   const failing = deps({ create: async () => { throw new CoreError('LED refused it: no timezone', 400) } })
   const r4 = await sendBookingToCore(two.bookingKey, failing.d)

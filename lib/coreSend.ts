@@ -20,7 +20,8 @@ export type SendDeps = {
   load: () => Promise<{ bookings: BookingRequest[]; sent: Map<string, SentRow> }>
   /** Create the booking's row with its first reference, or keep the one there; null when another booking's row already has that reference. */
   ensureRow: (bookingKey: string, externalRef: string) => Promise<SentRow | null>
-  saveSent: (bookingKey: string, created: CoreCreated, fingerprint: string) => Promise<void>
+  /** `fingerprint`: what LED now holds, or null when it may hold an earlier version. */
+  saveSent: (bookingKey: string, created: CoreCreated, fingerprint: string | null) => Promise<void>
   saveError: (bookingKey: string, message: string) => Promise<void>
   create: (body: CorePayload) => Promise<CoreCreated>
   audit: (b: BookingRequest, details: Record<string, unknown>) => Promise<void>
@@ -62,10 +63,24 @@ export async function sendBookingToCore(bookingKey: string, deps: SendDeps): Pro
     return { status: 502, body: { error: message } }
   }
 
-  await deps.saveSent(bookingKey, created, requestFingerprint(booking.request))
-  await deps.audit(booking, { booking: bookingKey, external_ref: row.external_ref, core_uid: created.coreUid, request_id: created.requestId })
+  // A row from an earlier attempt means LED may already hold a request made
+  // from an earlier version of the booking (a reply lost after Core created
+  // it), and Core returns that one unchanged. Its fingerprint is then left
+  // unknown, so the update call (when Core has one) sends the booking as it is.
+  const fingerprint = before ? null : requestFingerprint(booking.request)
+  const result = { sent: true, already: false, coreUid: created.coreUid, requestId: created.requestId }
+  const audited = deps.audit(booking, { booking: bookingKey, external_ref: row.external_ref, core_uid: created.coreUid, request_id: created.requestId })
     .catch(e => console.error('[core-send] audit not recorded:', e instanceof Error ? e.message : e))
-  return { status: 200, body: { sent: true, already: false, coreUid: created.coreUid, requestId: created.requestId } }
+  try {
+    await deps.saveSent(bookingKey, created, fingerprint)
+  } catch (err) {
+    // LED has it; only the app's record failed. Say so rather than "not sent".
+    console.error('[core-send] sent, but not recorded:', err instanceof Error ? err.message : err)
+    await audited
+    return { status: 200, body: { ...result, note: `Sent to LED as ${created.requestId ?? created.coreUid}, but the app couldn't record it. Sending again is safe: LED returns the same request.` } }
+  }
+  await audited
+  return { status: 200, body: result }
 }
 
 const ROW_SELECT = { booking_key: true, external_ref: true, core_uid: true, request_id: true, last_sent_at: true, last_error: true } as const

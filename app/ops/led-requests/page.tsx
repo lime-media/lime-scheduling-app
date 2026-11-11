@@ -52,6 +52,8 @@ export default function LedRequestsPage() {
       })
       const body = await res.json().catch(() => null)
       if (!res.ok || !body?.sent) throw new Error(body?.error || 'Sending to LED failed.')
+      // Sent, but the app couldn't record it: the button stays, with why.
+      if (body.note) setSendErrors(prev => ({ ...prev, [key]: body.note }))
       await load()
     } catch (e) {
       setSendErrors(prev => ({ ...prev, [key]: e instanceof Error ? e.message : 'Sending to LED failed.' }))

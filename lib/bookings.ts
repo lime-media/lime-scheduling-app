@@ -314,7 +314,7 @@ export type RevisedRow = {
 }
 
 /** Not a real truck: what quote-only logs carry when no truck could be priced. */
-const NO_TRUCK = new Set([QUOTE_ONLY_NO_TRUCK, ''])
+export const NO_TRUCK = new Set([QUOTE_ONLY_NO_TRUCK, ''])
 
 const parseFeatures = (json: string | null): Record<string, unknown> => {
   try { return json ? JSON.parse(json) : {} } catch { return {} }

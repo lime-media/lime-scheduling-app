@@ -52,6 +52,9 @@ eq('partly lapsed: the expired market\'s truck isn\'t counted',
 eq('a hold past its expiry but not yet swept (not live) isn\'t counted', heldNow([hold({ live: false })]), { trucks: 0, markets: 0 })
 eq('an extension request still holds its truck', heldNow([hold({ status: 'EXTENSION_REQUESTED' })]), { trucks: 1, markets: 1 })
 eq('a quote-only placeholder holds nothing', heldNow([hold({ origination: 'quote_only', truck_number: 'UNASSIGNED' })]), { trucks: 0, markets: 0 })
+eq('a market ops committed (no opportunity) is released too, so it counts',
+  heldNow([hold(), hold({ id: 'h2', campaign_group_id: 'mm_abc_2', market: 'Troy, NY', truck_number: '0912', status: 'COMMITTED' })]), { trucks: 2, markets: 2 })
+eq('a quote-only booking holds nothing', heldNow([hold({ origination: 'quote_only', status: 'EXPIRED', live: false, truck_number: '0382' })]), { trucks: 0, markets: 0 })
 eq('a shared truck counts once', heldNow([hold(), hold({ id: 'h2', campaign_group_id: 'mm_abc_2', market: 'Troy, NY' })]), { trucks: 1, markets: 2 })
 
 section('revise: a market keeps its truck where it still fits')

@@ -73,7 +73,7 @@ export async function GET(req: NextRequest) {
       heldUntil: holds.filter(h => h.live && h.expires_at).map(h => h.expires_at!.toISOString()).sort().reverse()[0] ?? null,
       committedMarkets: [...new Set(holds.filter(h => h.live && h.status === 'COMMITTED').map(h => h.market.trim().toLowerCase()))],
       // What it holds now, which a quote-only revision releases (the planner's warning).
-      held: quoteOnly ? { trucks: 0, markets: 0 } : heldNow(holds),
+      held: heldNow(holds),
     },
   })
 }

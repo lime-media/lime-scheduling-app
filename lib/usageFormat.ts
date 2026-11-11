@@ -41,6 +41,19 @@ export const MCP_TOOL_LABELS: Record<string, string> = {
 export const toolLabel = (tool: string) =>
   (TOOL_LABELS as Record<string, string>)[tool] ?? MCP_TOOL_LABELS[tool.replace(/^mcp_/, '')] ?? tool
 
+/**
+ * One run's label. A quote-only submit goes through the same hold route as a
+ * real hold, but it reserves nothing: "Quote logged to Salesforce, no
+ * reservation (Quote Builder)", not "Hold placed". The result's quote_only
+ * (lib/usageLog.ts summarizeResult) says so; rows logged before it was
+ * recorded fall back to the request's own quote-only flag.
+ */
+export function runLabel(tool: string, result?: Bag | null, inputs?: Bag | null): string {
+  const label = toolLabel(tool)
+  const quoteOnly = result?.quote_only === true || inputs?.quote_only === true || inputs?.quoteOnly === true
+  return quoteOnly && tool.startsWith('hold_') ? label.replace(/^Hold placed/, 'Quote logged to Salesforce, no reservation') : label
+}
+
 type Bag = Record<string, unknown>
 const s = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
 const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)

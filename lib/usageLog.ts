@@ -106,6 +106,8 @@ export function summarizeResult(json: unknown, replyChars = 300): Record<string,
     // A chat that filed a request for assistance: what happened to it.
     action: str(j.actionResult?.message),
     insufficient: j.insufficient === true ? true : undefined,
+    // Logged a quote and reserved nothing: Usage labels it as a quote, not a hold (lib/usageFormat.ts runLabel).
+    quote_only: j.quoteOnly === true ? true : undefined,
     error: str(j.error) ?? str(j.message),
   }
   return Object.fromEntries(Object.entries(out).filter(([, v]) => v !== undefined))

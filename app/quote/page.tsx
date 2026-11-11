@@ -280,6 +280,7 @@ export default function InternalQuotePage() {
           sfdc_account_id: account.id,
           sfdc_account_name: account.name,
           primary_contact_id: contact.id,
+          primary_contact_name: contact.name,
           hold_days: holdDays,
           attach_opportunity_id: attachTo?.id,
           brand,

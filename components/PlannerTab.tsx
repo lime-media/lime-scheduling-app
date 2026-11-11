@@ -358,7 +358,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: keepsOpportunity ? undefined : leadSource, opportunityType: keepsOpportunity ? undefined : opportunityType, quoteOnly, brand, primaryContactId: contact.id, holdDays, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: keepsOpportunity ? undefined : leadSource, opportunityType: keepsOpportunity ? undefined : opportunityType, quoteOnly, brand, primaryContactId: contact.id, primaryContactName: contact.name, holdDays, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
       })
       const data = await readJson(res)
       // The opportunity went Closed Lost after the booking was opened: ask now.

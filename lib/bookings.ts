@@ -339,6 +339,20 @@ const parseFeatures = (json: string | null): Record<string, unknown> => {
  * changed in Salesforce, never here. Lift studies are a single-market
  * option the multi-market quote does not price, so revising would drop them.
  */
+/**
+ * What a booking holds right now: the distinct trucks and markets of its holds
+ * that still reserve a truck (live, HOLD or EXTENSION_REQUESTED). A lapsed or
+ * expired hold of a partly lapsed booking isn't counted. The planner's warning
+ * before a quote-only revision names what it releases. Pure.
+ */
+export function heldNow(holds: RevisableHold[]): { trucks: number; markets: number } {
+  const held = holds.filter(h => h.live && (h.status === 'HOLD' || h.status === 'EXTENSION_REQUESTED') && !NO_TRUCK.has(h.truck_number))
+  return {
+    trucks: new Set(held.map(h => h.truck_number)).size,
+    markets: new Set(held.map(h => h.market.trim().toLowerCase())).size,
+  }
+}
+
 export function reviseRefusal(holds: RevisableHold[]): string | null {
   if (holds.length === 0) return 'That booking no longer exists.'
   if (holds.some(h => h.source !== 'INTERNAL')) {

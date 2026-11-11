@@ -44,7 +44,7 @@ import { getToken } from 'next-auth/jwt'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
-import { bookingHoldExpiry, reviseHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
+import { bookingHoldExpiry, holdUntilRefusal, reviseHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
 import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner, readOnlyPreview, salesforceWritesOff, WRITES_OFF_MESSAGE, WRITES_STOPPED_ERROR } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { chosenClientType } from '@/lib/pricing/brandMarkup'
@@ -126,7 +126,10 @@ async function handlePost(req: NextRequest) {
   if (body.holdUntil !== undefined && (typeof body.holdUntil !== 'string' || !body.revise?.bookingKey)) {
     return NextResponse.json({ error: 'A hold expiry date is only set when revising a booking.' }, { status: 400 })
   }
-  if (body.holdUntil !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(body.holdUntil)) return NextResponse.json({ error: 'Choose a valid hold expiry date.' }, { status: 400 })
+  // A real date, today or later, before any Salesforce read or routing; the
+  // limit needs the routed starts, so reviseHoldExpiry checks it below.
+  const holdUntilBad = body.holdUntil !== undefined && body.quoteOnly !== true ? holdUntilRefusal(body.holdUntil) : null
+  if (holdUntilBad) return NextResponse.json({ error: holdUntilBad }, { status: 400 })
   // A full ISO timestamp: a bare date would parse as UTC midnight, the day before in Central.
   const holdUntilFrom = typeof body.holdUntilFrom === 'string' && body.holdUntilFrom.includes('T') && !isNaN(new Date(body.holdUntilFrom).getTime()) ? new Date(body.holdUntilFrom) : null
   // A new opportunity's lead source: the seller picks one off Salesforce's

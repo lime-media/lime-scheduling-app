@@ -12,7 +12,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { availableHoldDays, bookingHoldExpiry, lastExpiryDate, reviseHoldExpiry, computeHoldExpiresAt, DEFAULT_HOLD_DAYS, HOLD_EXPIRATION_HOURS, MIN_HOLD_WINDOW_HOURS, STAFF_MIN_DAYS_BEFORE_START, holdExpiry, parseHoldDays } from '@/lib/holdExpiry'
+import { availableHoldDays, bookingHoldExpiry, lastExpiryDate, holdUntilRefusal, reviseHoldExpiry, computeHoldExpiresAt, DEFAULT_HOLD_DAYS, HOLD_EXPIRATION_HOURS, MIN_HOLD_WINDOW_HOURS, STAFF_MIN_DAYS_BEFORE_START, holdExpiry, parseHoldDays } from '@/lib/holdExpiry'
 import { centralDate, endOfDayCentral, holdExpDate } from '@/lib/dateOnly'
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -172,4 +172,14 @@ section('reviseHoldExpiry: a revision keeps the expiry unless the rep changes it
   const extended = new Date('2026-10-28T17:30:00Z') // ops extended after the form opened on Oct 24
   eq('unchanged on the form, extended since: the current expiry is kept, not cut back',
     at(reviseHoldExpiry(['2026-11-10'], '2026-10-24', extended, now, STAFF_MIN_DAYS_BEFORE_START, '2026-10-24')), extended.toISOString())
+}
+
+section('holdUntilRefusal: the date checks the route runs before Salesforce and routing')
+{
+  const now = new Date('2026-10-20T12:00:00Z')
+  eq('today or later: fine', [holdUntilRefusal('2026-10-20', now), holdUntilRefusal('2026-11-30', now)], [null, null])
+  eq('in the past: refused', holdUntilRefusal('2026-10-19', now), "The hold expiry can't be in the past (today is 2026-10-20).")
+  eq('an impossible date: refused', holdUntilRefusal('2026-02-31', now), 'Choose a valid hold expiry date.')
+  eq('not a date: refused', holdUntilRefusal('soon', now), 'Choose a valid hold expiry date.')
+  eq('late evening Central is still that day', holdUntilRefusal('2026-10-20', new Date('2026-10-21T03:00:00Z')), null)
 }

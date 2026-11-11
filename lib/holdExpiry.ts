@@ -109,6 +109,22 @@ export function bookingHoldExpiry(
 }
 
 /**
+ * Why a revise expiry date (YYYY-MM-DD, Central) can't be used whatever the
+ * booking's dates are: not a real calendar date, or before today. Null when
+ * it may be. The limit, which needs the revised starts, is reviseHoldExpiry's.
+ * Pure (pass `now`).
+ */
+export function holdUntilRefusal(holdUntil: string, now: Date = new Date()): string | null {
+  // Round-tripped: Date rolls 2026-02-31 over to March 3.
+  const parsed = new Date(`${holdUntil}T00:00:00Z`)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(holdUntil) || isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== holdUntil) {
+    return 'Choose a valid hold expiry date.'
+  }
+  const today = centralDate(now)
+  return holdUntil < today ? `The hold expiry can't be in the past (today is ${today}).` : null
+}
+
+/**
  * A revision's one expiry, when the rep sees the booking's expiry date in the
  * revise form (`holdUntil`, YYYY-MM-DD Central, opened on `heldUntil`'s date).
  * Left as it opened, the revision keeps `heldUntil` exactly, capped (with the
@@ -127,13 +143,8 @@ export function reviseHoldExpiry(
   const lastDate = lastExpiryDate(startDate, now, minDaysBeforeStart)
   // Unchanged: the current expiry, capped by the start with the 24-hour floor, as for every new hold (holdExpiry).
   if (heldUntil && openedOn === holdUntil) return { ...clampHold(heldUntil, startDate, now, minDaysBeforeStart), startDate }
-  // Round-tripped: Date rolls 2026-02-31 over to March 3.
-  const parsed = new Date(`${holdUntil}T00:00:00Z`)
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(holdUntil) || isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== holdUntil) {
-    return { error: 'Choose a valid hold expiry date.', lastDate }
-  }
-  const today = centralDate(now)
-  if (holdUntil < today) return { error: `The hold expiry can't be in the past (today is ${today}).`, lastDate }
+  const refused = holdUntilRefusal(holdUntil, now)
+  if (refused) return { error: refused, lastDate }
   if (holdUntil > lastDate) {
     return { error: `The latest this booking can be held is ${lastDate}: ${minDaysBeforeStart} days before its first market starts.`, lastDate }
   }

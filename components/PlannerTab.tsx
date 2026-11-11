@@ -210,9 +210,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         setQuoteOnly(b.quoteOnly === true)
         if (typeof b.brandMarkupPct === 'number') { revisedMarkup.current = b.brandMarkupPct; setBrandMarkupPct(b.brandMarkupPct) }
         setAttachTo(null)
-        const heldRows = b.live && !b.quoteOnly ? (b.rows as { keepTrucks?: string[] }[]).filter(r => (r.keepTrucks ?? []).length > 0) : []
-        const heldTrucks = new Set(heldRows.flatMap(r => r.keepTrucks ?? [])).size
-        setRevision({ key: b.key, opportunityName: b.opportunityName, clientName: b.clientName, live: b.live, heldUntil: b.heldUntil ?? null, committedMarkets: Array.isArray(b.committedMarkets) ? b.committedMarkets : [], reopenOpportunity: reopenAgreed, heldTrucks, heldMarkets: heldRows.length })
+        // What it holds now (live holds only), for the quote-only release warning.
+        const held = { trucks: Number(b.held?.trucks) || 0, markets: Number(b.held?.markets) || 0 }
+        setRevision({ key: b.key, opportunityName: b.opportunityName, clientName: b.clientName, live: b.live, heldUntil: b.heldUntil ?? null, committedMarkets: Array.isArray(b.committedMarkets) ? b.committedMarkets : [], reopenOpportunity: reopenAgreed, heldTrucks: held.trucks, heldMarkets: held.markets })
         setHoldUntil(b.live && b.heldUntil ? centralDate(new Date(b.heldUntil)) : null)
       })
       .catch(e => { if (alive) setReviseError(e instanceof Error ? e.message : 'That booking could not be opened.') })

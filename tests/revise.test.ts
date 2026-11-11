@@ -5,7 +5,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { keptPrices, reviseRefusal, reviseRows, type RevisableHold } from '@/lib/bookings'
+import { heldNow, keptPrices, reviseRefusal, reviseRows, type RevisableHold } from '@/lib/bookings'
 import { askedDates, withAskedDates } from '@/lib/quoteFeatures'
 import { keepBookedPrices } from '@/lib/planning/quote'
 import { mergedOpportunityFields, type LinkedHold } from '@/lib/opportunityMerge'
@@ -44,6 +44,15 @@ eq('expired: nothing kept, re-picked and re-priced', [expired.live, expired.rows
 eq('quote-only logs are recognized', reviseRows([hold({ origination: 'quote_only', status: 'EXPIRED', live: false, truck_number: 'UNASSIGNED' })]).quoteOnly, true)
 eq('quote-only placeholder truck is never "kept"',
   reviseRows([hold({ origination: 'quote_only', truck_number: 'UNASSIGNED' })]).rows[0].keepTrucks, [])
+
+section('revise: what a quote-only revision releases (heldNow)')
+eq('a live booking: its distinct trucks and markets', heldNow(booking), { trucks: 3, markets: 2 })
+eq('partly lapsed: the expired market\'s truck isn\'t counted',
+  heldNow(booking.map(h => (h.market === 'Buffalo, NY' ? { ...h, live: false, status: 'EXPIRED' } : h))), { trucks: 2, markets: 1 })
+eq('a hold past its expiry but not yet swept (not live) isn\'t counted', heldNow([hold({ live: false })]), { trucks: 0, markets: 0 })
+eq('an extension request still holds its truck', heldNow([hold({ status: 'EXTENSION_REQUESTED' })]), { trucks: 1, markets: 1 })
+eq('a quote-only placeholder holds nothing', heldNow([hold({ origination: 'quote_only', truck_number: 'UNASSIGNED' })]), { trucks: 0, markets: 0 })
+eq('a shared truck counts once', heldNow([hold(), hold({ id: 'h2', campaign_group_id: 'mm_abc_2', market: 'Troy, NY' })]), { trucks: 1, markets: 2 })
 
 section('revise: a market keeps its truck where it still fits')
 const S = { ...DEFAULT_ENGINE, today: '2026-10-16' }

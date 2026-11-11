@@ -207,19 +207,24 @@ export function standardMarketCoords<T>(market: string, standardMarkets: Readonl
   const key = normalizeMarketKey(withStateComma(market))
   const exact = standardMarkets.get(key)
   if (exact) return exact
-  const [city, rest] = key.split(',').map(p => p.trim())
+  // Market text and list entries are read the same way. Dots dropped, so
+  // "St. Louis" is "St Louis" and "Washington, D.C." is in DC. The state is
+  // the first word after the comma (a ZIP or ", USA" may follow it); a ZIP
+  // alone ("Allentown, 18101") names no state.
+  const parse = (name: string) => {
+    const [c, rest] = name.replace(/\./g, '').split(',').map(p => p.trim())
+    const s = rest?.split(' ')[0]
+    return { city: c, state: s && !/^\d/.test(s) ? s : undefined }
+  }
+  const { city, state } = parse(key)
   if (!city) return null
-  // The state is the first word after the comma: a ZIP or ", USA" may follow
-  // it. Dots dropped, so "Washington, D.C." is in DC.
-  const state = rest?.split(' ')[0].replace(/\./g, '')
   const hits = [...standardMarkets.entries()]
-    .filter(([name]) => {
-      const [nameCity, nameState] = name.split(',').map(p => p.trim())
-      // An entry naming no state ("Long Island") is not in another state.
-      return nameCity === city && (!state || !nameState || nameState === state)
-    })
-    .sort(([a], [b]) => a.localeCompare(b))
-  return hits.length > 0 ? hits[0][1] : null
+    .map(([name, value]) => ({ name, value, ...parse(name) }))
+    // An entry naming no state ("Long Island") is not in another state.
+    .filter(h => h.city === city && (!state || !h.state || h.state === state))
+    // An entry in the stated state beats one naming no state.
+    .sort((a, b) => Number(b.state === state) - Number(a.state === state) || a.name.localeCompare(b.name))
+  return hits.length > 0 ? hits[0].value : null
 }
 
 /**

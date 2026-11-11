@@ -207,30 +207,36 @@ export type CampaignCoords = { lat: number; lng: number; source: 'coords_map' | 
 export function standardMarketCoords<T>(market: string, standardMarkets: ReadonlyMap<string, T>): T | null {
   // Exact entry, as typed or with its state comma'd ("Dallas TX"). The list
   // keys plain names, so an entry like "Northern NJ" is found as typed.
-  const raw = normalizeMarketKey(market)
-  const exact = standardMarkets.get(raw) ?? standardMarkets.get(normalizeMarketKey(withStateComma(market)))
+  const key = normalizeMarketKey(withStateComma(market))
+  const exact = standardMarkets.get(normalizeMarketKey(market)) ?? standardMarkets.get(key)
   if (exact) return exact
-  // Market text and list entries are read the same way. Dots dropped, so
-  // "St. Louis" is "St Louis" and "Washington, D.C." is in DC. The state is
-  // the text after the comma as a code or a full name ("Texas", "New York"),
-  // a ZIP or ", USA" may follow it, and a ZIP alone ("Allentown, 18101")
-  // names no state.
-  const parse = (name: string) => {
-    const [c, rest = ''] = name.replace(/\./g, '').split(',').map(p => p.trim())
-    const head = rest.replace(/\s*\d[\d-]*$/, '').trim()
-    const first = rest.split(' ')[0]
-    const s = stateCode(head) || stateCode(first) || (first && !/^\d/.test(first) ? first : '')
-    return { city: c, state: s ? s.toLowerCase() : undefined }
-  }
-  const { city, state } = parse(normalizeMarketKey(withStateComma(market)))
+  const { city, state } = marketCityState(key)
   if (!city) return null
   // A stated state matches only entries in that state, never one naming none.
   // No state ("Allentown"): any entry with the city's name.
   const hit = [...standardMarkets.entries()]
-    .map(([name, value]) => ({ name, value, ...parse(name) }))
+    .map(([name, value]) => ({ name, value, ...marketCityState(name) }))
     .filter(h => h.city === city && (!state || h.state === state))
     .sort((a, b) => a.name.localeCompare(b.name))[0]
   return hit ? hit.value : null
+}
+
+/**
+ * A normalized market name's city and state, read the same way for market
+ * text and list entries. Dots dropped, so "St. Louis" is "St Louis" and
+ * "Washington, D.C." is in DC. The state is the text after the comma as a code
+ * or a full name ("Texas", "New York"); a ZIP or ", USA" may follow it, and a
+ * ZIP or a country alone ("Allentown, 18101", "Dallas, USA") names no state.
+ * Other text there ("Dallas, Tex") is kept as the state, so it never takes
+ * another state's entry. Pure.
+ */
+export function marketCityState(name: string): { city: string; state: string | undefined } {
+  const [city, rest = ''] = name.replace(/\./g, '').split(',').map(p => p.trim())
+  const head = rest.replace(/\s*\d[\d-]*$/, '').trim()
+  const first = rest.split(' ')[0]
+  const isCountry = /^(usa?|united states( of america)?|america)$/i.test(head)
+  const s = stateCode(head) || stateCode(first) || (first && !/^\d/.test(first) && !isCountry ? first : '')
+  return { city, state: s ? s.toLowerCase() : undefined }
 }
 
 /**
@@ -260,7 +266,11 @@ export async function resolveCampaignCoords(market: string): Promise<CampaignCoo
   }
 
   // Any US city, town or ZIP the lists do not know (lib/geo/places.ts).
-  const place = placeCoords(market)
+  // A state written in full or followed by a ZIP ("Canton, Texas",
+  // "Dallas, PA 18612") is looked up by its city and state code.
+  const named = marketCityState(normalizeMarketKey(withStateComma(market)))
+  const place = placeCoords(market) ??
+    (named.city && named.state && stateCode(named.state) ? placeCoords(named.city, named.state) : null)
   if (place) return { lat: place.lat, lng: place.lng, source: 'us_place' }
 
   // Last, a top-50 DMA's own name ("Dallas-Fort Worth, TX"), matched strictly:

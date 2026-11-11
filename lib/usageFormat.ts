@@ -43,10 +43,11 @@ export const toolLabel = (tool: string) =>
 
 /**
  * One run's label. A quote-only submit goes through the same hold route as a
- * real hold, but it reserves nothing: "Quote logged to Salesforce, no
- * reservation (Quote Builder)", not "Hold placed". The result's quote_only
- * (lib/usageLog.ts summarizeResult) says so; rows logged before it was
- * recorded fall back to the request's own quote-only flag.
+ * real hold, but it reserves nothing: "Quote only, no reservation (Quote
+ * Builder)", not "Hold placed". It doesn't claim the Salesforce log worked:
+ * the row's outcome says whether the run succeeded. The result's quote_only
+ * (lib/usageLog.ts summarizeResult) marks it; rows logged before that fall
+ * back to the request's own quote-only flag, or the backfill's note.
  */
 export function runLabel(tool: string, result?: Bag | null, inputs?: Bag | null): string {
   return isQuoteOnlyRun(tool, result, inputs) ? QUOTE_ONLY_RUNS[tool].label : toolLabel(tool)
@@ -59,13 +60,16 @@ export function runLabel(tool: string, result?: Bag | null, inputs?: Bag | null)
  */
 export function isQuoteOnlyRun(tool: string, result?: Bag | null, inputs?: Bag | null): boolean {
   const run = Object.hasOwn(QUOTE_ONLY_RUNS, tool) ? QUOTE_ONLY_RUNS[tool] : undefined
-  return !!run && (result?.quote_only === true || inputs?.[run.flag] === true)
+  return !!run && (result?.quote_only === true || inputs?.[run.flag] === true || result?.note === BACKFILL_QUOTE_ONLY_NOTE)
 }
+
+/** How the usage-log backfill (prisma/migrations/20261005200000_usage_record_conversations_last_activity) marked a quote-only booking. */
+export const BACKFILL_QUOTE_ONLY_NOTE = 'quote only, nothing reserved'
 
 /** The hold routes that can log a quote only: the request flag each reads, and how such a run reads. */
 const QUOTE_ONLY_RUNS: Record<string, { flag: string; label: string }> = {
-  hold_classic: { flag: 'quote_only', label: 'Quote logged to Salesforce, no reservation (Quote Builder)' },
-  hold_multi: { flag: 'quoteOnly', label: 'Quote logged to Salesforce, no reservation (Multi-market)' },
+  hold_classic: { flag: 'quote_only', label: 'Quote only, no reservation (Quote Builder)' },
+  hold_multi: { flag: 'quoteOnly', label: 'Quote only, no reservation (Multi-market)' },
 }
 
 type Bag = Record<string, unknown>

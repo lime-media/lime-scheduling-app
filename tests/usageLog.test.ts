@@ -70,14 +70,20 @@ eq('total, markets and trucks from summary (production shape)',
 
 section('usage log: a quote-only submit is a quote, not a hold')
 eq('the hold routes record quote only', [summarizeResult({ ok: true, created: 0, quoteOnly: true }).quote_only, summarizeResult({ ok: true, created: 2, quoteOnly: false }).quote_only], [true, undefined])
-eq('Quote Builder quote only', runLabel('hold_classic', { quote_only: true }), 'Quote logged to Salesforce, no reservation (Quote Builder)')
-eq('Multi-market quote only', runLabel('hold_multi', { quote_only: true }), 'Quote logged to Salesforce, no reservation (Multi-market)')
+eq('Quote Builder quote only', runLabel('hold_classic', { quote_only: true }), 'Quote only, no reservation (Quote Builder)')
+eq('Multi-market quote only', runLabel('hold_multi', { quote_only: true }), 'Quote only, no reservation (Multi-market)')
 eq('a real hold keeps its label', runLabel('hold_classic', { holds: 2 }, { quote_only: false }), 'Hold placed (Quote Builder)')
 eq('older rows: read from the request (quote_only on the Quote Builder, quoteOnly on the planner)',
   [runLabel('hold_classic', { total: 3800 }, { quote_only: true }), runLabel('hold_multi', null, { quoteOnly: true })],
-  ['Quote logged to Salesforce, no reservation (Quote Builder)', 'Quote logged to Salesforce, no reservation (Multi-market)'])
+  ['Quote only, no reservation (Quote Builder)', 'Quote only, no reservation (Multi-market)'])
 eq('only hold tools are relabelled', runLabel('quote_classic', null, { quote_only: true }), 'Quote (Quote Builder)')
 eq('a quote-only log counts no holds', summarizeResult({ ok: true, created: 1, quoteOnly: true }).holds, undefined)
 eq('a flag the route ignores does not relabel', [runLabel('hold_client', { holds: 1 }, { quote_only: true }), runLabel('hold_classic', { holds: 1 }, { quoteOnly: true })],
   ['Hold placed (client portal)', 'Hold placed (Quote Builder)'])
 eq('older quote-only rows are recognised from the request', [isQuoteOnlyRun('hold_classic', { holds: 1 }, { quote_only: true }), isQuoteOnlyRun('hold_client', { holds: 1 }, { quote_only: true })], [true, false])
+eq('backfilled quote-only bookings are recognised by the backfill note',
+  [runLabel('hold_classic', { total: 3800, holds: 1, note: 'quote only, nothing reserved' }), runLabel('hold_multi', { holds: 3, note: 'quote only, nothing reserved' }, { backfilled_from: 'holds' })],
+  ['Quote only, no reservation (Quote Builder)', 'Quote only, no reservation (Multi-market)'])
+eq('a backfilled real hold keeps its label', runLabel('hold_classic', { total: 3800, holds: 2 }, { backfilled_from: 'holds' }), 'Hold placed (Quote Builder)')
+eq('the label doesn\'t claim Salesforce worked: a failed quote-only submit reads the same, its outcome shows the error',
+  runLabel('hold_classic', { error: 'Salesforce is unavailable' }, { quote_only: true }), 'Quote only, no reservation (Quote Builder)')

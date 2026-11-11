@@ -3,6 +3,8 @@
  *
  * Run with: npm test
  */
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import { eq, section } from './harness'
 import { buildRequest, buildRequests, marketDays, requestFingerprint, type RequestHold } from '@/lib/campaignRequests'
 
@@ -129,3 +131,16 @@ const mixedDays = buildRequest([hold({ campaign_group_id: null }), hold({ campai
 eq('5 and 7 days in one market: every day sent, flagged', [on(mixedDays.request.markets[0].days), kinds(mixedDays)], ['sun mon tue wed thu fri sat', ['days_not_confirmed']])
 eq('a market with no real truck blocks', kinds(buildRequest([hold({ truck_number: '' })], linked)), ['no_trucks!'])
 eq('holdsEnd counts travel days past the asked-for end', buildRequest([hold({ end_date: '2026-12-22', features: JSON.stringify({ daysPerWeek: 5, operatingHours: 10, requestedStart: '2026-12-07', requestedEnd: '2026-12-20' }) })], linked)!.holdsEnd, '2026-12-22')
+
+section('a revised booking keeps its request')
+// A revise replaces the holds under a new key (mm_<requestId>); Core must be
+// sent the ref it was first sent, or it opens a second request.
+const sentAs = (key: string) => (key === 'mm_r2' ? 'cg_1' : null)
+const revised = buildRequest([hold({ campaign_group_id: 'mm_r2_1' })], linked, sentAs)!
+eq('the booking\'s key is the new one', revised.bookingKey, 'mm_r2')
+eq('Core is sent the ref it was first sent', revised.request.externalRef, 'cg_1')
+eq('never sent: its key is the ref', buildRequest([hold({ campaign_group_id: 'mm_r3_1' })], linked, sentAs)!.request.externalRef, 'mm_r3')
+const holdRoute = readFileSync(join(process.cwd(), 'app/api/plan/hold/route.ts'), 'utf8')
+const writeAll = holdRoute.slice(holdRoute.indexOf('const writeAll = async'), holdRoute.indexOf('const writeAll = async') + 2000)
+eq('the revise renames its request row in the same transaction as the holds',
+  /tx\.campaignRequestSync\.updateMany\(\{ where: \{ booking_key: reviseKey \}, data: \{ booking_key: groupPrefix\.replace/.test(writeAll), true)

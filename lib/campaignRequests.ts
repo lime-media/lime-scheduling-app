@@ -63,7 +63,11 @@ export type RequestMarket = {
 }
 
 export type CampaignRequest = {
-  /** Our booking key: a repeated create with it returns the existing request. */
+  /**
+   * The key the booking was first sent under (app_campaign_requests.external_ref),
+   * else its key now: a revision gives the booking a new key but keeps this,
+   * so Core keeps one request, and a repeated create returns it.
+   */
   externalRef: string
   campaignName: string
   clientUid: string | null
@@ -82,11 +86,11 @@ export type IssueKind =
 export type Issue = { kind: IssueKind; blocking: boolean; message: string; markets?: string[]; trucks?: string[] }
 
 /**
- * `won`: any hold is Closed Won. `marketNames`: each market as the holds name
+ * `bookingKey`: the booking's key now. `won`: any hold is Closed Won. `marketNames`: each market as the holds name
  * it, in `request.markets` order. `holdsEnd`: the last day any live hold
  * reserves a truck (travel included), which can be after `request.endDate`.
  */
-export type BookingRequest = { request: CampaignRequest; issues: Issue[]; won: boolean; marketNames: string[]; holdsEnd: string }
+export type BookingRequest = { bookingKey: string; request: CampaignRequest; issues: Issue[]; won: boolean; marketNames: string[]; holdsEnd: string }
 
 /** A Salesforce hold that names several markets in one label ("Multi-market: Austin, Dallas"). */
 export const isMarketLabel = (market: string) => /^\s*multi-market\s*:/i.test(market)
@@ -149,9 +153,11 @@ const placeName = (h: RequestHold) =>
 /**
  * One booking's live holds as a campaign request, with what stands in the way
  * of converting it. `clientUidOf` gives the LED client linked to a Salesforce
- * account (app_led_client_links). Null when the booking has no live hold.
+ * account (app_led_client_links); `externalRefOf` the ref a booking was first
+ * sent to Core under (app_campaign_requests), null for one never sent. Null
+ * when the booking has no live hold.
  */
-export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: string) => string | null): BookingRequest | null {
+export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: string) => string | null, externalRefOf: (bookingKey: string) => string | null = () => null): BookingRequest | null {
   const live = holds.filter(h => LIVE.has(h.status))
   if (live.length === 0) return null
   const first = [...live].sort((a, b) => a.start_date.localeCompare(b.start_date) || a.id.localeCompare(b.id))[0]
@@ -248,9 +254,11 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
   for (const h of live) if (!lineTotals.has(h.campaign_group_id ?? '')) lineTotals.set(h.campaign_group_id ?? '', h.quoted_total)
   const totals = [...lineTotals.values()]
 
+  const key = bookingKey(first) ?? first.id
   return {
+    bookingKey: key,
     request: {
-      externalRef: bookingKey(first) ?? first.id,
+      externalRef: externalRefOf(key) ?? key,
       campaignName: first.client_name.trim(),
       clientUid,
       startDate: markets.map(m => m.startDate).sort()[0],
@@ -267,7 +275,7 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
 }
 
 /** Live holds grouped into bookings, each as a request. */
-export function buildRequests(holds: RequestHold[], clientUidOf: (accountId: string) => string | null): BookingRequest[] {
+export function buildRequests(holds: RequestHold[], clientUidOf: (accountId: string) => string | null, externalRefOf?: (bookingKey: string) => string | null): BookingRequest[] {
   const bookings = new Map<string, RequestHold[]>()
   for (const h of holds) {
     const key = bookingKey(h) ?? h.id
@@ -275,7 +283,7 @@ export function buildRequests(holds: RequestHold[], clientUidOf: (accountId: str
     if (rows) rows.push(h)
     else bookings.set(key, [h])
   }
-  return [...bookings.values()].map(rows => buildRequest(rows, clientUidOf)).filter((r): r is BookingRequest => r !== null)
+  return [...bookings.values()].map(rows => buildRequest(rows, clientUidOf, externalRefOf)).filter((r): r is BookingRequest => r !== null)
 }
 
 /**

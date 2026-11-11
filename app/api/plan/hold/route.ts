@@ -427,6 +427,9 @@ async function handlePost(req: NextRequest) {
         },
       })
       if (reviseIds.length) await tx.hold.deleteMany({ where: { id: { in: reviseIds } } })
+      // Its CampaignIQ request follows it to the new key, keeping the ref Core
+      // was first sent (lib/campaignRequests.ts), so Core keeps one request.
+      if (reviseKey) await tx.campaignRequestSync.updateMany({ where: { booking_key: reviseKey }, data: { booking_key: groupPrefix.replace(/_$/, '') } })
       for (let i = 0; i < rows.length; i += CHUNK) await tx.hold.createMany({ data: rows.slice(i, i + CHUNK) })
     }
     try {

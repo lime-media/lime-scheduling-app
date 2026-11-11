@@ -47,7 +47,7 @@ export async function GET() {
     const bookings = all
       .filter(b => b.issues.length > 0)
       .map(b => ({
-        key: b.request.externalRef,
+        key: b.bookingKey,
         client: b.request.campaignName,
         won: b.won,
         start: b.request.startDate,

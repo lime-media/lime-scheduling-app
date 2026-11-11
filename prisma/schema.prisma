@@ -394,9 +394,11 @@ model LedClientLink {
 }
 
 /// A booking's CampaignIQ campaign request (lib/campaignRequests.ts). One row
-/// per booking; booking_key is also the external_ref sent to Core.
+/// per booking: booking_key is its key now (a revise renames the row);
+/// external_ref is the key first sent to Core and never changes.
 model CampaignRequestSync {
   booking_key    String    @id @db.NVarChar(191)
+  external_ref   String    @unique(map: "UX_app_campaign_requests_external_ref") @db.NVarChar(100)
   core_uid       String?   @unique(map: "UX_app_campaign_requests_core_uid") @db.UniqueIdentifier
   request_id     String?   @db.NVarChar(20)
   core_status    String?   @db.NVarChar(20)

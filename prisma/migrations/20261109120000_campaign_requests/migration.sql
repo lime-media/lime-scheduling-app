@@ -3,15 +3,21 @@
 -- it on Closed Won and declines it on a lapse or Closed Lost
 -- (lib/campaignRequests.ts builds what is sent).
 --
--- One row per booking (booking_key = lib/bookings.ts bookingKey, also sent
--- to Core as external_ref). Core's uid is stored once Core returns it; after
--- that the app only ever addresses the request by it. last_sent_hash is the
+-- One row per booking. booking_key is the booking's key now (lib/bookings.ts
+-- bookingKey); a revision replaces the holds under a new key, and the revise
+-- renames the row in the same transaction. external_ref is what Core was
+-- first sent, the key the booking had then, and never changes, so Core keeps
+-- one request across any number of revisions and a repeated create still
+-- returns it. Core's uid is stored once Core returns it; after that the app
+-- only ever addresses the request by it. last_sent_hash is the
 -- fingerprint of what was last sent, so an unchanged booking isn't resent.
 -- last_error is Core's refusal reason, verbatim, shown on the reservation.
 --
--- Nothing writes this table yet; the Core client fills it once the endpoints
--- are on Core UAT. Run before or after deploying: no existing model gains a
--- column. Safe to re-run: guarded on the table. A new table only.
+-- Nothing fills this table yet; the Core client does once the endpoints are
+-- on Core UAT. Run BEFORE deploying: a revise renames its booking's row here.
+-- Safe to re-run: guarded on the table, the column and each index. A new
+-- table only (a copy made by an earlier version of this script, still empty,
+-- gains external_ref).
 -- No GO separators: works in sqlcmd, SSMS, Azure Data Studio or the portal.
 
 -- The filtered unique index below needs these on; classic sqlcmd turns
@@ -22,6 +28,7 @@ SET QUOTED_IDENTIFIER ON;
 IF OBJECT_ID('dbo.app_campaign_requests', 'U') IS NULL
     CREATE TABLE [dbo].[app_campaign_requests] (
         [booking_key]      NVARCHAR(191)    NOT NULL CONSTRAINT [PK_app_campaign_requests] PRIMARY KEY,
+        [external_ref]     NVARCHAR(100)    NOT NULL,
         [core_uid]         UNIQUEIDENTIFIER NULL,
         [request_id]       NVARCHAR(20)     NULL,
         [core_status]      NVARCHAR(20)     NULL,
@@ -34,10 +41,19 @@ IF OBJECT_ID('dbo.app_campaign_requests', 'U') IS NULL
         [updated_at]       DATETIME2        NOT NULL CONSTRAINT [DF_app_campaign_requests_updated_at] DEFAULT SYSUTCDATETIME()
     );
 
+IF COL_LENGTH('dbo.app_campaign_requests', 'external_ref') IS NULL
+    ALTER TABLE [dbo].[app_campaign_requests] ADD [external_ref] NVARCHAR(100) NOT NULL;
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_app_campaign_requests_external_ref' AND object_id = OBJECT_ID('dbo.app_campaign_requests'))
+    -- In EXEC: a column added above can't be named elsewhere in the same batch.
+    EXEC('CREATE UNIQUE INDEX [UX_app_campaign_requests_external_ref] ON [dbo].[app_campaign_requests] ([external_ref])');
+
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_app_campaign_requests_core_uid' AND object_id = OBJECT_ID('dbo.app_campaign_requests'))
     CREATE UNIQUE INDEX [UX_app_campaign_requests_core_uid] ON [dbo].[app_campaign_requests] ([core_uid]) WHERE [core_uid] IS NOT NULL;
 
--- Verify. Expected: request_table 1, core_uid_index 1.
+-- Verify. Expected: request_table 1, external_ref 1, external_ref_index 1, core_uid_index 1.
 SELECT
     CASE WHEN OBJECT_ID('dbo.app_campaign_requests', 'U') IS NULL THEN 0 ELSE 1 END AS request_table,
+    CASE WHEN COL_LENGTH('dbo.app_campaign_requests', 'external_ref') IS NULL THEN 0 ELSE 1 END AS external_ref,
+    (SELECT COUNT(*) FROM sys.indexes WHERE name = 'UX_app_campaign_requests_external_ref' AND object_id = OBJECT_ID('dbo.app_campaign_requests')) AS external_ref_index,
     (SELECT COUNT(*) FROM sys.indexes WHERE name = 'UX_app_campaign_requests_core_uid' AND object_id = OBJECT_ID('dbo.app_campaign_requests')) AS core_uid_index;

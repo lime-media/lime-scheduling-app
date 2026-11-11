@@ -326,7 +326,9 @@ export default function InternalQuotePage() {
     <div className="flex flex-col min-h-dvh bg-gray-50">
       <Navbar />
 
-      <div className="flex-1 max-w-4xl mx-auto w-full px-4 py-6 sm:px-6">
+      {/* The Multi-market Plan lists several markets side by side, so it gets the
+          wider page; the Quote Builder keeps its narrow form. */}
+      <div className={`flex-1 ${activeTab === 'planner' ? 'max-w-6xl' : 'max-w-4xl'} mx-auto w-full px-4 py-6 sm:px-6`}>
         <h1 className="text-2xl font-bold text-gray-900 mb-1">LED Quote</h1>
 
         {/* Tabs */}

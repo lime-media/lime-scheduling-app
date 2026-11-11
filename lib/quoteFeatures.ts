@@ -70,11 +70,18 @@ export type QuoteFeatures = {
 export const ASKED_DATES_MOVED_KEY = 'askedDatesMoved'
 
 /**
+ * The key in a hold's features JSON recording who the booking is for: its
+ * Salesforce account, primary contact and brand (lib/bookingParty.ts).
+ */
+export const PARTY_KEY = 'party'
+
+/**
  * Keys in `features` that are internal, never sent to a client: Brand Direct
  * pricing (markup, client type), the deadhead cost a booking adds to the next
- * job, and the app's Salesforce bookkeeping.
+ * job, the app's Salesforce bookkeeping, and the Salesforce account and
+ * contact the booking was made for.
  */
-const INTERNAL_KEYS = ['brandMarkupPct', 'clientType', 'successorImpact', APP_HOLD_EXP_KEY, ASKED_DATES_MOVED_KEY] as const
+const INTERNAL_KEYS = ['brandMarkupPct', 'clientType', 'successorImpact', APP_HOLD_EXP_KEY, ASKED_DATES_MOVED_KEY, PARTY_KEY] as const
 
 /**
  * A hold's `features` as a client may see them: the internal keys removed

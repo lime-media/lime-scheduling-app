@@ -10,7 +10,9 @@
  * since), then what was booked.
  */
 
-export const PARTY_KEY = 'party'
+import { PARTY_KEY } from '@/lib/quoteFeatures'
+
+export { PARTY_KEY }
 
 export type PartyContact = { id: string; name: string; email?: string | null; title?: string | null }
 

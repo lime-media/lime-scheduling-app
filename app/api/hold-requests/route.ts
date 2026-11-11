@@ -9,7 +9,7 @@ import { ledClientNames } from '@/lib/ledClients'
 import { stillListed } from '@/lib/bookings'
 import { centralDate } from '@/lib/dateOnly'
 import { FOLLOW_SYNC_OVERDUE_MS } from '@/lib/ledTruckFollow'
-import { daysSold, ledShiftsForHolds, ledStandings, type JobHold, type LedStanding } from '@/lib/ledJobs'
+import { daysSold, ledDaysOutside, ledJobDays, ledShiftsForHolds, ledStandings, type JobHold, type LedOutside, type LedStanding } from '@/lib/ledJobs'
 
 // EXPIRED holds accumulate forever — every lapsed hold and every Closed Lost
 // Opportunity lands here and never leaves. Ops only care about the recent tail,
@@ -90,7 +90,7 @@ export async function GET() {
   // Won holds the sweep moved onto LED's truck in the last week (lib/ledTruckFollow.ts),
   // so the card says the truck changed: from the audit rows the move wrote.
   const anyWon = holds.some(h => h.status === 'COMMITTED')
-  const [owners, inLed, linked, followed] = await Promise.all([
+  const [owners, inLed, linked, followed, outsideDates] = await Promise.all([
     reservationOwners(holds.map(h => ({ id: h.id, created_by: h.created_by, created_by_name: h.user?.name ?? null, sfdc_opportunity_id: h.sfdc_opportunity_id }))),
     ledShiftsForHolds(committed)
       .then(shifts => ledStandings(committed, shifts))
@@ -116,6 +116,14 @@ export async function GET() {
           orderBy: { created_at: 'asc' },
         }).catch((err) => { console.error('[hold-requests] LED follow read failed:', err); return [] })
       : [],
+    // LED running a won job outside its reservation's dates (any truck): the
+    // truck follow never moves dates, so the card says so for a person to re-date.
+    ledJobDays(committed)
+      .then(days => ledDaysOutside(committed, days))
+      .catch((err) => {
+        console.error('[hold-requests] LED job dates read failed:', err)
+        return new Map<string, LedOutside>()
+      }),
   ])
   const { linkOf, clientNames } = linked
   const ledClientOf = (accountId: string | null) => {
@@ -175,6 +183,8 @@ export async function GET() {
     led_days:          inLed.get(h.id)?.days ?? 0,
     led_days_sold:     inLed.get(h.id)?.of ?? null,
     led_followed:      followedOf.get(h.id) ?? null,
+    // LED runs its job on days outside the reservation's dates (lib/ledJobs.ts ledDaysOutside).
+    led_outside:       outsideDates.get(h.id) ?? null,
     // Moved to LED's truck but Salesforce's LED Trucks still refuses it (lib/ledTruckFollow.ts).
     led_trucks_unsynced_since: h.status === 'COMMITTED' && h.sfdc_opportunity_id && h.led_follow_sync_pending && h.led_follow_sync_pending.getTime() < overdueBefore
       ? h.led_follow_sync_pending.toISOString() : null,

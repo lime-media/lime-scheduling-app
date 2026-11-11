@@ -55,6 +55,8 @@ type HoldRequest = {
   led_days_sold: number | null
   /** The sweep moved this won hold onto the truck LED runs its job on, this week (lib/ledTruckFollow.ts). */
   led_followed: { from: string; to: string; at: string } | null
+  /** LED runs this job on days outside the reservation's dates (lib/ledJobs.ts ledDaysOutside). */
+  led_outside: { from: string; to: string; outside: number } | null
   /** Salesforce's LED Trucks has refused the moved truck for over an hour (still retried every sweep). */
   led_trucks_unsynced_since: string | null
   expires_at: string | null
@@ -221,6 +223,22 @@ function LedFollowBadge({ rows }: { rows: HoldRequest[] }) {
         </span>
       )}
     </>
+  )
+}
+
+/**
+ * A won booking whose job LED runs on days outside the reservation's dates:
+ * the truck follow never moves dates, so a person re-dates it (lib/ledJobs.ts ledDaysOutside).
+ */
+function LedOutsideBadge({ rows }: { rows: HoldRequest[] }) {
+  const o = rows.find(r => r.status === 'COMMITTED' && r.led_outside)?.led_outside
+  if (!o) return null
+  const day = (d: string) => format(parseDateOnly(d), 'MMM d')
+  return (
+    <span className="text-xs text-amber-700 font-medium"
+      title="LED runs this job (any truck) on days outside the reservation's dates. The reservation's dates aren't changed to match on their own: re-date it if LED's dates are right.">
+      LED runs this job {day(o.from)}–{day(o.to)}: {o.outside} day{o.outside === 1 ? '' : 's'} outside the reservation&apos;s dates
+    </span>
   )
 }
 
@@ -955,6 +973,7 @@ export default function HoldRequestsPage() {
                         <LedClientLink accountId={first.sfdc_account_id} linked={first.led_client} onSaved={fetchRequests} />
                       )}
                       <LedFollowBadge rows={groupItems} />
+                      <LedOutsideBadge rows={groupItems} />
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.HOLD}`}>
                         {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[status] ?? status)}
                       </span>

@@ -7,21 +7,27 @@
  * The link is the job number (lib/jobNumber.ts linkedJob), so only committed
  * holds with one ever move.
  *
- * A hold moves only when the answer is unambiguous:
- * - LED runs none of its days on the hold's own truck (within its dates),
- * - LED runs its job, within its dates and in its market, on exactly one
- *   other truck, on at least as many days as were sold (lib/ledJobs.ts
- *   daysSold): a stand-in for a day or two doesn't free the held truck,
- * - no other hold of that job, and no other live hold of the same
- *   opportunity, is on that truck over the same days, and no other hold of
- *   the job could equally be moved to it.
+ * Which truck runs it doesn't matter to sales; that LED runs it does (Andrew,
+ * 2026-11-11). So a booking's trucks follow LED's one-for-one, per job:
+ * - A hold LED runs its job on (any day within its dates) keeps its truck.
+ * - Each other hold takes a truck LED runs the job on, within its dates and in
+ *   its market, that no hold of the job is on over the same days: the truck
+ *   with the most of those days first, then by truck number; holds go in
+ *   truck-number order. Each LED truck takes one hold over the same days.
+ * - Not when another live hold of the same opportunity is on that truck over
+ *   the same days (a market not yet won, say).
+ * - LED on fewer trucks than held: the holds left over keep their trucks and
+ *   show as not fully scheduled. On more: nothing is added.
+ * Moving doesn't wait for every day sold: the truck is LED's choice whatever
+ * it has scheduled so far. Whether the booking is fully scheduled is judged
+ * after, per hold, on its own truck (lib/ledJobs.ts ledStandings). Dates never
+ * move here: LED running the job outside the reservation's dates is shown on
+ * Reservations (lib/ledJobs.ts ledDaysOutside) for a person to re-date.
  * Every market of a booking shares its job number (and job numbers are reused
  * across opportunities), so the market has to match (lib/ledJobs.ts
  * ledMarketMatches). A Salesforce multi-market hold ("Multi-market: Detroit,
  * Los Angeles, CA") has no one market: LED's city must be one its label
- * names. Anything else (LED splitting the hold across trucks, only part of it
- * scheduled, two holds that could each take the same truck) is left alone:
- * the hold keeps its truck and Reservations keeps showing the shortfall.
+ * names.
  */
 
 import { prisma } from '@/lib/prisma'
@@ -132,7 +138,8 @@ export function ledTruckMoves(holds: FollowHold[], rows: FollowRow[], today: str
     // Trucks a hold of this job is already on over the same days: LED running
     // the job there is that hold's, never another's to move onto. Dates
     // matter: one truck can carry two markets of a booking one after another.
-    const overlaps = (a: FollowHold, b: FollowHold) => a.start_date <= b.end_date && b.start_date <= a.end_date
+    const overlaps = (a: { start_date: string; end_date: string }, b: { start_date: string; end_date: string }) =>
+      a.start_date <= b.end_date && b.start_date <= a.end_date
     const within = (h: FollowHold) => jobRows.filter(r => r.shift_start >= h.start_date && r.shift_start <= h.end_date)
     // Another live hold of the same opportunity (a market not yet won, say) on that truck over the same days.
     const takenByBooking = (h: FollowHold, truck: string) => !!h.sfdc_opportunity_id && live.some(o =>
@@ -141,29 +148,28 @@ export function ledTruckMoves(holds: FollowHold[], rows: FollowRow[], today: str
     // (another market of a reused job number on that truck isn't this hold's).
     const daysOn = (h: FollowHold, truck: string) =>
       new Set(within(h).filter(r => r.truck_number === truck && inHoldMarket(h, r)).map(r => r.shift_start)).size
-    // Each hold LED isn't running on its own truck, with every other truck it could be on.
+    // The holds LED isn't running on their own truck, in truck-number order so
+    // the same schedule always gives the same moves.
     const unmatched = group
       .filter(h => h.end_date >= today && h.days_sold > 0)
       .filter(h => !seen || (h.start_date >= seen.from && h.end_date <= seen.to))
-      .map(h => ({ hold: h, rows: within(h) }))
-      .filter(u => !u.rows.some(r => r.truck_number === u.hold.truck_number))
-      .map(({ hold: h, rows: inDates }) => ({
-        hold: h,
-        candidates: [...new Set(inDates
-          .filter(r => !group.some(o => o !== h && o.truck_number === r.truck_number && overlaps(o, h)))
-          .filter(r => !takenByBooking(h, r.truck_number))
-          .filter(r => inHoldMarket(h, r))
-          .map(r => r.truck_number))],
-      }))
-    for (const u of unmatched) {
-      if (u.candidates.length !== 1) continue
-      const to = u.candidates[0]
-      // Only once LED runs it there for every day sold.
-      if (daysOn(u.hold, to) < u.hold.days_sold) continue
-      // Another hold of the job, over the same days, that could take the same
-      // truck: which one LED meant can't be told, so neither moves.
-      if (unmatched.some(o => o !== u && overlaps(o.hold, u.hold) && o.candidates.includes(to))) continue
-      moves.push({ holdId: u.hold.id, from: u.hold.truck_number, to, job })
+      .filter(h => !within(h).some(r => r.truck_number === h.truck_number))
+      .sort((a, b) => a.truck_number.localeCompare(b.truck_number) || a.id.localeCompare(b.id))
+    // Trucks given to a hold of this job in this pass, over its dates.
+    const given: { truck: string; start_date: string; end_date: string }[] = []
+    for (const h of unmatched) {
+      const candidates = [...new Set(within(h)
+        .filter(r => inHoldMarket(h, r))
+        .map(r => r.truck_number))]
+        .filter(t => !group.some(o => o !== h && o.truck_number === t && overlaps(o, h)))
+        .filter(t => !given.some(g => g.truck === t && overlaps(g, h)))
+        .filter(t => !takenByBooking(h, t))
+        .map(t => ({ truck: t, days: daysOn(h, t) }))
+        .sort((a, b) => b.days - a.days || a.truck.localeCompare(b.truck))
+      const to = candidates[0]?.truck
+      if (!to) continue
+      given.push({ truck: to, start_date: h.start_date, end_date: h.end_date })
+      moves.push({ holdId: h.id, from: h.truck_number, to, job })
     }
   }
   return moves

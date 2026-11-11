@@ -197,8 +197,9 @@ export type CampaignCoords = { lat: number; lng: number; source: 'coords_map' | 
  * an ambiguous city resolves the same way every time rather than following Map
  * insertion order.
  *
- * A market that names a state matches only in that state. The city-only match
- * used to ignore the state, so "Dallas, PA" was placed at "Dallas, TX" (and
+ * A market that names a state matches only in that state ("Dallas, TX 75201"
+ * and "Dallas, TX, USA" still find "Dallas, TX"). The city-only match used to
+ * ignore the state, so "Dallas, PA" was placed at "Dallas, TX" (and
  * "Canton, TX" in Ohio): wrong distances, transport and impressions tier. Such
  * a town falls through to the US place list instead. Pure.
  */
@@ -206,10 +207,15 @@ export function standardMarketCoords<T>(market: string, standardMarkets: Readonl
   const key = normalizeMarketKey(withStateComma(market))
   const exact = standardMarkets.get(key)
   if (exact) return exact
-  const [city, state] = key.split(',').map(p => p.trim())
-  if (!city || state) return null
+  const [city, rest] = key.split(',').map(p => p.trim())
+  if (!city) return null
+  // The state is the first word after the comma: a ZIP or ", USA" may follow it.
+  const state = rest?.split(' ')[0]
   const hits = [...standardMarkets.entries()]
-    .filter(([name]) => name.split(',')[0].trim() === city)
+    .filter(([name]) => {
+      const [nameCity, nameState] = name.split(',').map(p => p.trim())
+      return nameCity === city && (!state || nameState === state)
+    })
     .sort(([a], [b]) => a.localeCompare(b))
   return hits.length > 0 ? hits[0][1] : null
 }

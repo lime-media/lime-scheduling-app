@@ -80,10 +80,14 @@ eq('Dallas, PA is not Dallas, TX', standardMarketCoords('Dallas, PA', STANDARD),
 eq('Canton, TX is not Canton, OH', standardMarketCoords('Canton, TX', STANDARD), null)
 eq('Greenville, TX is not Greenville, SC', standardMarketCoords('Greenville, TX', STANDARD), null)
 eq('a stated state with no comma is still a state', standardMarketCoords('Dallas PA', STANDARD), null)
-// What they fall through to: the US place list, in the right state.
-eq('Dallas, PA is located in Pennsylvania', (placeCoords('Dallas, PA')?.lng ?? 0) > -80, true)
-eq('Canton, TX is located in Texas', (placeCoords('Canton, TX')?.lng ?? 0) < -94, true)
-eq('Greenville, TX is located in Texas', (placeCoords('Greenville, TX')?.lng ?? 0) < -95, true)
+eq('a ZIP after the state still finds the entry', standardMarketCoords('Dallas, TX 75201', STANDARD), 'Dallas TX')
+eq('a country after the state still finds the entry', standardMarketCoords('Dallas, TX, USA', STANDARD), 'Dallas TX')
+eq('a ZIP after another state is still that state', standardMarketCoords('Dallas, PA 18612', STANDARD), null)
+// What they fall through to: the US place list, in the right state. NaN when
+// the place is missing, so a missing place fails rather than passing.
+eq('Dallas, PA is located in Pennsylvania', (placeCoords('Dallas, PA')?.lng ?? NaN) > -80, true)
+eq('Canton, TX is located in Texas', (placeCoords('Canton, TX')?.lng ?? NaN) < -94, true)
+eq('Greenville, TX is located in Texas', (placeCoords('Greenville, TX')?.lng ?? NaN) < -95, true)
 
 section('top-50 DMA matching (market size tier)')
 eq('exact city + state', matchTopDma('Chicago, IL', TOP_DMAS)?.dma_code, 'DMA-602')

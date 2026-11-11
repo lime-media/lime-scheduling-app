@@ -21,7 +21,8 @@ import { copyDatesDown, holdStartDates } from '@/lib/planner/rows'
 import { ClientTypePicker, LeadSourcePicker, OpportunityTypePicker } from '@/components/OpportunityFields'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
-import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
+import { HoldLength, HoldUntil, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
+import { centralDate } from '@/lib/dateOnly'
 import { OpportunityPicker, type OpenOpportunity } from '@/components/OpportunityPicker'
 import { BrandInput } from '@/components/BrandInput'
 import { SalesforceFailureModal } from '@/components/SalesforceFailureModal'
@@ -113,6 +114,8 @@ type Revision = {
   key: string; opportunityName: string | null; clientName: string; live: boolean
   /** The latest expiry of its live holds (ISO), which a revision won't cut back; how many markets are committed. */
   heldUntil: string | null; committedMarkets: string[]
+  /** What it holds now: the trucks and markets a quote-only revision releases. */
+  heldTrucks: number; heldMarkets: number
   /** Its opportunity is Closed Lost and the person agreed to move it back to WARM when the revision is saved. */
   reopenOpportunity: boolean
 }
@@ -130,6 +133,8 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
   const [contact, setContact] = useState<SfdcContact | null>(null)
   // How long the reservations hold the trucks (default 3 days).
   const [holdDays, setHoldDays] = useState(DEFAULT_HOLD_DAYS)
+  // A live booking's revision: the date it's held until (YYYY-MM-DD, Central), opened on its current expiry.
+  const [holdUntil, setHoldUntil] = useState<string | null>(null)
   // The campaign's brand, for the Salesforce opportunity (components/BrandInput.tsx).
   const [brand, setBrand] = useState('')
   const [rows, setRows] = useState<QuoteRow[]>([newRow()])
@@ -204,13 +209,15 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         setQuoteOnly(b.quoteOnly === true)
         if (typeof b.brandMarkupPct === 'number') { revisedMarkup.current = b.brandMarkupPct; setBrandMarkupPct(b.brandMarkupPct) }
         setAttachTo(null)
-        setRevision({ key: b.key, opportunityName: b.opportunityName, clientName: b.clientName, live: b.live, heldUntil: b.heldUntil ?? null, committedMarkets: Array.isArray(b.committedMarkets) ? b.committedMarkets : [], reopenOpportunity: reopenAgreed })
+        const heldTrucks = b.live && !b.quoteOnly ? new Set((b.rows as { keepTrucks?: string[] }[]).flatMap(r => r.keepTrucks ?? [])).size : 0
+        setRevision({ key: b.key, opportunityName: b.opportunityName, clientName: b.clientName, live: b.live, heldUntil: b.heldUntil ?? null, committedMarkets: Array.isArray(b.committedMarkets) ? b.committedMarkets : [], reopenOpportunity: reopenAgreed, heldTrucks, heldMarkets: heldTrucks ? b.rows.length : 0 })
+        setHoldUntil(b.live && b.heldUntil ? centralDate(new Date(b.heldUntil)) : null)
       })
       .catch(e => { if (alive) setReviseError(e instanceof Error ? e.message : 'That booking could not be opened.') })
     return () => { alive = false }
   }, [reviseKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const stopRevising = () => { setRevision(null); onReviseDone?.() }
+  const stopRevising = () => { setRevision(null); setHoldUntil(null); onReviseDone?.() }
 
   // Intake
   const [showImport, setShowImport] = useState(false)
@@ -358,7 +365,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: keepsOpportunity ? undefined : leadSource, opportunityType: keepsOpportunity ? undefined : opportunityType, quoteOnly, brand, primaryContactId: contact.id, holdDays, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: keepsOpportunity ? undefined : leadSource, opportunityType: keepsOpportunity ? undefined : opportunityType, quoteOnly, brand, primaryContactId: contact.id, holdDays, holdUntil: revision && holdUntil && !quoteOnly ? holdUntil : undefined, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
       })
       const data = await readJson(res)
       // The opportunity went Closed Lost after the booking was opened: ask now.
@@ -387,13 +394,19 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
       setHoldResult({ ok: true, message: data.confirmation ?? data.message, sfdcFailure: data.sfdcFailure ?? null })
       setSfdcFailureOpen(Boolean(data.sfdcFailure))
       // A finished revision: the booking now stands as booked; leave revise mode.
-      if (revision) { setRevision(null); onReviseDone?.() }
+      if (revision) { setRevision(null); setHoldUntil(null); onReviseDone?.() }
     } catch (e) {
       setHoldResult({ ok: false, message: e instanceof Error ? e.message : 'Holds could not be placed' })
     } finally {
       setHolding(false)
     }
   }
+
+  // Revised as quote only, a live booking gives up its trucks and leaves
+  // Reservations: asked once, before anything is sent.
+  const releaseAgreed = () => !revision || !quoteOnly || revision.heldTrucks === 0 || window.confirm(
+    `Quote only reserves nothing: this releases the ${revision.heldTrucks} truck${revision.heldTrucks === 1 ? '' : 's'} the booking holds in ${revision.heldMarkets} market${revision.heldMarkets === 1 ? '' : 's'}, and the booking leaves Reservations. The quote is logged to Salesforce.\n\nRelease the trucks and log the quote?`,
+  )
 
   const errorFor = (id: string) => rowErrors.find(e => e.rowId === id)
   const ready = rows.length > 0 && rows.every(r => r.market.trim() && r.startDate && r.endDate && r.trucks >= 1)
@@ -421,7 +434,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
             {revision.live
               ? 'Markets that stay keep their current trucks where those can still do the dates.'
               : 'It has expired, so trucks are picked and priced fresh.'}
-            {revision.live && revision.heldUntil && ` Its holds run to ${new Date(revision.heldUntil).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Chicago' })} at the latest; a market that stays keeps an expiry later than the hold length below.`}
+            {revision.live && revision.heldUntil && ` Its holds run to ${new Date(revision.heldUntil).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Chicago' })}; the revision keeps that expiry unless you change the date below.`}
             {revision.committedMarkets.length > 0 && ` ${revision.committedMarkets.length} market${revision.committedMarkets.length === 1 ? ' is' : 's are'} committed and stay${revision.committedMarkets.length === 1 ? 's' : ''} committed.`}
           </p>
         </div>
@@ -624,11 +637,13 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           attachName={revision ? null : attachTo?.name ?? null}
           holdDays={holdDays}
           onHoldDays={setHoldDays}
+          holdUntil={revision?.heldUntil && holdUntil ? { date: holdUntil, heldUntil: revision.heldUntil } : null}
+          onHoldUntil={setHoldUntil}
           holding={holding}
           holdResult={holdResult}
           selected={selected}
           onToggle={id => setSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })}
-          onPlaceHolds={() => placeHolds(false)}
+          onPlaceHolds={() => { if (releaseAgreed()) void placeHolds(false) }}
           quoteOnly={quoteOnly}
           unplaced={built?.unplaced.map(u => u.label) ?? []}
         />
@@ -738,7 +753,7 @@ function ImportPanel(p: {
 /** A booking's outcome; sfdcFailure is set when the holds saved but Salesforce didn't. */
 type HoldResult = { ok: boolean; message: string; sfdcFailure?: string | null }
 
-function QuoteResult({ quote, account, contact, revising, needsLeadSource, needsOpportunityType, committedMarkets, attachName, holdDays, onHoldDays, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
+function QuoteResult({ quote, account, contact, revising, needsLeadSource, needsOpportunityType, committedMarkets, attachName, holdDays, onHoldDays, holdUntil, onHoldUntil, holding, holdResult, selected, onToggle, onPlaceHolds, quoteOnly, unplaced }: {
   quote: MultiMarketQuote
   account: SfdcAccount | null
   contact: SfdcContact | null
@@ -753,6 +768,9 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
   attachName: string | null
   holdDays: number
   onHoldDays: (days: number) => void
+  /** Revising a live booking: its expiry date, shown instead of a hold length. */
+  holdUntil: { date: string; heldUntil: string } | null
+  onHoldUntil: (date: string) => void
   holding: boolean
   holdResult: HoldResult | null
   selected: Set<string>
@@ -862,9 +880,11 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
         ) : (
           <>
             {/* Hold length: a reservation only (a quote-only log holds nothing). */}
-            {!quoteOnly && (
-              <HoldLength days={holdDays} onChange={onHoldDays}
-                startDates={holdStartDates(chosen.filter(l => !committedMarkets.includes(l.market.trim().toLowerCase())))} />
+            {!quoteOnly && (holdUntil
+              ? <HoldUntil date={holdUntil.date} onChange={onHoldUntil} heldUntil={holdUntil.heldUntil}
+                  startDates={holdStartDates(chosen.filter(l => !committedMarkets.includes(l.market.trim().toLowerCase())))} />
+              : <HoldLength days={holdDays} onChange={onHoldDays}
+                  startDates={holdStartDates(chosen.filter(l => !committedMarkets.includes(l.market.trim().toLowerCase())))} />
             )}
             <button onClick={onPlaceHolds} disabled={holding || !account || !contact || needsLeadSource || needsOpportunityType || chosen.length === 0}
               className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium">

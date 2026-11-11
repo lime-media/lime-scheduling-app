@@ -44,7 +44,7 @@ import { getToken } from 'next-auth/jwt'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
-import { bookingHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
+import { bookingHoldExpiry, reviseHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
 import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner, readOnlyPreview, salesforceWritesOff, WRITES_OFF_MESSAGE, WRITES_STOPPED_ERROR } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { chosenClientType } from '@/lib/pricing/brandMarkup'
@@ -87,6 +87,13 @@ type HoldBody = QuoteRequest & {
   /** How long to hold the trucks, in days (default 3, at most MAX_HOLD_DAYS). */
   holdDays?: number
   /**
+   * A revision of a live booking only: its expiry date (YYYY-MM-DD, Central)
+   * as the revise form shows it, opened on the booking's current expiry.
+   * Unchanged keeps that expiry; changed sets this date (lib/holdExpiry.ts
+   * reviseHoldExpiry). Used instead of holdDays.
+   */
+  holdUntil?: string
+  /**
    * Add this booking to an existing open opportunity of the account instead
    * of creating one. (Revising a booking — QuoteRequest.revise — always goes
    * onto that booking's own opportunity.)
@@ -114,6 +121,9 @@ async function handlePost(req: NextRequest) {
   if (!body.requestId || !/^[A-Za-z0-9_-]{8,64}$/.test(body.requestId)) return NextResponse.json({ error: 'Missing booking request id.' }, { status: 400 })
   const holdDays = parseHoldDays(body.holdDays)
   if (holdDays === null) return NextResponse.json({ error: `Hold for 1 to ${MAX_HOLD_DAYS} days.` }, { status: 400 })
+  if (body.holdUntil !== undefined && (typeof body.holdUntil !== 'string' || !body.revise?.bookingKey)) {
+    return NextResponse.json({ error: 'A hold expiry date is only set when revising a booking.' }, { status: 400 })
+  }
   // A new opportunity's lead source: the seller picks one off Salesforce's
   // picklist. A revision or an attach keeps the opportunity's own (a
   // revision with no opportunity left makes one: checked once that's known).
@@ -272,8 +282,13 @@ async function handlePost(req: NextRequest) {
     // A multi-market booking is one quote with ONE expiry on every hold: the
     // seller's length, capped by the earliest start, or the later expiry the
     // revised booking already had, never past that cap (lib/holdExpiry.ts).
+    // A revision that shows the expiry date keeps it unless the rep changed it.
     const heldStarts = stints.map(x => x.stint.start)
-    const bookingExpiry = heldStarts.length ? bookingHoldExpiry(heldStarts, holdDays, holdClock, keepUntil, STAFF_MIN_DAYS_BEFORE_START) : null
+    const revisedExpiry = heldStarts.length && reviseKey && body.holdUntil !== undefined
+      ? reviseHoldExpiry(heldStarts, body.holdUntil, keepUntil, holdClock, STAFF_MIN_DAYS_BEFORE_START)
+      : null
+    if (revisedExpiry && 'error' in revisedExpiry) return NextResponse.json({ error: revisedExpiry.error, lastDate: revisedExpiry.lastDate }, { status: 400 })
+    const bookingExpiry = revisedExpiry ?? (heldStarts.length ? bookingHoldExpiry(heldStarts, holdDays, holdClock, keepUntil, STAFF_MIN_DAYS_BEFORE_START) : null)
     const stretches = stints.map(x => ({ ...x, expiresAt: bookingExpiry?.expiresAt ?? holdClock }))
 
     // All or nothing: any stretch that now clashes stops the whole booking.

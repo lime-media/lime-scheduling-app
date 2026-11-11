@@ -12,7 +12,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { availableHoldDays, bookingHoldExpiry, lastExpiryDate, computeHoldExpiresAt, DEFAULT_HOLD_DAYS, HOLD_EXPIRATION_HOURS, MIN_HOLD_WINDOW_HOURS, STAFF_MIN_DAYS_BEFORE_START, holdExpiry, parseHoldDays } from '@/lib/holdExpiry'
+import { availableHoldDays, bookingHoldExpiry, lastExpiryDate, reviseHoldExpiry, computeHoldExpiresAt, DEFAULT_HOLD_DAYS, HOLD_EXPIRATION_HOURS, MIN_HOLD_WINDOW_HOURS, STAFF_MIN_DAYS_BEFORE_START, holdExpiry, parseHoldDays } from '@/lib/holdExpiry'
 import { centralDate, endOfDayCentral, holdExpDate } from '@/lib/dateOnly'
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -143,4 +143,25 @@ section('Central days: a date-only expiry ends at the end of that day in Central
   eq('Thu 8pm CDT (Fri 01:00Z) is Thursday', holdExpDate(new Date('2026-10-23T01:00:00Z')), '2026-10-22')
   eq('winter: 11:30pm CST Jan 14 is Jan 14', holdExpDate(new Date('2027-01-15T05:30:00Z')), '2027-01-14')
   eq('a Hold Exp round trip keeps the day', centralDate(endOfDayCentral(holdExpDate(new Date('2026-10-23T01:00:00Z')))), '2026-10-22')
+}
+
+section('reviseHoldExpiry: a revision keeps the expiry unless the rep changes its date (F8)')
+{
+  const now = new Date('2026-10-20T12:00:00Z')
+  const held = new Date('2026-10-24T17:30:00Z') // Sat Oct 24, 12:30pm CDT
+  const staff = (starts: string[], date: string, h: Date | null = held) => reviseHoldExpiry(starts, date, h, now, STAFF_MIN_DAYS_BEFORE_START)
+  const at = (r: ReturnType<typeof staff>) => ('error' in r ? r.error : r.expiresAt.toISOString())
+  eq('unchanged: keeps the exact expiry, not a fresh length', at(staff(['2026-11-10'], '2026-10-24')), '2026-10-24T17:30:00.000Z')
+  eq('unchanged: kept even when a fresh hold length would run later', at(staff(['2026-12-01'], '2026-10-24')), held.toISOString())
+  eq('changed: the new date\'s end, Central', at(staff(['2026-11-10'], '2026-10-30')), endOfDayCentral('2026-10-30').toISOString())
+  eq('changed: brought in is allowed', at(staff(['2026-11-10'], '2026-10-21')), endOfDayCentral('2026-10-21').toISOString())
+  const capped = staff(['2026-10-25'], '2026-10-24')
+  eq('unchanged but the revised start is sooner: capped 2 days before it', [at(capped), 'error' in capped ? null : capped.cappedByStart], ['2026-10-23T04:59:59.000Z', true])
+  const late = staff(['2026-10-25'], '2026-10-24', new Date('2026-10-20T20:00:00Z'))
+  eq('a changed date past the limit is refused, not cut back', 'error' in late ? late.lastDate : null, '2026-10-22')
+  const past = staff(['2026-11-10'], '2026-10-19')
+  eq('a date in the past is refused', 'error' in past, true)
+  const bad = staff(['2026-11-10'], '2026-02-31')
+  eq('an impossible date is refused', 'error' in bad, true)
+  eq('no current expiry: the date is a change', at(staff(['2026-11-10'], '2026-10-24', null)), endOfDayCentral('2026-10-24').toISOString())
 }

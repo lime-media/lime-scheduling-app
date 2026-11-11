@@ -100,6 +100,42 @@ export function bookingHoldExpiry(
 }
 
 /**
+ * A revision's one expiry, when the rep sees the booking's expiry date in the
+ * revise form (`holdUntil`, YYYY-MM-DD Central, opened on `heldUntil`'s date).
+ * Left as it opened, the revision keeps `heldUntil` exactly, capped (with the
+ * 24-hour floor) by the revised booking's earliest start as bookingHoldExpiry
+ * caps it. Changed, it is that date's end, as Reservations → Edit stores one,
+ * and a date in the past or past the limit (lastExpiryDate) is refused, never
+ * quietly cut back. Pure (pass `now`).
+ */
+export function reviseHoldExpiry(
+  startDates: string[], holdUntil: string, heldUntil: Date | null, now: Date = new Date(),
+  minDaysBeforeStart: number = MIN_PROCESSING_DAYS_BEFORE_START,
+): { expiresAt: Date; cappedByStart: boolean; atMinimum: boolean; startDate: string } | { error: string; lastDate: string } {
+  const startDate = startDates.filter(Boolean).sort()[0]
+  const lastDate = lastExpiryDate(startDate, now, minDaysBeforeStart)
+  if (heldUntil && centralDate(heldUntil) === holdUntil) {
+    const cap = latestHoldMoment(startDate, minDaysBeforeStart)
+    if (heldUntil <= cap) return { expiresAt: heldUntil, cappedByStart: false, atMinimum: false, startDate }
+    const floor = addHours(now, MIN_HOLD_WINDOW_HOURS)
+    return cap < floor
+      ? { expiresAt: floor, cappedByStart: false, atMinimum: true, startDate }
+      : { expiresAt: cap, cappedByStart: true, atMinimum: false, startDate }
+  }
+  // Round-tripped: Date rolls 2026-02-31 over to March 3.
+  const parsed = new Date(`${holdUntil}T00:00:00Z`)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(holdUntil) || isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== holdUntil) {
+    return { error: 'Choose a valid hold expiry date.', lastDate }
+  }
+  const today = centralDate(now)
+  if (holdUntil < today) return { error: `The hold expiry can't be in the past (today is ${today}).`, lastDate }
+  if (holdUntil > lastDate) {
+    return { error: `The latest this booking can be held is ${lastDate}: ${minDaysBeforeStart} days before its first market starts.`, lastDate }
+  }
+  return { expiresAt: endOfDayCentral(holdUntil), cappedByStart: false, atMinimum: false, startDate }
+}
+
+/**
  * The latest a hold may run for a campaign starting `startDate`: the END of
  * the day `minDaysBeforeStart` + 1 days before it, in Central time, leaving
  * `minDaysBeforeStart` full days. It is the end of a day, not midnight

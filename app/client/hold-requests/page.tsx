@@ -1,5 +1,6 @@
 'use client'
 
+import { cancelledOf } from '@/lib/cancelReason'
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
@@ -35,6 +36,8 @@ type HoldRequest = {
   expires_at: string | null
   extension_until: string | null
   extension_reason: string | null
+  cancelled_at: string | null
+  cancel_reason: string | null
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -72,7 +75,11 @@ const EXP_DAY = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric
 const EXP_TIME = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: APP_TIME_ZONE, timeZoneName: 'short' })
 const EXP_FULL = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: APP_TIME_ZONE, timeZoneName: 'short' })
 
-function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; status: string }) {
+function ExpirationBadge({ expiresAt, status, cancelled }: { expiresAt: string | null; status: string; cancelled?: { reason: string | null } | null }) {
+  // Cancelled by Lime Media: say so, with the reason they were emailed.
+  if (status === 'EXPIRED' && cancelled) {
+    return <span className="text-xs text-red-700" title={cancelled.reason ?? undefined}>Cancelled{cancelled.reason ? `: ${cancelled.reason}` : ''}</span>
+  }
   // A confirmed booking is booked, not held: it has no expiry to show.
   if (!expiresAt || status === 'COMMITTED') return null
   const expDate = new Date(expiresAt)
@@ -421,7 +428,7 @@ export default function ClientHoldRequestsPage() {
                         </div>
                         <div className="flex items-center gap-3">
                           <PricingBadge tier={summary.tier} total={summary.total} />
-                          <ExpirationBadge expiresAt={summarizeBooking(live.map(r => ({ ...r, sfdc_opportunity_id: null }))).earliestExpiry} status={status} />
+                          <ExpirationBadge expiresAt={summarizeBooking(live.map(r => ({ ...r, sfdc_opportunity_id: null }))).earliestExpiry} status={status} cancelled={cancelledOf(live)} />
                           <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.HOLD}`}>
                             {statusLabel(status)}
                           </span>
@@ -505,7 +512,7 @@ export default function ClientHoldRequestsPage() {
                                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[r.status] ?? STATUS_BADGE.HOLD}`}>
                                         {statusLabel(r.status)}
                                       </span>
-                                      <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
+                                      <ExpirationBadge expiresAt={r.expires_at} status={r.status} cancelled={cancelledOf([r])} />
                                     </div>
                                   </td>
                                   <td className="px-4 py-3">

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { clearBookingCancel } from '@/lib/cancelBooking'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { SFDC_SERVICE_USER_EMAIL, appHasNotReleased, appHoldExpOf, opportunityMarketCandidates, pushedHoldExpiry, trucksToMirror, withAppHoldExp } from '@/lib/sfdcIntegration'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
@@ -260,12 +261,16 @@ export async function POST(req: NextRequest) {
           // date on a committed row, which has no expiry to keep, leaves it).
           ...(holdExp && appHoldExpOf(existing.features) && appHoldExpOf(existing.features) !== holdExp.slice(0, 10) ? { features: withAppHoldExp(existing.features, null) } : {}),
           ...(isCommitted || committedNow || (reactivated && revivedAsCommitted) ? {} : { expires_at: effectiveExpiry }),
-          ...(reactivated && { status: revivedAsCommitted ? 'COMMITTED' : 'HOLD' }),
+          // Live again: no longer cancelled (lib/cancelBooking.ts), or a later lapse would read as one.
+          ...(reactivated && { status: revivedAsCommitted ? 'COMMITTED' : 'HOLD', cancelled_at: null, cancel_reason: null, cancelled_by: null }),
           ...(reactivated && revivedAsCommitted && { expires_at: null }),
           ...(committedNow && { status: 'COMMITTED', expires_at: null, extension_until: null, extension_reason: null }),
           ...(expiredNow  && { status: 'EXPIRED' }),
         },
       })
+      // A booking brought back by the push: no longer cancelled anywhere in it,
+      // even when this row lapsed on its own and only the others carry the mark.
+      if (reactivated) await clearBookingCancel(updated)
       results.push({ truck_number, hold_id: updated.id, action: 'updated' })
       await prisma.auditLog.create({
         data: {

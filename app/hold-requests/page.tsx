@@ -6,6 +6,7 @@ import { SERVICE_AREA_RADIUS_MILES } from '@/lib/pricing/config'
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 import toast from 'react-hot-toast'
+import { CANCEL_REASON_MAX, cancelledOf } from '@/lib/cancelReason'
 import { Navbar } from '@/components/Navbar'
 import { TableSkeleton } from '@/components/LoadingSkeleton'
 import { LedClientLink } from '@/components/LedClientLink'
@@ -58,6 +59,10 @@ type HoldRequest = {
   led_trucks_unsynced_since: string | null
   expires_at: string | null
   extension_reason: string | null
+  cancelled_at: string | null
+  cancel_reason: string | null
+  client_emailable: boolean
+  client_portal: boolean
   extension_until: string | null
   created_at: string
 }
@@ -219,7 +224,10 @@ function LedFollowBadge({ rows }: { rows: HoldRequest[] }) {
   )
 }
 
-function ExpirationBadge({ expiresAt, status }: { expiresAt: string | null; status: string }) {
+function ExpirationBadge({ expiresAt, status, cancelled }: { expiresAt: string | null; status: string; cancelled?: { reason: string | null } | null }) {
+  if (status === 'EXPIRED' && cancelled) {
+    return <span className="text-xs text-red-700" title={cancelled.reason ?? undefined}>Cancelled{cancelled.reason ? `: ${cancelled.reason}` : ''}</span>
+  }
   if (!expiresAt || status === 'COMMITTED') return null
   const expDate = new Date(expiresAt)
 
@@ -941,7 +949,7 @@ export default function HoldRequestsPage() {
                         </span>
                       )}
                       {/* The earliest expiry in the booking is the one to act on. */}
-                      <ExpirationBadge expiresAt={expiry} status={status} />
+                      <ExpirationBadge expiresAt={expiry} status={status} cancelled={cancelledOf(groupItems)} />
                       <LedBadge progress={ledProgress(groupItems)} inLed={bookingInLed(groupItems)} unavailable={ledUnavailable} />
                       {status === 'COMMITTED' && first.sfdc_account_id && (
                         <LedClientLink accountId={first.sfdc_account_id} linked={first.led_client} onSaved={fetchRequests} />
@@ -1075,7 +1083,7 @@ export default function HoldRequestsPage() {
                                 </span>
                               </td>
                               <td className="px-4 py-3">
-                                <ExpirationBadge expiresAt={r.expires_at} status={r.status} />
+                                <ExpirationBadge expiresAt={r.expires_at} status={r.status} cancelled={cancelledOf([r])} />
                               </td>
                               <td className="px-4 py-3">
                                 <div className="flex items-center gap-2 flex-wrap">
@@ -1307,15 +1315,18 @@ export default function HoldRequestsPage() {
                       <textarea
                         value={cancelReason}
                         onChange={(e) => setCancelReason(e.target.value)}
+                        maxLength={CANCEL_REASON_MAX}
                         rows={3}
                         placeholder="e.g. Truck reassigned due to maintenance scheduling..."
                         className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent resize-none"
                       />
                     </div>
                     <p className="text-xs text-gray-500">
-                      {first.source === 'CLIENT'
-                        ? 'An email will be sent to the client with this reason.'
-                        : 'No client email on file — reason will be logged only.'}
+                      {editingGroup.some(r => r.client_emailable)
+                        ? 'The client is emailed this reason, and sees it on the cancelled reservation in their portal.'
+                        : editingGroup.some(r => r.client_portal)
+                          ? 'No client email on file: the client is not emailed, but sees this reason on the cancelled reservation in their portal.'
+                          : 'No client account on this reservation: the reason is kept on it here only.'}
                     </p>
                   </div>
                 )}

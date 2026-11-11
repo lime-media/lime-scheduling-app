@@ -143,6 +143,9 @@ export function closedWonRefusal(holds: { status: string; sfdc_opportunity_id: s
   return opportunity?.isWon || holds.some(h => h.status === 'COMMITTED' && !!h.sfdc_opportunity_id) ? CLOSED_WON_READ_ONLY : null
 }
 
+/** A date's UTC calendar day (hold start/end dates are stored as UTC midnight). */
+const day = (d: Date | string) => (typeof d === 'string' ? d : d.toISOString()).slice(0, 10)
+
 /**
  * The holds of a lapsed booking that Reinstate brings back: the lapsed ones
  * whose dates haven't all passed. A market that already ended stays expired —
@@ -150,8 +153,17 @@ export function closedWonRefusal(holds: { status: string; sfdc_opportunity_id: s
  * or listed in Salesforce. Pure.
  */
 export function reinstatableHolds<H extends { status: string; end_date: Date | string }>(holds: H[], today: string): H[] {
-  const day = (d: Date | string) => (typeof d === 'string' ? d : d.toISOString()).slice(0, 10)
   return holds.filter(h => h.status === 'EXPIRED' && day(h.end_date) >= today)
+}
+
+/** A booking's markets, trucks and span, as the client's emails and the cancel page give them. Pure. */
+export function bookingSummary(holds: { market: string; truck_number: string; start_date: Date; end_date: Date }[]) {
+  return {
+    markets:   [...new Set(holds.map(h => h.market))],
+    trucks:    [...new Set(holds.map(h => h.truck_number))],
+    startDate: holds.map(h => day(h.start_date)).sort()[0],
+    endDate:   holds.map(h => day(h.end_date)).sort().reverse()[0],
+  }
 }
 
 /** What a rep is told when every lapsed market of a booking has already ended. */

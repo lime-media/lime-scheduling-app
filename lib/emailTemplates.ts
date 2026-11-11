@@ -85,6 +85,8 @@ export type ExpiringBooking = {
   hoursLeft:  number
   /** The Extend buttons (lib/extendLink.ts); none when it can't be extended from email. */
   extend:     { days: number; label: string; url: string }[]
+  /** The Cancel link (lib/extendLink.ts, signed for cancelling); null when it can't be cancelled from email. */
+  cancelUrl:  string | null
 }
 export type ExpiringHoldsEmailFields = { name: string; bookings: ExpiringBooking[]; reservationsUrl: string }
 
@@ -100,8 +102,9 @@ function expiringLead(data: ExpiringHoldsEmailFields): string {
 
 /**
  * The expiry reminder: one card per booking (a booking is extended as one),
- * each with Extend buttons. The buttons open a confirm page (app/extend), so a
- * mail scanner that follows links can't extend anything. Mail-client HTML, as
+ * each with Extend buttons and a Cancel link. They open a confirm page
+ * (app/extend, app/cancel), so a mail scanner that follows links can't
+ * extend or cancel anything. Mail-client HTML, as
  * otpHtml.
  */
 export function expiringHoldsHtml(data: ExpiringHoldsEmailFields): string {
@@ -117,8 +120,9 @@ export function expiringHoldsHtml(data: ExpiringHoldsEmailFields): string {
                       ${b.trucks.length > 1 ? 'Trucks' : 'Truck'} ${esc(b.trucks.join(', '))} &middot; ${esc(b.startDate)} &rarr; ${esc(b.endDate)}<br>
                       <strong style="color:#b45309;">Expires ${esc(b.expiresAt)}</strong> (${b.hoursLeft}h)
                     </div>
-                    ${b.extend.length ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:14px;"><tr>
+                    ${b.extend.length || b.cancelUrl ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:14px;"><tr>
                       ${b.extend.map(x => `<td style="padding-right:8px;"><a href="${esc(x.url)}" style="display:inline-block;background:#2d6b22;color:#ffffff;text-decoration:none;font-size:13px;font-weight:600;padding:9px 14px;border-radius:8px;">Extend ${x.days} day${x.days > 1 ? 's' : ''} &middot; ${esc(x.label)}</a></td>`).join('')}
+                      ${b.cancelUrl ? `<td style="padding-right:8px;"><a href="${esc(b.cancelUrl)}" style="display:inline-block;background:#ffffff;color:#b91c1c;border:1px solid #fca5a5;text-decoration:none;font-size:13px;font-weight:600;padding:8px 14px;border-radius:8px;">Cancel reservation</a></td>` : ''}
                     </tr></table>` : ''}
                   </td>
                 </tr>
@@ -147,7 +151,7 @@ export function expiringHoldsHtml(data: ExpiringHoldsEmailFields): string {
           <tr>
             <td style="padding:4px 28px 28px;">
               <p style="margin:0;font-size:12px;line-height:1.6;color:#6b7280;border-top:1px solid #f3f4f6;padding-top:14px;">
-                Extend opens a page to confirm; no sign-in needed. To commit or change it otherwise, open <a href="${esc(data.reservationsUrl)}" style="color:#2d6b22;">Reservations</a>. Anything not committed or extended by its expiry is released automatically and the truck becomes available to everyone else.
+                Extend and Cancel open a page to confirm; no sign-in needed. To commit or change it otherwise, open <a href="${esc(data.reservationsUrl)}" style="color:#2d6b22;">Reservations</a>. Anything not committed or extended by its expiry is released automatically and the truck becomes available to everyone else.
               </p>
             </td>
           </tr>
@@ -170,6 +174,7 @@ export function expiringHoldsText(data: ExpiringHoldsEmailFields): string {
       `  Dates:   ${b.startDate} → ${b.endDate}`,
       `  Expires: ${b.expiresAt} (${b.hoursLeft}h)`,
       ...b.extend.map(x => `  Extend ${x.days} day${x.days > 1 ? 's' : ''} (to ${x.label}): ${x.url}`),
+      ...(b.cancelUrl ? [`  Cancel reservation: ${b.cancelUrl}`] : []),
       '',
     )
   }

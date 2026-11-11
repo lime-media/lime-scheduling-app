@@ -10,6 +10,7 @@ import { recordSwap, recordWon, winsToRecord } from '@/lib/transportMetricsRecor
 import { waitUntil } from '@vercel/functions'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
+import { clearBookingCancel } from '@/lib/cancelBooking'
 import { withAskedDates } from '@/lib/quoteFeatures'
 import { daysBetween } from '@/lib/planning/planner'
 
@@ -102,6 +103,8 @@ export async function PUT(
   const endMoved = effEnd !== day(hold.end_date)
   const data = {
     ...(status && { status }),
+    // Made live again: no longer cancelled (lib/cancelBooking.ts), or a later lapse would read as one.
+    ...(status && status !== 'EXPIRED' && { cancelled_at: null, cancel_reason: null, cancelled_by: null }),
     // Committed is booked, not held: no expiry left to show or sweep.
     ...(status === 'COMMITTED' && { expires_at: null, extension_until: null, extension_reason: null }),
     ...(notes !== undefined && { notes }),
@@ -160,6 +163,10 @@ export async function PUT(
     if (err instanceof HoldLockTimeoutError) return NextResponse.json({ error: err.message }, { status: 409 })
     throw err
   }
+
+  // A lapsed or cancelled hold brought back: its booking is no longer cancelled
+  // anywhere, even when this row lapsed on its own and only the others carry the mark.
+  if (hold.status === 'EXPIRED' && updated.status !== 'EXPIRED') await clearBookingCancel(updated)
 
   await prisma.auditLog.create({
     data: {

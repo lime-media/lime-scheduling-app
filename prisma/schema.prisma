@@ -269,21 +269,6 @@ model AppSetting {
   @@map("app_settings")
 }
 
-model AcceptedMarket {
-  id               String   @id @default(cuid())
-  dma_code         String   @unique
-  dma_name         String
-  lat              Float
-  lng              Float
-  base_concurrency Int      @default(1) // max simultaneous trucks before swarm trigger
-  notes            String?
-  is_active        Boolean  @default(true)
-  created_at       DateTime @default(now())
-  updated_at       DateTime @updatedAt
-
-  @@map("app_accepted_markets")
-}
-
 // THE record of tool use: every quote, hold booking and AI run in the app and
 // every MCP tool call — who, when, which tool, what went in, what came out
 // (lib/usageLog.ts). Replaces mcp_query_log and app_client_ai_questions.

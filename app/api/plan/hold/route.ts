@@ -35,7 +35,7 @@
  */
 
 import { withUsageLog } from '@/lib/usageLog'
-import { cleanBrand, opportunityName } from '@/lib/brand'
+import { opportunityName, savedBrand } from '@/lib/brand'
 import { QUOTE_ONLY_GROUP_PREFIX, QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
 import { openStage } from '@/lib/sfdcStages'
 import { NextRequest, NextResponse } from 'next/server'
@@ -333,7 +333,7 @@ async function handlePost(req: NextRequest) {
     }
 
     const accountName = body.sfdcAccountName || 'Client'
-    const brand = cleanBrand(body.brand)
+    const brand = savedBrand(body.brand) // "none" means no brand, as everywhere
     const linkedClient = await prisma.clientUser.findFirst({ where: { sfdc_account_id: body.sfdcAccountId }, select: { id: true } })
     const serviceUser = await prisma.user.findFirst({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } })
     const createdBy = (token.id as string) || serviceUser?.id || 'system'

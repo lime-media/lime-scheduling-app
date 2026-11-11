@@ -63,3 +63,39 @@ export function opportunityName(brand: string, account: string, rest: string): s
   const head = brand ? `${brand} / ${account}` : account
   return `${head} - ${rest}`.slice(0, 120)
 }
+
+/** What a rep says when the booking has no brand of its own. */
+// "n/a" needs its slash or dots: a brand really called "NA" is kept.
+const NO_BRAND = /^(?:none|no[ -]?brand|n\/a|n\.a)\.?$/i
+
+/** Whether the text says there is no brand ("none", "no brand", "n/a"). Pure. */
+export function isNoBrand(raw: unknown): boolean {
+  if (typeof raw !== 'string') return false
+  // Read once trailing descriptors are cleaned off (stripBrand also collapses
+  // spaces): "N/A LED" or "None 2026" would otherwise be saved as the brand
+  // "N/A" or "None".
+  return NO_BRAND.test(stripBrand(raw))
+}
+
+/** Asked of the rep before a chat or MCP booking (lib/staffBooking.ts requireBrand). */
+export const BRAND_REQUIRED = 'brand is required: ask the rep for the brand being advertised, or pass "none" if they say there is none.'
+
+/**
+ * The brand a booking is placed with. "none" (or "no brand", "n/a") is an
+ * answer: no brand. With `required` (the staff chat and MCP, which must ask
+ * rather than assume), a missing brand is refused instead of read as none;
+ * the Quote page, where the field is in front of the rep, doesn't require
+ * it. Pure.
+ */
+export function readBrand(raw: unknown, required: boolean): { brand: string } | { error: string } {
+  const text = typeof raw === 'string' ? raw.trim() : ''
+  if (isNoBrand(text)) return { brand: '' }
+  if (!text && required) return { error: BRAND_REQUIRED }
+  return { brand: cleanBrand(text) }
+}
+
+/** The brand as saved where it isn't required: cleaned, and "none" (or a variant) is no brand. Pure. */
+export function savedBrand(raw: unknown): string {
+  const r = readBrand(raw, false)
+  return 'brand' in r ? r.brand : ''
+}

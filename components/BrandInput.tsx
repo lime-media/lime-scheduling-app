@@ -7,7 +7,7 @@
  */
 
 import { useId } from 'react'
-import { BRAND_MAX, brandChange, cleanBrand } from '@/lib/brand'
+import { BRAND_MAX, brandChange, cleanBrand, isNoBrand } from '@/lib/brand'
 
 export function BrandInput({ value, onChange, className, hint = 'Goes to the Salesforce opportunity and leads its name, so it can be searched.', label = 'Brand' }: {
   value: string
@@ -26,11 +26,13 @@ export function BrandInput({ value, onChange, className, hint = 'Goes to the Sal
       <input id={id} type="text" value={value} maxLength={BRAND_MAX + 30} placeholder="e.g. Nike (the brand on the campaign)"
         onChange={e => onChange(e.target.value)} className={className} aria-describedby={`${id}-hint`} />
       <p id={`${id}-hint`} className="mt-1 text-[11px] text-gray-500">
-        {change === 'stripped'
-          ? <>Saved as <span className="font-medium text-gray-700">{saved}</span>: brand only, no asset, month or year.</>
-          : change === 'cut'
-            ? <>Saved as <span className="font-medium text-gray-700">{saved}</span>: Salesforce keeps {BRAND_MAX} characters.</>
-            : hint}
+        {isNoBrand(value)
+          ? <>Saved with no brand.</>
+          : change === 'stripped'
+            ? <>Saved as <span className="font-medium text-gray-700">{saved}</span>: brand only, no asset, month or year.</>
+            : change === 'cut'
+              ? <>Saved as <span className="font-medium text-gray-700">{saved}</span>: Salesforce keeps {BRAND_MAX} characters.</>
+              : hint}
       </p>
     </div>
   )

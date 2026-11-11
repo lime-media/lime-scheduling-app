@@ -57,7 +57,6 @@ export type QuoteRequest = {
   sfdcAccountId?: string
   features: { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean }
   reserveSoftHolds?: boolean
-  alloyRenews?: boolean
   hopLimitRoadMiles?: number
   /** Seller's Brand Direct markup; applied only to a Brand Direct quote (clientType). */
   brandMarkupPct?: number
@@ -393,7 +392,6 @@ export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: O
   const rules = {
     ...DEFAULT_RULES,
     reserveSoftHolds: req.reserveSoftHolds ?? DEFAULT_RULES.reserveSoftHolds,
-    renewingPrograms: req.alloyRenews ? ['Alloy Build'] : [],
   }
   const { overrides, basis } = opts.rates ?? await rateOverridesFor(req.sfdcAccountId)
   // Brand Direct: folded into every market's prices (lib/pricing/brandMarkup.ts).
@@ -428,7 +426,6 @@ export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: O
   if (plan.approximateClusters > 0) warnings.push('Some markets were too many to pair exactly in the time allowed. The truck count is still the minimum, but the weekly hops may not be the shortest possible.')
   if (fleet.trucks.some(t => !t.gps)) warnings.push(`${fleet.trucks.filter(t => !t.gps).length} truck(s) have no live position and were only considered where a scheduled job shows where they will be.`)
   if (rules.reserveSoftHolds && !fleet.reserved.some(r => r.reason.startsWith('AT&T soft'))) warnings.push('No AT&T soft holds are on file, so no AT&T trucks are held back.')
-  if (req.alloyRenews && !fleet.reserved.some(r => !r.reason.startsWith('AT&T soft'))) warnings.push('Alloy Build is marked as renewing, but no truck is currently on an Alloy Build job.')
   for (const l of priced) {
     // State plainly any market whose trucks deliver less than asked, with the
     // real last working day and the part-week that accounts for it.

@@ -52,6 +52,9 @@ model Hold {
   // Opportunity.AccountId, copied by the reconcile; its LED client is in
   // app_led_client_links (lib/ledClients.ts).
   sfdc_account_id     String?     @db.NVarChar(18)
+  // Opportunity.CreatedById, copied by the reconcile: tells opportunities the
+  // Leah Miles bot made apart from people's (lib/sfdcBots.ts).
+  sfdc_created_by_id  String?     @db.NVarChar(18)
   // When the sweep moved this won hold onto LED's truck and its opportunity's
   // LED Trucks hasn't reached Salesforce yet; retried every sweep
   // (lib/ledTruckFollow.ts). Null: nothing waiting.
@@ -73,6 +76,11 @@ model Hold {
   expires_at          DateTime?
   extension_reason    String?     @db.NVarChar(Max) // client's reason when requesting extension
   extension_until     DateTime? // requested extension date (client picks)
+  // Cancelled (lib/cancelBooking.ts): the holds are EXPIRED and stay listed;
+  // when, why and by which staff user. Reinstate clears them.
+  cancelled_at        DateTime?
+  cancel_reason       String?     @db.NVarChar(1000)
+  cancelled_by        String?     @db.NVarChar(191)
   // Relations
   user                User        @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
   client_user         ClientUser? @relation(fields: [client_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -266,21 +274,6 @@ model AppSetting {
   @@map("app_settings")
 }
 
-model AcceptedMarket {
-  id               String   @id @default(cuid())
-  dma_code         String   @unique
-  dma_name         String
-  lat              Float
-  lng              Float
-  base_concurrency Int      @default(1) // max simultaneous trucks before swarm trigger
-  notes            String?
-  is_active        Boolean  @default(true)
-  created_at       DateTime @default(now())
-  updated_at       DateTime @updatedAt
-
-  @@map("app_accepted_markets")
-}
-
 // THE record of tool use: every quote, hold booking and AI run in the app and
 // every MCP tool call — who, when, which tool, what went in, what came out
 // (lib/usageLog.ts). Replaces mcp_query_log and app_client_ai_questions.
@@ -391,4 +384,24 @@ model LedClientLink {
   linked_at       DateTime @default(now())
 
   @@map("app_led_client_links")
+}
+
+/// A booking's CampaignIQ campaign request (lib/campaignRequests.ts). One row
+/// per booking: booking_key is its key now (a revise renames the row);
+/// external_ref is the key first sent to Core and never changes.
+model CampaignRequestSync {
+  booking_key    String    @id @db.NVarChar(191)
+  external_ref   String    @unique(map: "UX_app_campaign_requests_external_ref") @db.NVarChar(191)
+  core_uid       String?   @unique(map: "UX_app_campaign_requests_core_uid") @db.UniqueIdentifier
+  request_id     String?   @db.NVarChar(20)
+  core_status    String?   @db.NVarChar(20)
+  program_uid    String?   @db.UniqueIdentifier
+  last_sent_hash String?   @db.NVarChar(64)
+  last_sent_at   DateTime?
+  last_error     String?   @db.NVarChar(Max)
+  last_error_at  DateTime?
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @default(now()) @updatedAt
+
+  @@map("app_campaign_requests")
 }

@@ -190,6 +190,9 @@ export const TRANSPORT_CONFIG = {
  */
 export const MIN_CLIENT_LEAD_DAYS = 2
 
+/** The most trucks a client may book in one request, online (portal or MCP). */
+export const CLIENT_MAX_TRUCKS = 20
+
 // ---------------------------------------------------------------------------
 // Rate override shape (for Rate Agreements)
 // ---------------------------------------------------------------------------

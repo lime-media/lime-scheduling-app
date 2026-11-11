@@ -12,7 +12,8 @@ import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
 import { PlannerTab } from '@/components/PlannerTab'
-import { ClientTypePicker, LeadSourcePicker } from '@/components/OpportunityFields'
+import { MARKET_SIZE_TIERS, NON_DMA_MARKET_TIER } from '@/lib/pricing/config'
+import { ClientTypePicker, LeadSourcePicker, OpportunityTypePicker } from '@/components/OpportunityFields'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
 import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
@@ -35,7 +36,7 @@ type QuoteResponse = {
     softHoldWarnings?: { truckNumber: string; warning: string }[]
     requiresOverride?: OverrideOption[]
   }
-  pricing: { quoteOnlyRequired?: boolean; brandMarkupPct?: number; clientType?: string | null; dailyRate: number; effectiveDailyRate: number; hourSurcharge: number; truckDays: number; days: number; calendarDays: number; truckCount: number; baseMedia: number; pricingBasis: string; marketSizeTier: { id: number; label: string }; schedule: { daysPerWeek: number; operatingHours: number; activationDays: number } }
+  pricing: { quoteOnlyRequired?: boolean; brandMarkupPct?: number; clientType?: string | null; dailyRate: number; effectiveDailyRate: number; hourSurcharge: number; truckDays: number; days: number; calendarDays: number; truckCount: number; baseMedia: number; pricingBasis: string; marketSizeTier: { id: number; label: string; dailyA18: number }; schedule: { daysPerWeek: number; operatingHours: number; activationDays: number } }
   features: {
     shadowFencing: { included: boolean; cost: number; floored: boolean; digitalImpressions: number }
     smartDirectional: { included: boolean; cost: number }
@@ -89,7 +90,7 @@ export default function InternalQuotePage() {
   }, [status, router])
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<'builder' | 'classic' | 'planner'>('builder')
+  const [activeTab, setActiveTab] = useState<'builder' | 'planner'>('builder')
   // Reservations → Revise opens /quote?revise=<booking>: the planner, with that booking loaded.
   const [reviseKey, setReviseKey] = useState<string | null>(null)
   useEffect(() => {
@@ -117,6 +118,7 @@ export default function InternalQuotePage() {
   // starting from the account's (components/OpportunityFields.tsx).
   const [clientType, setClientType] = useState<ClientType>('Agency')
   const [leadSource, setLeadSource] = useState('')
+  const [opportunityType, setOpportunityType] = useState('')
   const isBrandDirect = clientType === 'Brand Direct'
   const markupPct = isBrandDirect ? clampBrandMarkup(brandMarkupPct) : 0
 
@@ -262,7 +264,7 @@ export default function InternalQuotePage() {
   }
 
   const placeHold = useCallback(async (expectedOverride?: number) => {
-    if (holdLoading || !quoteResult || !account || !contact || (!attachTo && !leadSource)) return
+    if (holdLoading || !quoteResult || !account || !contact || (!attachTo && (!leadSource || !opportunityType))) return
     setHoldLoading(true)
 
     try {
@@ -289,6 +291,7 @@ export default function InternalQuotePage() {
           brand_markup_pct: isBrandDirect ? markupPct : undefined,
           // Adding to an existing opportunity keeps its own lead source.
           lead_source: attachTo ? undefined : leadSource,
+          opportunity_type: attachTo ? undefined : opportunityType,
           stage,
           quote_only: quoteOnly,
           days_per_week: form.days_per_week,
@@ -311,7 +314,7 @@ export default function InternalQuotePage() {
     } finally {
       setHoldLoading(false)
     }
-  }, [holdLoading, quoteResult, account, contact, holdDays, attachTo, form, toggles, clientType, isBrandDirect, markupPct, leadSource, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [holdLoading, quoteResult, account, contact, holdDays, attachTo, form, toggles, clientType, isBrandDirect, markupPct, leadSource, opportunityType, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (status === 'loading' || !session) return null
 
@@ -340,32 +343,17 @@ export default function InternalQuotePage() {
           >
             Multi-market Plan
           </button>
-          <button
-            onClick={() => setActiveTab('classic')}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'classic' ? 'border-green-600 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
-          >
-            Classic Quote Tool
-          </button>
         </div>
 
         {activeTab === 'planner' ? (
           <PlannerTab reviseKey={reviseKey} onReviseDone={() => { setReviseKey(null); window.history.replaceState(null, '', '/quote') }} />
-        ) : activeTab === 'classic' ? (
-          <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden" style={{ minHeight: 'calc(100vh - 200px)' }}>
-            <iframe
-              src="/led-quote-generator.html"
-              className="w-full border-0"
-              style={{ minHeight: 'calc(100vh - 200px)' }}
-              title="LED Quote Generator"
-            />
-          </div>
         ) : (
         <>
 
         {/* Step 1: Client selection */}
         <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 mb-4">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
-          <AccountSearch selected={account} onSelect={(a) => { setAccount(a); setClientType(a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setContact(null); setAttachTo(null); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
+          <AccountSearch suggestType selected={account} onSelect={(a) => { setAccount(a); setClientType(a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setOpportunityType(a?.opportunityType ?? ''); setContact(null); setAttachTo(null); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
           {account && (
             <div className="mt-3">
               {/* Sets Brand Direct pricing, so a change needs a fresh price. */}
@@ -663,6 +651,14 @@ export default function InternalQuotePage() {
                   <div><p className="text-sm font-medium text-gray-900">Lift Studies</p><p className="text-xs text-gray-500">{fmtMoney(quoteResult.features.studies.costPerStudy)} per study</p></div>
                   {!quoteResult.features.studies.available && <span className="text-[10px] text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">Requires {quoteResult.features.studies.reachMinimum.toLocaleString()}+ impressions</span>}
                 </div>
+                {/* How the reach behind the lift-study gate is estimated (lib/pricing/engine.ts): trucks × activation days × the market tier's daily A18+ impressions per truck. */}
+                <p className="text-xs text-gray-500 mb-2" title={`Daily A18+ impressions per truck by market tier: ${MARKET_SIZE_TIERS.map(t => `tier ${t.id} ${t.label} ${t.dailyA18.toLocaleString('en-US')}`).join('; ')}. Markets outside the top 50 DMAs are tier ${NON_DMA_MARKET_TIER}.`}>
+                  Estimated reach: {Math.round(quoteResult.features.studies.estimatedImpressions).toLocaleString('en-US')} impressions
+                  {' '}= {quoteResult.pricing.truckCount} truck{quoteResult.pricing.truckCount === 1 ? '' : 's'} × {quoteResult.pricing.days} activation day{quoteResult.pricing.days === 1 ? '' : 's'}
+                  {' '}× {quoteResult.pricing.marketSizeTier.dailyA18.toLocaleString('en-US')} per truck per day ({quoteResult.pricing.marketSizeTier.label}, tier {quoteResult.pricing.marketSizeTier.id}).
+                  {/* The badge above already names the minimum when studies are out of reach. */}
+                  {quoteResult.features.studies.available && <>{' '}Studies need {quoteResult.features.studies.reachMinimum.toLocaleString('en-US')}.</>}
+                </p>
                 <div className="grid grid-cols-2 gap-2">
                   {VALID_STUDIES.map(s => {
                     const sel = toggles.studies.includes(s)
@@ -705,6 +701,7 @@ export default function InternalQuotePage() {
                   {!holdResult?.ok && !attachTo && (
                     <div className="mt-4">
                       <LeadSourcePicker value={leadSource} onChange={setLeadSource} />
+                      <div className="mt-2"><OpportunityTypePicker value={opportunityType} onChange={setOpportunityType} /></div>
                     </div>
                   )}
                   {/* Opportunity stage — open stages only */}
@@ -752,9 +749,9 @@ export default function InternalQuotePage() {
                       )}
                     </>
                   ) : (
-                    <button onClick={() => placeHold()} disabled={holdLoading || quoteLoading || markupPending || !account || !contact || (!attachTo && !leadSource) || holdResult?.ok === true}
+                    <button onClick={() => placeHold()} disabled={holdLoading || quoteLoading || markupPending || !account || !contact || (!attachTo && (!leadSource || !opportunityType)) || holdResult?.ok === true}
                       className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg px-6 py-3 text-sm font-medium transition-colors">
-                      {!account ? 'Select a client above to place hold' : !contact ? 'Choose the primary contact above' : !attachTo && !leadSource ? 'Choose the lead source above' : markupPending ? 'Update the price for the new markup first' : holdLoading ? 'Submitting...'
+                      {!account ? 'Select a client above to place hold' : !contact ? 'Choose the primary contact above' : !attachTo && !leadSource ? 'Choose the lead source above' : !attachTo && !opportunityType ? 'Choose the opportunity type above' : markupPending ? 'Update the price for the new markup first' : holdLoading ? 'Submitting...'
                         : quoteOnly ? `Log quote in Salesforce (no reservation) \u2014 ${fmtMoney(total)}`
                         : `Place Hold \u2014 ${fmtMoney(total)}`}
                     </button>

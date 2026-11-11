@@ -23,23 +23,43 @@ export type ExtendClaims = {
 /** How many days the email offers to add. */
 export const EXTEND_DAYS = [1, 2] as const
 
-const hmac = (secret: string, data: string) =>
-  crypto.createHmac('sha256', secret).update(`extend:${data}`).digest('base64url')
+/**
+ * What a token is for. Each signs differently, so an Extend link can't be
+ * turned into a Cancel link (or back) by editing its URL.
+ */
+type Purpose = 'extend' | 'cancel'
 
-/** Signs the claims; the token stops working at the warned expiry. */
-export function signExtendToken(claims: ExtendClaims, secret: string): string {
+const hmac = (secret: string, data: string, purpose: Purpose) =>
+  crypto.createHmac('sha256', secret).update(`${purpose}:${data}`).digest('base64url')
+
+function signToken(claims: ExtendClaims, secret: string, purpose: Purpose): string {
   const data = Buffer.from(JSON.stringify({ h: claims.holdId, u: claims.userId, e: claims.expiresAt })).toString('base64url')
-  return `${data}.${hmac(secret, data)}`
+  return `${data}.${hmac(secret, data, purpose)}`
 }
 
+/** Signs the claims; the token stops working at the warned expiry. */
+export const signExtendToken = (claims: ExtendClaims, secret: string) => signToken(claims, secret, 'extend')
+
+/**
+ * The email's Cancel link (app/cancel): the same claims, signed for
+ * cancelling. It too stops working at the warned expiry, and once the
+ * booking's expiry changes.
+ */
+export const signCancelToken = (claims: ExtendClaims, secret: string) => signToken(claims, secret, 'cancel')
+
 /** The claims in a token, or null if it isn't ours, was altered, or its expiry has passed. */
-export function readExtendToken(token: string, secret: string, nowMs: number = Date.now()): ExtendClaims | null {
+export const readExtendToken = (token: string, secret: string, nowMs: number = Date.now()) => readToken(token, secret, 'extend', nowMs)
+
+/** A Cancel link's claims, as readExtendToken; an Extend token is refused. */
+export const readCancelToken = (token: string, secret: string, nowMs: number = Date.now()) => readToken(token, secret, 'cancel', nowMs)
+
+function readToken(token: string, secret: string, purpose: Purpose, nowMs: number): ExtendClaims | null {
   try {
     const dot = token.lastIndexOf('.')
     if (dot < 0) return null
     const data = token.slice(0, dot)
     const sig = token.slice(dot + 1)
-    const expected = hmac(secret, data)
+    const expected = hmac(secret, data, purpose)
     if (sig.length !== expected.length) return null
     if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null
     const { h, u, e } = JSON.parse(Buffer.from(data, 'base64url').toString()) as { h?: unknown; u?: unknown; e?: unknown }

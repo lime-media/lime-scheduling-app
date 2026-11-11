@@ -6,7 +6,8 @@
  * opportunity is created. Returns the route's status and JSON body.
  */
 
-import { cleanBrand, opportunityName } from '@/lib/brand'
+import { opportunityName, savedBrand } from '@/lib/brand'
+import { suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
@@ -32,7 +33,7 @@ import {
   VALID_STUDIES,
   type StudyType,
 } from '@/lib/pricing'
-import { resolveMarketSizeTierId, resolveRateOverrides, resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
+import { resolveMarketSizeTierId, clientRateCard } from '@/lib/pricing/resolvers'
 import { liveClientLinks } from '@/lib/clientLinks'
 import { holdExpDate } from '@/lib/dateOnly'
 import { reply, type CoreResult } from '@/lib/coreResult'
@@ -70,7 +71,7 @@ export async function placeClientBooking(
   const {
     market, state, start_date, end_date, truck_count, notes,
   } = body
-  const brand = cleanBrand(body.brand)
+  const brand = savedBrand(body.brand) // "none" means no brand, as everywhere
 
   // A whole number, as the quote requires (lib/clientAvailability.ts): 2.5,
   // "2" or true would hold one count of trucks and bill another.
@@ -96,14 +97,10 @@ export async function placeClientBooking(
   // The client's agreement over the editable default rate card, merged exactly
   // as the quote merges them (lib/clientAvailability.ts), so the booking is
   // priced and picked on the rates the client was just quoted.
-  const [marketSizeTierId, clientOverrides, defaultOverrides] = await Promise.all([
+  const [marketSizeTierId, { overrides: rateOverrides }] = await Promise.all([
     resolveMarketSizeTierId(market),
-    resolveRateOverrides(session),
-    resolveDefaultRateOverrides(),
+    clientRateCard(session),
   ])
-  const rateOverrides = clientOverrides
-    ? { ...defaultOverrides, ...clientOverrides, daily_rates: { ...defaultOverrides?.daily_rates, ...clientOverrides.daily_rates } }
-    : defaultOverrides
 
   const { selectedTrucks, availability } = await selectTrucksForHold({
     market,
@@ -145,7 +142,7 @@ export async function placeClientBooking(
   // relink reaches the next booking rather than the next login.
   const { sfdcAccountId } = await liveClientLinks(session)
   const accountInfo = sfdcAccountId && isSfdcConfigured()
-    ? await getSfdcAccountInfo(sfdcAccountId).catch(() => null)
+    ? await getSfdcAccountInfo(sfdcAccountId, { withWon: true }).catch(() => null)
     : null
   const markupPct = brandMarkupFor(accountInfo?.clientType)
 
@@ -300,6 +297,8 @@ export async function placeClientBooking(
         clientType: accountInfo?.clientType,
         // No seller to pick one: the website, or a partner booking through MCP.
         leadSource: opts.origination === 'mcp' ? MCP_LEAD_SOURCE : CLIENT_PORTAL_LEAD_SOURCE,
+        // Existing Client once the account has won a deal (lib/sfdcOpportunityType.ts).
+        opportunityType: suggestedOpportunityType(accountInfo?.hasWon),
         name: oppName,
         brand: brand || undefined,
         stageName: DEFAULT_STAGE, // a client's own request: no seller to choose

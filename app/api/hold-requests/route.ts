@@ -50,7 +50,7 @@ export async function GET() {
     },
     orderBy:  { created_at: 'desc' },
     include:  {
-      client_user: { select: { company_name: true } },
+      client_user: { select: { company_name: true, email: true } },
       user: { select: { name: true } },
     },
   })
@@ -181,6 +181,13 @@ export async function GET() {
     expires_at:        h.expires_at?.toISOString() ?? null,
     extension_reason:  h.extension_reason ?? null,
     extension_until:   h.extension_until?.toISOString() ?? null,
+    // Cancelled (lib/cancelBooking.ts): Reservations shows it under Expired as Cancelled, with the reason.
+    cancelled_at:      h.cancelled_at?.toISOString() ?? null,
+    cancel_reason:     h.cancel_reason ?? null,
+    // A client account with an email: a cancel reason is emailed to it and shown in its portal.
+    client_emailable:  Boolean(h.client_user?.email),
+    // Any client account, emailable or not: its portal shows the cancel reason.
+    client_portal:     Boolean(h.client_user_id),
     created_at:        h.created_at.toISOString(),
   }))
 

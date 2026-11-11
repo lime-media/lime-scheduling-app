@@ -7,9 +7,14 @@
 import { soqlString, sfdcQuery } from '@/lib/salesforceClient'
 import { clientTypeOf } from '@/lib/pricing/brandMarkup'
 import { leadSourceOf } from '@/lib/sfdcLeadSource'
+import { suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
 
-/** Accounts whose name contains q (at least 2 characters), up to 20. */
-export async function searchAccounts(q: string) {
+/**
+ * Accounts whose name contains q (at least 2 characters), up to 20. With
+ * `suggestType` (the quote pages, which show the Opportunity Type picker),
+ * each carries its type suggestion, at the cost of one more query.
+ */
+export async function searchAccounts(q: string, opts: { suggestType?: boolean } = {}) {
   if (q.length < 2) return []
   // Typed % and _ are literal (an account name, not a pattern): the AI chat
   // passes its own text here, and "_" alone would match any account.
@@ -21,9 +26,18 @@ export async function searchAccounts(q: string) {
   // clientType: Account "Client Type" — Agency (also when blank) or Brand Direct.
   // leadSource: the suggestion for a new quote, from the account's latest LED
   // opportunity that has one, only when it's still on the picklist.
+  // opportunityType: the suggestion for a new quote, Existing Client when the
+  // account has won a deal (one more query for the page of accounts). Only a
+  // suggestion: if that query fails, the search still answers and the seller picks.
+  const won = opts.suggestType && records.length
+    ? await sfdcQuery<{ AccountId: string }>(
+        `SELECT AccountId FROM Opportunity WHERE IsWon = true AND AccountId IN (${records.map(r => `'${r.Id}'`).join(',')}) GROUP BY AccountId`,
+      ).then(rows => new Set(rows.map(r => r.AccountId)), (err) => { console.error('[sfdc] won-deal lookup for account search failed:', err); return null })
+    : null
   return records.map(r => ({
     id: r.Id, name: r.Name, clientType: clientTypeOf(r.Client_Type2__c),
     leadSource: leadSourceOf(r.Opportunities?.records?.[0]?.LeadSource) ?? undefined,
+    opportunityType: won ? suggestedOpportunityType(won.has(r.Id)) : undefined,
   }))
 }
 

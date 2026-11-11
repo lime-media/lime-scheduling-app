@@ -13,6 +13,7 @@
 import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { centralDate } from '@/lib/dateOnly'
 import { chosenClientType, type ClientType } from '@/lib/pricing/brandMarkup'
+import { ASKED_DATES_MOVED_KEY, askedDates } from '@/lib/quoteFeatures'
 
 type BookingRow = {
   campaign_group_id: string | null
@@ -142,6 +143,9 @@ export function closedWonRefusal(holds: { status: string; sfdc_opportunity_id: s
   return opportunity?.isWon || holds.some(h => h.status === 'COMMITTED' && !!h.sfdc_opportunity_id) ? CLOSED_WON_READ_ONLY : null
 }
 
+/** A date's UTC calendar day (hold start/end dates are stored as UTC midnight). */
+const day = (d: Date | string) => (typeof d === 'string' ? d : d.toISOString()).slice(0, 10)
+
 /**
  * The holds of a lapsed booking that Reinstate brings back: the lapsed ones
  * whose dates haven't all passed. A market that already ended stays expired —
@@ -149,8 +153,17 @@ export function closedWonRefusal(holds: { status: string; sfdc_opportunity_id: s
  * or listed in Salesforce. Pure.
  */
 export function reinstatableHolds<H extends { status: string; end_date: Date | string }>(holds: H[], today: string): H[] {
-  const day = (d: Date | string) => (typeof d === 'string' ? d : d.toISOString()).slice(0, 10)
   return holds.filter(h => h.status === 'EXPIRED' && day(h.end_date) >= today)
+}
+
+/** A booking's markets, trucks and span, as the client's emails and the cancel page give them. Pure. */
+export function bookingSummary(holds: { market: string; truck_number: string; start_date: Date; end_date: Date }[]) {
+  return {
+    markets:   [...new Set(holds.map(h => h.market))],
+    trucks:    [...new Set(holds.map(h => h.truck_number))],
+    startDate: holds.map(h => day(h.start_date)).sort()[0],
+    endDate:   holds.map(h => day(h.end_date)).sort().reverse()[0],
+  }
 }
 
 /** What a rep is told when every lapsed market of a booking has already ended. */
@@ -313,7 +326,7 @@ export type RevisedRow = {
 }
 
 /** Not a real truck: what quote-only logs carry when no truck could be priced. */
-const NO_TRUCK = new Set([QUOTE_ONLY_NO_TRUCK, ''])
+export const NO_TRUCK = new Set([QUOTE_ONLY_NO_TRUCK, ''])
 
 const parseFeatures = (json: string | null): Record<string, unknown> => {
   try { return json ? JSON.parse(json) : {} } catch { return {} }
@@ -371,14 +384,15 @@ export function reviseRows(holds: RevisableHold[]): {
   const rows = [...byGroup.entries()].map(([campaignGroup, group]) => {
     const f = parseFeatures(group[0].features)
     const trucks = [...new Set(group.map(h => h.truck_number).filter(t => !NO_TRUCK.has(t)))]
-    // The dates the client asked for, as booked. Older holds don't store
-    // them: their span is the best there is (a shared truck's travel days
-    // can widen or shift it).
-    const asked = (k: string) => (typeof f[k] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(f[k] as string) ? f[k] as string : null)
+    // The dates the client asked for, as booked or as staff re-dated them,
+    // across the line's holds (askedDates). Older holds don't store them:
+    // their span is the best there is (a shared truck's travel days can
+    // widen or shift it).
+    const asked = askedDates(group)
     return {
       market: group[0].market,
-      startDate: asked('requestedStart') ?? group.map(h => h.start_date).sort()[0],
-      endDate: asked('requestedEnd') ?? group.map(h => h.end_date).sort().reverse()[0],
+      startDate: asked.start ?? group.map(h => h.start_date).sort()[0],
+      endDate: asked.end ?? group.map(h => h.end_date).sort().reverse()[0],
       trucks: Math.max(1, group[0].truck_count ?? (Number(f.truckCount) || trucks.length || 1)),
       daysPerWeek: Number(f.daysPerWeek) || 5,
       hours: Number(f.operatingHours) || 8,
@@ -437,6 +451,8 @@ export function keptPrices(
     const group = holds.filter(h => (h.campaign_group_id ?? h.id) === b.campaignGroup && h.live)
     const total = group.find(h => h.quoted_total != null)?.quoted_total
     if (total == null) continue
+    // Re-dated by staff since it was priced: the price is for the old dates.
+    if (group.some(h => parseFeatures(h.features)[ASKED_DATES_MOVED_KEY] === true)) continue
     const features = group.find(h => h.features)?.features ?? null
     const markup = parseFeatures(features).brandMarkupPct
     out.set(row.id, { total, features, trucks: b.keepTrucks, truckCount: b.trucks, markupPct: typeof markup === 'number' ? markup : null })

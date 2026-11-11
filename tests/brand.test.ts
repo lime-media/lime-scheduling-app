@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { brandChange, cleanBrand, opportunityName } from '@/lib/brand'
+import { brandChange, cleanBrand, isNoBrand, opportunityName, readBrand, savedBrand } from '@/lib/brand'
 
 section('brand: only the brand is saved')
 eq('a plain brand', cleanBrand('  Nike  '), 'Nike')
@@ -29,3 +29,15 @@ eq('extra spaces are not a change', brandChange('  Nike  '), 'none')
 eq('words dropped', brandChange('Molytical August LED'), 'stripped')
 eq('only cut to 50 characters (nothing dropped)', brandChange('A'.repeat(60)), 'cut')
 eq('both: says what was dropped', brandChange('A'.repeat(60) + ' LED'), 'stripped')
+
+section('readBrand: the chat and MCP ask, never assume (F6)')
+eq('a brand', readBrand('Nike LED', true), { brand: 'Nike' })
+eq('"none" is an answer: no brand', [readBrand('none', true), readBrand(' No Brand ', true), readBrand('N/A', true)], [{ brand: '' }, { brand: '' }, { brand: '' }])
+eq('missing, when required: refused', 'error' in readBrand(undefined, true) && 'error' in readBrand('  ', true), true)
+eq('"none." and "n.a." are answers too', [readBrand('None.', true), readBrand('n.a.', true)], [{ brand: '' }, { brand: '' }])
+eq('missing on the Quote page: no brand', readBrand(undefined, false), { brand: '' })
+eq('savedBrand: none is no brand, a brand is cleaned', [savedBrand('None'), savedBrand('Nike LED'), savedBrand(undefined)], ['', 'Nike', ''])
+eq('"no  brand" and "no-brand" are answers too (spacing, hyphen)', [readBrand('no  brand', true), readBrand('No-Brand', true)], [{ brand: '' }, { brand: '' }])
+eq('isNoBrand: only the no-brand answers', [isNoBrand('None'), isNoBrand(' n/a '), isNoBrand('Nike'), isNoBrand(''), isNoBrand(undefined)], [true, true, false, false, false])
+eq('a brand called NA is kept', savedBrand('NA'), 'NA')
+eq('a no-brand answer with a trailing descriptor is still no brand', [savedBrand('N/A LED'), savedBrand('None 2026')], ['', ''])

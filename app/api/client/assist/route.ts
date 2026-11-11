@@ -20,6 +20,7 @@ export async function POST(req: NextRequest) {
 
   try {
     await sendAssistanceRequestEmail({
+      clientUserId: session.id,
       companyName: session.companyName,
       market,
       state,

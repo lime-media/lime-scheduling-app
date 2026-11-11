@@ -47,12 +47,12 @@ IF OBJECT_ID('dbo.app_campaign_requests', 'U') IS NULL
 IF COL_LENGTH('dbo.app_campaign_requests', 'external_ref') IS NULL
 BEGIN
     ALTER TABLE [dbo].[app_campaign_requests] ADD [external_ref] NVARCHAR(191) NULL;
-    EXEC('UPDATE [dbo].[app_campaign_requests] SET [external_ref] = [booking_key] WHERE [external_ref] IS NULL');
-    EXEC('ALTER TABLE [dbo].[app_campaign_requests] ALTER COLUMN [external_ref] NVARCHAR(191) NOT NULL');
+    EXEC(N'UPDATE [dbo].[app_campaign_requests] SET [external_ref] = [booking_key] WHERE [external_ref] IS NULL');
+    EXEC(N'ALTER TABLE [dbo].[app_campaign_requests] ALTER COLUMN [external_ref] NVARCHAR(191) NOT NULL');
 END
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_app_campaign_requests_external_ref' AND object_id = OBJECT_ID('dbo.app_campaign_requests'))
-    EXEC('CREATE UNIQUE INDEX [UX_app_campaign_requests_external_ref] ON [dbo].[app_campaign_requests] ([external_ref])');
+    EXEC(N'CREATE UNIQUE INDEX [UX_app_campaign_requests_external_ref] ON [dbo].[app_campaign_requests] ([external_ref])');
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_app_campaign_requests_core_uid' AND object_id = OBJECT_ID('dbo.app_campaign_requests'))
     CREATE UNIQUE INDEX [UX_app_campaign_requests_core_uid] ON [dbo].[app_campaign_requests] ([core_uid]) WHERE [core_uid] IS NOT NULL;

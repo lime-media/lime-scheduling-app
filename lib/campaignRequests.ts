@@ -157,7 +157,7 @@ const placeName = (h: RequestHold) =>
  * sent to Core under (app_campaign_requests), null for one never sent. Null
  * when the booking has no live hold.
  */
-export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: string) => string | null, externalRefOf: (bookingKey: string) => string | null = () => null): BookingRequest | null {
+export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: string) => string | null, externalRefOf: (bookingKey: string) => string | null): BookingRequest | null {
   const live = holds.filter(h => LIVE.has(h.status))
   if (live.length === 0) return null
   const first = [...live].sort((a, b) => a.start_date.localeCompare(b.start_date) || a.id.localeCompare(b.id))[0]
@@ -275,7 +275,7 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
 }
 
 /** Live holds grouped into bookings, each as a request. */
-export function buildRequests(holds: RequestHold[], clientUidOf: (accountId: string) => string | null, externalRefOf?: (bookingKey: string) => string | null): BookingRequest[] {
+export function buildRequests(holds: RequestHold[], clientUidOf: (accountId: string) => string | null, externalRefOf: (bookingKey: string) => string | null): BookingRequest[] {
   const bookings = new Map<string, RequestHold[]>()
   for (const h of holds) {
     const key = bookingKey(h) ?? h.id

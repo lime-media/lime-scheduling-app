@@ -27,7 +27,7 @@ export async function GET() {
 
   try {
     const today = centralDate(new Date())
-    const [holds, links] = await Promise.all([
+    const [holds, links, sent] = await Promise.all([
       prisma.hold.findMany({
         // Won holds stay COMMITTED for good, so history is cut at a year: no
         // booking's markets run a year apart, and a running booking still
@@ -40,10 +40,12 @@ export async function GET() {
         },
       }),
       prisma.ledClientLink.findMany({ select: { sfdc_account_id: true, client_uid: true } }),
+      prisma.campaignRequestSync.findMany({ select: { booking_key: true, external_ref: true } }),
     ])
     const clientOf = new Map(links.map(l => [l.sfdc_account_id, l.client_uid]))
     const rows: RequestHold[] = holds.map(h => ({ ...h, start_date: day(h.start_date), end_date: day(h.end_date) }))
-    const all = buildRequests(rows, a => clientOf.get(a) ?? null).filter(b => b.holdsEnd >= today)
+    const refOf = new Map(sent.map(r => [r.booking_key, r.external_ref]))
+    const all = buildRequests(rows, a => clientOf.get(a) ?? null, k => refOf.get(k) ?? null).filter(b => b.holdsEnd >= today)
     const bookings = all
       .filter(b => b.issues.length > 0)
       .map(b => ({

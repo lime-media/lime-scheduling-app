@@ -58,7 +58,7 @@ export function runLabel(tool: string, result?: Bag | null, inputs?: Bag | null)
  * ignores it (client portal, chat) never relabels a real hold.
  */
 export function isQuoteOnlyRun(tool: string, result?: Bag | null, inputs?: Bag | null): boolean {
-  const run = QUOTE_ONLY_RUNS[tool]
+  const run = Object.hasOwn(QUOTE_ONLY_RUNS, tool) ? QUOTE_ONLY_RUNS[tool] : undefined
   return !!run && (result?.quote_only === true || inputs?.[run.flag] === true)
 }
 

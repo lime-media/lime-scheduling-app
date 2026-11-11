@@ -78,7 +78,7 @@ export function isNoBrand(raw: unknown): boolean {
 }
 
 /** Asked of the rep before a chat or MCP booking (lib/staffBooking.ts requireBrand). */
-export const BRAND_REQUIRED = 'brand is required: ask the rep which brand is being advertised. Don\'t offer "none" as an option; pass "none" only if the rep says there is no brand.'
+export const BRAND_REQUIRED = 'brand is required: if the rep already named the brand, pass it (or "none" if they said there is no brand) without asking again; otherwise ask the rep which brand is being advertised. Don\'t offer "none" as an option; pass "none" only if the rep says there is no brand.'
 
 /**
  * The brand a booking is placed with. "none" (or "no brand", "n/a") is an

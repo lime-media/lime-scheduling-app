@@ -77,3 +77,6 @@ eq('older rows: read from the request (quote_only on the Quote Builder, quoteOnl
   [runLabel('hold_classic', { total: 3800 }, { quote_only: true }), runLabel('hold_multi', null, { quoteOnly: true })],
   ['Quote logged to Salesforce, no reservation (Quote Builder)', 'Quote logged to Salesforce, no reservation (Multi-market)'])
 eq('only hold tools are relabelled', runLabel('quote_classic', null, { quote_only: true }), 'Quote (Quote Builder)')
+eq('a quote-only log counts no holds', summarizeResult({ ok: true, created: 1, quoteOnly: true }).holds, undefined)
+eq('a flag the route ignores does not relabel', [runLabel('hold_client', { holds: 1 }, { quote_only: true }), runLabel('hold_classic', { holds: 1 }, { quoteOnly: true })],
+  ['Hold placed (client portal)', 'Hold placed (Quote Builder)'])

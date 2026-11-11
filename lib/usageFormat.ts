@@ -49,9 +49,17 @@ export const toolLabel = (tool: string) =>
  * recorded fall back to the request's own quote-only flag.
  */
 export function runLabel(tool: string, result?: Bag | null, inputs?: Bag | null): string {
-  const label = toolLabel(tool)
-  const quoteOnly = result?.quote_only === true || inputs?.quote_only === true || inputs?.quoteOnly === true
-  return quoteOnly && tool.startsWith('hold_') ? label.replace(/^Hold placed/, 'Quote logged to Salesforce, no reservation') : label
+  // Only the two routes that honour the flag: each reads its own spelling, so a
+  // flag sent to a route that ignores it (client portal, chat) never relabels a real hold.
+  const asked = tool === 'hold_classic' ? inputs?.quote_only === true : tool === 'hold_multi' ? inputs?.quoteOnly === true : false
+  const quoteOnly = result?.quote_only === true || asked
+  return (quoteOnly && QUOTE_ONLY_LABELS[tool]) || toolLabel(tool)
+}
+
+/** The hold routes that can log a quote only, and how such a run reads. */
+const QUOTE_ONLY_LABELS: Record<string, string> = {
+  hold_classic: 'Quote logged to Salesforce, no reservation (Quote Builder)',
+  hold_multi: 'Quote logged to Salesforce, no reservation (Multi-market)',
 }
 
 type Bag = Record<string, unknown>

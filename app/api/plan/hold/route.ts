@@ -127,7 +127,8 @@ async function handlePost(req: NextRequest) {
     return NextResponse.json({ error: 'A hold expiry date is only set when revising a booking.' }, { status: 400 })
   }
   if (body.holdUntil !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(body.holdUntil)) return NextResponse.json({ error: 'Choose a valid hold expiry date.' }, { status: 400 })
-  const holdUntilFrom = typeof body.holdUntilFrom === 'string' && !isNaN(new Date(body.holdUntilFrom).getTime()) ? new Date(body.holdUntilFrom) : null
+  // A full ISO timestamp: a bare date would parse as UTC midnight, the day before in Central.
+  const holdUntilFrom = typeof body.holdUntilFrom === 'string' && body.holdUntilFrom.includes('T') && !isNaN(new Date(body.holdUntilFrom).getTime()) ? new Date(body.holdUntilFrom) : null
   // A new opportunity's lead source: the seller picks one off Salesforce's
   // picklist. A revision or an attach keeps the opportunity's own (a
   // revision with no opportunity left makes one: checked once that's known).

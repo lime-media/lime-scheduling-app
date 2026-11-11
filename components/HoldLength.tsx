@@ -69,7 +69,7 @@ export function HoldLength({ days, onChange, startDates }: {
  * (lib/holdExpiry.ts reviseHoldExpiry), including a refusal or the cap when
  * the revised dates start sooner.
  */
-export function HoldUntil({ date, onChange, heldUntil, startDates }: {
+export function HoldUntil({ date, onChange, heldUntil, startDates, result }: {
   /** YYYY-MM-DD, Central. */
   date: string
   onChange: (date: string) => void
@@ -77,11 +77,12 @@ export function HoldUntil({ date, onChange, heldUntil, startDates }: {
   heldUntil: string
   /** The booking's start dates, YYYY-MM-DD. A booking has one expiry, capped by the earliest of them. */
   startDates: string[]
+  /** reviseHoldExpiry for these dates (the caller also gates the button on it), or null with no start dates. */
+  result: ReturnType<typeof reviseHoldExpiry> | null
 }) {
   const starts = startDates.filter(Boolean)
   const now = new Date()
   const held = new Date(heldUntil)
-  const result = starts.length ? reviseHoldExpiry(starts, date, held, now, STAFF_MIN_DAYS_BEFORE_START) : null
   const unchanged = date === centralDate(held)
   return (
     <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-gray-700">

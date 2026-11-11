@@ -791,8 +791,10 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
   // The trucks this booking would hold: committed markets keep their own expiry.
   const holdStarts = holdStartDates(chosen.filter(l => !committedMarkets.includes(l.market.trim().toLowerCase())))
   // A revision's expiry date the server would refuse (past, or past the limit): HoldUntil says why.
-  const holdUntilRefused = !quoteOnly && holdUntil !== null && holdStarts.length > 0
-    && 'error' in reviseHoldExpiry(holdStarts, holdUntil.date, new Date(holdUntil.heldUntil), new Date(), STAFF_MIN_DAYS_BEFORE_START)
+  const holdUntilResult = !quoteOnly && holdUntil !== null && holdStarts.length > 0
+    ? reviseHoldExpiry(holdStarts, holdUntil.date, new Date(holdUntil.heldUntil), new Date(), STAFF_MIN_DAYS_BEFORE_START)
+    : null
+  const holdUntilRefused = holdUntilResult !== null && 'error' in holdUntilResult
 
   return (
     <>
@@ -888,7 +890,7 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
           <>
             {/* Hold length: a reservation only (a quote-only log holds nothing). */}
             {!quoteOnly && (holdUntil
-              ? <HoldUntil date={holdUntil.date} onChange={onHoldUntil} heldUntil={holdUntil.heldUntil} startDates={holdStarts} />
+              ? <HoldUntil date={holdUntil.date} onChange={onHoldUntil} heldUntil={holdUntil.heldUntil} startDates={holdStarts} result={holdUntilResult} />
               : <HoldLength days={holdDays} onChange={onHoldDays} startDates={holdStarts} />
             )}
             <button onClick={onPlaceHolds} disabled={holding || !account || !contact || needsLeadSource || needsOpportunityType || chosen.length === 0 || holdUntilRefused}

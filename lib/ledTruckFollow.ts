@@ -12,8 +12,9 @@
  * - A hold LED runs its job on (any day within its dates) keeps its truck.
  * - Each other hold takes a truck LED runs the job on, within its dates and in
  *   its market, that no hold of the job is on over the same days: the truck
- *   with the most of those days first, then by truck number; holds go in
- *   truck-number order. Each LED truck takes one hold over the same days.
+ *   with the most of those days first, then by truck number. The hold with
+ *   the fewest trucks to choose from picks first, then truck-number order.
+ *   Each LED truck takes one hold over the same days.
  * - Not when another live hold of the same opportunity is on that truck over
  *   the same days (a market not yet won, say).
  * - LED on fewer trucks than held: the holds left over keep their trucks and
@@ -148,22 +149,29 @@ export function ledTruckMoves(holds: FollowHold[], rows: FollowRow[], today: str
     // (another market of a reused job number on that truck isn't this hold's).
     const daysOn = (h: FollowHold, truck: string) =>
       new Set(within(h).filter(r => r.truck_number === truck && inHoldMarket(h, r)).map(r => r.shift_start)).size
-    // The holds LED isn't running on their own truck, in truck-number order so
-    // the same schedule always gives the same moves.
+    // LED's trucks for the job a hold could take, before any is given out:
+    // within its dates and market, and no other hold of the job or live hold
+    // of its opportunity on it over those days.
+    const options = (h: FollowHold) => [...new Set(within(h)
+      .filter(r => inHoldMarket(h, r))
+      .map(r => r.truck_number))]
+      .filter(t => !group.some(o => o !== h && o.truck_number === t && overlaps(o, h)))
+      .filter(t => !takenByBooking(h, t))
+    // The holds LED isn't running on their own truck. The one with the fewest
+    // trucks to choose from picks first, so a hold that can only go one place
+    // isn't crowded out; then truck-number order, so the same schedule always
+    // gives the same moves.
     const unmatched = group
       .filter(h => h.end_date >= today && h.days_sold > 0)
       .filter(h => !seen || (h.start_date >= seen.from && h.end_date <= seen.to))
       .filter(h => !within(h).some(r => r.truck_number === h.truck_number))
-      .sort((a, b) => a.truck_number.localeCompare(b.truck_number) || a.id.localeCompare(b.id))
+      .map(h => ({ h, trucks: options(h) }))
+      .sort((a, b) => a.trucks.length - b.trucks.length || a.h.truck_number.localeCompare(b.h.truck_number) || a.h.id.localeCompare(b.h.id))
     // Trucks given to a hold of this job in this pass, over its dates.
     const given: { truck: string; start_date: string; end_date: string }[] = []
-    for (const h of unmatched) {
-      const candidates = [...new Set(within(h)
-        .filter(r => inHoldMarket(h, r))
-        .map(r => r.truck_number))]
-        .filter(t => !group.some(o => o !== h && o.truck_number === t && overlaps(o, h)))
+    for (const { h, trucks } of unmatched) {
+      const candidates = trucks
         .filter(t => !given.some(g => g.truck === t && overlaps(g, h)))
-        .filter(t => !takenByBooking(h, t))
         .map(t => ({ truck: t, days: daysOn(h, t) }))
         .sort((a, b) => b.days - a.days || a.truck.localeCompare(b.truck))
       const to = candidates[0]?.truck

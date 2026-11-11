@@ -137,6 +137,10 @@ eq('held on 5 trucks Nov 16–30, LED runs 5 trucks Nov 30–Dec 8: only the ove
   pmoves(['0786', '4378', '7267', '7278', '7402'].map((t, i) => ph(`h${i}`, t, '2026-11-16', '2026-11-30', 11)),
     ['0751', '1106', '4378', '7417', '7450'].flatMap(t => led(t, LATE))),
   [['h0', '0786', '0751'], ['h2', '7267', '1106'], ['h3', '7278', '7417'], ['h4', '7402', '7450']])
+eq('a hold that can only go one place picks first',
+  moves([multi({ id: 'a', truck_number: '1000', market: 'Multi-market: Detroit, Phoenix' }), multi({ id: 'b', truck_number: '4322', market: 'Multi-market: Detroit, Los Angeles' })],
+    [...led('1261', DAYS, DET), ...led('5688', DAYS, { market: 'Phoenix', state: 'AZ', standard_market_name: 'Phoenix, AZ' })]).sort(),
+  [['a', '1000', '5688'], ['b', '4322', '1261']])
 eq('no LED program: nothing moves', pmoves([ph('a', '5156', '2026-11-12', '2026-11-14', 3)], []), [])
 eq('two holds of the job never land on one truck over the same days',
   pmoves([ph('a', '0768', '2026-11-17', '2026-11-30'), ph('b', '1727', '2026-11-17', '2026-11-30')], led('0820', weekdays('2026-11-17', '2026-11-30'))),

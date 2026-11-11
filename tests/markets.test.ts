@@ -83,6 +83,8 @@ eq('a stated state with no comma is still a state', standardMarketCoords('Dallas
 eq('a ZIP after the state still finds the entry', standardMarketCoords('Dallas, TX 75201', STANDARD), 'Dallas TX')
 eq('a country after the state still finds the entry', standardMarketCoords('Dallas, TX, USA', STANDARD), 'Dallas TX')
 eq('a ZIP after another state is still that state', standardMarketCoords('Dallas, PA 18612', STANDARD), null)
+eq('a dotted state still finds the entry', standardMarketCoords('Washington, D.C.', new Map([['washington, dc', 'DC']])), 'DC')
+eq('an entry naming no state matches a stated state', standardMarketCoords('Long Island, NY', new Map([['long island', 'LI']])), 'LI')
 // What they fall through to: the US place list, in the right state. NaN when
 // the place is missing, so a missing place fails rather than passing.
 eq('Dallas, PA is located in Pennsylvania', (placeCoords('Dallas, PA')?.lng ?? NaN) > -80, true)

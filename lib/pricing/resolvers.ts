@@ -209,12 +209,14 @@ export function standardMarketCoords<T>(market: string, standardMarkets: Readonl
   if (exact) return exact
   const [city, rest] = key.split(',').map(p => p.trim())
   if (!city) return null
-  // The state is the first word after the comma: a ZIP or ", USA" may follow it.
-  const state = rest?.split(' ')[0]
+  // The state is the first word after the comma: a ZIP or ", USA" may follow
+  // it. Dots dropped, so "Washington, D.C." is in DC.
+  const state = rest?.split(' ')[0].replace(/\./g, '')
   const hits = [...standardMarkets.entries()]
     .filter(([name]) => {
       const [nameCity, nameState] = name.split(',').map(p => p.trim())
-      return nameCity === city && (!state || nameState === state)
+      // An entry naming no state ("Long Island") is not in another state.
+      return nameCity === city && (!state || !nameState || nameState === state)
     })
     .sort(([a], [b]) => a.localeCompare(b))
   return hits.length > 0 ? hits[0][1] : null

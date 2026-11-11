@@ -17,7 +17,7 @@ section('Client chat: one engine, client rules')
   eq('the chat and the quote form share the availability check',
     route.includes('await clientAvailability(session,') && quote.includes('await clientAvailability(session,'), true)
   eq('the client rules: lead time, own rate card, no AT&T strand override',
-    availability.includes('MIN_CLIENT_LEAD_DAYS') && availability.includes('resolveRateOverrides(session)') && !availability.includes('softHoldStrandIsWarning'), true)
+    availability.includes('MIN_CLIENT_LEAD_DAYS') && availability.includes('clientRateCard(session)') && !availability.includes('softHoldStrandIsWarning'), true)
   eq('a refusal passes on only the message and market choices', route.includes('message: b.message ?? b.error, candidates: b.candidates })'), true)
   eq('the context is the client\'s own holds only', /client_user_id: session\.id/.test(context) && !context.includes('SCHEDULED_QUERY') && !context.includes('getLiveVehicleLocations'), true)
   eq('still no prices', route.includes('Do NOT attempt to generate prices'), true)

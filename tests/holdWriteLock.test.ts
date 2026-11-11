@@ -49,7 +49,8 @@ section('Hold write lock: every path that chooses a truck writes under it')
   eq('the client batch writes every row in one locked write', fs.readFileSync('lib/holdRequestService.ts', 'utf8').includes('tx => tx.hold.createMany({ data: rows })'), true)
   eq('a booking with fewer trucks free than quoted is refused, not booked short (portal and staff)',
     portal.includes('selectedTrucks.length < truck_count') && fs.readFileSync('lib/staffBooking.ts', 'utf8').includes('!quoteOnly && selectedTrucks.length < truck_count'), true)
-  eq('a portal booking prices on the default rate card under the client\'s agreement, as its quote does', portal.includes('resolveDefaultRateOverrides()') && portal.includes('{ ...defaultOverrides, ...clientOverrides,'), true)
+  eq('a portal booking prices on the default rate card under the client\'s agreement, as its quote does', portal.includes('clientRateCard(session)') && fs.readFileSync('lib/clientAvailability.ts', 'utf8').includes('clientRateCard(session)')
+    && fs.readFileSync('lib/pricing/resolvers.ts', 'utf8').includes('{ ...defaultOverrides, ...clientOverrides,'), true)
   eq('paid review (#133): a refused grid drag is a 409 with its reason, as the portal booking', fs.readFileSync('app/api/client/hold-requests/route.ts', 'utf8').includes('e instanceof ClientHoldRefusal ||'), true)
   eq('an MCP client booking keeps its origination through the all-or-nothing batch', portal.includes('origination: opts.origination,') && fs.readFileSync('lib/holdRequestService.ts', 'utf8').includes("params.origination ?? 'client-view'"), true)
 }

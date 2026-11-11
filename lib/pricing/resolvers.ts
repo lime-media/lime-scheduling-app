@@ -132,6 +132,19 @@ export async function resolveDefaultRateOverrides(): Promise<RateOverrides | nul
   }
 }
 
+/**
+ * A client's rate card: their agreement over the editable default card
+ * (daily rates merged market by market), or the default card alone. The one
+ * merge every client quote and booking prices on, so the portal's quote, its
+ * booking and the multi-market order agree.
+ */
+export async function clientRateCard(session: ClientSession): Promise<{ overrides: RateOverrides | null; agreement: boolean }> {
+  const [clientOverrides, defaultOverrides] = await Promise.all([resolveRateOverrides(session), resolveDefaultRateOverrides()])
+  return clientOverrides
+    ? { overrides: { ...defaultOverrides, ...clientOverrides, daily_rates: { ...defaultOverrides?.daily_rates, ...clientOverrides.daily_rates } }, agreement: true }
+    : { overrides: defaultOverrides, agreement: false }
+}
+
 export async function resolveRateOverridesBySfdcAccount(sfdcAccountId: string): Promise<{ overrides: RateOverrides | null; agreementName?: string }> {
   try {
     const now = new Date()

@@ -17,6 +17,13 @@ export function parseDateOnly(value: string): Date {
   return parseISO(value.slice(0, 10))
 }
 
+/** A YYYY-MM-DD string naming a day that exists (JS rolls 2026-02-31 over to March 3). */
+export const isCalendarDate = (s: unknown): s is string => {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false
+  const t = Date.parse(s + 'T00:00:00Z')
+  return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === s
+}
+
 
 /**
  * The zone a hold's dates are in: reps, confirmations, the expiry sweep's

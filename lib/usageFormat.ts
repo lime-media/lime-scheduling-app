@@ -6,6 +6,7 @@
 export type UsageTool =
   | 'quote_classic' | 'quote_multi' | 'quote_client' | 'quote_chat'
   | 'hold_classic' | 'hold_multi' | 'hold_client' | 'hold_chat'
+  | 'quote_client_multi' | 'hold_client_multi'
   | 'ai_chat_staff' | 'ai_chat_client' | 'ai_plan_areas' | 'ai_plan_review'
 
 export const TOOL_LABELS: Record<UsageTool, string> = {
@@ -19,6 +20,8 @@ export const TOOL_LABELS: Record<UsageTool, string> = {
   hold_multi: 'Hold placed (Multi-market)',
   hold_client: 'Hold placed (client portal)',
   hold_chat: 'Hold placed (AI chat)',
+  quote_client_multi: 'Quote (client portal, multi-market)',
+  hold_client_multi: 'Hold placed (client portal, multi-market)',
   ai_chat_staff: 'AI chat (staff)',
   ai_chat_client: 'AI chat (client portal)',
   ai_plan_areas: 'AI: ZIP list → areas',

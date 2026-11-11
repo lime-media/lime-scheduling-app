@@ -10,6 +10,7 @@ import { prisma } from '@/lib/prisma'
 import type { ClientSession } from '@/lib/clientAuth'
 import type { StaffActor } from '@/lib/staffBooking'
 import { chosenClientType, type ClientType } from '@/lib/pricing/brandMarkup'
+import { isCalendarDate } from '@/lib/dateOnly'
 
 export type McpParty =
   | { kind: 'client'; session: ClientSession }
@@ -48,9 +49,6 @@ export type McpCampaign = {
   days_per_week?: 5 | 6 | 7
   operating_hours?: number
 }
-
-const isCalendarDate = (s: unknown): s is string => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
-  && new Date(Date.parse(s + 'T00:00:00Z')).toISOString().slice(0, 10) === s
 
 /**
  * The campaign from an MCP request body, or the 400 message. Types are checked

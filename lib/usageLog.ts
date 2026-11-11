@@ -87,13 +87,16 @@ export function summarizeResult(json: unknown, replyChars = 300): Record<string,
   const j = json as Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
   const out: Record<string, unknown> = {
     // Quote Builder: grandTotal. Multi-market (/api/plan/quote returns the quote itself): summary.grandTotal.
-    total: num(j.grandTotal) ?? num(j.summary?.grandTotal) ?? num(j.quote?.summary?.grandTotal) ?? num(j.pricing?.grandTotal) ?? num(j.quote?.grandTotal),
+    // The client's multi-market quote (lib/clientMultiMarket.ts): what can be booked, else the order as asked.
+    total: num(j.grandTotal) ?? num(j.summary?.grandTotal) ?? num(j.quote?.summary?.grandTotal) ?? num(j.pricing?.grandTotal) ?? num(j.quote?.grandTotal)
+      ?? num(j.fits?.total) ?? num(j.asked?.total),
     good: num(j.presets?.good?.total),
     best: num(j.presets?.best?.total),
     market: str(j.market, 100),
     holds: Array.isArray(j.created) ? j.created.length : num(j.created),
     failed: Array.isArray(j.failed) ? j.failed.length : undefined,
-    markets: num(j.summary?.markets) ?? num(j.quote?.summary?.markets),
+    markets: num(j.summary?.markets) ?? num(j.quote?.summary?.markets) ?? (Array.isArray(j.asked?.lines) ? j.asked.lines.length : undefined)
+      ?? (Array.isArray(j.markets) ? j.markets.length : undefined),
     trucks: num(j.summary?.trucksUsed) ?? num(j.quote?.summary?.trucksUsed),
     areas: Array.isArray(j.areas) ? j.areas.length : undefined,
     findings: Array.isArray(j.findings) ? j.findings.length : undefined,

@@ -89,7 +89,7 @@ export default function InternalQuotePage() {
   }, [status, router])
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<'builder' | 'classic' | 'planner'>('builder')
+  const [activeTab, setActiveTab] = useState<'builder' | 'planner'>('builder')
   // Reservations → Revise opens /quote?revise=<booking>: the planner, with that booking loaded.
   const [reviseKey, setReviseKey] = useState<string | null>(null)
   useEffect(() => {
@@ -340,25 +340,10 @@ export default function InternalQuotePage() {
           >
             Multi-market Plan
           </button>
-          <button
-            onClick={() => setActiveTab('classic')}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'classic' ? 'border-green-600 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
-          >
-            Classic Quote Tool
-          </button>
         </div>
 
         {activeTab === 'planner' ? (
           <PlannerTab reviseKey={reviseKey} onReviseDone={() => { setReviseKey(null); window.history.replaceState(null, '', '/quote') }} />
-        ) : activeTab === 'classic' ? (
-          <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden" style={{ minHeight: 'calc(100vh - 200px)' }}>
-            <iframe
-              src="/led-quote-generator.html"
-              className="w-full border-0"
-              style={{ minHeight: 'calc(100vh - 200px)' }}
-              title="LED Quote Generator"
-            />
-          </div>
         ) : (
         <>
 

@@ -181,3 +181,52 @@ export function expiringHoldsText(data: ExpiringHoldsEmailFields): string {
   )
   return lines.join('\n')
 }
+
+// ── Client assistance requests (lib/email.ts sendAssistanceRequestEmail) ──
+
+export interface AssistanceRequestEmailData {
+  /** The client user asking (app_client_users.id): named in the email, and Reply goes to them. */
+  clientUserId: string
+  companyName: string
+  market?:     string
+  state?:      string
+  startDate?:  string
+  endDate?:    string
+  details:     string
+  /** Where staff act on it, when there is a page for it (an extension request: Reservations). */
+  actionUrl?:  string
+}
+
+/** Who asked, as the email names them; `email` is where Reply goes (null: no address on file). */
+export type Asker = { username: string; email: string | null }
+
+// One plain address: no list separators or display-name syntax, so Reply-To can't name a second recipient.
+const looksLikeEmail = (s: string | null | undefined): s is string => !!s && /^[^\s@,;<>"()]+@[^\s@,;<>"()]+\.[^\s@,;<>"()]+$/.test(s)
+
+/** The client's address for Reply: their email on file, else their username when it is one. Pure. */
+export function askerEmail(user: { username: string; email: string | null }): string | null {
+  const email = user.email?.trim(), username = user.username.trim()
+  return looksLikeEmail(email) ? email : looksLikeEmail(username) ? username : null
+}
+
+/**
+ * The assistance request as the team reads it: who asked and how to reach
+ * them, what they asked, and where to act on it if there is a page. The app
+ * keeps no list of these, so the email itself is the whole request: Reply
+ * goes to the client (sendAssistanceRequestEmail sets Reply-To). Pure.
+ */
+export function assistanceRequestText(data: AssistanceRequestEmailData, asker: Asker | null): string {
+  return [
+    `${data.companyName} asked the client view assistant to relay a question/need to the Lime Media team.`,
+    ``,
+    asker ? `From:    ${asker.username}${asker.email && asker.email !== asker.username ? ` <${asker.email}>` : ''}` : null,
+    data.market                    ? `Market:  ${data.market}${data.state ? ', ' + data.state : ''}` : null,
+    data.startDate && data.endDate ? `Dates:   ${data.startDate} → ${data.endDate}` : null,
+    `Details: ${data.details}`,
+    ``,
+    asker?.email ? `Reply to this email to answer ${asker.email} directly.`
+      : asker ? `No email address is on file for this client; reach them through their account manager.`
+      : `Who asked isn't known (their client account couldn't be read or no longer exists); reach ${data.companyName} through their account manager.`,
+    data.actionUrl ? `Act on it: ${data.actionUrl}` : null,
+  ].filter(v => v !== null).join('\n')
+}

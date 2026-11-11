@@ -6,7 +6,7 @@
  * exception (smtpTransport's `direct`): they must reach the person logging in.
  */
 
-type Message = { to?: unknown; cc?: unknown; bcc?: unknown; subject?: unknown; [k: string]: unknown }
+type Message = { to?: unknown; cc?: unknown; bcc?: unknown; replyTo?: unknown; subject?: unknown; [k: string]: unknown }
 type Transport = { sendMail: (message: never) => Promise<unknown> }
 
 // nodemailer takes an address as a string or as { name, address }.
@@ -23,6 +23,8 @@ export function redirectedMessage<M extends Message>(message: M, to: string | un
     to: target,
     cc: undefined,
     bcc: undefined,
+    // A reply to a redirected email must not reach the real person either.
+    replyTo: undefined,
     subject: `[Redirected from ${original.join(', ') || 'no one'}] ${String(message.subject ?? '')}`,
   }
 }

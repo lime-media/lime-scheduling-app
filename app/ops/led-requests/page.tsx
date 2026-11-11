@@ -91,7 +91,7 @@ export default function LedRequestsPage() {
               Made by the Salesforce bot (not sent to LED): {data.excluded.length}
             </summary>
             <p className="px-4 pb-2 text-xs text-gray-500">
-              Their Salesforce opportunity was made by the bot user, which is to be switched off. They stay on Reservations but never go to LED; book them again in the app to send them.
+              Their Salesforce opportunity was made by the bot user, which is to be switched off. They stay on Reservations but are never sent to LED.
             </p>
             <ul className="divide-y divide-gray-100 text-sm">
               {data.excluded.map(b => (

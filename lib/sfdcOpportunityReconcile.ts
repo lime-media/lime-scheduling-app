@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { sfdcQuery, sfdcQueryOptionalField, updateOpportunity, isSfdcConfigured } from '@/lib/salesforceClient'
 import { isLinkableAccount } from '@/lib/sfdcSearch'
+import { isUserId } from '@/lib/sfdcBots'
 import { SFDC_SERVICE_USER_EMAIL, reconcileTarget } from '@/lib/sfdcIntegration'
 import { DEFAULT_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, bookingHoldExpiry } from '@/lib/holdExpiry'
 import { centralDate } from '@/lib/dateOnly'
@@ -62,6 +63,8 @@ interface OpportunityStage {
   Job_Number__c?: string | null
   /** Whose LED client the program belongs to (lib/ledClients.ts). */
   AccountId?: string | null
+  /** Who made the opportunity: tells the Leah Miles bot's apart (lib/sfdcBots.ts). */
+  CreatedById?: string | null
 }
 
 export interface SfdcReconcileSummary {
@@ -137,8 +140,8 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
   // Job_Number__c only links holds to LED (lib/ledJobs.ts). If this org or the
   // integration user can't read it, the stages are still read without it:
   // losing the LED link must never stop deals being committed or released.
-  // AccountId (a standard field) is in both forms of the query, so it has no
-  // such fallback: a field added here that might be unreadable belongs in the
+  // AccountId and CreatedById (standard fields) are in both forms of the query,
+  // so they have no such fallback: a field added here that might be unreadable belongs in the
   // optional part, or an unreadable one fails the whole reconcile.
   // Opportunities read with Job_Number__c: only their holds' job numbers are updated.
   const readWithJob = new Set<string>()
@@ -146,7 +149,7 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
   for (const batch of chunk(uniqueIds, SOQL_ID_CHUNK)) {
     const list = batch.map((id) => `'${id}'`).join(',')
     const { rows, withField, refused }: { rows: OpportunityStage[]; withField: boolean; refused: boolean } = await sfdcQueryOptionalField<OpportunityStage>('Job_Number__c', (job) =>
-      `SELECT Id, StageName, IsClosed, IsWon, Amount, AccountId${job ? ', Job_Number__c' : ''} FROM Opportunity WHERE Id IN (${list})`, tryJob)
+      `SELECT Id, StageName, IsClosed, IsWon, Amount, AccountId, CreatedById${job ? ', Job_Number__c' : ''} FROM Opportunity WHERE Id IN (${list})`, tryJob)
     tryJob = !refused
     for (const row of rows) {
       stages.set(normalizeId(row.Id), row)
@@ -219,6 +222,16 @@ export async function reconcileSfdcOpportunities(): Promise<SfdcReconcileSummary
     if (staleAccount.length) {
       await prisma.hold.updateMany({ where: { id: { in: staleAccount } }, data: { sfdc_account_id: accountId } })
         .catch((err) => console.error(`[sfdc-reconcile] account write failed for ${key}; carrying on:`, err))
+    }
+    // Who made it, the same way: the bot's opportunities are left out of what
+    // the app builds for LED (lib/sfdcBots.ts). A creator never changes, so in
+    // practice this fills holds that don't have it yet; one that differs is
+    // corrected. An unreadable creator leaves the stored one alone.
+    const createdBy = stage.CreatedById && isUserId(stage.CreatedById) ? stage.CreatedById : null
+    const staleCreator = createdBy ? group.filter(h => h.sfdc_created_by_id !== createdBy).map(h => h.id) : []
+    if (staleCreator.length) {
+      await prisma.hold.updateMany({ where: { id: { in: staleCreator } }, data: { sfdc_created_by_id: createdBy } })
+        .catch((err) => console.error(`[sfdc-reconcile] creator write failed for ${key}; carrying on:`, err))
     }
 
     for (const hold of group) {

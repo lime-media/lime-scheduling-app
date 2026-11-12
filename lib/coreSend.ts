@@ -11,7 +11,7 @@
  */
 
 import { prisma } from '@/lib/prisma'
-import { requestFingerprint, type BookingRequest } from '@/lib/campaignRequests'
+import { leftOutOfLed, requestFingerprint, type BookingRequest } from '@/lib/campaignRequests'
 import { coreClient, coreConfig, corePayload, CoreError, type CoreCreated, type CorePayload } from '@/lib/coreClient'
 import { isReady, loadLedBookings, type Creator, type SentRow } from '@/lib/ledReadiness'
 
@@ -42,7 +42,7 @@ export async function sendBookingToCore(bookingKey: string, deps: SendDeps): Pro
   // 2026-11-12; lib/sfdcBots.ts). Checked here, not only on the list, so no
   // caller can send one; a creator not read yet waits rather than counting as a person.
   const creator = creators.get(bookingKey) ?? 'unknown'
-  if (creator === 'bot' && !booking.won) return { status: 409, body: { error: 'Not sent: the Salesforce bot made this opportunity, and its deals go to LED only once Closed Won.' } }
+  if (leftOutOfLed({ creator, won: booking.won })) return { status: 409, body: { error: 'Not sent: the Salesforce bot made this opportunity, and its deals go to LED only once Closed Won.' } }
   if (creator === 'unknown') return { status: 409, body: { error: 'Not sent yet: who made its Salesforce opportunity isn\'t read yet. The sweep reads it within 15 minutes; if this stays, check the opportunity exists.' } }
   if (!isReady(booking)) {
     return { status: 409, body: { error: `Not ready for LED: ${booking.issues.filter(i => i.blocking).map(i => i.message).join(' ')}` } }

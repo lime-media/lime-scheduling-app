@@ -26,6 +26,8 @@ export default function LedRequestsPage() {
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState<string | null>(null)
   const [sendErrors, setSendErrors] = useState<Record<string, string>>({})
+  // Sent, but the app couldn't record it: a warning, not a failure (amber, like "Check").
+  const [sendNotes, setSendNotes] = useState<Record<string, string>>({})
 
   const load = useCallback(async () => {
     try {
@@ -44,6 +46,7 @@ export default function LedRequestsPage() {
   async function send(key: string) {
     setSending(key)
     setSendErrors(prev => { const next = { ...prev }; delete next[key]; return next })
+    setSendNotes(prev => { const next = { ...prev }; delete next[key]; return next })
     try {
       const res = await fetch('/api/ops/led-requests/send', {
         method: 'POST',
@@ -53,7 +56,7 @@ export default function LedRequestsPage() {
       const body = await res.json().catch(() => null)
       if (!res.ok || !body?.sent) throw new Error(body?.error || 'Sending to LED failed.')
       // Sent, but the app couldn't record it: the button stays, with why.
-      if (body.note) setSendErrors(prev => ({ ...prev, [key]: body.note }))
+      if (body.note) setSendNotes(prev => ({ ...prev, [key]: body.note }))
       await load()
     } catch (e) {
       setSendErrors(prev => ({ ...prev, [key]: e instanceof Error ? e.message : 'Sending to LED failed.' }))
@@ -90,6 +93,7 @@ export default function LedRequestsPage() {
                 {data.bookings.length === 0 && <tr><td colSpan={5} className="px-3 py-4 text-center text-gray-500">No live bookings.</td></tr>}
                 {data.bookings.map(b => {
                   const failed = sendErrors[b.key] ?? b.lastError
+                  const note = sendNotes[b.key]
                   return (
                     <tr key={b.key}>
                       <td className="px-3 py-2">
@@ -129,6 +133,7 @@ export default function LedRequestsPage() {
                               {sending === b.key ? 'Sending…' : 'Send to LED'}
                             </button>
                             {failed && <div className="mt-1 text-xs text-red-800">{failed}</div>}
+                            {note && !sendErrors[b.key] && <div className="mt-1 text-xs text-amber-800">{note}</div>}
                           </div>
                         ) : (
                           <span className="text-xs text-gray-400">Fix first</span>

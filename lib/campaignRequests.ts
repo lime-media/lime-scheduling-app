@@ -94,6 +94,13 @@ export type Issue = { kind: IssueKind; blocking: boolean; message: string; marke
  */
 export type BookingRequest = { bookingKey: string; request: CampaignRequest; issues: Issue[]; won: boolean; marketNames: string[]; holdsEnd: string }
 
+/**
+ * The one rule for the Salesforce bot's deals (Andrew, 2026-11-12; lib/sfdcBots.ts):
+ * they block availability like any booking but go to LED only once Closed Won.
+ * The send (lib/coreSend.ts) and the LED Readiness list both ask this.
+ */
+export const leftOutOfLed = (b: { creator: 'bot' | 'person' | 'unknown'; won: boolean }): boolean => b.creator === 'bot' && !b.won
+
 /** A Salesforce hold that names several markets in one label ("Multi-market: Austin, Dallas"). */
 export const isMarketLabel = (market: string) => /^\s*multi-market\s*:/i.test(market)
 

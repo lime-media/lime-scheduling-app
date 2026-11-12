@@ -21,7 +21,8 @@ import {
 } from '@/lib/pricing'
 import { billedDaysPerWeek, countCalendarDays } from '@/lib/pricing/schedule'
 import { resolveDefaultRateOverrides, resolveRateOverridesBySfdcAccount, resolveMarketInputAll } from '@/lib/pricing/resolvers'
-import type { RateOverrides } from '@/lib/pricing/config'
+import type { RateOverrides, StudyType } from '@/lib/pricing/config'
+import { applyStudies, studiesChange, type OrderStudies } from './studies'
 import { centralDate } from '@/lib/dateOnly'
 import { canonicalMarketName, loadStandardMarketCoords, titleCaseMarket } from '@/lib/marketBounds'
 import { haversineDistance } from '@/lib/marketCoordinates'
@@ -55,9 +56,9 @@ export type QuoteRow = {
 export type QuoteRequest = {
   rows: QuoteRow[]
   sfdcAccountId?: string
-  features: { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean }
+  /** `studies`: lift studies for the whole order (lib/pricing/studies.ts). */
+  features: { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean; studies?: StudyType[] }
   reserveSoftHolds?: boolean
-  alloyRenews?: boolean
   hopLimitRoadMiles?: number
   /** Seller's Brand Direct markup; applied only to a Brand Direct quote (clientType). */
   brandMarkupPct?: number
@@ -146,6 +147,13 @@ export type LineQuote = {
   missing: number
   /** Revising a live booking: this market is unchanged and keeps its booked price (lib/bookings.ts keptPrices). */
   priceKept?: boolean
+  /** Estimated reach: truck-days x the market tier's daily A18+ impressions per truck. */
+  estimatedImpressions: number
+  marketSizeTier: { id: number; label: string; dailyA18: number }
+  /** The order's lift studies are carried on its first market (one booking total); 0 elsewhere. */
+  studiesTotal: number
+  /** The market a study counts it as: its standard market (lib/pricing/studies.ts uniqueMarketCount). */
+  studyMarket: string
 }
 
 export type Arrival = {
@@ -188,8 +196,11 @@ export type QuoteSummary = {
   leftForOthers: number
 }
 
+export type { OrderStudies } from './studies'
+
 export type MultiMarketQuote = {
   lines: LineQuote[]
+  studies: OrderStudies
   summary: QuoteSummary
   itineraries: Itinerary[]
   alternatives: Alternative[]
@@ -336,6 +347,10 @@ async function priceLines(
       arrivals,
       transportNote: t.absorbedReason ?? null,
       missing: missing.get(line.id) ?? 0,
+      estimatedImpressions: q.best.estimatedImpressions,
+      marketSizeTier: q.input.marketSizeTier,
+      studiesTotal: 0,
+      studyMarket: line.standardMarket ?? line.market,
     }
   })
 }
@@ -393,7 +408,6 @@ export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: O
   const rules = {
     ...DEFAULT_RULES,
     reserveSoftHolds: req.reserveSoftHolds ?? DEFAULT_RULES.reserveSoftHolds,
-    renewingPrograms: req.alloyRenews ? ['Alloy Build'] : [],
   }
   const { overrides, basis } = opts.rates ?? await rateOverridesFor(req.sfdcAccountId)
   // Brand Direct: folded into every market's prices (lib/pricing/brandMarkup.ts).
@@ -419,16 +433,21 @@ export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: O
 
   const run = (ls: OrderLine[], settings = s) => planOrder(ls, fleet.trucks, settings)
   const plan = run(lines)
-  const priced = keepBookedPrices(await priceLines(lines, plan, req.features, overrides, tiers, markupPct), kept, markupPct)
+  const routed = keepBookedPrices(await priceLines(lines, plan, req.features, overrides, tiers, markupPct), kept, markupPct)
+  // A request's studies are only trusted as a list (priceStudies keeps the known ones).
+  const asked = Array.isArray(req.features?.studies) ? req.features.studies : []
+  // Every price of the order, alternatives included, carries its lift studies.
+  const withStudies = (ls: LineQuote[]) => applyStudies(ls, asked, overrides?.study_cost, markupPct)
+  const { lines: priced, studies } = withStudies(routed)
   const summary = summarize(priced, plan)
 
-  const alternatives = opts.alternatives === false ? [] : await buildAlternatives(lines, plan, summary, { run, price: (ls, p) => priceLines(ls, p, req.features, overrides, tiers, markupPct), s, trucks: fleet.trucks })
+  const alternatives = opts.alternatives === false ? [] : await buildAlternatives(lines, plan, summary, { run, price: async (ls, p) => withStudies(await priceLines(ls, p, req.features, overrides, tiers, markupPct)), studies, s, trucks: fleet.trucks })
 
   const warnings: string[] = []
   if (plan.approximateClusters > 0) warnings.push('Some markets were too many to pair exactly in the time allowed. The truck count is still the minimum, but the weekly hops may not be the shortest possible.')
   if (fleet.trucks.some(t => !t.gps)) warnings.push(`${fleet.trucks.filter(t => !t.gps).length} truck(s) have no live position and were only considered where a scheduled job shows where they will be.`)
   if (rules.reserveSoftHolds && !fleet.reserved.some(r => r.reason.startsWith('AT&T soft'))) warnings.push('No AT&T soft holds are on file, so no AT&T trucks are held back.')
-  if (req.alloyRenews && !fleet.reserved.some(r => !r.reason.startsWith('AT&T soft'))) warnings.push('Alloy Build is marked as renewing, but no truck is currently on an Alloy Build job.')
+  if (studies.warning) warnings.push(studies.warning)
   for (const l of priced) {
     // State plainly any market whose trucks deliver less than asked, with the
     // real last working day and the part-week that accounts for it.
@@ -446,7 +465,7 @@ export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: O
   }
 
   return {
-    quote: { lines: priced, summary, itineraries: itineraries(plan), alternatives, reserved: fleet.reserved, pricingBasis: basis, brandMarkupPct: markupPct, clientType, warnings },
+    quote: { lines: priced, studies, summary, itineraries: itineraries(plan), alternatives, reserved: fleet.reserved, pricingBasis: basis, brandMarkupPct: markupPct, clientType, warnings },
     lines,
     plan,
   }
@@ -492,7 +511,10 @@ async function buildAlternatives(
   base: QuoteSummary,
   ctx: {
     run: (ls: OrderLine[], s?: EngineSettings) => OrderPlan
-    price: (ls: OrderLine[], p: OrderPlan) => Promise<LineQuote[]>
+    /** An alternative priced as the order is, its lift studies included (they can drop out or come in). */
+    price: (ls: OrderLine[], p: OrderPlan) => Promise<{ lines: LineQuote[]; studies: OrderStudies }>
+    /** The order's own studies, to say how an alternative changes them. */
+    studies: OrderStudies
     s: EngineSettings
     trucks: PlanTruck[]
   },
@@ -529,11 +551,13 @@ async function buildAlternatives(
       if (hop > 450) break
       const p = ctx.run(lines, { ...ctx.s, hopLimitRoadMiles: hop })
       if (p.trucks.length < plan.trucks.length && short(p) <= short(plan)) {
-        const sum = summarize(await ctx.price(lines, p), p)
+        const alt = await ctx.price(lines, p)
+        const sum = summarize(alt.lines, p)
         out.push({
           kind: 'FEWER_TRUCKS',
           text: `Letting a truck alternate between markets up to ${hop} road miles apart needs ${plan.trucks.length - p.trucks.length} fewer truck${plan.trucks.length - p.trucks.length === 1 ? '' : 's'} (${p.trucks.length} instead of ${plan.trucks.length}), with longer weekly drives.`
-            + (cost(sum) !== cost(base) ? ` Transport ${cost(sum) < cost(base) ? 'falls' : 'rises'} by ${money(cost(sum) - cost(base))}.` : ''),
+            + (cost(sum) !== cost(base) ? ` Transport ${cost(sum) < cost(base) ? 'falls' : 'rises'} by ${money(cost(sum) - cost(base))}.` : '')
+            + studiesChange(ctx.studies, alt.studies),
         })
         break
       }
@@ -552,14 +576,15 @@ async function buildAlternatives(
     const alt = lines.map(l => (variant.ids.has(l.id) ? { ...l, daysPerWeek: variant.dpw, hours: variant.hours } : l))
     const p = ctx.run(alt)
     const altPriced = await ctx.price(alt, p)
-    const sum = summarize(altPriced, p)
+    const sum = summarize(altPriced.lines, p)
     const dTrucks = p.trucks.length - plan.trucks.length
     const dTotal = sum.grandTotal - base.grandTotal
     out.push({
       kind: 'HOURS_MODEL',
       text: `${variant.to} instead of ${variant.from} on ${variant.ids.size} market${variant.ids.size === 1 ? '' : 's'}: `
         + `${dTrucks === 0 ? 'the same number of trucks' : `${Math.abs(dTrucks)} ${dTrucks < 0 ? 'fewer' : 'more'} truck${Math.abs(dTrucks) === 1 ? '' : 's'}`}, `
-        + `and the order total ${dTotal <= 0 ? 'falls' : 'rises'} by ${money(dTotal)} (${variant.to === '3×12' ? '36' : '40'} hours per market per week instead of ${variant.to === '3×12' ? '40' : '36'}).`,
+        + `and the order total ${dTotal <= 0 ? 'falls' : 'rises'} by ${money(dTotal)} (${variant.to === '3×12' ? '36' : '40'} hours per market per week instead of ${variant.to === '3×12' ? '40' : '36'}).`
+        + studiesChange(ctx.studies, altPriced.studies),
     })
   }
 
@@ -572,30 +597,34 @@ async function buildAlternatives(
       const alt = shifted(days)
       const p = ctx.run(alt)
       if (short(p) > 0) continue
-      const sum = summarize(await ctx.price(alt, p), p)
+      const altPriced = await ctx.price(alt, p)
+      const sum = summarize(altPriced.lines, p)
       out.push({
         kind: 'START_DATE',
         text: `Starting ${days} days later (${fmt(addDays(earliest, days))}) covers every market with ${p.trucks.length} trucks`
           + (sum.transportAbsorbed > 0 ? `, absorbing ${money(sum.transportAbsorbed)} of transport` : '')
-          + (sum.transportBilled > 0 ? ` and billing ${money(sum.transportBilled)}` : '') + '.',
+          + (sum.transportBilled > 0 ? ` and billing ${money(sum.transportBilled)}` : '') + '.'
+          + studiesChange(ctx.studies, altPriced.studies),
       })
       break
     }
   } else {
-    let best: { days: number; saving: number; p: OrderPlan } | null = null
+    let best: { days: number; saving: number; p: OrderPlan; studies: OrderStudies } | null = null
     for (const days of [7, 14, 21]) {
       const alt = shifted(days)
       const p = ctx.run(alt)
       if (short(p) > 0) continue
-      const sum = summarize(await ctx.price(alt, p), p)
+      const altPriced = await ctx.price(alt, p)
+      const sum = summarize(altPriced.lines, p)
       const saving = cost(base) - cost(sum)
-      if (saving >= 500 && (!best || saving > best.saving)) best = { days, saving, p }
+      if (saving >= 500 && (!best || saving > best.saving)) best = { days, saving, p, studies: altPriced.studies }
     }
     if (best) {
       out.push({
         kind: 'START_DATE',
         text: `Starting ${best.days} days later (${fmt(addDays(earliest, best.days))}) cuts transport by ${money(best.saving)}`
-          + (best.p.trucks.length !== plan.trucks.length ? ` and uses ${best.p.trucks.length} trucks instead of ${plan.trucks.length}.` : '.'),
+          + (best.p.trucks.length !== plan.trucks.length ? ` and uses ${best.p.trucks.length} trucks instead of ${plan.trucks.length}.` : '.')
+          + studiesChange(ctx.studies, best.studies),
       })
     }
   }
@@ -655,6 +684,8 @@ export function keepBookedPrices(lines: LineQuote[], kept?: Map<string, KeptPric
     try { f = k.features ? JSON.parse(k.features) : {} } catch { /* booked total alone */ }
     const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback)
     const billed = num(f.transportCharge, 0)
+    // The order's studies are priced again for the whole order (applyStudies), not kept with a market.
+    const studies = num(f.studiesTotal, 0)
     return {
       ...l,
       dailyRate: num(f.dailyRate, l.dailyRate),
@@ -663,9 +694,9 @@ export function keepBookedPrices(lines: LineQuote[], kept?: Map<string, KeptPric
       shadowFencing: num(f.shadowFencing, l.shadowFencing),
       smartDirectional: num(f.smartDirectional, l.smartDirectional),
       deviceId: num(f.deviceId, l.deviceId),
-      media: k.total - billed,
+      media: k.total - billed - studies,
       transport: { ...l.transport, billed, outcome: billed > 0 ? 'BILLED' : l.transport.outcome === 'BILLED' ? 'ABSORBED' : l.transport.outcome },
-      total: k.total,
+      total: k.total - studies,
       priceKept: true,
     }
   })

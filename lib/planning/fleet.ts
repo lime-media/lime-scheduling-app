@@ -11,11 +11,6 @@
  *     loaded. Only the latest month counts: older months are rarely expired,
  *     and the roster rotates, so taking every month would reserve trucks AT&T
  *     has already handed back.
- *   - Programs expected to renew (AT&T's Alloy Build, by default off) keep
- *     their trucks. Matched under the reserved client, because a program named
- *     after the product is not recognisably AT&T by name — and matched by
- *     "contains", not equality, so "Alloy Build - DFW" or a client stored as
- *     "160over90 Inc" still count.
  *
  * With soft holds not reserved, their jobs are dropped instead: a rep releasing
  * them is exactly what "yieldable" means.
@@ -30,16 +25,10 @@ import { addDays, latestSoftHoldTrucks, type PlanTruck } from './planner'
 
 export type ReservationRules = {
   reserveSoftHolds: boolean
-  /** Booking clients whose programs can be reserved (AT&T books as 160over90). */
-  reservedClients: string[]
-  /** Programs under those clients treated as renewing indefinitely. */
-  renewingPrograms: string[]
 }
 
 export const DEFAULT_RULES: ReservationRules = {
   reserveSoftHolds: true,
-  reservedClients: ['160over90'],
-  renewingPrograms: [],
 }
 
 export type ReservedTruck = { truckNumber: string; reason: string }
@@ -50,9 +39,6 @@ export type PlanningFleet = {
   /** Active, bookable trucks in the fleet (not archived, not hidden). */
   activeTrucks: number
 }
-
-const lower = (s: string) => s.trim().toLowerCase()
-
 
 export async function loadPlanningFleet(opts: {
   today: string
@@ -75,8 +61,6 @@ export async function loadPlanningFleet(opts: {
   const softHeld = latestSoftHoldTrucks(softHolds)
 
   const active = truckRows.map(r => String(r.truck_number)).filter(t => t && !HIDDEN_TRUCKS.has(t))
-  const renewing = new Set(rules.renewingPrograms.map(lower))
-  const clients = new Set(rules.reservedClients.map(lower))
 
   const reserved: ReservedTruck[] = []
   const trucks: PlanTruck[] = []
@@ -87,16 +71,6 @@ export async function loadPlanningFleet(opts: {
       reserved.push({ truckNumber, reason: 'AT&T soft hold' })
       continue
     }
-    const renew = jobs.find(j =>
-      j.source === 'SCHEDULE' && j.end >= today
-      && [...renewing].some(p => lower(j.program ?? '').includes(p))
-      && [...clients].some(c => lower(j.client ?? '').includes(c)),
-    )
-    if (renew) {
-      reserved.push({ truckNumber, reason: `${renew.program} renews` })
-      continue
-    }
-
     const gps = fleet.gpsMap.get(truckNumber)
     trucks.push({
       truckNumber,

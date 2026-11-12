@@ -41,6 +41,38 @@ export const MCP_TOOL_LABELS: Record<string, string> = {
 export const toolLabel = (tool: string) =>
   (TOOL_LABELS as Record<string, string>)[tool] ?? MCP_TOOL_LABELS[tool.replace(/^mcp_/, '')] ?? tool
 
+/**
+ * One run's label. A quote-only submit goes through the same hold route as a
+ * real hold, but it reserves nothing: "Quote only, no reservation (Quote
+ * Builder)", not "Hold placed". It doesn't claim the Salesforce log worked:
+ * the outcome shows a run that errored, and a Salesforce failure on a run that
+ * otherwise succeeded is in the row's result text. The result's quote_only
+ * (lib/usageLog.ts summarizeResult) marks it; rows logged before that fall
+ * back to the request's own quote-only flag, or the backfill's note.
+ */
+export function runLabel(tool: string, result?: Bag | null, inputs?: Bag | null): string {
+  return isQuoteOnlyRun(tool, result, inputs) ? QUOTE_ONLY_RUNS[tool].label : toolLabel(tool)
+}
+
+/**
+ * Whether a run logged a quote only. Only the two routes that honour the flag
+ * count, each by its own spelling of it, so a flag sent to a route that
+ * ignores it (client portal, chat) never relabels a real hold.
+ */
+export function isQuoteOnlyRun(tool: string, result?: Bag | null, inputs?: Bag | null): boolean {
+  const run = Object.hasOwn(QUOTE_ONLY_RUNS, tool) ? QUOTE_ONLY_RUNS[tool] : undefined
+  return !!run && (result?.quote_only === true || inputs?.[run.flag] === true || result?.note === BACKFILL_QUOTE_ONLY_NOTE)
+}
+
+/** How the usage-log backfill (prisma/migrations/20261005200000_usage_record_conversations_last_activity) marked a quote-only booking. */
+export const BACKFILL_QUOTE_ONLY_NOTE = 'quote only, nothing reserved'
+
+/** The hold routes that can log a quote only: the request flag each reads, and how such a run reads. */
+const QUOTE_ONLY_RUNS: Record<string, { flag: string; label: string }> = {
+  hold_classic: { flag: 'quote_only', label: 'Quote only, no reservation (Quote Builder)' },
+  hold_multi: { flag: 'quoteOnly', label: 'Quote only, no reservation (Multi-market)' },
+}
+
 type Bag = Record<string, unknown>
 const s = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
 const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)

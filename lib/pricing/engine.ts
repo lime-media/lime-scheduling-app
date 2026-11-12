@@ -19,13 +19,12 @@ import {
   SHADOW_FENCING_RATE,
   SHADOW_FENCING_FLOOR,
   SHADOW_FENCING_CPM,
-  STUDY_PRICE,
-  STUDY_MIN_IMPRESSIONS,
   VALID_STUDIES,
   MARKET_SIZE_TIERS,
   type RateOverrides,
   type StudyType,
 } from './config'
+import { priceStudies } from './studies'
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -39,6 +38,10 @@ export type QuoteInput = {
   includeSmartDirectional?: boolean
   includeDeviceId?: boolean
   studies?: StudyType[]
+  /** Unique markets the order covers, for study pricing (lib/pricing/studies.ts). Default 1. */
+  uniqueMarkets?: number
+  /** The order's calendar span in days, for the studies' 3-month warning. */
+  spanDays?: number
   rateOverrides?: RateOverrides | null
   /**
    * Brand Direct premium, in percent. Folded into every price the engine
@@ -90,8 +93,13 @@ export type TierBetter = {
 export type TierBest = {
   betterTotal: number
   studies: StudyType[]
+  /** Foot traffic / web lift on this order (the per-market rule), for callers that show one figure. */
   studyCost: number
+  /** What each study costs on this order (sales lift: 0, it's an ask). */
+  studyPrices: Record<StudyType, number>
   studiesTotal: number
+  salesLiftRequested: boolean
+  studyWarning: string | null
   reachOk: boolean
   estimatedImpressions: number
   total: number
@@ -155,6 +163,8 @@ export function computeQuote(input: QuoteInput): QuoteResult {
     includeSmartDirectional = false,
     includeDeviceId = false,
     studies = [],
+    uniqueMarkets = 1,
+    spanDays,
     rateOverrides = null,
     markupPct = 0,
   } = input
@@ -221,18 +231,19 @@ export function computeQuote(input: QuoteInput): QuoteResult {
 
   // Tier 3 — Best
   const estimatedImpressions = truckCount * days * marketSizeTier.dailyA18
-  const reachOk = estimatedImpressions >= STUDY_MIN_IMPRESSIONS
-  const studyCost = up(rateOverrides?.study_cost ?? STUDY_PRICE)
-  const studiesTotal = reachOk ? studies.length * studyCost : 0
+  const st = priceStudies({ studies, uniqueMarkets, estimatedImpressions, spanDays, base: rateOverrides?.study_cost, markupPct })
 
   const best: TierBest = {
     betterTotal,
-    studies: reachOk ? studies : [],
-    studyCost,
-    studiesTotal,
-    reachOk,
+    studies: st.studies,
+    studyCost: st.prices.foot_traffic,
+    studyPrices: st.prices,
+    studiesTotal: st.total,
+    salesLiftRequested: st.salesLiftRequested,
+    studyWarning: st.warning,
+    reachOk: st.reachOk,
     estimatedImpressions,
-    total: betterTotal + studiesTotal,
+    total: betterTotal + st.total,
   }
 
   // Pricing basis

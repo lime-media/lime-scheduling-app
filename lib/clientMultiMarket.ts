@@ -184,6 +184,8 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
       return refuse(reply({
         error: 'What can be booked changed since you were quoted. Nothing was booked; check the new quote.',
         priceChanged: { was: expectedTotal, now: quote.summary.grandTotal },
+        // The order as asked too, so the shortfall note matches the new "what fits".
+        asked: view(asked),
         short: asked.plan.shortfalls.length > 0,
         fits: view(fits),
       }, { status: 409 }))

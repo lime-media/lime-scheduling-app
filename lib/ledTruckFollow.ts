@@ -39,6 +39,10 @@
  *   the sale, not the runs (ledMirrorStandings).
  * - A job number and market on two live bookings: neither is touched; both
  *   are flagged (which booking LED means can't be told).
+ * - The days a mirror would newly hold on a truck where LED doesn't run the job
+ *   (a weekend inside a run on a new truck) taken by another booking: nothing
+ *   is written, and the market is flagged 'clash' naming that booking
+ *   (mirrorClashFlags), for as long as the clash lasts.
  * Re-running on a mirrored booking changes nothing. Each booking is written in
  * its own transaction, guarded on its holds being as read.
  */
@@ -50,8 +54,8 @@ import { centralDate } from '@/lib/dateOnly'
 import { stateCode } from '@/lib/usStates'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
-import type { Hold } from '@prisma/client'
-import { clashesWith, lockTrucks } from '@/lib/holdWriteLock'
+import type { Hold, Prisma } from '@prisma/client'
+import { clashesWith, lockTrucks, type HoldClashRow } from '@/lib/holdWriteLock'
 import { activeHoldWhere } from '@/lib/holdFilters'
 
 /** How far either side of a booking market's dates LED's days of its job are read. */
@@ -79,8 +83,17 @@ export type LedRun = { truck: string; start: string; end: string; days: number }
 /** What a booking market was sold, kept on its holds once mirrored. */
 export type SoldShape = { trucks: number; truckDays: number }
 
-/** A booking market LED can't be mirrored onto, or can only with a note. */
-export type MirrorFlag = { booking: string; market: string; job: string; kind: 'reused_job' | 'unfit' | 'more_trucks' | 'partial' }
+/**
+ * A booking market LED can't be mirrored onto, or can only with a note.
+ * 'clash': the mirror would hold days LED doesn't run on a truck another
+ * booking holds, so nothing is written (mirrorClashFlags); `blockedBy` names
+ * those bookings.
+ */
+export type MirrorFlag = {
+  booking: string; market: string; job: string
+  kind: 'reused_job' | 'unfit' | 'more_trucks' | 'partial' | 'clash'
+  blockedBy?: string
+}
 
 /** The writes that make a booking market match LED. */
 export type MirrorPlan = {
@@ -438,6 +451,50 @@ export function ledMirrorStandings<S extends { days: number; of: number; schedul
   return out
 }
 
+type ClashHold = { id: string; truck_number: string; start_date: Date; end_date: Date; client_name: string; status: string }
+type HoldReader = Pick<Prisma.TransactionClient, 'hold'>
+
+/** Live holds on the plans' unrun trucks and dates (AT&T soft holds give way, as in the sweep's own conflict check). */
+async function liveOnUnrun(db: HoldReader, plans: MirrorPlan[]): Promise<ClashHold[]> {
+  const unrun = plans.flatMap(p => p.unrun)
+  if (!unrun.length) return []
+  const from = unrun.map(u => u.start).sort()[0]
+  const to = unrun.map(u => u.end).sort().reverse()[0]
+  return db.hold.findMany({
+    where: {
+      truck_number: { in: [...new Set(unrun.map(u => u.truck))] },
+      ...activeHoldWhere({ excludeAttSoft: true }),
+      start_date: { lte: new Date(`${to}T23:59:59.999Z`) },
+      end_date: { gte: new Date(from) },
+    },
+    select: { id: true, truck_number: true, start_date: true, end_date: true, client_name: true, status: true },
+  })
+}
+
+/** The other bookings' holds on a plan's unrun days (its own holds don't count). Pure; exported for tests. */
+export function planClashes(p: MirrorPlan, live: ClashHold[]): HoldClashRow[] {
+  return clashesWith(p.unrun, live, new Set(p.read.map(r => r.id)))
+}
+
+/** The 'clash' flag a refused plan carries, naming what blocks it. Pure; exported for tests. */
+export function clashFlag(p: MirrorPlan, clashes: HoldClashRow[]): MirrorFlag {
+  const blockedBy = [...new Set(clashes.map(c => `${c.client} (truck ${c.truck}, ${c.start} to ${c.end})`))].join('; ')
+  return { booking: p.booking, market: p.market, job: p.job, kind: 'clash', blockedBy }
+}
+
+/**
+ * The plans applyLedMirror would refuse right now because another booking
+ * holds one of their unrun days, as 'clash' flags. Read-only, one query for
+ * all plans. Reservations runs it on every load, so the flag shows for as long
+ * as the clash lasts and goes once it clears or the mirror is written.
+ */
+export async function mirrorClashFlags(plans: MirrorPlan[], db: HoldReader = prisma): Promise<MirrorFlag[]> {
+  const withUnrun = plans.filter(p => p.unrun.length)
+  if (!withUnrun.length) return []
+  const live = await liveOnUnrun(db, withUnrun)
+  return withUnrun.flatMap(p => { const c = planClashes(p, live); return c.length ? [clashFlag(p, c)] : [] })
+}
+
 /** A booking's mirror, as written. */
 export type MirrorDone = {
   booking: string; opportunity: string | null; by: string
@@ -462,7 +519,8 @@ export type MirrorDone = {
  * /api/holds/infeasible). Days LED doesn't run on a truck (a weekend inside a
  * run, on a truck the market didn't hold) are checked under the same truck
  * locks as every booking (lib/holdWriteLock.ts lockTrucks): if another
- * booking holds one, nothing is written and the next sweep tries again. One
+ * booking holds one, nothing is written, Reservations flags the market
+ * 'clash' (mirrorClashFlags) and the next sweep tries again. One
  * failed booking never stops the rest.
  */
 export async function applyLedMirror(plans: MirrorPlan[], templates: Map<string, Hold>): Promise<MirrorDone[]> {
@@ -484,19 +542,7 @@ export async function applyLedMirror(plans: MirrorPlan[], templates: Map<string,
         // Days LED doesn't run on a truck aren't mirrored: another booking
         // holding one of them keeps it, and this market waits (logged).
         if (p.unrun.length) {
-          const from = p.unrun.map(u => u.start).sort()[0]
-          const to = p.unrun.map(u => u.end).sort().reverse()[0]
-          const live = await tx.hold.findMany({
-            where: {
-              truck_number: { in: [...new Set(p.unrun.map(u => u.truck))] },
-              // AT&T soft holds give way, as in the sweep's own conflict check.
-              ...activeHoldWhere({ excludeAttSoft: true }),
-              start_date: { lte: new Date(`${to}T23:59:59.999Z`) },
-              end_date: { gte: new Date(from) },
-            },
-            select: { id: true, truck_number: true, start_date: true, end_date: true, client_name: true, status: true },
-          })
-          const clashes = clashesWith(p.unrun.map(u => ({ truck: u.truck, start: u.start, end: u.end })), live, new Set(p.read.map(r => r.id)))
+          const clashes = planClashes(p, await liveOnUnrun(tx, [p]))
           if (clashes.length) throw new MirrorClash(clashes.map(c => `${c.truck} ${c.start}–${c.end}`).join(', '))
         }
         // Every hold of the market still as read, or nothing is written.
@@ -548,7 +594,7 @@ export async function applyLedMirror(plans: MirrorPlan[], templates: Map<string,
       }
     } catch (err) {
       if (err instanceof StaleMirror) console.warn(`[led-follow] booking ${p.booking} changed while mirroring; next sweep`)
-      else if (err instanceof MirrorClash) console.warn(`[led-follow] booking ${p.booking} not mirrored: days LED doesn't run would take another booking's truck (${err.message}); next sweep`)
+      else if (err instanceof MirrorClash) console.warn(`[led-follow] booking ${p.booking} not mirrored: days LED doesn't run would take another booking's truck (${err.message}); flagged 'clash' on Reservations, next sweep`)
       else console.error(`[led-follow] mirroring booking ${p.booking} failed; carrying on:`, err)
     }
   }

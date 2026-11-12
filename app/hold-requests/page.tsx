@@ -57,6 +57,8 @@ type HoldRequest = {
   led_followed: { from: string; to: string; at: string } | null
   /** The LED mirror can't follow this market, or follows it with a note (lib/ledTruckFollow.ts). */
   led_flag: 'reused_job' | 'unfit' | 'more_trucks' | 'partial' | null
+  /** The LED mirror is blocked: the other bookings holding days it needs. */
+  led_clash: string | null
   /** Salesforce's LED Trucks has refused the moved truck for over an hour (still retried every sweep). */
   led_trucks_unsynced_since: string | null
   expires_at: string | null
@@ -259,9 +261,18 @@ function LedSeries({ rows }: { rows: HoldRequest[] }) {
 
 /** A won market the LED mirror can't follow, or follows with a note (lib/ledTruckFollow.ts). */
 function LedMirrorBadge({ rows }: { rows: HoldRequest[] }) {
-  const flags = new Set(rows.filter(r => r.status === 'COMMITTED').map(r => r.led_flag).filter(Boolean))
+  const won = rows.filter(r => r.status === 'COMMITTED')
+  const flags = new Set(won.map(r => r.led_flag).filter(Boolean))
+  // One line per blocked market, naming the market and what blocks it.
+  const clashes = new Map<string, { market: string; by: string }>()
+  for (const r of won) if (r.led_clash !== null) clashes.set(r.market, { market: formatMarketState(r.market, r.state), by: r.led_clash })
   return (
     <>
+      {[...clashes].map(([k, c]) => (
+        <span key={k} className="text-xs text-red-700 font-medium" title={`LED runs this market on other trucks or dates, but following it would take days LED doesn't run on a truck another booking holds. Nothing has been changed: the reservation still shows its old trucks and dates, so availability doesn't match LED. Retried every sweep; resolve the other booking or LED's schedule. Blocked by: ${c.by}`}>
+          Not following LED in {c.market}: blocked by {c.by || 'another booking'}
+        </span>
+      ))}
       {flags.has('reused_job') && (
         <span className="text-xs text-amber-700 font-medium" title="Another live booking has the same job number in this market, so which one LED's schedule belongs to can't be told. Neither follows LED until one job number is corrected in Salesforce.">
           Job number on two bookings: not following LED

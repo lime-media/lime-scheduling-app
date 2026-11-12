@@ -5,9 +5,9 @@
  *
  * Run with: npm test
  */
-import { eq, section } from './harness'
+import { defer, eq, section } from './harness'
 import {
-  labelCities, ledMirrorPlans, ledMirrorStandings, ledRuns, mirroredFeatures, soldShapeOf,
+  clashFlag, labelCities, ledMirrorPlans, mirrorClashFlags, planClashes, ledMirrorStandings, ledRuns, mirroredFeatures, soldShapeOf,
   type FollowHold, type FollowRow, type MirrorPlan,
 } from '@/lib/ledTruckFollow'
 
@@ -206,4 +206,33 @@ section('sold days are never released (Andrew, 2026-11-12)')
     [shape(mirror(TWO, [...led('0768', weekdays('2026-11-02', '2026-11-27')), ...led('0820', weekdays('2026-11-02', '2026-11-27'))])),
       kinds(TWO, [...led('0768', weekdays('2026-11-02', '2026-11-27')), ...led('0820', weekdays('2026-11-02', '2026-11-27'))])],
     [['0768 2026-11-02 2026-11-27', '0820 2026-11-02 2026-11-27'], []])
+}
+
+section('review #177: a mirror another booking blocks is flagged, not silent')
+{
+  const blocked = plan([hold({ end_date: '2026-11-13' })], led('1261', weekdays('2026-11-02', '2026-11-13'))).plans[0]
+  const live = (id: string, truck: string, start: string, end: string, client = 'Acme') =>
+    ({ id, truck_number: truck, start_date: new Date(`${start}T00:00:00Z`), end_date: new Date(`${end}T00:00:00Z`), client_name: client, status: 'COMMITTED' })
+  const other = live('x1', '1261', '2026-11-07', '2026-11-08', 'Acme Brand')
+  eq('another booking on the unrun weekend clashes', planClashes(blocked, [other]).map(c => c.truck), ['1261'])
+  eq('the booking\'s own holds never block it', planClashes(blocked, [live(blocked.read[0].id, '1261', '2026-11-07', '2026-11-08')]), [])
+  eq('a booking on days LED does run doesn\'t block (those are written regardless)', planClashes(blocked, [live('x2', '1261', '2026-11-05', '2026-11-06')]), [])
+  const f = clashFlag(blocked, planClashes(blocked, [other]))
+  eq('the flag is a clash on this booking market and job', [f.kind, f.booking, f.market, f.job], ['clash', blocked.booking, blocked.market, blocked.job])
+  eq('the flag names the blocking booking, truck and dates', f.blockedBy, 'Acme Brand (truck 1261, 2026-11-07 to 2026-11-08)')
+  eq('the same booking on two days is named once',
+    clashFlag(blocked, [{ truck: '1261', start: '2026-11-07', end: '2026-11-08', client: 'A', status: 'COMMITTED' }, { truck: '1261', start: '2026-11-07', end: '2026-11-08', client: 'A', status: 'COMMITTED' }]).blockedBy,
+    'A (truck 1261, 2026-11-07 to 2026-11-08)')
+
+  // mirrorClashFlags reads once for all plans and flags only the blocked ones.
+  const free = plan([hold({ id: 'f1', booking: 'free', end_date: '2026-11-13' })], led('1261', weekdays('2026-11-02', '2026-11-13'))).plans[0]
+  const freeMoved = { ...free, unrun: [{ truck: '7777', start: '2026-11-07', end: '2026-11-08' }] }
+  let reads = 0
+  const db = { hold: { findMany: async () => { reads++; return [other] } } } as unknown as Parameters<typeof mirrorClashFlags>[1]
+  defer((async () => {
+    const flags = await mirrorClashFlags([blocked, freeMoved], db)
+    eq('only the blocked plan is flagged', flags.map(x => x.booking), [blocked.booking])
+    eq('one read for every plan', reads, 1)
+    eq('no plan with unrun days: no read at all', await mirrorClashFlags([{ ...blocked, unrun: [] }], db).then(x => [x.length, reads]), [0, 1])
+  })())
 }

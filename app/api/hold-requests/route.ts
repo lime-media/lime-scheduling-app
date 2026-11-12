@@ -9,7 +9,7 @@ import { ledClientNames } from '@/lib/ledClients'
 import { bookingKey, stillListed } from '@/lib/bookings'
 import { linkedJob } from '@/lib/jobNumber'
 import { centralDate } from '@/lib/dateOnly'
-import { FOLLOW_SYNC_OVERDUE_MS, ledMirrorJobs, ledMirrorPlans, ledMirrorStandings, mirrorFlagKey, type FollowHold, type MirrorFlag } from '@/lib/ledTruckFollow'
+import { FOLLOW_SYNC_OVERDUE_MS, ledMirrorJobs, ledMirrorPlans, ledMirrorStandings, mirrorClashFlags, mirrorFlagKey, type FollowHold, type MirrorFlag } from '@/lib/ledTruckFollow'
 import { daysSold, ledJobShifts, ledShiftsForHolds, ledStandings, type JobHold, type LedStanding } from '@/lib/ledJobs'
 
 // EXPIRED holds accumulate forever — every lapsed hold and every Closed Lost
@@ -123,9 +123,13 @@ export async function GET() {
         }).catch((err) => { console.error('[hold-requests] LED follow read failed:', err); return [] })
       : [],
     // A won booking market the mirror can't follow, or follows with a note
-    // (lib/ledTruckFollow.ts): the card says so.
+    // (lib/ledTruckFollow.ts): the card says so. A mirror another booking
+    // blocks is checked here on every load, so it shows while the clash lasts.
     (wonFollow.length
-      ? ledJobShifts(ledMirrorJobs(wonFollow)).then(rows => ledMirrorPlans(wonFollow, rows, today).flags)
+      ? ledJobShifts(ledMirrorJobs(wonFollow)).then(async rows => {
+          const { plans, flags } = ledMirrorPlans(wonFollow, rows, today)
+          return [...flags, ...await mirrorClashFlags(plans)]
+        })
       : Promise.resolve([] as MirrorFlag[]))
       .catch((err): MirrorFlag[] => {
         console.error('[hold-requests] LED mirror check failed:', err)
@@ -135,7 +139,9 @@ export async function GET() {
   const { linkOf, clientNames } = linked
   // A mirrored market is judged against what was sold, not its runs.
   const inLed = ledMirrorStandings(wonFollow, inLedByHold)
-  const flagOf = new Map(mirrorFlags.map(f => [mirrorFlagKey(f.booking, f.market), f.kind]))
+  // A clash is carried apart from the other kinds, so it never hides one (or is hidden by one).
+  const flagOf = new Map(mirrorFlags.filter(f => f.kind !== 'clash').map(f => [mirrorFlagKey(f.booking, f.market), f.kind]))
+  const clashOf = new Map(mirrorFlags.filter(f => f.kind === 'clash').map(f => [mirrorFlagKey(f.booking, f.market), f.blockedBy ?? '']))
   const ledClientOf = (accountId: string | null) => {
     const uid = accountId ? linkOf.get(accountId) : undefined
     if (!uid) return null
@@ -195,6 +201,8 @@ export async function GET() {
     led_followed:      followedOf.get(h.id) ?? null,
     // The LED mirror can't follow this market, or follows it with a note (lib/ledTruckFollow.ts).
     led_flag:          h.status === 'COMMITTED' ? flagOf.get(mirrorFlagKey(bookingKey(h) ?? h.id, h.market)) ?? null : null,
+    // The mirror is refused because another booking holds days it needs: who (lib/ledTruckFollow.ts mirrorClashFlags).
+    led_clash:         h.status === 'COMMITTED' ? clashOf.get(mirrorFlagKey(bookingKey(h) ?? h.id, h.market)) ?? null : null,
     // Moved to LED's truck but Salesforce's LED Trucks still refuses it (lib/ledTruckFollow.ts).
     led_trucks_unsynced_since: h.status === 'COMMITTED' && h.sfdc_opportunity_id && h.led_follow_sync_pending && h.led_follow_sync_pending.getTime() < overdueBefore
       ? h.led_follow_sync_pending.toISOString() : null,

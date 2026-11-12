@@ -111,6 +111,8 @@ const tdNum = td + ' text-right tabular-nums'
 // A quote line's first row: its trucks follow on a second row, so no bottom border here.
 const tdTop = 'px-2 pt-1.5 pb-0.5 text-sm text-gray-800 align-top'
 const tdTopNum = tdTop + ' text-right tabular-nums'
+// An unselected market greys out: on the cells themselves, since each cell sets its own text colour.
+const unselectedRow = '[&>td]:text-gray-400'
 // The markets list: one line per market from lg up, a two-column card per market below.
 const marketGridCols = 'lg:grid-cols-[minmax(10rem,1.3fr)_minmax(17rem,2fr)_4.5rem_minmax(12rem,1.2fr)_5.5rem_1.5rem]'
 const marketGrid = 'gap-x-2 ' + marketGridCols
@@ -819,7 +821,7 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
                   table fits the card instead of scrolling sideways. */}
               {quote.lines.map(l => (
                 <Fragment key={l.id}>
-                <tr className={selected.has(l.id) ? '' : 'text-gray-400'}>
+                <tr className={selected.has(l.id) ? '' : unselectedRow}>
                   <td className={tdTop}>
                     <input type="checkbox" checked={selected.has(l.id)} disabled={booked || (!quoteOnly && l.missing >= l.trucks)} onChange={() => onToggle(l.id)}
                       title={l.missing >= l.trucks ? 'No truck can cover this market' : 'Book this market'} />
@@ -836,7 +838,7 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
                     {l.priceKept && <span className="block text-[11px] font-normal text-blue-700" title="Unchanged in this revision: keeps the price already booked">booked price kept</span>}
                   </td>
                 </tr>
-                <tr className={selected.has(l.id) ? '' : 'text-gray-400'}>
+                <tr className={selected.has(l.id) ? '' : unselectedRow}>
                   <td className={td} />
                   <td className={td + ' text-xs pt-0'} colSpan={6}>
                     <div className="flex flex-wrap gap-x-4 gap-y-0.5">

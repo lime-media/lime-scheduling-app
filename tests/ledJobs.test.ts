@@ -6,7 +6,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { daysSold, ledDaysOutside, ledMarketMatches, ledStandings, type JobHold } from '@/lib/ledJobs'
+import { daysSold, ledMarketMatches, ledStandings, type JobHold } from '@/lib/ledJobs'
 import { isOwnLedProgram, jobKey, linkedJob, realJobNumber } from '@/lib/jobNumber'
 import { fieldUnreadable } from '@/lib/salesforceClient'
 import { stateCode } from '@/lib/usStates'
@@ -171,19 +171,3 @@ eq('a zero-day stint beside a scheduled one: in LED', bookingInLed([{ status: 'C
 eq('a row with no state on a day another state shares: judged on job and dates', isOwnLedProgram({ ...wonHold, state: 'AZ' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', state: '', states: ['', 'NM'] }), true)
 eq('the other state\'s row that day stays', isOwnLedProgram({ ...wonHold, state: 'AZ' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', state: 'NM', states: ['', 'NM'] }), false)
 
-section('ledDaysOutside: LED runs the job outside the reservation\'s dates')
-{
-  const J = '26-0463-300'
-  const jh = (id: string, truck: string, start: string, end: string, job = J): JobHold => ({ id, truck_number: truck, start_date: start, end_date: end, job_number: job, days_sold: 11 })
-  const late = ['2026-11-30', '2026-12-01', '2026-12-02', '2026-12-03', '2026-12-04', '2026-12-07', '2026-12-08']
-  const out = ledDaysOutside([jh('a', '0786', '2026-11-16', '2026-11-30'), jh('b', '4378', '2026-11-16', '2026-11-30')], late.map(d => ({ job_number: J, shift_date: d })))
-  eq('held Nov 16–30, LED runs Nov 30–Dec 8: flagged, with LED\'s range and 6 days outside', out.get('a'), { from: '2026-11-30', to: '2026-12-08', outside: 6 })
-  eq('every hold of the booking carries it', out.get('b'), { from: '2026-11-30', to: '2026-12-08', outside: 6 })
-  eq('LED inside the dates: nothing flagged',
-    ledDaysOutside([jh('a', '0881', '2026-11-09', '2026-12-17')], [{ job_number: J, shift_date: '2026-11-10' }]).size, 0)
-  eq('the reservation\'s dates are all its holds together (one market after another)',
-    ledDaysOutside([jh('a', '1', '2026-11-02', '2026-11-06'), jh('b', '2', '2026-11-09', '2026-11-13')], [{ job_number: J, shift_date: '2026-11-12' }]).size, 0)
-  eq('job number case doesn\'t matter', ledDaysOutside([jh('a', '1', '2026-11-02', '2026-11-06')], [{ job_number: J.toLowerCase(), shift_date: '2026-11-20' }]).get('a')?.outside, 1)
-  eq('another job\'s days: nothing flagged', ledDaysOutside([jh('a', '1', '2026-11-02', '2026-11-06')], [{ job_number: '26-0999-300', shift_date: '2026-11-20' }]).size, 0)
-  eq('no LED days: nothing flagged', ledDaysOutside([jh('a', '1', '2026-11-02', '2026-11-06')], []).size, 0)
-}

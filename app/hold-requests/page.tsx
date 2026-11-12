@@ -55,8 +55,8 @@ type HoldRequest = {
   led_days_sold: number | null
   /** The sweep moved this won hold onto the truck LED runs its job on, this week (lib/ledTruckFollow.ts). */
   led_followed: { from: string; to: string; at: string } | null
-  /** LED runs this job on days outside the reservation's dates (lib/ledJobs.ts ledDaysOutside). */
-  led_outside: { from: string; to: string; outside: number } | null
+  /** The LED mirror can't follow this market, or follows it with a note (lib/ledTruckFollow.ts). */
+  led_flag: 'reused_job' | 'unfit' | 'more_trucks' | null
   /** Salesforce's LED Trucks has refused the moved truck for over an hour (still retried every sweep). */
   led_trucks_unsynced_since: string | null
   expires_at: string | null
@@ -227,18 +227,57 @@ function LedFollowBadge({ rows }: { rows: HoldRequest[] }) {
 }
 
 /**
- * A won booking whose job LED runs on days outside the reservation's dates:
- * the truck follow never moves dates, so a person re-dates it (lib/ledJobs.ts ledDaysOutside).
+ * A won booking's trucks in the order LED runs them, per market, once they're
+ * more than one truck on the same dates: "1002 Nov 1 → 1261 Nov 2–30"
+ * (lib/ledTruckFollow.ts mirrors LED's trucks and dates onto the holds).
  */
-function LedOutsideBadge({ rows }: { rows: HoldRequest[] }) {
-  const o = rows.find(r => r.status === 'COMMITTED' && r.led_outside)?.led_outside
-  if (!o) return null
+function LedSeries({ rows }: { rows: HoldRequest[] }) {
+  const won = rows.filter(r => r.status === 'COMMITTED')
+  const markets = marketGroups(won).filter(m => new Set(m.rows.map(r => `${r.start_date.slice(0, 10)}|${r.end_date.slice(0, 10)}`)).size > 1)
+  if (!markets.length) return null
   const day = (d: string) => format(parseDateOnly(d), 'MMM d')
+  const span = (s: string, e: string) => s.slice(0, 10) === e.slice(0, 10) ? day(s) : `${day(s)}–${day(e)}`
   return (
-    <span className="text-xs text-amber-700 font-medium"
-      title="LED runs this job (any truck) on days outside the reservation's dates. The reservation's dates aren't changed to match on their own: re-date it if LED's dates are right.">
-      LED runs this job {day(o.from)}–{day(o.to)}: {o.outside} day{o.outside === 1 ? '' : 's'} outside the reservation&apos;s dates
-    </span>
+    <>
+      {markets.map(m => {
+        // Trucks on the same dates run together: "1002 + 1261 Nov 2–30".
+        const steps = new Map<string, string[]>()
+        for (const r of [...m.rows].sort((a, b) => a.start_date.localeCompare(b.start_date) || a.truck_number.localeCompare(b.truck_number))) {
+          const k = `${r.start_date.slice(0, 10)}|${r.end_date.slice(0, 10)}`
+          steps.set(k, [...(steps.get(k) ?? []), r.truck_number])
+        }
+        return (
+          <span key={m.key} className="text-xs text-gray-600" title="The trucks and dates LED runs this market on, in order">
+            {markets.length > 1 ? `${formatMarketState(m.market, m.rows[0].state)}: ` : ''}
+            {[...steps].map(([k, trucks]) => `${trucks.join(' + ')} ${span(k.split('|')[0], k.split('|')[1])}`).join(' → ')}
+          </span>
+        )
+      })}
+    </>
+  )
+}
+
+/** A won market the LED mirror can't follow, or follows with a note (lib/ledTruckFollow.ts). */
+function LedMirrorBadge({ rows }: { rows: HoldRequest[] }) {
+  const flags = new Set(rows.filter(r => r.status === 'COMMITTED').map(r => r.led_flag).filter(Boolean))
+  return (
+    <>
+      {flags.has('reused_job') && (
+        <span className="text-xs text-amber-700 font-medium" title="Another live booking has the same job number in this market, so which one LED's schedule belongs to can't be told. Neither follows LED until one job number is corrected in Salesforce.">
+          Job number on two bookings: not following LED
+        </span>
+      )}
+      {flags.has('unfit') && (
+        <span className="text-xs text-amber-700 font-medium" title="LED runs fewer trucks at once than were sold, and the trucks still held are ones LED also uses, so the reservation can't be matched to LED without dropping a sold truck. Check it by hand.">
+          LED schedule doesn&apos;t fit the booking: check by hand
+        </span>
+      )}
+      {flags.has('more_trucks') && (
+        <span className="text-xs text-amber-700 font-medium" title="LED runs more trucks at once than were sold. The reservation holds what LED runs.">
+          LED runs more trucks than sold
+        </span>
+      )}
+    </>
   )
 }
 
@@ -973,7 +1012,8 @@ export default function HoldRequestsPage() {
                         <LedClientLink accountId={first.sfdc_account_id} linked={first.led_client} onSaved={fetchRequests} />
                       )}
                       <LedFollowBadge rows={groupItems} />
-                      <LedOutsideBadge rows={groupItems} />
+                      <LedMirrorBadge rows={groupItems} />
+                      <LedSeries rows={groupItems} />
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.HOLD}`}>
                         {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[status] ?? status)}
                       </span>

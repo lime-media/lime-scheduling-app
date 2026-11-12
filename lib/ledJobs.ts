@@ -159,58 +159,20 @@ export async function ledShiftsForHolds(holds: JobHold[]): Promise<JobShift[]> {
   return query<JobShift[]>(HOLD_SHIFTS_QUERY, { holds: JSON.stringify(rows) })
 }
 
-/** LED's days for a won job outside its reservation's dates: the range LED runs it, and how many days fall outside. */
-export type LedOutside = { from: string; to: string; outside: number }
+/** One LED day of a won job on a truck, in a market (any truck: what the mirror follows). */
+export type LedJobShift = { truck_number: string; job_number: string; shift_start: string; market: string; state: string; standard_market_name: string }
 
-/**
- * The won holds whose job LED runs on days outside the reservation's dates
- * (any truck), so Reservations can say so: the truck follow (lib/ledTruckFollow.ts)
- * only sees LED within a hold's dates, and dates are never moved for a person.
- * The reservation's dates are its job's holds together, earliest start to
- * latest end. `days`: each job's LED days (YYYY-MM-DD) near those dates
- * (ledJobDays). Pure.
- */
-export function ledDaysOutside(holds: JobHold[], days: { job_number: string; shift_date: string }[]): Map<string, LedOutside> {
-  const span = new Map<string, { from: string; to: string }>()
-  for (const h of holds) {
-    const job = jobKey(h.job_number)
-    if (!job) continue
-    const s = span.get(job)
-    span.set(job, s ? { from: h.start_date < s.from ? h.start_date : s.from, to: h.end_date > s.to ? h.end_date : s.to } : { from: h.start_date, to: h.end_date })
-  }
-  const daysOf = new Map<string, Set<string>>()
-  for (const d of days) {
-    const job = jobKey(d.job_number)
-    if (!job || !span.has(job)) continue
-    const set = daysOf.get(job)
-    if (set) set.add(d.shift_date)
-    else daysOf.set(job, new Set([d.shift_date]))
-  }
-  const byJob = new Map<string, LedOutside>()
-  for (const [job, set] of daysOf) {
-    const s = span.get(job)!
-    const all = [...set].sort()
-    const outside = all.filter(d => d < s.from || d > s.to).length
-    if (outside) byJob.set(job, { from: all[0], to: all[all.length - 1], outside })
-  }
-  const out = new Map<string, LedOutside>()
-  for (const h of holds) {
-    const o = byJob.get(jobKey(h.job_number) ?? '')
-    if (o) out.set(h.id, o)
-  }
-  return out
-}
-
-/** How far either side of a reservation's dates LED's days of its job are read. */
-export const LED_OUTSIDE_WINDOW_DAYS = 60
-
-// Each won job's LED days (any truck, live programs) within
-// LED_OUTSIDE_WINDOW_DAYS of its reservation's dates: what ledDaysOutside
-// compares. One JSON parameter, so nothing reaches the SQL text.
-const JOB_DAYS_QUERY = `
+// Each won job's LED days on any truck, live programs and trucks, within the
+// window around its holds the caller gives (lib/ledTruckFollow.ts
+// MIRROR_WINDOW_DAYS). One JSON parameter, so nothing reaches the SQL text.
+const JOB_SHIFTS_QUERY = `
 SELECT DISTINCT
+    t.truck_number,
     LTRIM(RTRIM(cp.job_number)) AS job_number,
-    CONVERT(varchar(10), ${shiftDay('ps.start_time')}, 120) AS shift_date
+    CONVERT(varchar(10), ${shiftDay('ps.start_time')}, 120) AS shift_start,
+    COALESCE(cpm.market, '') AS market,
+    COALESCE(cpm.state, '') AS state,
+    COALESCE(cpm.standard_market_name, '') AS standard_market_name
 FROM OPENJSON(@jobs) WITH (
     job NVARCHAR(4000) '$.job',
     s   DATE         '$.start',
@@ -218,21 +180,25 @@ FROM OPENJSON(@jobs) WITH (
 ) j
 JOIN dbo.client_programs cp ON LTRIM(RTRIM(cp.job_number)) = j.job  -- the LED column's collation is case-insensitive
 JOIN dbo.program_schedule ps ON ps.client_program_uid = cp.client_program_uid
+JOIN dbo.trucks t ON t.truck_uid = ps.truck_uid
 LEFT JOIN dbo.client_program_markets cpm ON cpm.client_program_market_uid = ps.client_program_market_uid
-WHERE COALESCE(cp.is_deleted, 0) = 0  -- only a live program counts
-  AND ${shiftDayIn({ from: `DATEADD(day, -${LED_OUTSIDE_WINDOW_DAYS}, j.s)`, to: `DATEADD(day, ${LED_OUTSIDE_WINDOW_DAYS}, j.e)` })}
+WHERE COALESCE(cp.is_deleted, 0) = 0  -- an archived program is never what LED runs
+  AND COALESCE(t.is_deleted, 0) = 0
+  AND ${shiftDayIn({ from: 'j.s', to: 'j.e' })}
 `
 
-/** LED's days for each won job near its holds' dates (any truck). Reads the LED database; throws if it can't. */
-export async function ledJobDays(holds: JobHold[]): Promise<{ job_number: string; shift_date: string }[]> {
-  const span = new Map<string, { start: string; end: string }>()
-  for (const h of holds) {
-    const job = jobKey(h.job_number)
+/**
+ * LED's days of each job on any truck, between `start` and `end` (YYYY-MM-DD,
+ * inclusive; one entry per job). Reads the LED database; throws if it can't.
+ */
+export async function ledJobShifts(jobs: { job: string; start: string; end: string }[]): Promise<LedJobShift[]> {
+  const byJob = new Map<string, { start: string; end: string }>()
+  for (const j of jobs) {
+    const job = jobKey(j.job)
     if (!job) continue
-    const s = span.get(job)
-    span.set(job, s ? { start: h.start_date < s.start ? h.start_date : s.start, end: h.end_date > s.end ? h.end_date : s.end } : { start: h.start_date, end: h.end_date })
+    const s = byJob.get(job)
+    byJob.set(job, s ? { start: j.start < s.start ? j.start : s.start, end: j.end > s.end ? j.end : s.end } : { start: j.start, end: j.end })
   }
-  if (!span.size) return []
-  const jobs = [...span].map(([job, s]) => ({ job, ...s }))
-  return query<{ job_number: string; shift_date: string }[]>(JOB_DAYS_QUERY, { jobs: JSON.stringify(jobs) })
+  if (!byJob.size) return []
+  return query<LedJobShift[]>(JOB_SHIFTS_QUERY, { jobs: JSON.stringify([...byJob].map(([job, s]) => ({ job, ...s }))) })
 }

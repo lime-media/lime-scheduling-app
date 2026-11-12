@@ -1,70 +1,91 @@
 /**
- * A won reservation follows the truck LED scheduled it on.
+ * A won reservation mirrors what LED runs: its trucks and its dates.
  *
- * Ops schedules a won job in LED, and may put it on a different truck than
- * the app held (Andrew, Oct 2026: the reservation follows LED's choice and
- * stays in sync, even when that raises new conflicts, so they're visible).
- * The link is the job number (lib/jobNumber.ts linkedJob), so only committed
- * holds with one ever move.
+ * Ops schedules a won job in LED, on whichever trucks and days work. Sales
+ * doesn't care which truck runs it, but the reservation is what availability
+ * reads for every future quote, so it has to say what LED actually runs
+ * (Andrew, 2026-11-11). The link is the job number (lib/jobNumber.ts
+ * linkedJob), so only committed holds with one ever change.
  *
- * Which truck runs it doesn't matter to sales; that LED runs it does (Andrew,
- * 2026-11-11). So a booking's trucks follow LED's one-for-one, per job:
- * - A hold LED runs its job on (any day within its dates) keeps its truck.
- * - Each other hold takes a truck LED runs the job on, within its dates and in
- *   its market, that no hold of the job is on over the same days: the truck
- *   with the most of those days first, then by truck number. The hold with
- *   the fewest trucks to choose from picks first, then truck-number order.
- *   Each LED truck takes one hold over the same days.
- * - Not when another live hold of the same opportunity is on that truck over
- *   the same days (a market not yet won, say).
- * - LED on fewer trucks than held: the holds left over keep their trucks and
- *   show as not fully scheduled. On more: nothing is added.
- * Moving doesn't wait for every day sold: the truck is LED's choice whatever
- * it has scheduled so far. Whether the booking is fully scheduled is judged
- * after, per hold, on its own truck (lib/ledJobs.ts ledStandings). Dates never
- * move here: LED running the job outside the reservation's dates is shown on
- * Reservations (lib/ledJobs.ts ledDaysOutside) for a person to re-date.
- * Every market of a booking shares its job number (and job numbers are reused
- * across opportunities), so the market has to match (lib/ledJobs.ts
- * ledMarketMatches). A Salesforce multi-market hold ("Multi-market: Detroit,
- * Los Angeles, CA") has no one market: LED's city must be one its label
- * names.
+ * For each won booking market (one booking, one market, one job):
+ * - LED's days of the job in that market (lib/ledJobs.ts ledMarketMatches; a
+ *   Salesforce multi-market label: a city it names), on any truck, from
+ *   MIRROR_WINDOW_DAYS before the market's first day to as many after its last.
+ * - Grouped by truck into runs of days. A gap made only of weekdays LED never
+ *   runs this job on (the weekend of a Mon–Fri flight) doesn't split a run; a
+ *   gap with a working weekday in it, or another truck, does.
+ * - The market's holds become those runs: one hold per truck and run, with its
+ *   dates. Holds are reused (same truck first) and re-dated rather than
+ *   replaced, so their history stays; extra runs copy the market's first hold.
+ * - LED running fewer trucks at once than were sold: that many of the market's
+ *   holds on trucks LED doesn't use stay as they are, so the shortfall is still
+ *   held and still shows. If there aren't enough such holds the market is left
+ *   alone and flagged. LED running more than were sold: mirrored, and flagged.
+ * - What was sold (trucks at once, truck-days) is recorded on the holds the
+ *   first time (`features.ledMirror`), so "fully scheduled" is judged against
+ *   the sale, not the runs (ledMirrorStandings).
+ * - A job number and market on two live bookings: neither is touched; both
+ *   are flagged (which booking LED means can't be told).
+ * Re-running on a mirrored booking changes nothing. Each booking is written in
+ * its own transaction, guarded on its holds being as read.
  */
 
 import { prisma } from '@/lib/prisma'
 import { jobKey } from '@/lib/jobNumber'
-import { ledMarketMatches } from '@/lib/ledJobs'
+import { daysSold, ledMarketMatches } from '@/lib/ledJobs'
 import { centralDate } from '@/lib/dateOnly'
 import { stateCode } from '@/lib/usStates'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
+import type { Hold } from '@prisma/client'
 
-/** A won hold as following needs it. Dates YYYY-MM-DD, inclusive. `job_number`: its linked job (linkedJob). */
+/** How far either side of a booking market's dates LED's days of its job are read. */
+export const MIRROR_WINDOW_DAYS = 60
+
+/** A won hold as mirroring needs it. Dates YYYY-MM-DD, inclusive. `job_number`: its linked job (linkedJob). */
 export type FollowHold = {
   id: string; truck_number: string; start_date: string; end_date: string
   market: string; state: string | null; job_number: string | null
-  /** The days LED must run it on a truck (lib/ledJobs.ts daysSold). */
-  days_sold: number
+  /** The booking it belongs to (lib/bookings.ts bookingKey). */
+  booking: string
+  features: string | null
   sfdc_opportunity_id?: string | null
 }
 
-/** Any live hold (any status), for the trucks a booking already occupies. */
-export type LiveHold = { id: string; truck_number: string; start_date: string; end_date: string; sfdc_opportunity_id?: string | null }
-
-/** One LED schedule row: a job on a truck on a day, in a market. */
+/** One LED schedule row: a job on a truck on a day (YYYY-MM-DD), in a market. */
 export type FollowRow = {
   truck_number: string; job_number?: string; shift_start: string
   market: string; state?: string; standard_market_name?: string
 }
 
-/** A hold to move from its truck to the one LED runs its job on. */
-export type TruckMove = { holdId: string; from: string; to: string; job: string }
+/** One truck's run of LED days: a hold's truck and dates once mirrored. */
+export type LedRun = { truck: string; start: string; end: string; days: number }
 
-/** The dates LED's rows cover (YYYY-MM-DD, inclusive): a hold reaching outside them can't be judged. */
-export type SeenWindow = { from: string; to: string }
+/** What a booking market was sold, kept on its holds once mirrored. */
+export type SoldShape = { trucks: number; truckDays: number }
+
+/** A booking market LED can't be mirrored onto, or can only with a note. */
+export type MirrorFlag = { booking: string; market: string; job: string; kind: 'reused_job' | 'unfit' | 'more_trucks' }
+
+/** The writes that make a booking market match LED. */
+export type MirrorPlan = {
+  booking: string; market: string; job: string; sold: SoldShape
+  /** Holds as read: the write is refused if any has changed since. */
+  read: { id: string; truck_number: string; start_date: string; end_date: string }[]
+  update: { id: string; from: { truck: string; start: string; end: string }; to: LedRun }[]
+  create: { templateId: string; to: LedRun }[]
+  remove: string[]
+  /** Holds whose features only need the sold shape recorded. */
+  stamp: string[]
+}
 
 const MULTI_MARKET = /^\s*multi-market\s*:/i
 const cityOf = (m: string) => m.split(',')[0].trim().toLowerCase().replace(/\s+/g, ' ')
+const marketKey = (m: string) => m.trim().toLowerCase().replace(/\s+/g, ' ')
+/** The key a MirrorFlag is looked up by: its booking and market. Pure. */
+export const mirrorFlagKey = (booking: string, market: string) => `${booking}|${marketKey(market)}`
+const weekday = (d: string) => new Date(`${d}T00:00:00Z`).getUTCDay()
+const addDays = (d: string, n: number) => { const x = new Date(`${d}T00:00:00Z`); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10) }
 
 /**
  * The cities a Salesforce multi-market label names, each with its state when
@@ -90,7 +111,7 @@ export function labelCities(label: string): { city: string; state: string | null
  * as a state: "New York" and "Washington" are cities in a label, though
  * stateCode reads them as states.
  */
-function inHoldMarket(h: FollowHold, r: FollowRow): boolean {
+function inHoldMarket(h: { market: string; state: string | null }, r: FollowRow): boolean {
   if (MULTI_MARKET.test(h.market)) {
     // A city the label names, by LED's market or its standard market, each in
     // its own state: LED files a suburb under its metro's standard market, which
@@ -108,148 +129,295 @@ function inHoldMarket(h: FollowHold, r: FollowRow): boolean {
 }
 
 /**
- * The holds to move, and where. Only holds still running (ending today or
- * later) move; a finished booking keeps the truck it was recorded on. With
- * `seen`, only holds wholly inside the dates LED's rows cover move: a day of
- * the hold's own truck outside them can't be seen, so a split could look like
- * a move. Pure.
+ * LED's days grouped by truck into runs. A gap whose days all fall on
+ * weekdays the job never runs on (`working`) doesn't split a run. Pure.
  */
-export function ledTruckMoves(holds: FollowHold[], rows: FollowRow[], today: string, live: LiveHold[] = [], seen?: SeenWindow): TruckMove[] {
-  const byJob = new Map<string, FollowHold[]>()
-  for (const h of holds) {
-    const job = jobKey(h.job_number)
-    if (!job) continue
-    const group = byJob.get(job)
-    if (group) group.push(h)
-    else byJob.set(job, [h])
+export function ledRuns(days: { truck: string; day: string }[]): LedRun[] {
+  const working = new Set(days.map(d => weekday(d.day)))
+  const byTruck = new Map<string, Set<string>>()
+  for (const d of days) {
+    const set = byTruck.get(d.truck)
+    if (set) set.add(d.day)
+    else byTruck.set(d.truck, new Set([d.day]))
   }
-  const rowsByJob = new Map<string, FollowRow[]>()
-  for (const r of rows) {
-    const job = jobKey(r.job_number)
-    if (!job || !byJob.has(job)) continue
-    const group = rowsByJob.get(job)
-    if (group) group.push(r)
-    else rowsByJob.set(job, [r])
-  }
-
-  const moves: TruckMove[] = []
-  for (const [job, group] of byJob) {
-    const jobRows = rowsByJob.get(job) ?? []
-    if (!jobRows.length) continue
-    // Trucks a hold of this job is already on over the same days: LED running
-    // the job there is that hold's, never another's to move onto. Dates
-    // matter: one truck can carry two markets of a booking one after another.
-    const overlaps = (a: { start_date: string; end_date: string }, b: { start_date: string; end_date: string }) =>
-      a.start_date <= b.end_date && b.start_date <= a.end_date
-    const within = (h: FollowHold) => jobRows.filter(r => r.shift_start >= h.start_date && r.shift_start <= h.end_date)
-    // Another live hold of the same opportunity (a market not yet won, say) on that truck over the same days.
-    const takenByBooking = (h: FollowHold, truck: string) => !!h.sfdc_opportunity_id && live.some(o =>
-      o.id !== h.id && o.sfdc_opportunity_id === h.sfdc_opportunity_id && o.truck_number === truck && o.start_date <= h.end_date && h.start_date <= o.end_date)
-    // LED days of the job on a truck within the hold's dates and in its market
-    // (another market of a reused job number on that truck isn't this hold's).
-    const daysOn = (h: FollowHold, truck: string) =>
-      new Set(within(h).filter(r => r.truck_number === truck && inHoldMarket(h, r)).map(r => r.shift_start)).size
-    // LED's trucks for the job a hold could take, before any is given out:
-    // within its dates and market, and no other hold of the job or live hold
-    // of its opportunity on it over those days.
-    const options = (h: FollowHold) => [...new Set(within(h)
-      .filter(r => inHoldMarket(h, r))
-      .map(r => r.truck_number))]
-      .filter(t => !group.some(o => o !== h && o.truck_number === t && overlaps(o, h)))
-      .filter(t => !takenByBooking(h, t))
-    // The holds LED isn't running on their own truck. The one with the fewest
-    // trucks to choose from picks first, so a hold that can only go one place
-    // isn't crowded out; then truck-number order, so the same schedule always
-    // gives the same moves.
-    const unmatched = group
-      .filter(h => h.end_date >= today && h.days_sold > 0)
-      .filter(h => !seen || (h.start_date >= seen.from && h.end_date <= seen.to))
-      .filter(h => !within(h).some(r => r.truck_number === h.truck_number))
-      .map(h => ({ h, trucks: options(h) }))
-      .sort((a, b) => a.trucks.length - b.trucks.length || a.h.truck_number.localeCompare(b.h.truck_number) || a.h.id.localeCompare(b.h.id))
-    // Trucks given to a hold of this job in this pass, over its dates.
-    const given: { truck: string; start_date: string; end_date: string }[] = []
-    for (const { h, trucks } of unmatched) {
-      const candidates = trucks
-        .filter(t => !given.some(g => g.truck === t && overlaps(g, h)))
-        .map(t => ({ truck: t, days: daysOn(h, t) }))
-        .sort((a, b) => b.days - a.days || a.truck.localeCompare(b.truck))
-      const to = candidates[0]?.truck
-      if (!to) continue
-      given.push({ truck: to, start_date: h.start_date, end_date: h.end_date })
-      moves.push({ holdId: h.id, from: h.truck_number, to, job })
+  const runs: LedRun[] = []
+  for (const [truck, set] of byTruck) {
+    const sorted = [...set].sort()
+    let run: LedRun = { truck, start: sorted[0], end: sorted[0], days: 1 }
+    for (const day of sorted.slice(1)) {
+      let gapWorks = false
+      for (let g = addDays(run.end, 1); g < day; g = addDays(g, 1)) if (working.has(weekday(g))) { gapWorks = true; break }
+      if (gapWorks) {
+        runs.push(run)
+        run = { truck, start: day, end: day, days: 1 }
+      } else {
+        run.end = day
+        run.days++
+      }
     }
+    runs.push(run)
   }
-  return moves
+  return runs.sort((a, b) => a.start.localeCompare(b.start) || a.truck.localeCompare(b.truck))
+}
+
+/** The most trucks running on any one day. Pure. */
+function concurrency(spans: { truck: string; start: string; end: string }[]): number {
+  const edges = [...new Set(spans.map(s => s.start))]
+  return edges.reduce((max, d) => Math.max(max, new Set(spans.filter(s => s.start <= d && d <= s.end).map(s => s.truck)).size), 0)
+}
+
+/** The sold shape recorded on a hold's features, if any. */
+export function soldShapeOf(features: string | null): SoldShape | null {
+  try {
+    const m = (JSON.parse(features ?? '{}') as { ledMirror?: unknown })?.ledMirror as Partial<SoldShape> | undefined
+    return m && Number.isInteger(m.trucks) && Number.isInteger(m.truckDays) ? { trucks: m.trucks!, truckDays: m.truckDays! } : null
+  } catch {
+    return null
+  }
 }
 
 /**
- * Moves each hold ledTruckMoves names onto LED's truck, as a truck swap made
- * by the sweep: audited (SWAP_HOLD_TRUCK, reason led_truck_follow) in the same
- * transaction as the move. Returns the moves made, each with the user it is
- * recorded as, and the opportunities whose LED Trucks the caller syncs to
- * Salesforce (the app owns them). The caller measures the swaps (recordSwap) after
- * conflict detection, so the fleet and GPS loads never delay it.
+ * A hold's features once mirrored: its days are LED's days in its run (read
+ * back by daysSold while its dates match), with the market's sold shape.
+ */
+export function mirroredFeatures(features: string | null, run: LedRun | null, sold: SoldShape): string {
+  let f: Record<string, unknown> = {}
+  try { const p: unknown = JSON.parse(features ?? '{}'); if (p && typeof p === 'object') f = p as Record<string, unknown> } catch { /* unreadable: start fresh */ }
+  return JSON.stringify({ ...f, ...(run ? { heldStart: run.start, heldEnd: run.end, heldWorkDays: run.days } : {}), ledMirror: sold })
+}
+
+/** The LED read the mirror needs: each job, from MIRROR_WINDOW_DAYS before its holds to as many after (lib/ledJobs.ts ledJobShifts). Pure. */
+export function ledMirrorJobs(holds: FollowHold[]): { job: string; start: string; end: string }[] {
+  return holds.flatMap(h => {
+    const job = jobKey(h.job_number)
+    return job ? [{ job, start: addDays(h.start_date, -MIRROR_WINDOW_DAYS), end: addDays(h.end_date, MIRROR_WINDOW_DAYS) }] : []
+  })
+}
+
+/**
+ * What to write so each won booking market matches LED, and the markets that
+ * can't be (or can only with a note). `holds`: the won holds with a job
+ * number; `rows`: LED's days of those jobs near them. Only markets still
+ * running (a day today or later) change. Pure.
+ */
+export function ledMirrorPlans(holds: FollowHold[], rows: FollowRow[], today: string): { plans: MirrorPlan[]; flags: MirrorFlag[] } {
+  const groups = new Map<string, FollowHold[]>()
+  for (const h of holds) {
+    const job = jobKey(h.job_number)
+    if (!job) continue
+    const key = `${h.booking}|${marketKey(h.market)}|${job}`
+    const g = groups.get(key)
+    if (g) g.push(h)
+    else groups.set(key, [h])
+  }
+  // A job number and market on two live bookings: which one LED means can't be told.
+  const bookingsOf = new Map<string, Set<string>>()
+  for (const [key, g] of groups) {
+    if (!g.some(h => h.end_date >= today)) continue
+    const [booking, market, job] = key.split('|')
+    const jm = `${job}|${market}`
+    const set = bookingsOf.get(jm)
+    if (set) set.add(booking)
+    else bookingsOf.set(jm, new Set([booking]))
+  }
+  const plans: MirrorPlan[] = []
+  const flags: MirrorFlag[] = []
+  for (const [key, g] of groups) {
+    const [booking, , job] = key.split('|')
+    const market = g[0].market
+    if (!g.some(h => h.end_date >= today)) continue
+    if ((bookingsOf.get(`${job}|${marketKey(market)}`)?.size ?? 0) > 1) {
+      flags.push({ booking, market, job, kind: 'reused_job' })
+      continue
+    }
+    const from = addDays(g.reduce((m, h) => h.start_date < m ? h.start_date : m, g[0].start_date), -MIRROR_WINDOW_DAYS)
+    const to = addDays(g.reduce((m, h) => h.end_date > m ? h.end_date : m, g[0].end_date), MIRROR_WINDOW_DAYS)
+    const days = rows
+      .filter(r => jobKey(r.job_number) === job && r.shift_start >= from && r.shift_start <= to && inHoldMarket(g[0], r))
+      .map(r => ({ truck: r.truck_number, day: r.shift_start }))
+    if (!days.length) continue
+    const runs = ledRuns(days)
+    const sold = g.map(h => soldShapeOf(h.features)).find(Boolean) ?? {
+      trucks: concurrency(g.map(h => ({ truck: h.truck_number, start: h.start_date, end: h.end_date }))),
+      truckDays: g.reduce((n, h) => n + Math.max(daysSold(h.features, h.start_date, h.end_date), 0), 0),
+    }
+    const ledAtOnce = concurrency(runs)
+    if (ledAtOnce > sold.trucks) flags.push({ booking, market, job, kind: 'more_trucks' })
+    // The sold trucks LED isn't running yet stay held where they are.
+    const ledTrucks = new Set(runs.map(r => r.truck))
+    const spare = g.filter(h => !ledTrucks.has(h.truck_number)).sort((a, b) => a.truck_number.localeCompare(b.truck_number) || a.id.localeCompare(b.id))
+    const short = Math.max(0, sold.trucks - ledAtOnce)
+    if (spare.length < short) {
+      flags.push({ booking, market, job, kind: 'unfit' })
+      continue
+    }
+    const kept = new Set(spare.slice(0, short).map(h => h.id))
+    let pool = g.filter(h => !kept.has(h.id))
+    const plan: MirrorPlan = {
+      booking, market, job, sold,
+      read: g.map(h => ({ id: h.id, truck_number: h.truck_number, start_date: h.start_date, end_date: h.end_date })),
+      update: [], create: [], remove: [], stamp: [],
+    }
+    const exact = (h: FollowHold, r: LedRun) => h.truck_number === r.truck && h.start_date === r.start && h.end_date === r.end
+    const open: LedRun[] = []
+    // Already as LED runs it: unchanged (its features only need the sold shape).
+    for (const r of runs) {
+      const same = pool.find(h => exact(h, r))
+      if (!same) { open.push(r); continue }
+      pool = pool.filter(h => h !== same)
+      if (!soldShapeOf(same.features)) plan.stamp.push(same.id)
+    }
+    const reuse = (h: FollowHold, r: LedRun) => {
+      pool = pool.filter(x => x !== h)
+      plan.update.push({ id: h.id, from: { truck: h.truck_number, start: h.start_date, end: h.end_date }, to: r })
+    }
+    // A hold already on a run's truck is re-dated to it first, so it keeps its
+    // truck; then any hold left moves to a run; the runs left are added.
+    const rest: LedRun[] = []
+    for (const r of open) {
+      const same = pool.find(h => h.truck_number === r.truck)
+      if (same) reuse(same, r)
+      else rest.push(r)
+    }
+    for (const r of rest) {
+      if (pool.length) reuse(pool[0], r)
+      else plan.create.push({ templateId: g[0].id, to: r })
+    }
+    plan.remove = pool.map(h => h.id)
+    for (const id of kept) if (!soldShapeOf(g.find(h => h.id === id)!.features)) plan.stamp.push(id)
+    if (plan.update.length || plan.create.length || plan.remove.length || plan.stamp.length) plans.push(plan)
+  }
+  return { plans, flags }
+}
+
+/**
+ * Per won booking market that has been mirrored: LED's truck-days on its
+ * holds against what was sold (`features.ledMirror`), so splitting a hold into
+ * runs never makes a short booking look fully scheduled. Each hold's `of` is
+ * its share, the market's sold truck-days in total; `scheduled` is the
+ * market's. Holds never mirrored keep their own standing. Pure.
+ */
+export function ledMirrorStandings<S extends { days: number; of: number; scheduled: boolean }>(
+  holds: { id: string; booking: string; market: string; features: string | null }[],
+  standings: Map<string, S>,
+): Map<string, S> {
+  const out = new Map(standings)
+  const groups = new Map<string, { id: string; sold: SoldShape }[]>()
+  for (const h of holds) {
+    const sold = soldShapeOf(h.features)
+    if (!sold || !standings.has(h.id)) continue
+    const key = `${h.booking}|${marketKey(h.market)}`
+    const g = groups.get(key)
+    if (g) g.push({ id: h.id, sold })
+    else groups.set(key, [{ id: h.id, sold }])
+  }
+  for (const g of groups.values()) {
+    const sold = g[0].sold.truckDays
+    const days = g.reduce((n, h) => n + standings.get(h.id)!.days, 0)
+    let left = sold
+    g.forEach((h, i) => {
+      const s = standings.get(h.id)!
+      const of = i === g.length - 1 ? Math.max(left, 0) : Math.min(s.days, Math.max(left, 0))
+      left -= of
+      out.set(h.id, { ...s, of, scheduled: days >= sold })
+    })
+  }
+  return out
+}
+
+/** A booking's mirror, as written. */
+export type MirrorDone = {
+  booking: string; opportunity: string | null; by: string
+  updated: { id: string; from: { truck: string; start: string; end: string }; to: LedRun }[]
+  created: { id: string; templateId: string; to: LedRun }[]
+  removed: string[]
+}
+
+/**
+ * Writes each plan, one booking market per transaction: re-dates or moves the
+ * holds, adds the extra runs as holds copied from the market's first hold,
+ * removes holds no run needs, and records the sold shape on every hold. Each
+ * change is audited (SWAP_HOLD_TRUCK with reason led_truck_follow for a hold
+ * re-dated or moved; LED_MIRROR_ADD / LED_MIRROR_REMOVE). Refused, with
+ * nothing written, when any of the market's holds changed since it was read
+ * (a staff swap or un-commit meanwhile wins). Marks the holds for the
+ * Salesforce LED Trucks sync (syncFollowedOpportunities).
  *
- * MIRROR PATH — no clash check by design. LED has the job on that truck
- * already; refusing would leave the app holding a truck LED isn't using and
- * hide the real clash. Another booking on the new truck surfaces as a
- * conflict and on /api/holds/infeasible.
- * Each write is guarded on the hold still being committed on its old truck,
- * so a swap or un-commit made meanwhile wins. One failed move never stops the
+ * MIRROR PATH — no clash check by design. LED already runs the job on those
+ * trucks and days; refusing would leave the app holding what LED isn't
+ * running and hide the real clash. Another booking on a truck surfaces as a
+ * conflict and on /api/holds/infeasible. One failed booking never stops the
  * rest.
  */
-export async function followLedTrucks(
-  holds: (FollowHold & { sfdc_opportunity_id: string | null; created_by: string })[],
-  rows: FollowRow[],
-  today: string,
-  live: LiveHold[],
-  seen?: SeenWindow,
-): Promise<{ moved: (TruckMove & { by: string })[]; opportunities: string[] }> {
-  const moves = ledTruckMoves(holds, rows, today, live, seen)
-  if (!moves.length) return { moved: [], opportunities: [] }
+export async function applyLedMirror(plans: MirrorPlan[], templates: Map<string, Hold>): Promise<MirrorDone[]> {
+  if (!plans.length) return []
   const serviceUser = await prisma.user.findUnique({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } })
-  const byId = new Map(holds.map(h => [h.id, h]))
-  const moved: (TruckMove & { by: string })[] = []
-  const opportunities = new Set<string>()
-  for (const m of moves) {
-    const hold = byId.get(m.holdId)
-    if (!hold) continue
-    const by = serviceUser?.id ?? hold.created_by
+  const done: MirrorDone[] = []
+  for (const p of plans) {
+    const template = templates.get(p.read[0]?.id ?? '') ?? templates.get(p.create[0]?.templateId ?? '')
+    if (!template) continue
+    const by = serviceUser?.id ?? template.created_by
+    const opportunity = template.sfdc_opportunity_id
+    const pending = opportunity ? { led_follow_sync_pending: new Date() } : {}
+    const date = (d: string) => new Date(`${d}T00:00:00Z`)
     try {
-      // Move and audit together: a move left without its audit row (or
-      // reported as failed after it was written) would never reach
-      // Salesforce's LED Trucks, and the next sweep sees nothing to move.
-      const done = await prisma.$transaction(async (tx) => {
-        const { count } = await tx.hold.updateMany({
-          where: { id: m.holdId, truck_number: m.from, status: 'COMMITTED' },
-          // Marked until its opportunity's LED Trucks reaches Salesforce
-          // (syncFollowedOpportunities): once the hold is on LED's truck the
-          // next sweep has nothing to move, so the mark is what retries the sync.
-          data:  { truck_number: m.to, ...(hold.sfdc_opportunity_id ? { led_follow_sync_pending: new Date() } : {}) },
-        })
-        if (!count) return false
-        await tx.auditLog.create({
-          data: {
-            action:       'SWAP_HOLD_TRUCK',
-            truck_number: m.to,
-            user_id:      by,
-            hold_id:      m.holdId,
-            details:      JSON.stringify({ old_truck: m.from, new_truck: m.to, reason: 'led_truck_follow', job_number: m.job }),
-          },
-        })
-        return true
+      const result = await prisma.$transaction(async (tx) => {
+        // Every hold of the market still as read, or nothing is written.
+        for (const r of p.read) {
+          const still = await tx.hold.count({ where: { id: r.id, truck_number: r.truck_number, start_date: date(r.start_date), end_date: date(r.end_date), status: 'COMMITTED' } })
+          if (!still) throw new StaleMirror()
+        }
+        const featuresOf = new Map(p.read.map(r => [r.id, templates.get(r.id)?.features ?? null]))
+        for (const u of p.update) {
+          await tx.hold.update({
+            where: { id: u.id },
+            data: { truck_number: u.to.truck, start_date: date(u.to.start), end_date: date(u.to.end), features: mirroredFeatures(featuresOf.get(u.id) ?? null, u.to, p.sold), ...pending },
+          })
+          await tx.auditLog.create({ data: {
+            action: 'SWAP_HOLD_TRUCK', truck_number: u.to.truck, user_id: by, hold_id: u.id,
+            details: JSON.stringify({ old_truck: u.from.truck, new_truck: u.to.truck, old_start: u.from.start, old_end: u.from.end, new_start: u.to.start, new_end: u.to.end, reason: 'led_truck_follow', job_number: p.job }),
+          } })
+        }
+        const created: { id: string; templateId: string; to: LedRun }[] = []
+        for (const c of p.create) {
+          const t = templates.get(c.templateId) ?? template
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          const { id: _id, created_at: _c, updated_at: _u, ...copy } = t
+          const row = await tx.hold.create({
+            data: { ...copy, truck_number: c.to.truck, start_date: date(c.to.start), end_date: date(c.to.end), features: mirroredFeatures(t.features, c.to, p.sold), ...pending },
+          })
+          created.push({ id: row.id, templateId: t.id, to: c.to })
+          await tx.auditLog.create({ data: {
+            action: 'LED_MIRROR_ADD', truck_number: c.to.truck, user_id: by, hold_id: row.id,
+            details: JSON.stringify({ copied_from: t.id, start: c.to.start, end: c.to.end, reason: 'led_truck_follow', job_number: p.job }),
+          } })
+        }
+        for (const id of p.remove) {
+          const was = p.read.find(r => r.id === id)!
+          await tx.auditLog.create({ data: {
+            action: 'LED_MIRROR_REMOVE', truck_number: was.truck_number, user_id: by, hold_id: id,
+            details: JSON.stringify({ ...was, reason: 'led_truck_follow', job_number: p.job }),
+          } })
+          await tx.hold.delete({ where: { id } })
+        }
+        for (const id of p.stamp) {
+          await tx.hold.update({ where: { id }, data: { features: mirroredFeatures(featuresOf.get(id) ?? null, null, p.sold) } })
+        }
+        return created
       })
-      if (!done) continue
-      moved.push({ ...m, by })
-      if (hold.sfdc_opportunity_id) opportunities.add(hold.sfdc_opportunity_id)
-      console.log(`[led-follow] hold ${m.holdId} (job ${m.job}) moved from truck ${m.from} to ${m.to}, where LED runs it`)
+      done.push({ booking: p.booking, opportunity, by, updated: p.update, created: result, removed: p.remove })
+      if (p.update.length || p.create.length || p.remove.length) {
+        console.log(`[led-follow] booking ${p.booking} (job ${p.job}, ${p.market}) mirrored to LED: ${p.update.length} re-dated or moved, ${p.create.length} added, ${p.remove.length} removed`)
+      }
     } catch (err) {
-      console.error(`[led-follow] moving hold ${m.holdId} to truck ${m.to} failed; carrying on:`, err)
+      if (err instanceof StaleMirror) console.warn(`[led-follow] booking ${p.booking} changed while mirroring; next sweep`)
+      else console.error(`[led-follow] mirroring booking ${p.booking} failed; carrying on:`, err)
     }
   }
-  return { moved, opportunities: [...opportunities] }
+  return done
 }
+
+class StaleMirror extends Error {}
 
 /**
  * How long a refused LED Trucks sync waits before Reservations flags the

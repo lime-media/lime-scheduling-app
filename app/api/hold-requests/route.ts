@@ -6,10 +6,11 @@ import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { reservationOwners } from '@/lib/reservationOwners'
 import { ledClientNames } from '@/lib/ledClients'
-import { stillListed } from '@/lib/bookings'
+import { bookingKey, stillListed } from '@/lib/bookings'
+import { linkedJob } from '@/lib/jobNumber'
 import { centralDate } from '@/lib/dateOnly'
-import { FOLLOW_SYNC_OVERDUE_MS } from '@/lib/ledTruckFollow'
-import { daysSold, ledDaysOutside, ledJobDays, ledShiftsForHolds, ledStandings, type JobHold, type LedOutside, type LedStanding } from '@/lib/ledJobs'
+import { FOLLOW_SYNC_OVERDUE_MS, ledMirrorJobs, ledMirrorPlans, ledMirrorStandings, mirrorFlagKey, type FollowHold, type MirrorFlag } from '@/lib/ledTruckFollow'
+import { daysSold, ledJobShifts, ledShiftsForHolds, ledStandings, type JobHold, type LedStanding } from '@/lib/ledJobs'
 
 // EXPIRED holds accumulate forever — every lapsed hold and every Closed Lost
 // Opportunity lands here and never leaves. Ops only care about the recent tail,
@@ -90,7 +91,12 @@ export async function GET() {
   // Won holds the sweep moved onto LED's truck in the last week (lib/ledTruckFollow.ts),
   // so the card says the truck changed: from the audit rows the move wrote.
   const anyWon = holds.some(h => h.status === 'COMMITTED')
-  const [owners, inLed, linked, followed, outsideDates] = await Promise.all([
+  const wonFollow: FollowHold[] = holds.filter(h => linkedJob(h)).map(h => ({
+    id: h.id, truck_number: h.truck_number, market: h.market, state: h.state, job_number: linkedJob(h),
+    start_date: h.start_date.toISOString().slice(0, 10), end_date: h.end_date.toISOString().slice(0, 10),
+    booking: bookingKey(h) ?? h.id, features: h.features, sfdc_opportunity_id: h.sfdc_opportunity_id,
+  }))
+  const [owners, inLedByHold, linked, followed, mirrorFlags] = await Promise.all([
     reservationOwners(holds.map(h => ({ id: h.id, created_by: h.created_by, created_by_name: h.user?.name ?? null, sfdc_opportunity_id: h.sfdc_opportunity_id }))),
     ledShiftsForHolds(committed)
       .then(shifts => ledStandings(committed, shifts))
@@ -116,16 +122,20 @@ export async function GET() {
           orderBy: { created_at: 'asc' },
         }).catch((err) => { console.error('[hold-requests] LED follow read failed:', err); return [] })
       : [],
-    // LED running a won job outside its reservation's dates (any truck): the
-    // truck follow never moves dates, so the card says so for a person to re-date.
-    ledJobDays(committed)
-      .then(days => ledDaysOutside(committed, days))
-      .catch((err) => {
-        console.error('[hold-requests] LED job dates read failed:', err)
-        return new Map<string, LedOutside>()
+    // A won booking market the mirror can't follow, or follows with a note
+    // (lib/ledTruckFollow.ts): the card says so.
+    (wonFollow.length
+      ? ledJobShifts(ledMirrorJobs(wonFollow)).then(rows => ledMirrorPlans(wonFollow, rows, today).flags)
+      : Promise.resolve([] as MirrorFlag[]))
+      .catch((err): MirrorFlag[] => {
+        console.error('[hold-requests] LED mirror check failed:', err)
+        return []
       }),
   ])
   const { linkOf, clientNames } = linked
+  // A mirrored market is judged against what was sold, not its runs.
+  const inLed = ledMirrorStandings(wonFollow, inLedByHold)
+  const flagOf = new Map(mirrorFlags.map(f => [mirrorFlagKey(f.booking, f.market), f.kind]))
   const ledClientOf = (accountId: string | null) => {
     const uid = accountId ? linkOf.get(accountId) : undefined
     if (!uid) return null
@@ -183,8 +193,8 @@ export async function GET() {
     led_days:          inLed.get(h.id)?.days ?? 0,
     led_days_sold:     inLed.get(h.id)?.of ?? null,
     led_followed:      followedOf.get(h.id) ?? null,
-    // LED runs its job on days outside the reservation's dates (lib/ledJobs.ts ledDaysOutside).
-    led_outside:       outsideDates.get(h.id) ?? null,
+    // The LED mirror can't follow this market, or follows it with a note (lib/ledTruckFollow.ts).
+    led_flag:          h.status === 'COMMITTED' ? flagOf.get(mirrorFlagKey(bookingKey(h) ?? h.id, h.market)) ?? null : null,
     // Moved to LED's truck but Salesforce's LED Trucks still refuses it (lib/ledTruckFollow.ts).
     led_trucks_unsynced_since: h.status === 'COMMITTED' && h.sfdc_opportunity_id && h.led_follow_sync_pending && h.led_follow_sync_pending.getTime() < overdueBefore
       ? h.led_follow_sync_pending.toISOString() : null,

@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import toast from 'react-hot-toast'
 import { PasswordInput } from '@/components/PasswordInput'
+import { BAR_LINKS, isActivePath, settingsActive, settingsLinks } from '@/lib/navLinks'
 
 export function Navbar() {
   const { data: session } = useSession()
@@ -17,6 +18,9 @@ export function Navbar() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const userMenuRef = useRef<HTMLDivElement>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const settingsRef = useRef<HTMLDivElement>(null)
+  const settingsButtonRef = useRef<HTMLButtonElement>(null)
 
   const [changePwOpen,    setChangePwOpen]    = useState(false)
   const [changePwForm,    setChangePwForm]    = useState({ current: '', next: '', confirm: '' })
@@ -44,7 +48,24 @@ export function Navbar() {
     return () => document.removeEventListener('mousedown', handleClick)
   }, [userMenuOpen])
 
-  useEffect(() => { setMobileMenuOpen(false) }, [pathname])
+  // The Settings menu closes on a click outside it and on Escape (focus back on its button).
+  useEffect(() => {
+    if (!settingsOpen) return
+    function handleClick(e: MouseEvent) {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) setSettingsOpen(false)
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') { setSettingsOpen(false); settingsButtonRef.current?.focus() }
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [settingsOpen])
+
+  useEffect(() => { setMobileMenuOpen(false); setSettingsOpen(false) }, [pathname])
 
   function openChangePw() {
     setUserMenuOpen(false)
@@ -74,29 +95,26 @@ export function Navbar() {
     }
   }
 
-  const navLinks = [
-    { href: '/',                       label: 'Schedule' },
-    { href: '/planner',                label: 'Planner' },
-    { href: '/map',                    label: 'Map' },
-    { href: '/ai',                     label: 'AI Assistant' },
-    { href: '/hold-requests',          label: 'Reservations' },
-    { href: '/conflicts',              label: 'Conflicts', badge: conflictCount > 0 ? conflictCount : null, pulse: hasRecentConflict },
-    { href: '/quote',                  label: 'LED Quote' },
-    { href: '/saturation-calculator',  label: 'Saturation' },
-    { href: '/rate-cards', label: 'Rate Cards' },
-    { href: '/ops/transport', label: 'Transport' },
-    { href: '/ops/opportunities', label: 'Opp Origins' },
-    { href: '/ops/led-requests', label: 'LED Readiness' },
-    { href: '/users', label: 'Users' },
-    ...(session?.user?.role === 'OPERATIONS' ? [{ href: '/usage', label: 'Usage' }] : []),
-    { href: '/settings', label: 'Settings' },
-  ]
+  // The daily pages stay on the bar; the rest sit under Settings (lib/navLinks.ts).
+  const role = session?.user?.role
+  const navLinks = BAR_LINKS.map((link) => link.href === '/conflicts'
+    ? { ...link, badge: conflictCount > 0 ? conflictCount : null, pulse: hasRecentConflict }
+    : { ...link, badge: null, pulse: false })
+  const menuLinks = settingsLinks(role)
+  const menuActive = settingsActive(pathname, role)
 
-  const linkClass = (href: string) =>
+  const barClass = (active: boolean) =>
     `flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium tracking-wide transition-all duration-150 ${
-      pathname === href
+      active
         ? 'bg-white/20 text-white shadow-sm backdrop-blur-sm'
         : 'text-white/80 hover:text-white hover:bg-white/10'
+    }`
+  const linkClass = (href: string) => barClass(isActivePath(pathname, href))
+  const mobileClass = (href: string) =>
+    `flex items-center justify-between px-3 py-3 rounded-lg text-sm font-medium transition-colors ${
+      isActivePath(pathname, href)
+        ? 'bg-white/20 text-white'
+        : 'text-white/70 hover:text-white hover:bg-white/10'
     }`
 
   return (
@@ -121,6 +139,42 @@ export function Navbar() {
                     )}
                   </Link>
                 ))}
+
+                {/* Settings: everything used less than daily */}
+                <div ref={settingsRef} className="relative">
+                  <button
+                    ref={settingsButtonRef}
+                    type="button"
+                    onClick={() => setSettingsOpen((o) => !o)}
+                    aria-expanded={settingsOpen}
+                    aria-controls="nav-settings-menu"
+                    className={barClass(menuActive || settingsOpen)}
+                  >
+                    Settings
+                    <svg className={`w-3 h-3 transition-transform ${settingsOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                  {settingsOpen && (
+                    <div id="nav-settings-menu" className="absolute left-0 top-full mt-1.5 w-52 bg-white rounded-lg shadow-xl border border-gray-200/80 py-1 z-50">
+                      {menuLinks.map((link) => (
+                        <Link
+                          key={link.href}
+                          href={link.href}
+                          onClick={() => setSettingsOpen(false)}
+                          aria-current={isActivePath(pathname, link.href) ? 'page' : undefined}
+                          className={`block px-4 py-2 text-sm transition-colors ${
+                            isActivePath(pathname, link.href)
+                              ? 'bg-green-50 text-green-800 font-medium'
+                              : 'text-gray-700 hover:bg-gray-50'
+                          }`}
+                        >
+                          {link.label}
+                        </Link>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -191,11 +245,7 @@ export function Navbar() {
                 key={link.href}
                 href={link.href}
                 onClick={() => setMobileMenuOpen(false)}
-                className={`flex items-center justify-between px-3 py-3 rounded-lg text-sm font-medium transition-colors ${
-                  pathname === link.href
-                    ? 'bg-white/20 text-white'
-                    : 'text-white/70 hover:text-white hover:bg-white/10'
-                }`}
+                className={mobileClass(link.href)}
               >
                 {link.label}
                 {link.badge != null && (
@@ -205,6 +255,20 @@ export function Navbar() {
                 )}
               </Link>
             ))}
+
+            <div className="pt-2 mt-2 border-t border-white/10">
+              <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-white/50">Settings</div>
+              {menuLinks.map((link) => (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={mobileClass(link.href)}
+                >
+                  {link.label}
+                </Link>
+              ))}
+            </div>
 
             {session && (
               <div className="pt-2 mt-2 border-t border-white/10">

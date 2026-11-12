@@ -15,12 +15,24 @@ const API_VERSION        = 'v61.0'
 // ---------------------------------------------------------------------------
 
 let cachedToken: { accessToken: string; instanceUrl: string; expiresAt: number } | null = null
+// One sign-in at a time: concurrent callers share it.
+let signingIn: Promise<{ accessToken: string; instanceUrl: string }> | null = null
+const SIGN_IN_TIMEOUT_MS = 10_000
+// After a failed sign-in, record links (salesforceInstanceUrl) skip Salesforce
+// for a while, so an outage or bad credentials cost a page load one attempt per
+// window. Bookings and syncs still try every time.
+const LINK_FAILURE_COOLDOWN_MS = 60_000
+let linksFailedUntil = 0
 
 async function getAccessToken(): Promise<{ accessToken: string; instanceUrl: string }> {
   if (cachedToken && cachedToken.expiresAt > Date.now()) {
     return { accessToken: cachedToken.accessToken, instanceUrl: cachedToken.instanceUrl }
   }
+  if (!signingIn) signingIn = signIn().finally(() => { signingIn = null })
+  return signingIn
+}
 
+async function signIn(): Promise<{ accessToken: string; instanceUrl: string }> {
   if (!SFDC_CLIENT_ID || !SFDC_CLIENT_SECRET) {
     throw new Error('SFDC_CLIENT_ID and SFDC_CLIENT_SECRET must be set')
   }
@@ -36,6 +48,7 @@ async function getAccessToken(): Promise<{ accessToken: string; instanceUrl: str
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: params.toString(),
     cache: 'no-store',
+    signal: AbortSignal.timeout(SIGN_IN_TIMEOUT_MS),
   })
 
   const data = await res.json()
@@ -51,6 +64,21 @@ async function getAccessToken(): Promise<{ accessToken: string; instanceUrl: str
   }
 
   return { accessToken: cachedToken.accessToken, instanceUrl: cachedToken.instanceUrl }
+}
+
+/**
+ * The org's instance URL (e.g. for record links on staff pages), from the
+ * cached connection; null when Salesforce isn't configured or can't be reached.
+ * Never the token.
+ */
+export async function salesforceInstanceUrl(): Promise<string | null> {
+  if (linksFailedUntil > Date.now()) return null
+  try {
+    return (await getAccessToken()).instanceUrl || null
+  } catch {
+    linksFailedUntil = Date.now() + LINK_FAILURE_COOLDOWN_MS
+    return null
+  }
 }
 
 // ---------------------------------------------------------------------------

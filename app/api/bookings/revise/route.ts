@@ -13,7 +13,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireStaff } from '@/lib/planning/http'
 import { loadBookingHolds } from '@/lib/bookingLoad'
-import { reviseRefusal, reviseRows } from '@/lib/bookings'
+import { heldNow, reviseRefusal, reviseRows } from '@/lib/bookings'
 import { getBookingOpportunity, opportunityRefusal } from '@/lib/sfdcBooking'
 import { reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { clientTypeOf } from '@/lib/pricing/brandMarkup'
@@ -75,6 +75,8 @@ export async function GET(req: NextRequest) {
       // live holds, and the markets ops marked committed.
       heldUntil: holds.filter(h => h.live && h.expires_at).map(h => h.expires_at!.toISOString()).sort().reverse()[0] ?? null,
       committedMarkets: [...new Set(holds.filter(h => h.live && h.status === 'COMMITTED').map(h => h.market.trim().toLowerCase()))],
+      // What it holds now, which a quote-only revision releases (the planner's warning).
+      held: heldNow(holds),
     },
   })
 }

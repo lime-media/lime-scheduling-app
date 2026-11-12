@@ -53,6 +53,19 @@ async function getAccessToken(): Promise<{ accessToken: string; instanceUrl: str
   return { accessToken: cachedToken.accessToken, instanceUrl: cachedToken.instanceUrl }
 }
 
+/**
+ * The org's instance URL (e.g. for record links on staff pages), from the
+ * cached connection; null when Salesforce isn't configured or can't be reached.
+ * Never the token.
+ */
+export async function salesforceInstanceUrl(): Promise<string | null> {
+  try {
+    return (await getAccessToken()).instanceUrl || null
+  } catch {
+    return null
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Generic REST helpers
 // ---------------------------------------------------------------------------

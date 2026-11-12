@@ -37,6 +37,10 @@ export const SFDC_BOT_USER_IDS: ReadonlySet<string> = new Set([
  */
 export function opportunityCreator(h: { sfdc_opportunity_id: string | null; sfdc_created_by_id: string | null }): 'bot' | 'person' | 'unknown' {
   if (!h.sfdc_opportunity_id) return 'person'
-  if (!h.sfdc_created_by_id) return 'unknown'
+  // A stored id that isn't an 18-character user id (a 15-character one, or
+  // anything else) can't be checked against the bot list, so it is not known
+  // rather than a person: fail safe. The reconcile rewrites any creator that
+  // differs from the opportunity's, so it clears on the next sweep.
+  if (!h.sfdc_created_by_id || !isUserId(h.sfdc_created_by_id)) return 'unknown'
   return SFDC_BOT_USER_IDS.has(h.sfdc_created_by_id) ? 'bot' : 'person'
 }

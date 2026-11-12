@@ -3,14 +3,18 @@
  * market or multi-market), or a partner through MCP: no seller is there to
  * pick one (lib/sfdcOpportunityType.ts). Andrew, 2026-11-11: the account's
  * latest LED opportunity's Type, else New Client (the picklist's "new
- * business" value). A failed lookup never stops a booking: it falls back too.
+ * business" value). A failed lookup never stops a booking: the opportunity
+ * is made with no Type. Not New Client: that guess would be written as an LED
+ * opportunity's Type and read back by the next lookup as the account's real
+ * one. With none, `Type != null` skips it and the next booking reads the real
+ * Type.
  */
 
 import { sfdcQuery } from '@/lib/salesforceClient'
 import { opportunityTypeOf, type OpportunityType } from '@/lib/sfdcOpportunityType'
 import { SFDC_BOT_USER_IDS } from '@/lib/sfdcBots'
 
-/** When the account has no LED opportunity with a Type, or it can't be read. */
+/** When the account has no LED opportunity (not the bot's) with a Type. */
 export const CLIENT_DEFAULT_OPPORTUNITY_TYPE: OpportunityType = 'New Client'
 
 /**
@@ -39,15 +43,18 @@ export async function latestLedOpportunityType(accountId: string): Promise<Oppor
   return null
 }
 
-/** A client opportunity's Type: the latest LED one's, else New Client. Never throws. */
+/**
+ * A client opportunity's Type: the latest LED one's, else New Client; none
+ * (undefined) when the lookup fails. Never throws.
+ */
 export async function clientOpportunityType(
   accountId: string,
   lookup: (accountId: string) => Promise<OpportunityType | null> = latestLedOpportunityType,
-): Promise<OpportunityType> {
+): Promise<OpportunityType | undefined> {
   try {
     return (await lookup(accountId)) ?? CLIENT_DEFAULT_OPPORTUNITY_TYPE
   } catch (err) {
-    console.error('[sfdc] latest LED opportunity type lookup failed; using New Client:', err)
-    return CLIENT_DEFAULT_OPPORTUNITY_TYPE
+    console.error('[sfdc] latest LED opportunity type lookup failed; the opportunity is made with no Type:', err)
+    return undefined
   }
 }

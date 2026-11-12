@@ -17,7 +17,7 @@ defer((async () => {
   const quiet = console.error
   console.error = () => {}
   try {
-    eq('the lookup throws: New Client, never a refusal', await clientOpportunityType('001A', async () => { throw new Error('down') }), 'New Client')
+    eq('the lookup throws: no Type (a guess would be read back as the real one), never a refusal', await clientOpportunityType('001A', async () => { throw new Error('down') }), undefined)
   } finally {
     console.error = quiet
   }

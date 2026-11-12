@@ -18,6 +18,30 @@ eq('never stripped to nothing', cleanBrand('LED'), 'LED')
 eq('at most 50 characters', cleanBrand('A'.repeat(60)).length, 50)
 eq('empty stays empty', cleanBrand(''), '')
 
+section('brand: cleaning a saved brand again changes nothing')
+// Long names where the 50-character cut leaves a trailing descriptor, a month,
+// a year or an asset type for the next clean to drop.
+const tricky = [
+  'Acme Regional Sporting Goods Holiday Season Kickoff Tour August LED',
+  'Acme Regional Sporting Goods Holiday Season 2026 Kickoff Tour LED',
+  'Acme Regional Sporting Goods Holiday Promotion Tour Extension 2026',
+  'Northwest Coastal Outdoor Recreation and Supply Co. LED Truck Tour',
+  'Big   Spaces   Between   Words   In   A   Very   Long   Brand   Name   2026',
+  'A'.repeat(45) + ' Tour of the Year',
+  'A'.repeat(44) + ' - LED - August',
+  'B'.repeat(46) + ' Van Tour',
+  'Punctuation, Commas, and/or Slashes / Everywhere — Airstream / 2026',
+  'Short Brand',
+  'LED',
+  '',
+]
+for (const raw of tricky) {
+  const once = cleanBrand(raw)
+  eq(`idempotent: ${JSON.stringify(raw.slice(0, 40))}`, cleanBrand(once), once)
+  eq(`at most 50: ${JSON.stringify(raw.slice(0, 40))}`, once.length <= 50, true)
+}
+eq('a cut that ends on a descriptor drops it', cleanBrand('A'.repeat(45) + ' Tour of the Year'), 'A'.repeat(45))
+
 section('brand: it leads the Opportunity name')
 eq('brand first', opportunityName('Nike', 'Rolling Adz', 'Des Moines, IA - 2026-10-02 to 2026-10-03'), 'Nike / Rolling Adz - Des Moines, IA - 2026-10-02 to 2026-10-03')
 eq('no brand: as before', opportunityName('', 'Rolling Adz', 'Des Moines, IA - 2026-10-02 to 2026-10-03'), 'Rolling Adz - Des Moines, IA - 2026-10-02 to 2026-10-03')

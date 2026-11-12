@@ -42,9 +42,20 @@ function stripBrand(raw: string | null | undefined): string {
   return s
 }
 
-/** The brand as saved: trimmed, trailing descriptors dropped, at most 50 characters. */
+/**
+ * The brand as saved: trimmed, trailing descriptors dropped, at most 50
+ * characters. The cut can leave a new trailing descriptor ("… Tour" once the
+ * rest is cut off), so strip and cut repeat until nothing changes: cleaning a
+ * saved brand again gives the same brand (it is cleaned on every save and
+ * every read of a quote ref). Each round only shortens it, so it stops.
+ */
 export function cleanBrand(raw: string | null | undefined): string {
-  return stripBrand(raw).slice(0, BRAND_MAX).trim()
+  let s = stripBrand(raw).slice(0, BRAND_MAX).trim()
+  for (let prev = ''; prev !== s; ) {
+    prev = s
+    s = stripBrand(s).slice(0, BRAND_MAX).trim()
+  }
+  return s
 }
 
 /** Why the saved brand differs from what was typed, so the page can say so. */

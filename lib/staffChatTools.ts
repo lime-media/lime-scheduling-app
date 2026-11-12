@@ -280,8 +280,7 @@ async function quote(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
     && !!q.client_type && !!terms.lead_source && !('error' in readBrand(terms.brand, true))
   // The summary is what the rep confirms when the reply leaves the ref out, so
   // it names everything the ref covers that changes the opportunity.
-  // terms.brand is already the saved brand (bookingTerms): cleaning it again
-  // could cut more (cleanBrand isn't idempotent past its 50-character cut).
+  // terms.brand is already the saved brand (bookingTerms), so it is shown as is.
   const savedAs = terms.brand === 'none' ? '' : terms.brand ?? ''
   return {
     content: json({ ...body, quote_ref: ref }),

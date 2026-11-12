@@ -137,7 +137,12 @@ type Revision = {
   reopenOpportunity: boolean
 }
 
-export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: string | null; onReviseDone?: () => void } = {}) {
+export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: {
+  reviseKey?: string | null
+  /** Opened from Reservations → Quotes → Reserve: a quote-only log opens to reserve its trucks. */
+  reserve?: boolean
+  onReviseDone?: () => void
+} = {}) {
   const [account, setAccount] = useState<SfdcAccount | null>(null)
   const [revision, setRevision] = useState<Revision | null>(null)
   const [reviseError, setReviseError] = useState<string | null>(null)
@@ -222,8 +227,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         // The booking's lift studies come back with it (lib/bookings.ts reviseRows).
         setFeatures({ ...b.features, studies: Array.isArray(b.features?.studies) ? b.features.studies : [] })
         // Reopen in the mode it was logged in: a quote-only log reserved nothing,
-        // so revising it must not reserve trucks unless the rep unticks it.
-        setQuoteOnly(b.quoteOnly === true)
+        // so revising it must not reserve trucks unless the rep unticks it, or
+        // opened it with Reserve (Reservations → Quotes).
+        setQuoteOnly(b.quoteOnly === true && !reserve)
         if (typeof b.brandMarkupPct === 'number') { revisedMarkup.current = b.brandMarkupPct; setBrandMarkupPct(b.brandMarkupPct) }
         setAttachTo(null)
         // What it holds now (live holds only), for the quote-only release warning.
@@ -382,7 +388,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: keepsOpportunity ? undefined : leadSource, opportunityType: keepsOpportunity ? undefined : opportunityType, quoteOnly, brand, primaryContactId: contact.id, holdDays, holdUntil: revision && holdUntil && !quoteOnly ? holdUntil : undefined, holdUntilFrom: revision && holdUntil && !quoteOnly ? revision.heldUntil ?? undefined : undefined, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: keepsOpportunity ? undefined : leadSource, opportunityType: keepsOpportunity ? undefined : opportunityType, quoteOnly, brand, primaryContactId: contact.id, primaryContactName: contact.name, holdDays, holdUntil: revision && holdUntil && !quoteOnly ? holdUntil : undefined, holdUntilFrom: revision && holdUntil && !quoteOnly ? revision.heldUntil ?? undefined : undefined, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
       })
       const data = await readJson(res)
       // The opportunity went Closed Lost after the booking was opened: ask now.

@@ -36,8 +36,9 @@
 
 import { withUsageLog } from '@/lib/usageLog'
 import { opportunityName, savedBrand } from '@/lib/brand'
+import { PARTY_KEY, bookingParty } from '@/lib/bookingParty'
 import { readOpportunityType, suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
-import { QUOTE_ONLY_GROUP_PREFIX, QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
+import { QUOTE_ONLY_GROUP_PREFIX, QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS, bookingEvent } from '@/lib/quoteOnly'
 import { openStage } from '@/lib/sfdcStages'
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
@@ -85,6 +86,8 @@ type HoldBody = QuoteRequest & {
   quoteOnly?: boolean
   /** The opportunity's primary contact: a Contact on the account. Required. */
   primaryContactId?: string
+  /** Its name as the page shows it; recorded when Salesforce can't confirm it (lib/bookingParty.ts). */
+  primaryContactName?: string
   /** How long to hold the trucks, in days (default 3, at most MAX_HOLD_DAYS). */
   holdDays?: number
   /**
@@ -338,6 +341,11 @@ async function handlePost(req: NextRequest) {
 
     const accountName = body.sfdcAccountName || 'Client'
     const brand = savedBrand(body.brand) // "none" means no brand, as everywhere
+    // Who it's for, on every hold, so a revision reopens with them even without an opportunity (lib/bookingParty.ts).
+    const party = bookingParty({
+      accountId: body.sfdcAccountId, accountName: body.sfdcAccountName,
+      contactId: body.primaryContactId, contactName: body.primaryContactName, verified: contact.contact, brand,
+    })
     const linkedClient = await prisma.clientUser.findFirst({ where: { sfdc_account_id: body.sfdcAccountId }, select: { id: true } })
     const serviceUser = await prisma.user.findFirst({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } })
     const createdBy = (token.id as string) || serviceUser?.id || 'system'
@@ -371,7 +379,7 @@ async function handlePost(req: NextRequest) {
         pricing_tier: tier,
         quoted_total: lq.total,
         daily_rate: lq.effectiveDailyRate,
-        features: JSON.stringify(withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies))),
+        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies)), [PARTY_KEY]: party }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(lq.id)!,
         expires_at: new Date(),
@@ -403,7 +411,7 @@ async function handlePost(req: NextRequest) {
         daily_rate: lq.effectiveDailyRate,
         // The line's quote, plus what this hold itself sells: a rotating truck's
         // weekly stint works only some of the line's days (lib/ledJobs.ts daysSold).
-        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies)), heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
+        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies)), [PARTY_KEY]: party, heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(stint.lineId)!,
         expires_at: expiresAt,
@@ -623,7 +631,9 @@ async function handlePost(req: NextRequest) {
     }
 
     // Transport and deal-value metrics (best-effort; never fails the booking).
-    if (!quoteOnly) await recordBooking({ event: reviseKey ? 'REVISED' : 'BOOKED', groups: quote.lines.map(l => ({ groupId: groupOf.get(l.id)!, legs: legsFromArrivals(l.arrivals) })), appQuotedTotal: quote.summary.grandTotal, createdBy, ...(reviseKey ? { revised: { holdIds: reviseIds, bookingKey: reviseKey } } : {}) })
+    // Reserving a quote-only log is the first real booking (bookingEvent).
+    const revisesBooking = bookingEvent(reviseKey, reviseHolds) === 'REVISED'
+    if (!quoteOnly) await recordBooking({ event: revisesBooking ? 'REVISED' : 'BOOKED', groups: quote.lines.map(l => ({ groupId: groupOf.get(l.id)!, legs: legsFromArrivals(l.arrivals) })), appQuotedTotal: quote.summary.grandTotal, createdBy, ...(revisesBooking ? { revised: { holdIds: reviseIds, bookingKey: reviseKey! } } : {}) })
 
     const leftOut = notSelected.length + unavailable.length
     // Which opportunity, and what happened to it.

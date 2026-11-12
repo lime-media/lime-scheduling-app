@@ -180,14 +180,14 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   const quote = computeQuote({
     truckCount: truck_count, days: activationDays, operatingHours: opHours,
     marketSizeTierId, includeSmartDirectional: includeSD, includeDeviceId: includeDID, studies,
-    spanDays: calendarDays, rateOverrides, markupPct,
+    rateOverrides, markupPct,
   })
 
   let mediaTotal = quote.good.baseMedia
   if (includeSF) mediaTotal += quote.better.shadowFencing
   if (includeSD) mediaTotal += quote.better.smartDirectional
   if (includeDID) mediaTotal += quote.better.deviceId
-  mediaTotal += quote.best.studiesTotal
+  if (quote.best.reachOk && studies.length > 0) mediaTotal += studies.length * quote.best.studyCost
 
   const transport = priceTransport({
     activationDays,
@@ -242,10 +242,8 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
     shadowFencingFloored: quote.better.shadowFencingFloored,
     smartDirectionalIncluded: includeSD, smartDirectional: includeSD ? quote.better.smartDirectional : 0,
     deviceIdIncluded: includeDID, deviceId: includeDID ? quote.better.deviceId : 0,
-    // What was sold: a study with no reach behind it isn't (quote.best.studies).
-    studies: quote.best.studies, studyCost: quote.best.studyCost,
-    studiesTotal: quote.best.studiesTotal,
-    ...(quote.best.salesLiftRequested ? { salesLiftRequested: true } : {}),
+    studies, studyCost: quote.best.studyCost,
+    studiesTotal: quote.best.reachOk ? studies.length * quote.best.studyCost : 0,
     transportCharge,
     successorImpact,
     // How it was priced, so a revision reopens the same way (lib/bookings.ts reviseRows).

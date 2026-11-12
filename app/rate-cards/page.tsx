@@ -400,7 +400,7 @@ export default function RateCardsPage() {
               <div className="font-semibold text-gray-900">{fmtMoney(std.device_id_flat)}<span className="text-xs text-gray-400 font-normal"> flat</span></div>
             </div>
             <div className="bg-gray-50 rounded-lg border border-gray-100 px-3 py-2.5">
-              <div className="text-xs text-gray-500">Lift Study base</div>
+              <div className="text-xs text-gray-500">Lift Study</div>
               <div className="font-semibold text-gray-900">{fmtMoney(std.study_cost)}<span className="text-xs text-gray-400 font-normal"> /study</span></div>
             </div>
             <div className="bg-gray-50 rounded-lg border border-gray-100 px-3 py-2.5">
@@ -504,7 +504,7 @@ export default function RateCardsPage() {
                         <Tile label="SF Floor" val={o.shadow_fencing_floor} stdVal={std.shadow_fencing_floor} suffix="min" />
                         <Tile label="Smart Directional" val={o.smart_directional_daily} stdVal={std.smart_directional_daily} suffix="/truck/day" />
                         <Tile label="Device ID" val={o.device_id_flat} stdVal={std.device_id_flat} suffix="flat" />
-                        <Tile label="Lift Study base" val={o.study_cost} stdVal={std.study_cost} suffix="/study" />
+                        <Tile label="Lift Study" val={o.study_cost} stdVal={std.study_cost} suffix="/study" />
                         <Tile label="Hour Surcharge" val={o.hour_surcharge} stdVal={std.hour_surcharge} suffix="/hr over 8" />
                       </div>
 
@@ -610,7 +610,7 @@ export default function RateCardsPage() {
                     <input type="number" value={form.device_id_flat} onChange={(e) => setForm({ ...form, device_id_flat: e.target.value })} className={inputClass} placeholder={std.device_id_flat.toString()} />
                   </div>
                   <div>
-                    <label className="block text-xs text-gray-500 mb-1" title="Foot traffic and web lift, covering 2 markets. Extra markets and brand lift keep their standard prices.">Study base, 2 markets <span className="text-gray-300">(std: {fmtMoney(std.study_cost)})</span></label>
+                    <label className="block text-xs text-gray-500 mb-1">Study cost <span className="text-gray-300">(std: {fmtMoney(std.study_cost)})</span></label>
                     <input type="number" value={form.study_cost} onChange={(e) => setForm({ ...form, study_cost: e.target.value })} className={inputClass} placeholder={std.study_cost.toString()} />
                   </div>
                   <div>

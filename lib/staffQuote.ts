@@ -25,7 +25,7 @@ import {
   resolveDefaultRateOverrides,
 } from '@/lib/pricing/resolvers'
 
-import { SERVICE_AREA_RADIUS_MILES, STUDY_MIN_IMPRESSIONS, type RateOverrides } from '@/lib/pricing/config'
+import { SERVICE_AREA_RADIUS_MILES, type RateOverrides } from '@/lib/pricing/config'
 import { reply, type CoreResult } from '@/lib/coreResult'
 
 export type StaffQuoteInput = {
@@ -170,7 +170,6 @@ export async function staffQuote(body: StaffQuoteInput): Promise<CoreResult> {
     includeSmartDirectional,
     includeDeviceId,
     studies,
-    spanDays: calendarDays,
     rateOverrides,
     markupPct,
   })
@@ -194,7 +193,9 @@ export async function staffQuote(body: StaffQuoteInput): Promise<CoreResult> {
   if (includeShadowFencing) mediaTotal += quote.better.shadowFencing
   if (includeSmartDirectional) mediaTotal += quote.better.smartDirectional
   if (includeDeviceId) mediaTotal += quote.better.deviceId
-  mediaTotal += quote.best.studiesTotal
+  if (quote.best.reachOk && studies.length > 0) {
+    mediaTotal += studies.length * quote.best.studyCost
+  }
 
   const grandTotal = mediaTotal + totalTransportCharge
 
@@ -252,7 +253,7 @@ export async function staffQuote(body: StaffQuoteInput): Promise<CoreResult> {
       shadowFencing: { included: includeShadowFencing, cost: quote.better.shadowFencing, floored: quote.better.shadowFencingFloored, digitalImpressions: quote.better.digitalImpressions },
       smartDirectional: { included: includeSmartDirectional, cost: includeSmartDirectional ? quote.better.smartDirectional : quote.input.truckDays * withMarkup(rateOverrides?.smart_directional_daily ?? 250, markupPct) },
       deviceId: { included: includeDeviceId, cost: includeDeviceId ? quote.better.deviceId : withMarkup(rateOverrides?.device_id_flat ?? 2500, markupPct) },
-      studies: { available: quote.best.reachOk, selected: studies, costPerStudy: quote.best.studyCost, prices: quote.best.studyPrices, salesLiftRequested: quote.best.salesLiftRequested, warning: quote.best.studyWarning, estimatedImpressions: quote.best.estimatedImpressions, reachMinimum: STUDY_MIN_IMPRESSIONS },
+      studies: { available: quote.best.reachOk, selected: studies, costPerStudy: quote.best.studyCost, estimatedImpressions: quote.best.estimatedImpressions, reachMinimum: 1_200_000 },
     },
     transport: {
       outcome: transport.outcome,

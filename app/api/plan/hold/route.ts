@@ -54,8 +54,7 @@ import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, CLIENT_TYPE_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, reopenClosedLostOpportunity, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { SFDC_SERVICE_USER_EMAIL, attachedToOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { bookWhatFits, buildMultiMarketQuote, holdPlaces, resolveRows, validateQuoteRequest, type QuoteRequest } from '@/lib/planning/quote'
-import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches, planTier, studiesDescription } from '@/lib/planning/booking'
-import { VALID_STUDIES, type StudyType } from '@/lib/pricing/config'
+import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches, planTier } from '@/lib/planning/booking'
 import { holdExpDate } from '@/lib/dateOnly'
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
@@ -156,10 +155,6 @@ async function handlePost(req: NextRequest) {
   const reviseIds = reviseHolds.map(h => h.id)
 
   body.features = body.features ?? { shadowFencing: true, smartDirectional: false, deviceId: false }
-  // Only known studies, from the browser (lib/pricing/studies.ts prices them).
-  body.features.studies = Array.isArray(body.features.studies)
-    ? [...new Set(body.features.studies.filter((x): x is StudyType => (VALID_STUDIES as readonly unknown[]).includes(x)))]
-    : []
   // Holds never displace AT&T: soft-hold trucks are always reserved here.
   body.reserveSoftHolds = true
   const invalid = validateQuoteRequest(body)
@@ -313,7 +308,7 @@ async function handlePost(req: NextRequest) {
     const linkedClient = await prisma.clientUser.findFirst({ where: { sfdc_account_id: body.sfdcAccountId }, select: { id: true } })
     const serviceUser = await prisma.user.findFirst({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } })
     const createdBy = (token.id as string) || serviceUser?.id || 'system'
-    const tier = planTier(body.features, quote.studies.studies)
+    const tier = planTier(body.features)
     // One campaign group per market, so each market reads as its own campaign
     // with its own total wherever holds are grouped.
     const groupOf = new Map(quote.lines.map((l, i) => [l.id, `${groupPrefix}${i + 1}`]))
@@ -343,7 +338,7 @@ async function handlePost(req: NextRequest) {
         pricing_tier: tier,
         quoted_total: lq.total,
         daily_rate: lq.effectiveDailyRate,
-        features: JSON.stringify(withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies))),
+        features: JSON.stringify(withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType))),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(lq.id)!,
         expires_at: new Date(),
@@ -375,7 +370,7 @@ async function handlePost(req: NextRequest) {
         daily_rate: lq.effectiveDailyRate,
         // The line's quote, plus what this hold itself sells: a rotating truck's
         // weekly stint works only some of the line's days (lib/ledJobs.ts daysSold).
-        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies)), heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
+        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType)), heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(stint.lineId)!,
         expires_at: expiresAt,
@@ -511,10 +506,8 @@ async function handlePost(req: NextRequest) {
           ...(quote.brandMarkupPct ? [`Brand Direct pricing: +${quote.brandMarkupPct}% folded into every line item.`, ''] : []),
           quoteOnly ? 'Quoted (no reservation):' : 'Booked:',
           ...quote.lines.map(l => `${describeBooked(l)}, ${money(l.total)}`),
-          // Without the order's studies: they're priced once, on what's booked (studiesDescription).
-          ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(l.total - l.studiesTotal)}`)] : []),
+          ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(l.total)}`)] : []),
           ...(unavailable.length ? ['', 'Quoted but no truck available:', ...unavailable] : []),
-          ...studiesDescription(quote.studies),
         ].join('\n')
         const holdExp = stretches.length ? holdExpDate(new Date(Math.min(...stretches.map(x => x.expiresAt.getTime())))) : undefined
         if (target) {
@@ -575,7 +568,6 @@ async function handlePost(req: NextRequest) {
           activationNotes: `Multi-market: ${quote.lines.length} market${quote.lines.length === 1 ? '' : 's'} booked, ${money(quote.summary.grandTotal)}.`
             + (notSelected.length ? ` ${notSelected.length} quoted but not selected.` : '')
             + (unavailable.length ? ` ${unavailable.length} quoted but no truck available.` : '')
-            + (quote.studies.salesLiftRequested ? ' Sales lift requested: the team quotes it.' : '')
             + ' Breakdown in Description.',
           description,
         }, { createdBy, path: 'multi-market' })

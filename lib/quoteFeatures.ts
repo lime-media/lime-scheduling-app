@@ -30,8 +30,6 @@ export type QuoteFeatures = {
   studies?: string[]
   studyCost?: number
   studiesTotal?: number
-  /** Sales lift was asked for: the team quotes it (lib/pricing/studies.ts). */
-  salesLiftRequested?: boolean
   transportCharge?: number
   /**
    * The dates the client asked for in this market (YYYY-MM-DD). A hold's own
@@ -208,12 +206,8 @@ export function buildActivationNotes(features: QuoteFeatures, tier?: string | nu
   if (features.shadowFencing) featureList.push('Shadow Fencing')
   if (features.smartDirectionalIncluded) featureList.push('Smart Directional')
   if (features.deviceIdIncluded) featureList.push('Device ID Passback')
-  const priced = (features.studies ?? []).filter(s => s !== 'sales_lift')
-  if (priced.length > 0) {
-    featureList.push(`Lift Studies (${priced.map(s => s.replace(/_/g, ' ')).join(', ')})`)
-  }
-  if (features.salesLiftRequested || features.studies?.includes('sales_lift')) {
-    featureList.push('Sales lift requested (the team quotes it)')
+  if (features.studies && features.studies.length > 0) {
+    featureList.push(`Lift Studies (${features.studies.map(s => s.replace(/_/g, ' ')).join(', ')})`)
   }
   if (featureList.length > 0) parts.push(`Features: ${featureList.join(', ')}`)
 

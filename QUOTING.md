@@ -90,22 +90,11 @@ The surcharge is added to the daily rate *before* everything else, so it flows i
 | **Shadow fencing** | 25% of base media, with a **$5,000 floor** |
 | **Smart directional** | $250 per truck-day |
 | **Device ID passback** | $2,500 flat, regardless of size |
-| **Lift studies** | One study covers the order: foot traffic and web lift $7,500 with 2 unique markets, +$2,000 per extra; brand lift $12,500; sales lift is quoted by the team (no price) |
+| **Lift study** | $7,500 each |
 
 **The shadow fencing floor bites on small campaigns.** 25% only exceeds $5,000 once base media passes $20,000. Below that, every client pays exactly $5,000 and the quote flags it as "floored."
 
 Digital impressions are derived from the fencing spend at a **$10 CPM** — i.e. `shadow fencing ÷ 10 × 1,000`.
-
-### Lift study pricing
-
-The same rule in the Quote Builder and the Multi-market Plan (`lib/pricing/studies.ts`, decided 2026-11-11):
-
-- **Foot traffic and web lift:** one study covers the whole order. The base ($7,500, or a rate agreement's study cost) includes **2 unique markets**; each further unique market adds **$2,000**. A single-market quote is $7,500. A market booked twice, or markets one truck alternates between, count once.
-- **Brand lift:** $12,500 flat.
-- **Sales lift:** not priced. Selecting it adds nothing and flags the booking: the Salesforce activation notes and Description say "Sales lift requested", and a client's request email to the team says so. The team quotes it.
-- **Over 3 months** (more than 92 calendar days): a warning that studies cover up to 3 months, so the rep checks with the team. No add-on price.
-- A rate agreement's study cost replaces the base only; the per-market charge and brand lift stay. A Brand Direct markup applies to every study price.
-- On the Multi-market Plan the studies' price is carried on the first market (by start), so every total adds up once; the page names it. Booking only some markets prices the studies again for those markets (reach, unique markets).
 
 ### Lift study eligibility
 
@@ -120,7 +109,7 @@ Studies are **gated on estimated physical impressions** and are silently dropped
 | 3 | Standard mid/large DMA | 40,000 |
 | 4 | Sub-DMA / small metro | 20,000 |
 
-The campaign must clear **1,200,000 estimated impressions** to qualify — on a multi-market order, the order's total across its markets. If it doesn't, the studies are removed and **billed at $0** — the client isn't charged, but they also don't get the study. Worth checking on any small campaign where a study was promised in the room.
+The campaign must clear **1,200,000 estimated impressions** to qualify. If it doesn't, the studies are removed and **billed at $0** — the client isn't charged, but they also don't get the study. Worth checking on any small campaign where a study was promised in the room.
 
 **Worked example.** 1 truck, 10 days, mid/large market = 1 × 10 × 40,000 = 400,000 impressions. **Below the threshold** — no study, even if requested. That same campaign needs 3 trucks (1.2M exactly) to qualify.
 
@@ -145,7 +134,7 @@ Any of these can be overridden per client:
 - Shadow fencing percentage and floor
 - Smart directional daily rate
 - Device ID flat fee
-- Study cost (the study base: foot traffic and web lift for 2 markets)
+- Study cost
 - Hourly surcharge
 - **`transport_included`** — always absorb transport for this client
 - Service-area radius, transport day rate, airfare, hotel per night
@@ -394,7 +383,7 @@ The pool is the bookable fleet (`HIDDEN_TRUCKS` excluded), with jobs and holds l
 - **AT&T soft holds are permanent.** Trucks on the latest month of `ATT_SOFT` holds are held back, however old that month is. If none are on file, the quote warns.
 - **Alloy Build renewing** (optional toggle). Trucks currently on AT&T's Alloy Build (booked under 160over90, matched by "contains") are held back too.
 
-**Pricing** is per market, at the single-market rates. Each market is billed for the truck-days the plan's trucks actually work there, read from the same day-by-day rotation the holds are cut from, plus the requested days for any truck the fleet cannot cover. A truck of its own works the schedule over the date range. A shared truck gives each market its 3 days in every full week, but the final part-week can only go to one of them, so the other gets (and pays for) fewer days. Nothing is overstated: each market shows the dates its trucks actually work (first and last working day, with the requested range beneath when they differ, in amber when days are short) and the arithmetic of what is billed: full weeks, plus the final part-week with its real dates and the days it actually gets. The same real dates and counts go to the Salesforce Description, and the opportunity's hold start and stop are the first and last working days. Because the rate depends only on total truck-days, this prices exactly as trucks × days would. Media is `computeQuote()` on those truck-days, hours and tier, with the chosen features. It uses the client's rate agreement if one exists, else the rate card. A shared truck is billed in both markets it serves. Transport follows the existing rules per move: the legs that arrive at a market are priced against that market's activation days and lead time. That makes them free inside the service area, absorbed when the market clears both tests, and billed otherwise (§6). Under each market, every truck shows where it comes from, as in the single-market quote. That is its last job before this order, its live location, or an earlier market in this order. An out-of-market truck shows the miles, travel days, and the charge or "included" (with what we absorb); an in-market truck shows its miles; a shared truck shows its weekly hop. The quote shows each market's media, transport and total; the order total; how many trucks come from out of market and how far; the transport we absorb; deadhead miles; trucks used out of those available; and trucks left for other clients. Lift studies are priced once for the whole order (§ Lift study pricing): the quote shows each market's estimated reach, the order's total against the 1.2M minimum, and the studies' price on the market that carries it.
+**Pricing** is per market, at the single-market rates. Each market is billed for the truck-days the plan's trucks actually work there, read from the same day-by-day rotation the holds are cut from, plus the requested days for any truck the fleet cannot cover. A truck of its own works the schedule over the date range. A shared truck gives each market its 3 days in every full week, but the final part-week can only go to one of them, so the other gets (and pays for) fewer days. Nothing is overstated: each market shows the dates its trucks actually work (first and last working day, with the requested range beneath when they differ, in amber when days are short) and the arithmetic of what is billed: full weeks, plus the final part-week with its real dates and the days it actually gets. The same real dates and counts go to the Salesforce Description, and the opportunity's hold start and stop are the first and last working days. Because the rate depends only on total truck-days, this prices exactly as trucks × days would. Media is `computeQuote()` on those truck-days, hours and tier, with the chosen features. It uses the client's rate agreement if one exists, else the rate card. A shared truck is billed in both markets it serves. Transport follows the existing rules per move: the legs that arrive at a market are priced against that market's activation days and lead time. That makes them free inside the service area, absorbed when the market clears both tests, and billed otherwise (§6). Under each market, every truck shows where it comes from, as in the single-market quote. That is its last job before this order, its live location, or an earlier market in this order. An out-of-market truck shows the miles, travel days, and the charge or "included" (with what we absorb); an in-market truck shows its miles; a shared truck shows its weekly hop. The quote shows each market's media, transport and total; the order total; how many trucks come from out of market and how far; the transport we absorb; deadhead miles; trucks used out of those available; and trucks left for other clients. Lift studies are not offered on multi-market quotes.
 
 **Alternatives** are re-runs of the same engine and pricing:
 
@@ -468,8 +457,7 @@ Multi-market plans evolve: a market is dropped or added, dates move. Two ways to
 - **Trucks:** while the booking is still live, a market that stays keeps the trucks it holds, wherever they can still do the (possibly moved) dates; it gets other trucks only where they cannot. The booking's own holds are left out of the fleet while it is planned, so they never block themselves. An **expired** booking keeps nothing: it is re-picked and priced fresh.
 - **One transaction:** the booking's old holds are removed and the new ones written together, or neither. A `REVISE_BOOKING` audit row records what it was.
 - **Same opportunity:** amount, markets, trucks and hold dates become the booking as it now stands; the description starts with a revision note saying what it was. A won opportunity's booking stays committed.
-- **Studies:** the booking's lift studies come back selected and are priced for the order as it now stands (a single-market booking revises here too, keeping its studies). A kept market's booked price leaves out the studies it carried; they're priced again once for the order.
-- **Refused:** Salesforce pushes (change them in Salesforce), client-portal bookings, and a Closed Lost opportunity.
+- **Refused:** Salesforce pushes (change them in Salesforce), client-portal bookings, single-market bookings with lift studies (the planner does not price them), and a Closed Lost opportunity.
 
 **Add to an existing opportunity** (both quote tools, after the primary contact). The picker lists the account's open LED opportunities; choosing one adds the quote to it (`attach_opportunity_id` / `attachOpportunityId`): the new holds link to it, its amount adds, markets and trucks are the union, the hold window widens, and the description notes what was added. For changing or dropping markets already on it, use Revise.
 
@@ -552,10 +540,7 @@ The two-transport-engine split and the calendar-vs-activation-day mismatch descr
 | Shadow fencing CPM | $10 |
 | Smart directional | $250 / truck-day |
 | Device ID passback | $2,500 flat |
-| Lift study base (foot traffic, web lift) | $7,500, 2 unique markets included |
-| Each extra unique market | $2,000 |
-| Brand lift | $12,500 |
-| Sales lift | quoted by the team |
+| Lift study | $7,500 each |
 | Study minimum | 1,200,000 impressions |
 | Service area radius | 250 miles |
 | Miles per transport day | 450 |

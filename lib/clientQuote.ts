@@ -22,7 +22,6 @@ import {
   countActivationDays,
   billedDaysPerWeek,
   VALID_STUDIES,
-  STUDY_MIN_IMPRESSIONS,
   type StudyType,
 } from '@/lib/pricing'
 import { resolveRateOverrides } from '@/lib/pricing/resolvers'
@@ -100,7 +99,6 @@ export async function clientQuote(session: ClientSession, body: ClientQuoteInput
     includeSmartDirectional,
     includeDeviceId,
     studies,
-    spanDays: calendarDays,
     rateOverrides,
     markupPct,
   })
@@ -135,7 +133,9 @@ export async function clientQuote(session: ClientSession, body: ClientQuoteInput
   if (includeShadowFencing) mediaTotal += featureCosts.shadowFencing.cost
   if (includeSmartDirectional) mediaTotal += featureCosts.smartDirectional.cost
   if (includeDeviceId) mediaTotal += featureCosts.deviceId.cost
-  mediaTotal += quote.best.studiesTotal
+  if (quote.best.reachOk && studies.length > 0) {
+    mediaTotal += studies.length * featureCosts.studies.costPerStudy
+  }
 
   const grandTotal = mediaTotal + totalTransportCharge
 
@@ -287,11 +287,8 @@ function buildFeaturesResponse(
       available: quote.best.reachOk,
       selected: studies,
       costPerStudy: quote.best.studyCost,
-      prices: quote.best.studyPrices,
-      salesLiftRequested: quote.best.salesLiftRequested,
-      warning: quote.best.studyWarning,
       estimatedImpressions: quote.best.estimatedImpressions,
-      reachMinimum: STUDY_MIN_IMPRESSIONS,
+      reachMinimum: 1_200_000,
     },
   }
 }

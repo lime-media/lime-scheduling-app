@@ -6,7 +6,7 @@
 
 import type { QuoteFeatures } from '@/lib/quoteFeatures'
 import { rotationStints, type OrderPlan, type Stint } from './order'
-import type { LineQuote, OrderStudies, QuoteRequest } from './quote'
+import type { LineQuote, QuoteRequest } from './quote'
 
 /**
  * The client-facing breakdown for one market, in the QuoteFeatures shape the
@@ -14,7 +14,7 @@ import type { LineQuote, OrderStudies, QuoteRequest } from './quote'
  * nothing internal: no truck origins, no transport we absorb, no fleet counts,
  * no other markets.
  */
-export function lineFeatures(l: LineQuote, f: QuoteRequest['features'], brandMarkupPct = 0, clientType?: 'Agency' | 'Brand Direct' | null, studies: Pick<OrderStudies, 'studies' | 'salesLiftRequested'> = { studies: [], salesLiftRequested: false }): QuoteFeatures {
+export function lineFeatures(l: LineQuote, f: QuoteRequest['features'], brandMarkupPct = 0, clientType?: 'Agency' | 'Brand Direct' | null): QuoteFeatures {
   return {
     dailyRate: l.dailyRate,
     hourSurcharge: l.hourSurcharge,
@@ -32,10 +32,6 @@ export function lineFeatures(l: LineQuote, f: QuoteRequest['features'], brandMar
     deviceIdIncluded: f.deviceId,
     deviceId: l.deviceId,
     transportCharge: l.transport.billed,
-    // The order's studies: named on every market (a revision restores them),
-    // priced on the one that carries them (lib/planning/quote.ts applyStudies).
-    ...(studies.studies.length ? { studies: studies.studies, studiesTotal: l.studiesTotal } : {}),
-    ...(studies.salesLiftRequested ? { salesLiftRequested: true } : {}),
     requestedStart: l.startDate,
     requestedEnd: l.endDate,
     brandMarkupPct,
@@ -55,15 +51,9 @@ export function fitNames(names: string[], max: number): string {
   return out.join('; ')
 }
 
-/**
- * A multi-market booking's pricing tier, as the single-market quote names it:
- * Good (nothing), Better (shadow fencing only), Best (shadow fencing and the
- * lift studies it sold, `studies`), else Custom.
- */
-export const planTier = (f: QuoteRequest['features'], studies: readonly string[] = []) =>
-  !f.smartDirectional && !f.deviceId
-    ? (f.shadowFencing ? (studies.length ? 'Best' : 'Better') : (studies.length ? 'Custom' : 'Good'))
-    : f.shadowFencing && studies.length ? 'Best' : 'Custom'
+/** A multi-market booking's pricing tier, from its features: Better (shadow fencing only), Good (none) or Custom. */
+export const planTier = (f: QuoteRequest['features']) =>
+  f.shadowFencing && !f.smartDirectional && !f.deviceId ? 'Better' : !f.shadowFencing && !f.smartDirectional && !f.deviceId ? 'Good' : 'Custom'
 
 export const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
 const scheduleText = (dpw: number) => (dpw === 3 ? '3 days/wk' : dpw === 7 ? 'every day' : dpw === 6 ? 'Mon-Sat' : 'Mon-Fri')
@@ -95,18 +85,4 @@ export function planStretches(plan: OrderPlan): { truckNumber: string; stint: St
     stint: st,
     partner: job.lines.length > 1 ? job.lines.find(l => l.id !== st.lineId)!.market : null,
   }))))
-}
-
-const STUDY_NAMES: Record<string, string> = { web_lift: 'web lift', foot_traffic: 'foot traffic', brand_lift: 'brand lift', sales_lift: 'sales lift' }
-
-/** The Salesforce Description lines for an order's lift studies (none when it sold none). Pure. */
-export function studiesDescription(st: Pick<OrderStudies, 'studies' | 'prices' | 'total' | 'uniqueMarkets' | 'salesLiftRequested' | 'warning'>): string[] {
-  const priced = st.studies.filter(s => s !== 'sales_lift')
-  if (!priced.length && !st.salesLiftRequested) return []
-  return [
-    '',
-    ...(priced.length ? [`Lift studies for the whole order (${st.uniqueMarkets} unique market${st.uniqueMarkets === 1 ? '' : 's'}): ${priced.map(s => `${STUDY_NAMES[s]} ${money(st.prices[s])}`).join(', ')}; ${money(st.total)} in all.`] : []),
-    ...(st.salesLiftRequested ? ['Sales lift requested: the team quotes it.'] : []),
-    ...(st.warning ? [st.warning] : []),
-  ]
 }

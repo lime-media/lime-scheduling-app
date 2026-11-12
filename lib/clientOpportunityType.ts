@@ -8,19 +8,30 @@
 
 import { sfdcQuery } from '@/lib/salesforceClient'
 import { opportunityTypeOf, type OpportunityType } from '@/lib/sfdcOpportunityType'
+import { SFDC_BOT_USER_IDS } from '@/lib/sfdcBots'
 
 /** When the account has no LED opportunity with a Type, or it can't be read. */
 export const CLIENT_DEFAULT_OPPORTUNITY_TYPE: OpportunityType = 'New Client'
 
 /**
- * The Type of the account's latest LED opportunity that has one still on the
- * picklist, or null. Throws if Salesforce can't be read.
+ * The query for an account's latest LED opportunities with a Type, leaving out
+ * those the Salesforce bot user made (lib/sfdcBots.ts): never designed for.
+ * accountId must already be checked. Pure.
+ */
+export function latestLedTypeSoql(accountId: string): string {
+  const bots = [...SFDC_BOT_USER_IDS].map(id => `'${id}'`).join(',')
+  return `SELECT Type FROM Opportunity WHERE AccountId = '${accountId}' AND Job_Type__c = 'LED' AND Type != null`
+    + (bots ? ` AND CreatedById NOT IN (${bots})` : '')
+    + ' ORDER BY CreatedDate DESC LIMIT 5'
+}
+
+/**
+ * The Type of the account's latest LED opportunity (not the bot's) that has
+ * one still on the picklist, or null. Throws if Salesforce can't be read.
  */
 export async function latestLedOpportunityType(accountId: string): Promise<OpportunityType | null> {
   if (!/^[A-Za-z0-9]{15,18}$/.test(accountId)) return null
-  const rows = await sfdcQuery<{ Type: string | null }>(
-    `SELECT Type FROM Opportunity WHERE AccountId = '${accountId}' AND Job_Type__c = 'LED' AND Type != null ORDER BY CreatedDate DESC LIMIT 5`,
-  )
+  const rows = await sfdcQuery<{ Type: string | null }>(latestLedTypeSoql(accountId))
   for (const r of rows) {
     const t = opportunityTypeOf(r.Type)
     if (t) return t

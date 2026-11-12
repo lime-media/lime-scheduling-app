@@ -6,7 +6,8 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { defer, eq, section } from './harness'
-import { CLIENT_DEFAULT_OPPORTUNITY_TYPE, clientOpportunityType } from '@/lib/clientOpportunityType'
+import { CLIENT_DEFAULT_OPPORTUNITY_TYPE, clientOpportunityType, latestLedTypeSoql } from '@/lib/clientOpportunityType'
+import { SFDC_BOT_USER_IDS } from '@/lib/sfdcBots'
 
 section('clientOpportunityType')
 eq('the fallback is a picklist value', CLIENT_DEFAULT_OPPORTUNITY_TYPE, 'New Client')
@@ -21,6 +22,11 @@ defer((async () => {
     console.error = quiet
   }
 })())
+
+section('latestLedTypeSoql')
+const soql = latestLedTypeSoql('001000000000001AAA')
+eq('skips every bot user\'s opportunities', [...SFDC_BOT_USER_IDS].every(id => soql.includes(`CreatedById NOT IN (`) && soql.includes(`'${id}'`)), true)
+eq('LED opportunities with a Type, newest first', /Job_Type__c = 'LED' AND Type != null.*ORDER BY CreatedDate DESC/.test(soql), true)
 
 section('client booking paths set it')
 for (const file of ['lib/clientBooking.ts', 'lib/clientMultiMarket.ts']) {

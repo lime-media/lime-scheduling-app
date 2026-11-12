@@ -782,9 +782,12 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
   const [openTruck, setOpenTruck] = useState<string | null>(null)
   const short = quote.lines.filter(l => l.missing > 0)
   const chosen = quote.lines.filter(l => selected.has(l.id))
-  // The order's studies priced again for just the selected markets, as the server books them.
-  const chosenTotal = selectionTotal(quote.lines, selected, quote.studies, quote.brandMarkupPct).total
-  const st = quote.studies
+  // The order's studies priced again for just the selected markets, as the
+  // server books them: the panel below and the button both describe that.
+  const selection = selectionTotal(quote.lines, selected, quote.studies, quote.brandMarkupPct)
+  const chosenTotal = selection.total
+  const st = selection.studies
+  const chosenLines = quote.lines.filter(l => selected.has(l.id))
   const booked = holdResult?.ok === true
   const outOfMarket = quote.lines.flatMap(l => l.arrivals).filter(a => a.outOfMarket)
 
@@ -830,14 +833,14 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
                   <td className={td}>{l.market}</td>
                   <td className={td + ' whitespace-nowrap'}><DeliveryDates l={l} /></td>
                   <td className={td + ' whitespace-nowrap'}><DeliveryDays l={l} /></td>
-                  <td className={tdNum}>{fmtMoney(l.media)}</td>
+                  <td className={tdNum}>{fmtMoney(l.media - l.studiesTotal)}</td>
                   <td className={tdNum}>
                     {l.transport.billed > 0 ? fmtMoney(l.transport.billed) : <span className="text-gray-400">{l.transport.outcome === 'ABSORBED' ? 'included' : '—'}</span>}
                   </td>
                   <td className={tdNum + ' font-medium'}>
-                    {fmtMoney(l.total)}
+                    {/* The order's studies are their own row below (priced once for the order). */}
+                    {fmtMoney(l.total - l.studiesTotal)}
                     {l.priceKept && <span className="block text-[11px] font-normal text-blue-700" title="Unchanged in this revision: keeps the price already booked">booked price kept</span>}
-                    {l.studiesTotal > 0 && <span className="block text-[11px] font-normal text-purple-700">incl. the order&apos;s lift studies {fmtMoney(l.studiesTotal)}</span>}
                   </td>
                   <td className={td + ' text-xs min-w-[16rem]'}>
                     {l.arrivals.map(a => <ArrivalLine key={a.truckNumber} a={a} />)}
@@ -845,6 +848,14 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
                   </td>
                 </tr>
               ))}
+              {quote.studies.total > 0 && (
+                <tr>
+                  <td className={td}></td>
+                  <td className={td} colSpan={5}>Lift studies, one for the whole order ({quote.studies.studies.filter(x => x !== 'sales_lift').map(x => STUDY_LABELS[x]).join(', ')})</td>
+                  <td className={tdNum}>{fmtMoney(quote.studies.total)}</td>
+                  <td className={td}></td>
+                </tr>
+              )}
               <tr className="font-medium">
                 <td className={td} colSpan={4}>Totals</td>
                 <td className={tdNum}>{fmtMoney(summary.media)}</td>
@@ -856,17 +867,17 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
           </table>
         </div>
 
-        {/* Reach and lift studies for the whole order (lib/planning/studies.ts). */}
+        {/* Reach and lift studies for the markets selected to book (lib/planning/studies.ts selectionTotal). */}
         <div className="mt-3 text-xs text-gray-600 space-y-1">
           <p>
-            Estimated reach: {fmtNum(st.estimatedImpressions)} impressions across the order
-            {' '}({quote.lines.map(l => `${l.market} ${fmtNum(l.estimatedImpressions)}`).join(' · ')}): truck-days × each market tier&apos;s daily A18+ impressions per truck.
+            Estimated reach: {fmtNum(st.estimatedImpressions)} impressions across the {chosenLines.length === quote.lines.length ? 'order' : `${chosenLines.length} selected market${chosenLines.length === 1 ? '' : 's'}`}
+            {chosenLines.length > 0 && <>{' '}({chosenLines.map(l => `${l.market} ${fmtNum(l.estimatedImpressions)}`).join(' · ')})</>}: truck-days × each market tier&apos;s daily A18+ impressions per truck.
             {' '}{st.reachOk ? `Lift studies are available (${fmtNum(st.reachMinimum)} needed).` : `Lift studies need ${fmtNum(st.reachMinimum)}.`}
           </p>
           {st.requested.length > 0 && (st.reachOk ? (
             <p>
               Lift studies ({st.uniqueMarkets} unique market{st.uniqueMarkets === 1 ? '' : 's'}): {st.studies.filter(x => x !== 'sales_lift').map(x => `${STUDY_LABELS[x]} ${fmtMoney(st.prices[x])}`).join(', ') || 'none priced'}
-              {st.total > 0 && <>, {fmtMoney(st.total)} in all, included in {st.carriedBy}&apos;s total</>}.
+              {st.total > 0 && <>, {fmtMoney(st.total)} in all, booked with {st.carriedBy}</>}.
               {st.salesLiftRequested && <> Sales lift: the team quotes it; noted on the booking.</>}
             </p>
           ) : (

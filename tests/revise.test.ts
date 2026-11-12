@@ -26,7 +26,7 @@ eq('a Salesforce push is changed in Salesforce', reviseRefusal([hold({ source: '
 eq('a client booking is the client\'s', reviseRefusal([hold({ source: 'CLIENT' })])?.startsWith('This booking was made in the client portal'), true)
 eq('a pending extension request: refused until it is answered', reviseRefusal([hold(), hold({ id: 'h2', status: 'EXTENSION_REQUESTED' })])?.startsWith('This booking has an extension request waiting'), true)
 eq('a booking with lift studies can be revised (the planner prices them)', reviseRefusal([hold({ features: feat({ studies: ['web_lift'] }) })]), null)
-eq('its studies come back with it', reviseRows([hold({ features: feat({ studies: ['web_lift', 'brand_lift', 'bogus'] }) })]).features.studies, ['web_lift', 'brand_lift'])
+eq('its studies come back with it', reviseRows([hold({ features: feat({ studies: ['web_lift', 'brand_lift', 'bogus'], studiesTotal: 20000 }) })]).features.studies, ['web_lift', 'brand_lift'])
 
 section('revise: the booking as planner rows')
 const booking = [

@@ -511,7 +511,8 @@ async function handlePost(req: NextRequest) {
           ...(quote.brandMarkupPct ? [`Brand Direct pricing: +${quote.brandMarkupPct}% folded into every line item.`, ''] : []),
           quoteOnly ? 'Quoted (no reservation):' : 'Booked:',
           ...quote.lines.map(l => `${describeBooked(l)}, ${money(l.total)}`),
-          ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(l.total)}`)] : []),
+          // Without the order's studies: they're priced once, on what's booked (studiesDescription).
+          ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(l.total - l.studiesTotal)}`)] : []),
           ...(unavailable.length ? ['', 'Quoted but no truck available:', ...unavailable] : []),
           ...studiesDescription(quote.studies),
         ].join('\n')

@@ -414,13 +414,20 @@ export function reviseRows(holds: RevisableHold[]): {
   }
 }
 
-/** The lift studies a booking was sold with, from its holds' features (the first that records any). Pure. */
+/**
+ * The lift studies a booking was sold, from its holds' features. Only what was
+ * sold: a hold whose studies were priced (studiesTotal > 0), or a sales lift
+ * asked for (salesLiftRequested). Bookings made before studies were stored as
+ * sold recorded the studies requested even when reach was short and nothing
+ * was charged; those are not restored. Pure.
+ */
 export function bookedStudies(holds: { features: string | null }[]): StudyType[] {
+  const valid = (v: unknown): StudyType[] => (Array.isArray(v) ? [...new Set(v.filter((x): x is StudyType => (VALID_STUDIES as readonly unknown[]).includes(x)))] : [])
   for (const h of holds) {
-    const s = parseFeatures(h.features).studies
-    if (Array.isArray(s) && s.length) return [...new Set(s.filter((x): x is StudyType => (VALID_STUDIES as readonly unknown[]).includes(x)))]
+    const f = parseFeatures(h.features)
+    if (Number(f.studiesTotal) > 0) return valid(f.studies)
   }
-  return []
+  return holds.some(h => parseFeatures(h.features).salesLiftRequested === true) ? ['sales_lift'] : []
 }
 
 /** A market whose booked price a revision keeps, for the truck count and Brand Direct markup (null: not recorded) it was booked with. */

@@ -65,7 +65,20 @@ export function applyStudies<L extends StudyLine>(
 }
 
 /** The markets a rep selected, priced as the server books them: the order's studies priced again for just those. Pure. */
-export function selectionTotal<L extends StudyLine & { id: string }>(lines: L[], selected: ReadonlySet<string>, studies: Pick<OrderStudies, 'requested' | 'base'>, markupPct = 0): { total: number; studies: OrderStudies } {
+export function selectionTotal<L extends StudyLine & { id: string }>(lines: L[], selected: ReadonlySet<string>, studies: Pick<OrderStudies, 'requested' | 'base'>, markupPct = 0): { total: number; studies: OrderStudies; carrierId: string | null } {
   const repriced = applyStudies(lines.filter(l => selected.has(l.id)), studies.requested, studies.base, markupPct)
-  return { total: repriced.lines.reduce((n, l) => n + l.total, 0), studies: repriced.studies }
+  return {
+    total: repriced.lines.reduce((n, l) => n + l.total, 0),
+    studies: repriced.studies,
+    carrierId: repriced.lines.find(l => l.studiesTotal > 0)?.id ?? null,
+  }
+}
+
+/** What an alternative does to the order's lift studies, in words ('' when nothing changes). Pure. */
+export function studiesChange(was: Pick<OrderStudies, 'total' | 'studies'>, now: Pick<OrderStudies, 'total' | 'studies'>): string {
+  const money = (n: number) => '$' + Math.round(Math.abs(n)).toLocaleString('en-US')
+  if (was.studies.length > 0 && now.studies.length === 0) return ` The lift studies drop out (${money(was.total)}): the order's reach falls under the minimum.`
+  if (was.studies.length === 0 && now.studies.length > 0) return ` The lift studies come in (${money(now.total)}): the order's reach clears the minimum.`
+  if (was.total !== now.total) return ` The lift studies cost ${money(now.total - was.total)} ${now.total < was.total ? 'less' : 'more'} (unique markets change).`
+  return ''
 }

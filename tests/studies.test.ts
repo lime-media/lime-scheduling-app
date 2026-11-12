@@ -6,7 +6,8 @@
 import { eq, section } from './harness'
 import { priceStudies, studiesCost, uniqueMarketCount, STUDY_LONG_WARNING } from '@/lib/pricing/studies'
 import { computeQuote } from '@/lib/pricing/engine'
-import { applyStudies, selectionTotal } from '@/lib/planning/studies'
+import { applyStudies, selectionTotal, studiesChange } from '@/lib/planning/studies'
+import { bookedStudies } from '@/lib/bookings'
 import { keepBookedPrices } from '@/lib/planning/quote'
 import { planTier, studiesDescription } from '@/lib/planning/booking'
 
@@ -98,3 +99,26 @@ eq('the Description names the studies and the ask',
   studiesDescription({ studies: ['foot_traffic', 'sales_lift'], prices: price(3).prices, total: 9500, uniqueMarkets: 3, salesLiftRequested: true, warning: null }),
   ['', 'Lift studies for the whole order (3 unique markets): foot traffic $9,500; $9,500 in all.', 'Sales lift requested: the team quotes it.'])
 eq('no studies: no lines', studiesDescription({ studies: [], prices: price(1).prices, total: 0, uniqueMarkets: 1, salesLiftRequested: false, warning: null }), [])
+
+section('studies: a revision restores only what was sold')
+const f = (o: Record<string, unknown>) => ({ features: JSON.stringify(o) })
+eq('priced studies come back', bookedStudies([f({ studies: ['foot_traffic', 'brand_lift'], studiesTotal: 20000 })]), ['foot_traffic', 'brand_lift'])
+eq('an older booking that recorded studies it never sold (reach short, $0): none', bookedStudies([f({ studies: ['foot_traffic'], studiesTotal: 0 })]), [])
+eq('no studiesTotal recorded: none', bookedStudies([f({ studies: ['web_lift'] })]), [])
+eq('a multi-market booking: found on the market that carried them', bookedStudies([f({ studies: ['web_lift'], studiesTotal: 0 }), f({ studies: ['web_lift'], studiesTotal: 7500 })]), ['web_lift'])
+eq('a sales lift ask alone comes back', bookedStudies([f({ studies: ['sales_lift'], studiesTotal: 0, salesLiftRequested: true })]), ['sales_lift'])
+eq('nothing recorded: none', bookedStudies([f({}), { features: null }]), [])
+
+section('studies: alternatives say what they do to the studies')
+const was = { total: 20000, studies: ['foot_traffic', 'brand_lift'] as never[] }
+eq('reach falls under the minimum', studiesChange(was, { total: 0, studies: [] }), ' The lift studies drop out ($20,000): the order\'s reach falls under the minimum.')
+eq('reach clears it', studiesChange({ total: 0, studies: [] }, was), ' The lift studies come in ($20,000): the order\'s reach clears the minimum.')
+eq('fewer unique markets', studiesChange(was, { total: 18000, studies: was.studies }), ' The lift studies cost $2,000 less (unique markets change).')
+eq('no change: nothing said', studiesChange(was, was), '')
+
+section('studies: the selection names its own carrier')
+const s3 = applyStudies(order.map(l => ({ ...l, estimatedImpressions: 900_000 })), ['web_lift'], null)
+eq('whole order: the earliest market carries it', selectionTotal(s3.lines, new Set(['a', 'b', 'c']), s3.studies).carrierId, 'b')
+eq('without it: the next earliest', selectionTotal(s3.lines, new Set(['a', 'c']), s3.studies).carrierId, 'a')
+eq('and the selection\'s own unique markets', selectionTotal(s3.lines, new Set(['a', 'c']), s3.studies).studies.uniqueMarkets, 2)
+eq('under the minimum: no carrier', selectionTotal(s3.lines, new Set(['c']), s3.studies).carrierId, null)

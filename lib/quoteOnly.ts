@@ -23,6 +23,24 @@ export const QUOTE_ONLY_STATUS = 'EXPIRED'
 export const QUOTE_ONLY_NOTE = 'Quote only: logged to Salesforce, no reservation.'
 
 /**
+ * How plan/hold records a booking for the transport and deal-value metrics
+ * (lib/transportMetricsRecord.ts recordBooking).
+ *
+ * Reserving a quote opens it as a revision, but every hold it replaces is a
+ * quote-only log: nothing was booked and no transport leg was ever written.
+ * So it is the first real booking: BOOKED, keyed on the new booking, which
+ * the ops transport KPIs (built from BOOKED legs) and its later swaps and
+ * executions then join. Only a revision that replaces at least one real hold
+ * is REVISED, carrying that booking's lineage. Replaced holds not found (a
+ * retry) stay REVISED: the retry guard answers those before anything is
+ * recorded.
+ */
+export function bookingEvent(reviseKey: string | null | undefined, replaced: { origination: string | null }[]): 'BOOKED' | 'REVISED' {
+  if (!reviseKey) return 'BOOKED'
+  return replaced.length > 0 && replaced.every(h => h.origination === QUOTE_ONLY_ORIGINATION) ? 'BOOKED' : 'REVISED'
+}
+
+/**
  * Multi-market quote-only logs use their own booking-id prefix, apart from
  * real bookings (mm_), so a real booking is never taken for an earlier
  * quote-only log of the same quote.

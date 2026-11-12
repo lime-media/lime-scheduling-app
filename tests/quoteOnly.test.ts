@@ -3,7 +3,7 @@
  * These pin the guarantees it relies on. Run with: npm test
  */
 import { eq, section } from './harness'
-import { QUOTE_ONLY_STATUS, QUOTE_ONLY_ORIGINATION, listedQuotes, type QuoteListRow } from '@/lib/quoteOnly'
+import { QUOTE_ONLY_STATUS, QUOTE_ONLY_ORIGINATION, bookingEvent, listedQuotes, type QuoteListRow } from '@/lib/quoteOnly'
 import { activeHoldWhere } from '@/lib/holdFilters'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -119,4 +119,16 @@ section('quote-only: which quotes Reservations lists under Quotes')
   eq('equal log times pick one, stably', list([
     q('a', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'), q('b', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'),
   ]), ['b'])
+}
+
+section('quote-only: reserving a quote is recorded as BOOKED (transport KPIs see it)')
+{
+  const q = { origination: QUOTE_ONLY_ORIGINATION }
+  const real = { origination: 'manual' }
+  eq('a new booking is BOOKED', bookingEvent(null, []), 'BOOKED')
+  eq('Reserve on a quote: every replaced hold is a quote-only log, so BOOKED', bookingEvent('mmq_abc', [q, q]), 'BOOKED')
+  eq('revising a real booking stays REVISED', bookingEvent('mm_abc', [real, real]), 'REVISED')
+  eq('any real hold replaced keeps the lineage: REVISED', bookingEvent('mm_abc', [q, real]), 'REVISED')
+  eq('replaced holds not found (a retry) stays REVISED', bookingEvent('mm_abc', []), 'REVISED')
+  eq('a hold with no origination counts as real', bookingEvent('mm_abc', [{ origination: null }]), 'REVISED')
 }

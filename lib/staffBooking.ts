@@ -39,6 +39,7 @@ import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { legsFromSelectedTrucks } from '@/lib/transportMetrics'
 import { reply, type CoreResult } from '@/lib/coreResult'
+import { PARTY_KEY, bookingParty } from '@/lib/bookingParty'
 import { holdExpDate } from '@/lib/dateOnly'
 
 /** The staff member booking it: who the holds and the opportunity are attributed to. */
@@ -253,6 +254,11 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
     ...(clientType ? { clientType } : {}),
     // Added to an existing opportunity: lapsing never closes it (expiryClosesOpportunity).
     ...(target ? { attachedToOpportunity: true } : {}),
+    // Who it's for, so a revision reopens with them even without an opportunity (lib/bookingParty.ts).
+    [PARTY_KEY]: bookingParty({
+      accountId: sfdc_account_id, accountName: sfdc_account_name,
+      contactId: primary_contact_id, contactName: body.primary_contact_name, verified: contact.contact, brand,
+    }),
   })
 
   // Find a ClientUser linked to this SFDC Account if one exists.

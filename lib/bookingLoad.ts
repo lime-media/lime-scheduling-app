@@ -11,7 +11,7 @@ import type { LinkedHold } from '@/lib/opportunityMerge'
 import { holdExpDate } from '@/lib/dateOnly'
 
 /** Every hold in the booking, any status (an expired booking can be revised too). */
-export async function loadBookingHolds(key: string): Promise<(RevisableHold & { sfdc_opportunity_id: string | null; client_name: string; quoted_total: number | null; expires_at: Date | null })[]> {
+export async function loadBookingHolds(key: string): Promise<(RevisableHold & { sfdc_opportunity_id: string | null; sfdc_account_id: string | null; client_name: string; quoted_total: number | null; expires_at: Date | null })[]> {
   if (!/^[A-Za-z0-9_-]{6,80}$/.test(key)) return []
   const rows = await prisma.hold.findMany({
     where: {
@@ -30,6 +30,7 @@ export async function loadBookingHolds(key: string): Promise<(RevisableHold & { 
       id: h.id,
       campaign_group_id: h.campaign_group_id,
       sfdc_opportunity_id: h.sfdc_opportunity_id,
+      sfdc_account_id: h.sfdc_account_id,
       client_name: h.client_name,
       truck_number: h.truck_number,
       market: h.market,

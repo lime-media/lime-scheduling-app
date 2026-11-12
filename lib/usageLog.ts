@@ -93,7 +93,8 @@ export function summarizeResult(json: unknown, replyChars = 300): Record<string,
     good: num(j.presets?.good?.total),
     best: num(j.presets?.best?.total),
     market: str(j.market, 100),
-    holds: Array.isArray(j.created) ? j.created.length : num(j.created),
+    // A quote-only log writes already-expired records, not holds: count none.
+    holds: j.quoteOnly === true ? undefined : Array.isArray(j.created) ? j.created.length : num(j.created),
     failed: Array.isArray(j.failed) ? j.failed.length : undefined,
     markets: num(j.summary?.markets) ?? num(j.quote?.summary?.markets) ?? (Array.isArray(j.asked?.lines) ? j.asked.lines.length : undefined)
       ?? (Array.isArray(j.markets) ? j.markets.length : undefined),
@@ -106,6 +107,8 @@ export function summarizeResult(json: unknown, replyChars = 300): Record<string,
     // A chat that filed a request for assistance: what happened to it.
     action: str(j.actionResult?.message),
     insufficient: j.insufficient === true ? true : undefined,
+    // Logged a quote and reserved nothing: Usage labels it as a quote, not a hold (lib/usageFormat.ts runLabel).
+    quote_only: j.quoteOnly === true ? true : undefined,
     error: str(j.error) ?? str(j.message),
   }
   return Object.fromEntries(Object.entries(out).filter(([, v]) => v !== undefined))

@@ -11,6 +11,10 @@ import { linkedJob } from '@/lib/jobNumber'
 import { centralDate } from '@/lib/dateOnly'
 import { FOLLOW_SYNC_OVERDUE_MS, ledMirrorJobs, ledMirrorPlans, ledMirrorStandings, mirrorClashFlags, mirrorFlagKey, type FollowHold, type MirrorFlag } from '@/lib/ledTruckFollow'
 import { daysSold, ledJobShifts, ledShiftsForHolds, ledStandings, type JobHold, type LedStanding } from '@/lib/ledJobs'
+import { salesforceInstanceUrl } from '@/lib/salesforceClient'
+
+/** How long the page waits for Salesforce's address before leaving the links out. */
+const SFDC_LINK_WAIT_MS = 3000
 
 // EXPIRED holds accumulate forever — every lapsed hold and every Closed Lost
 // Opportunity lands here and never leaves. Ops only care about the recent tail,
@@ -96,6 +100,12 @@ export async function GET() {
     start_date: h.start_date.toISOString().slice(0, 10), end_date: h.end_date.toISOString().slice(0, 10),
     booking: bookingKey(h) ?? h.id, features: h.features, sfdc_opportunity_id: h.sfdc_opportunity_id,
   }))
+  // The org's address for the cards' Salesforce links (staff only; null leaves them out).
+  // A cold connection signs in first; never hold the page for it past a few seconds.
+  const sfdcBase = Promise.race([
+    salesforceInstanceUrl(),
+    new Promise<null>(resolve => setTimeout(() => resolve(null), SFDC_LINK_WAIT_MS)),
+  ])
   const [owners, inLedByHold, linked, followed, mirrorFlags] = await Promise.all([
     reservationOwners(holds.map(h => ({ id: h.id, created_by: h.created_by, created_by_name: h.user?.name ?? null, sfdc_opportunity_id: h.sfdc_opportunity_id }))),
     ledShiftsForHolds(committed)
@@ -224,6 +234,7 @@ export async function GET() {
   return NextResponse.json({
     expired_window_days: EXPIRED_WINDOW_DAYS,
     led_unavailable: ledUnavailable,
+    sfdc_base_url: await sfdcBase,
     holdRequests: stillListed(rows, today),
   })
 }

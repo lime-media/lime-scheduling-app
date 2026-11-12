@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { toolLabel } from '@/lib/usageFormat'
+import { isQuoteOnlyRun, runLabel } from '@/lib/usageFormat'
 
 const MAX_ROWS = 1000
 const parse = (v: string | null) => { if (!v) return null; try { return JSON.parse(v) } catch { return v } }
@@ -50,12 +50,21 @@ export async function GET(req: NextRequest) {
       ...clients.map(c => [c.id, `${c.company_name} (${c.username})`] as [string, string]),
     ])
 
-    const rows: UsageRow[] = logRows.map(r => ({
-      id: r.id, at: r.created_at.toISOString(), source: r.tool.startsWith('mcp_') ? 'mcp' as const : 'app' as const,
-      tool: r.tool, toolLabel: toolLabel(r.tool),
-      actorType: r.actor_type, actorId: r.actor_id, actorName: names.get(r.actor_id) ?? r.actor_name,
-      outcome: r.outcome, latencyMs: r.latency_ms, inputs: parse(r.inputs), result: parse(r.result),
-    }))
+    const rows: UsageRow[] = logRows.map(r => {
+      const inputs = parse(r.inputs)
+      const parsed = parse(r.result)
+      // A quote-only run reserved nothing. Rows logged before summarizeResult
+      // knew that still carry a hold count: drop it, so "2 holds" never sits
+      // next to "no reservation".
+      const result = isQuoteOnlyRun(r.tool, parsed, inputs) && parsed && typeof parsed === 'object'
+        ? { ...parsed, holds: undefined, hold_count: undefined, quote_only: true } : parsed
+      return {
+        id: r.id, at: r.created_at.toISOString(), source: r.tool.startsWith('mcp_') ? 'mcp' as const : 'app' as const,
+        tool: r.tool, toolLabel: runLabel(r.tool, result, inputs),
+        actorType: r.actor_type, actorId: r.actor_id, actorName: names.get(r.actor_id) ?? r.actor_name,
+        outcome: r.outcome, latencyMs: r.latency_ms, inputs, result,
+      }
+    })
 
     const count = (key: (r: UsageRow) => string) => {
       const m = new Map<string, number>()

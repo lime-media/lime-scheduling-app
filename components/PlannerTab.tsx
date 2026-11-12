@@ -29,6 +29,9 @@ import { useReopenConfirm } from '@/components/ReopenOpportunityDialog'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { ReviewFinding } from '@/lib/planning/claude'
 import type { Arrival, LineQuote, MultiMarketQuote, QuoteRow, RowError } from '@/lib/planning/quote'
+import { selectionTotal } from '@/lib/planning/studies'
+import { STUDY_MIN_IMPRESSIONS, STUDY_PRICE, VALID_STUDIES, type StudyType } from '@/lib/pricing/config'
+import { BRAND_LIFT_PRICE, STUDY_EXTRA_MARKET_PRICE, STUDY_INCLUDED_MARKETS } from '@/lib/pricing/studies'
 
 type BuiltAreas = AreaBuildResult & { source: string; parsedRows: ZipRow[]; notes: string[] }
 
@@ -55,6 +58,7 @@ async function fileToBase64(f: File): Promise<string> {
 
 const fmtMoney = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
 const fmtNum = (n: number) => Math.round(n).toLocaleString('en-US')
+const STUDY_LABELS: Record<StudyType, string> = { web_lift: 'Web lift', foot_traffic: 'Foot traffic', brand_lift: 'Brand lift', sales_lift: 'Sales lift' }
 const fmtDate = (d: string) => new Date(d + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
 const todayStr = () => new Date().toISOString().split('T')[0]
 
@@ -134,8 +138,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
   const [brand, setBrand] = useState('')
   const [rows, setRows] = useState<QuoteRow[]>([newRow()])
   const [rowErrors, setRowErrors] = useState<RowError[]>([])
-  const [features, setFeatures] = useState({ shadowFencing: true, smartDirectional: false, deviceId: false })
-  const [alloyRenews, setAlloyRenews] = useState(false)
+  const [features, setFeatures] = useState<{ shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean; studies: StudyType[] }>({ shadowFencing: true, smartDirectional: false, deviceId: false, studies: [] })
   // Brand Direct accounts: a premium folded into every price (internal control only).
   const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
   // The opportunity's Client Type and Lead Source: the seller picks both,
@@ -198,7 +201,8 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         setBrand(b.brand ?? '')
         setRows(b.rows.map((r: { market: string; startDate: string; endDate: string; trucks: number; daysPerWeek: number; hours: number }) =>
           newRow({ market: r.market, startDate: r.startDate, endDate: r.endDate, trucks: r.trucks, daysPerWeek: r.daysPerWeek, hours: r.hours })))
-        setFeatures(b.features)
+        // The booking's lift studies come back with it (lib/bookings.ts reviseRows).
+        setFeatures({ ...b.features, studies: Array.isArray(b.features?.studies) ? b.features.studies : [] })
         // Reopen in the mode it was logged in: a quote-only log reserved nothing,
         // so revising it must not reserve trucks unless the rep unticks it.
         setQuoteOnly(b.quoteOnly === true)
@@ -246,7 +250,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
   // something other than what is on screen.
   useEffect(() => {
     setQuote(null); setHoldResult(null)
-  }, [rows, features, alloyRenews, account, brandMarkupPct])
+  }, [rows, features, account, brandMarkupPct])
   // A new client starts at the default markup.
   // A new account starts at the default markup; a revised booking at the one it was sold at.
   const revisedMarkup = useRef<number | null>(null)
@@ -327,7 +331,6 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     sfdcAccountId: account?.id,
     sfdcAccountName: account?.name,
     features,
-    alloyRenews,
     clientType: account ? clientType : undefined,
     brandMarkupPct: isBrandDirect ? clampBrandMarkup(brandMarkupPct) : undefined,
     // Revising: the server frees the booking's trucks and keeps them where they fit.
@@ -353,7 +356,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
 
   const placeHolds = async (allowPartial = false, expectedTotal?: number, reopenAgreed = revision?.reopenOpportunity === true): Promise<void> => {
     if (!account || !contact || !quote) return
-    const shown = expectedTotal ?? quote.lines.filter(l => selected.has(l.id)).reduce((n, l) => n + l.total, 0)
+    const shown = expectedTotal ?? selectionTotal(quote.lines, selected, quote.studies, quote.brandMarkupPct).total
     setHolding(true); setHoldResult(null)
     try {
       const res = await fetch('/api/plan/hold', {
@@ -564,8 +567,19 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           <label className="flex items-center gap-2"><input type="checkbox" checked={features.shadowFencing} onChange={e => setFeatures(f => ({ ...f, shadowFencing: e.target.checked }))} /> Shadow fencing</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={features.smartDirectional} onChange={e => setFeatures(f => ({ ...f, smartDirectional: e.target.checked }))} /> Smart directional</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={features.deviceId} onChange={e => setFeatures(f => ({ ...f, deviceId: e.target.checked }))} /> Device ID passback</label>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={alloyRenews} onChange={e => setAlloyRenews(e.target.checked)} /> Keep AT&amp;T Alloy Build trucks reserved</label>
         </div>
+        {/* Lift studies: one study covers the whole order (lib/pricing/studies.ts). */}
+        <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-gray-700">
+          <span className="text-xs font-medium text-gray-600">Lift studies</span>
+          {VALID_STUDIES.map(st => (
+            <label key={st} className="flex items-center gap-2">
+              <input type="checkbox" checked={features.studies.includes(st)}
+                onChange={e => setFeatures(f => ({ ...f, studies: e.target.checked ? [...f.studies, st] : f.studies.filter(x => x !== st) }))} />
+              {STUDY_LABELS[st]}{st === 'sales_lift' && <span className="text-xs text-gray-500">(the team quotes it)</span>}
+            </label>
+          ))}
+        </div>
+        <p className="mt-1 text-xs text-gray-500">One study covers the whole order: {fmtMoney(STUDY_PRICE)} with {STUDY_INCLUDED_MARKETS} markets, +{fmtMoney(STUDY_EXTRA_MARKET_PRICE)} per extra market (a client&apos;s rate card may set its own base); brand lift {fmtMoney(BRAND_LIFT_PRICE)}. Studies need {STUDY_MIN_IMPRESSIONS.toLocaleString('en-US')} estimated impressions across the order.</p>
         {/* A new opportunity's lead source; a revision or an attach keeps its opportunity's own. */}
         {!keepsOpportunity && (
           <div className="mt-3">
@@ -765,7 +779,12 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
   const [openTruck, setOpenTruck] = useState<string | null>(null)
   const short = quote.lines.filter(l => l.missing > 0)
   const chosen = quote.lines.filter(l => selected.has(l.id))
-  const chosenTotal = chosen.reduce((s, l) => s + l.total, 0)
+  // The order's studies priced again for just the selected markets, as the
+  // server books them: the panel below and the button both describe that.
+  const selection = selectionTotal(quote.lines, selected, quote.studies, quote.brandMarkupPct)
+  const chosenTotal = selection.total
+  const st = selection.studies
+  const chosenLines = quote.lines.filter(l => selected.has(l.id))
   const booked = holdResult?.ok === true
   const outOfMarket = quote.lines.flatMap(l => l.arrivals).filter(a => a.outOfMarket)
 
@@ -811,12 +830,13 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
                   <td className={td}>{l.market}</td>
                   <td className={td + ' whitespace-nowrap'}><DeliveryDates l={l} /></td>
                   <td className={td + ' whitespace-nowrap'}><DeliveryDays l={l} /></td>
-                  <td className={tdNum}>{fmtMoney(l.media)}</td>
+                  <td className={tdNum}>{fmtMoney(l.media - l.studiesTotal)}</td>
                   <td className={tdNum}>
                     {l.transport.billed > 0 ? fmtMoney(l.transport.billed) : <span className="text-gray-400">{l.transport.outcome === 'ABSORBED' ? 'included' : '—'}</span>}
                   </td>
                   <td className={tdNum + ' font-medium'}>
-                    {fmtMoney(l.total)}
+                    {/* The order's studies are their own row below (priced once for the order). */}
+                    {fmtMoney(l.total - l.studiesTotal)}
                     {l.priceKept && <span className="block text-[11px] font-normal text-blue-700" title="Unchanged in this revision: keeps the price already booked">booked price kept</span>}
                   </td>
                   <td className={td + ' text-xs min-w-[16rem]'}>
@@ -825,6 +845,14 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
                   </td>
                 </tr>
               ))}
+              {quote.studies.total > 0 && (
+                <tr>
+                  <td className={td}></td>
+                  <td className={td} colSpan={5}>Lift studies, one for the whole order ({quote.studies.studies.filter(x => x !== 'sales_lift').map(x => STUDY_LABELS[x]).join(', ')})</td>
+                  <td className={tdNum}>{fmtMoney(quote.studies.total)}</td>
+                  <td className={td}></td>
+                </tr>
+              )}
               <tr className="font-medium">
                 <td className={td} colSpan={4}>Totals</td>
                 <td className={tdNum}>{fmtMoney(summary.media)}</td>
@@ -834,6 +862,24 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
               </tr>
             </tbody>
           </table>
+        </div>
+
+        {/* Reach and lift studies for the markets selected to book (lib/planning/studies.ts selectionTotal). */}
+        <div className="mt-3 text-xs text-gray-600 space-y-1">
+          <p>
+            Estimated reach: {fmtNum(st.estimatedImpressions)} impressions across the {chosenLines.length === quote.lines.length ? 'order' : `${chosenLines.length} selected market${chosenLines.length === 1 ? '' : 's'}`}
+            {chosenLines.length > 0 && <>{' '}({chosenLines.map(l => `${l.market} ${fmtNum(l.estimatedImpressions)}`).join(' · ')})</>}: truck-days × each market tier&apos;s daily A18+ impressions per truck.
+            {' '}{st.reachOk ? `Lift studies are available (${fmtNum(st.reachMinimum)} needed).` : `Lift studies need ${fmtNum(st.reachMinimum)}.`}
+          </p>
+          {st.requested.length > 0 && (st.reachOk ? (
+            <p>
+              Lift studies ({st.uniqueMarkets} unique market{st.uniqueMarkets === 1 ? '' : 's'}): {st.studies.filter(x => x !== 'sales_lift').map(x => `${STUDY_LABELS[x]} ${fmtMoney(st.prices[x])}`).join(', ') || 'none priced'}
+              {st.total > 0 && <>, {fmtMoney(st.total)} in all, booked with {st.carriedBy}</>}.
+              {st.salesLiftRequested && <> Sales lift: the team quotes it; noted on the booking.</>}
+            </p>
+          ) : (
+            <p className="text-amber-700">The selected lift studies aren&apos;t included: the order&apos;s estimated reach is under {fmtNum(st.reachMinimum)}.</p>
+          ))}
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-3 text-sm">

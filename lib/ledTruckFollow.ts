@@ -25,6 +25,15 @@
  *   holds on trucks LED doesn't use stay as they are, so the shortfall is still
  *   held and still shows. If there aren't enough such holds the market is left
  *   alone and flagged. LED running more than were sold: mirrored, and flagged.
+ * - SOLD DAYS ARE NEVER RELEASED (Andrew, 2026-11-12). The mirror is written
+ *   only if what it leaves held still covers every sold truck-day and the
+ *   sold trucks at once. Otherwise (LED has scheduled part of the job: a late
+ *   start, a gap, days in a market or window this can't read) nothing the
+ *   market holds is moved, shortened or removed: LED's days on trucks and days
+ *   it doesn't already hold are added, so the booking briefly holds more than
+ *   it sold, never less, and is flagged 'partial' until LED covers the sale.
+ *   A booking with no quote on file counts every calendar day as sold, so it
+ *   stays add-only (flagged) until staff settle it by hand.
  * - What was sold (trucks at once, truck-days) is recorded on the holds the
  *   first time (`features.ledMirror`), so "fully scheduled" is judged against
  *   the sale, not the runs (ledMirrorStandings).
@@ -71,7 +80,7 @@ export type LedRun = { truck: string; start: string; end: string; days: number }
 export type SoldShape = { trucks: number; truckDays: number }
 
 /** A booking market LED can't be mirrored onto, or can only with a note. */
-export type MirrorFlag = { booking: string; market: string; job: string; kind: 'reused_job' | 'unfit' | 'more_trucks' }
+export type MirrorFlag = { booking: string; market: string; job: string; kind: 'reused_job' | 'unfit' | 'more_trucks' | 'partial' }
 
 /** The writes that make a booking market match LED. */
 export type MirrorPlan = {
@@ -172,6 +181,29 @@ export function ledRuns(days: { truck: string; day: string }[]): LedRun[] {
   return runs.sort((a, b) => a.start.localeCompare(b.start) || a.truck.localeCompare(b.truck))
 }
 
+/**
+ * The parts of LED's runs on days their truck isn't already held by the
+ * market: each a run of its own, trimmed to start and end on a day LED runs,
+ * with `days` the LED days in it. Pure.
+ */
+function unheldParts(runs: LedRun[], ledDays: Set<string>, held: (truck: string, day: string) => boolean): LedRun[] {
+  const out: LedRun[] = []
+  for (const r of runs) {
+    let cur: LedRun | null = null
+    for (let d = r.start; d <= r.end; d = addDays(d, 1)) {
+      const runsToday = ledDays.has(`${r.truck}|${d}`)
+      if (held(r.truck, d)) { if (cur) out.push(cur); cur = null; continue }
+      if (!cur) { if (runsToday) cur = { truck: r.truck, start: d, end: d, days: 1 }; continue }
+      if (runsToday) { cur.end = d; cur.days++ }
+    }
+    if (cur) out.push(cur)
+  }
+  return out
+}
+
+/** Calendar days from start to end, inclusive. Pure. */
+const calDays = (start: string, end: string) => Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000) + 1
+
 /** The most trucks running on any one day. Pure. */
 function concurrency(spans: { truck: string; start: string; end: string }[]): number {
   const edges = [...new Set(spans.map(s => s.start))]
@@ -204,6 +236,34 @@ export function ledMirrorJobs(holds: FollowHold[]): { job: string; start: string
     const job = jobKey(h.job_number)
     return job ? [{ job, start: addDays(h.start_date, -MIRROR_WINDOW_DAYS), end: addDays(h.end_date, MIRROR_WINDOW_DAYS) }] : []
   })
+}
+
+/**
+ * The plan when LED doesn't cover the sale yet: every hold stays exactly as
+ * it is; LED's days the market doesn't hold yet are added (a gap inside an
+ * added run that LED doesn't run, a weekend, is checked against other
+ * bookings as `unrun`); holds get the sold shape. Null when nothing changes. Pure.
+ */
+function addOnlyPlan(a: {
+  booking: string; market: string; job: string; sold: SoldShape; g: FollowHold[]; found: LedRun[]
+  ledDays: Set<string>; heldBefore: (truck: string, day: string) => boolean
+}): MirrorPlan | null {
+  const plan: MirrorPlan = {
+    booking: a.booking, market: a.market, job: a.job, sold: a.sold,
+    read: a.g.map(h => ({ id: h.id, truck_number: h.truck_number, start_date: h.start_date, end_date: h.end_date })),
+    update: [], create: [], remove: [], stamp: [], unrun: [],
+  }
+  for (const add of unheldParts(a.found, a.ledDays, a.heldBefore)) {
+    plan.create.push({ templateId: a.g[0].id, to: add })
+    for (let d = add.start; d <= add.end; d = addDays(d, 1)) {
+      if (a.ledDays.has(`${add.truck}|${d}`)) continue
+      const last = plan.unrun[plan.unrun.length - 1]
+      if (last && last.truck === add.truck && last.end === addDays(d, -1)) last.end = d
+      else plan.unrun.push({ truck: add.truck, start: d, end: d })
+    }
+  }
+  for (const h of a.g) if (!soldShapeOf(h.features)) plan.stamp.push(h.id)
+  return plan.create.length || plan.stamp.length ? plan : null
 }
 
 /**
@@ -272,10 +332,11 @@ export function ledMirrorPlans(holds: FollowHold[], rows: FollowRow[], today: st
     const heldEnd = g.reduce((m, h) => h.end_date > m ? h.end_date : m, g[0].end_date)
     const ledEnd = found.reduce((m, r) => r.end > m ? r.end : m, found[0].end)
     const ledTruckDays = found.reduce((n, r) => n + r.days, 0)
-    const remainder: LedRun[] = ledTruckDays < sold.truckDays && ledEnd < heldEnd
+    const remainderOf = ledTruckDays < sold.truckDays && ledEnd < heldEnd
       ? g.filter(h => !kept.has(h.id) && h.end_date > ledEnd)
-        .map(h => ({ truck: h.truck_number, start: h.start_date > ledEnd ? h.start_date : addDays(ledEnd, 1), end: h.end_date, days: 0 }))
+        .map(h => ({ h, run: { truck: h.truck_number, start: h.start_date > ledEnd ? h.start_date : addDays(ledEnd, 1), end: h.end_date, days: 0 } }))
       : []
+    const remainder: LedRun[] = remainderOf.map(x => x.run)
     const runs = [...found, ...remainder].sort((a, b) => a.start.localeCompare(b.start) || a.truck.localeCompare(b.truck))
     let pool = g.filter(h => !kept.has(h.id))
     const plan: MirrorPlan = {
@@ -323,6 +384,20 @@ export function ledMirrorPlans(holds: FollowHold[], rows: FollowRow[], today: st
       }
     }
     for (const id of kept) if (!soldShapeOf(g.find(h => h.id === id)!.features)) plan.stamp.push(id)
+    // SOLD DAYS ARE NEVER RELEASED: what the exact mirror would leave held is
+    // LED's days, the kept holds' sold days, and the held tail's share of its
+    // hold's sold days (rounded down). Short of the sale, it isn't written.
+    const keptHolds = g.filter(h => kept.has(h.id))
+    const heldAfter = ledTruckDays
+      + keptHolds.reduce((n, h) => n + Math.max(daysSold(h.features, h.start_date, h.end_date), 0), 0)
+      + remainderOf.reduce((n, { h, run }) => n + Math.floor(Math.max(daysSold(h.features, h.start_date, h.end_date), 0) * calDays(run.start, run.end) / calDays(h.start_date, h.end_date)), 0)
+    const atOnceAfter = concurrency([...runs, ...keptHolds.map(h => ({ truck: h.truck_number, start: h.start_date, end: h.end_date }))])
+    if (heldAfter < sold.truckDays || atOnceAfter < sold.trucks) {
+      flags.push({ booking, market, job, kind: 'partial' })
+      const add = addOnlyPlan({ booking, market, job, sold, g, found, ledDays, heldBefore })
+      if (add) plans.push(add)
+      continue
+    }
     if (plan.update.length || plan.create.length || plan.remove.length || plan.stamp.length) plans.push(plan)
   }
   return { plans, flags }

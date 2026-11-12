@@ -56,7 +56,7 @@ type HoldRequest = {
   /** The sweep moved this won hold onto the truck LED runs its job on, this week (lib/ledTruckFollow.ts). */
   led_followed: { from: string; to: string; at: string } | null
   /** The LED mirror can't follow this market, or follows it with a note (lib/ledTruckFollow.ts). */
-  led_flag: 'reused_job' | 'unfit' | 'more_trucks' | null
+  led_flag: 'reused_job' | 'unfit' | 'more_trucks' | 'partial' | null
   /** Salesforce's LED Trucks has refused the moved truck for over an hour (still retried every sweep). */
   led_trucks_unsynced_since: string | null
   expires_at: string | null
@@ -270,6 +270,11 @@ function LedMirrorBadge({ rows }: { rows: HoldRequest[] }) {
       {flags.has('unfit') && (
         <span className="text-xs text-amber-700 font-medium" title="LED runs fewer trucks at once than were sold, and the trucks still held are ones LED also uses, so the reservation can't be matched to LED without dropping a sold truck. Check it by hand.">
           LED schedule doesn&apos;t fit the booking: check by hand
+        </span>
+      )}
+      {flags.has('partial') && (
+        <span className="text-xs text-amber-700 font-medium" title="LED has scheduled fewer truck-days than were sold. Every sold day stays held as booked, and LED's days on other trucks or dates are held as well, until LED's schedule covers the sale.">
+          LED has scheduled part of it: all sold days still held
         </span>
       )}
       {flags.has('more_trucks') && (

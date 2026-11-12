@@ -13,16 +13,28 @@ import {
 
 const JOB = '26-0500-300'
 const TODAY = '2026-11-11'
-const hold = (over: Partial<FollowHold> = {}): FollowHold => ({
-  id: 'h1', truck_number: '1002', start_date: '2026-11-02', end_date: '2026-11-27', market: 'Phoenix, AZ', state: 'AZ',
-  job_number: JOB, booking: 'B1', features: null, ...over,
+/**
+ * A won hold, sold Mon–Fri by its quote (every live won hold in prod has its
+ * sold days from a quote, 2026-11-12). `features: null` = no quote on file.
+ */
+const hold = (over: Partial<FollowHold> = {}): FollowHold => {
+  const h: FollowHold = {
+    id: 'h1', truck_number: '1002', start_date: '2026-11-02', end_date: '2026-11-27', market: 'Phoenix, AZ', state: 'AZ',
+    job_number: JOB, booking: 'B1', features: null, ...over,
+  }
+  return 'features' in over ? h : { ...h, features: monFri(h.start_date, h.end_date) }
+}
+/** A Mon–Fri quote's features for these dates. */
+const monFri = (start: string, end: string) => JSON.stringify({
+  activationDays: weekdays(start, end).length,
+  calendarDays: Math.round((Date.parse(end) - Date.parse(start)) / 86_400_000) + 1,
 })
 const PHX = { market: 'Phoenix', state: 'AZ', standard_market_name: 'Phoenix, AZ' }
 /** LED runs the job on `truck` on each of `days`, in Phoenix unless said. */
 const led = (truck: string, days: string[], over: Partial<FollowRow> = {}): FollowRow[] =>
   days.map(d => ({ truck_number: truck, job_number: JOB, shift_start: d, ...PHX, ...over }))
 /** Mon–Fri days between two dates, inclusive. */
-const weekdays = (from: string, to: string) => {
+function weekdays(from: string, to: string): string[] {
   const out: string[] = []
   for (let d = new Date(from + 'T00:00:00Z'); d.toISOString().slice(0, 10) <= to; d.setUTCDate(d.getUTCDate() + 1)) {
     if (d.getUTCDay() % 6) out.push(d.toISOString().slice(0, 10))
@@ -61,7 +73,7 @@ eq('a stand-in day: held 1002 Nov 2–27, LED runs 1002 Nov 2 and 1261 the rest 
   ['1002 2026-11-02 2026-11-02', '1261 2026-11-03 2026-11-27'])
 eq('held 1002, LED runs it all on 1261: the hold moves', shape(mirror([hold()], led('1261', weekdays('2026-11-02', '2026-11-27')))), ['1261 2026-11-02 2026-11-27'])
 eq('two-for-two: held 0768 and 1727, LED runs 0820 and 9269',
-  shape(mirror([hold({ id: 'a', truck_number: '0768' }), hold({ id: 'b', truck_number: '1727' })],
+  shape(mirror([hold({ id: 'a', truck_number: '0768', start_date: '2026-11-17', end_date: '2026-11-30' }), hold({ id: 'b', truck_number: '1727', start_date: '2026-11-17', end_date: '2026-11-30' })],
     [...led('0820', weekdays('2026-11-17', '2026-11-30')), ...led('9269', weekdays('2026-11-17', '2026-11-30'))])),
   ['0820 2026-11-17 2026-11-30', '9269 2026-11-17 2026-11-30'])
 eq('0881 kept, 4840 → 0912 (the same-truck hold keeps its id)',
@@ -73,10 +85,11 @@ eq('7314 → 0382 (6 days) and 9378 (1 day): two holds',
     [...led('9378', ['2026-11-11']), ...led('0382', ['2026-11-12', '2026-11-13', '2026-11-14', '2026-11-16', '2026-11-17', '2026-11-18'])])),
   ['0382 2026-11-12 2026-11-18', '9378 2026-11-11 2026-11-11'])
 const FIVE = ['0786', '4378', '7267', '7278', '7402'].map((t, i) => hold({ id: `h${i}`, truck_number: t, start_date: '2026-11-16', end_date: '2026-11-30' }))
-const LATE = weekdays('2026-11-30', '2026-12-08')
-eq('moved dates: held on 5 trucks Nov 16–30, LED runs 5 trucks Nov 30–Dec 8 → LED\'s trucks and dates',
+// Sold Nov 16–30 Mon–Fri: 11 days a truck. LED runs all 11, later.
+const LATE = weekdays('2026-11-30', '2026-12-14')
+eq('moved dates: held on 5 trucks Nov 16–30, LED runs all 11 days on 5 trucks Nov 30–Dec 14 → LED\'s trucks and dates',
   shape(mirror(FIVE, ['0751', '1106', '4378', '7417', '7450'].flatMap(t => led(t, LATE)))),
-  ['0751', '1106', '4378', '7417', '7450'].map(t => `${t} 2026-11-30 2026-12-08`))
+  ['0751', '1106', '4378', '7417', '7450'].map(t => `${t} 2026-11-30 2026-12-14`))
 eq('4378, on both, keeps its hold (re-dated)', plan(FIVE, ['0751', '1106', '4378', '7417', '7450'].flatMap(t => led(t, LATE))).plans[0].update.find(u => u.id === 'h1')?.to.truck, '4378')
 
 section('what LED hasn\'t scheduled stays held')
@@ -118,7 +131,7 @@ section('idempotent: a mirrored booking changes nothing')
   eq('moved dates, run again', plan(mirror(FIVE, fiveRows), fiveRows).plans, [])
   const short = led('0820', weekdays('2026-11-02', '2026-11-27'))
   eq('shortfall kept, run again', plan(mirror(TWO, short), short).plans, [])
-  eq('the sold shape is recorded on every hold', mirror(TWO, short).map(h => soldShapeOf(h.features)), [{ trucks: 2, truckDays: 52 }, { trucks: 2, truckDays: 52 }])
+  eq('the sold shape is recorded on every hold', mirror(TWO, short).map(h => soldShapeOf(h.features)), [{ trucks: 2, truckDays: 40 }, { trucks: 2, truckDays: 40 }])
 }
 
 section('fully scheduled is judged against what was sold')
@@ -158,4 +171,39 @@ section('review #177: a stand-in day never pins a hold, and unrun days are check
     plan([hold({ end_date: '2026-11-13' })], led('1261', weekdays('2026-11-02', '2026-11-13'))).plans[0].unrun, [{ truck: '1261', start: '2026-11-07', end: '2026-11-08' }])
   eq('days kept on the truck the booking already held aren\'t',
     plan([hold()], first).plans[0].unrun, [])
+}
+
+section('sold days are never released (Andrew, 2026-11-12)')
+{
+  const kinds = (holds: FollowHold[], rows: FollowRow[]) => plan(holds, rows).flags.map(f => f.kind)
+  const removes = (holds: FollowHold[], rows: FollowRow[]) => plan(holds, rows).plans.flatMap(p => [...p.remove, ...p.update.map(u => u.id)])
+  // Sold 1002 Nov 2–27 Mon–Fri (20 days).
+  const late = led('1002', weekdays('2026-11-16', '2026-11-27'))
+  eq('a late start that still reaches the end: the hold stays whole, flagged', [shape(mirror([hold()], late)), kinds([hold()], late)],
+    [['1002 2026-11-02 2026-11-27'], ['partial']])
+  const gap = led('1261', [...weekdays('2026-11-02', '2026-11-06'), ...weekdays('2026-11-23', '2026-11-27')])
+  eq('first and last weeks only, on another truck: the hold stays whole and LED\'s weeks are added', shape(mirror([hold()], gap)),
+    ['1002 2026-11-02 2026-11-27', '1261 2026-11-02 2026-11-06', '1261 2026-11-23 2026-11-27'])
+  const pastEnd = led('1002', [...weekdays('2026-11-02', '2026-11-04'), '2026-11-30'])
+  eq('part scheduled plus a day past the end: the hold stays, the extra day is added', shape(mirror([hold()], pastEnd)),
+    ['1002 2026-11-02 2026-11-27', '1002 2026-11-30 2026-11-30'])
+  eq('… nothing held is moved or removed', removes([hold()], pastEnd), [])
+  eq('… and run again, nothing changes', plan(mirror([hold()], pastEnd), pastEnd).plans, [])
+  const early = led('1002', weekdays('2026-11-02', '2026-11-06'))
+  eq('two-for-two held for the whole month, LED has the last two weeks: both holds stay, LED\'s trucks added',
+    shape(mirror([hold({ id: 'a', truck_number: '0768' }), hold({ id: 'b', truck_number: '1727' })],
+      [...led('0820', weekdays('2026-11-17', '2026-11-30')), ...led('9269', weekdays('2026-11-17', '2026-11-30'))])),
+    ['0768 2026-11-02 2026-11-27', '0820 2026-11-17 2026-11-30', '1727 2026-11-02 2026-11-27', '9269 2026-11-17 2026-11-30'])
+  eq('job 26-0463 as seen: 5 trucks sold 11 days, LED has 7 days on 5 trucks → all 5 holds stay, LED\'s added (4378 already holds Nov 30)',
+    (() => { const rows = ['0751', '1106', '4378', '7417', '7450'].flatMap(t => led(t, weekdays('2026-11-30', '2026-12-08'))); const r = plan(FIVE, rows); return [removes(FIVE, rows), r.flags.map(f => f.kind), mirror(FIVE, rows).length] })(),
+    [[], ['partial'], 10])
+  eq('LED ending early: LED\'s run, and the tail still held on the held truck (every day covered, so exact)', [shape(mirror([hold()], early)), kinds([hold()], early)],
+    [['1002 2026-11-02 2026-11-06', '1002 2026-11-07 2026-11-27'], []])
+  eq('no quote on file: every calendar day counts as sold, so a Mon–Fri run never releases it',
+    [removes([hold({ features: null })], led('1261', weekdays('2026-11-02', '2026-11-27'))), kinds([hold({ features: null })], led('1261', weekdays('2026-11-02', '2026-11-27')))],
+    [[], ['partial']])
+  eq('a lossless swap still mirrors exactly: sold 2, LED runs one held truck and one new truck for every sold day',
+    [shape(mirror(TWO, [...led('0768', weekdays('2026-11-02', '2026-11-27')), ...led('0820', weekdays('2026-11-02', '2026-11-27'))])),
+      kinds(TWO, [...led('0768', weekdays('2026-11-02', '2026-11-27')), ...led('0820', weekdays('2026-11-02', '2026-11-27'))])],
+    [['0768 2026-11-02 2026-11-27', '0820 2026-11-02 2026-11-27'], []])
 }

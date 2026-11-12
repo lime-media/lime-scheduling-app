@@ -91,8 +91,13 @@ eq('LED runs more trucks than sold: mirrored, and flagged',
   [['1261 2026-11-02 2026-11-27', '5688 2026-11-02 2026-11-27'], ['more_trucks']])
 
 section('safety')
-eq('LED has scheduled only the first two weeks so far: the hold follows LED\'s truck and keeps its sold end',
-  shape(mirror([hold()], led('1261', weekdays('2026-11-02', '2026-11-13')))), ['1261 2026-11-02 2026-11-27'])
+const TWO_EARLY = [hold({ id: 'a', truck_number: '0768' }), hold({ id: 'b', truck_number: '1727' })]
+eq('LED has scheduled only the first two weeks so far: LED\'s truck for those, the rest stays on the truck already held',
+  shape(mirror([hold()], led('1261', weekdays('2026-11-02', '2026-11-13')))), ['1002 2026-11-14 2026-11-27', '1261 2026-11-02 2026-11-13'])
+eq('… with two sold and one LED truck so far: the second sold truck stays held whole',
+  shape(mirror(TWO_EARLY, led('0820', weekdays('2026-11-02', '2026-11-13')))), ['0768 2026-11-02 2026-11-27', '0820 2026-11-02 2026-11-13', '1727 2026-11-14 2026-11-27'])
+eq('… and run again, nothing changes', (() => { const rows = led('0820', weekdays('2026-11-02', '2026-11-13')); return plan(mirror(TWO_EARLY, rows), rows).plans })(), [])
+
 eq('… and run again, nothing changes', (() => { const rows = led('1261', weekdays('2026-11-02', '2026-11-13')); return plan(mirror([hold()], rows), rows).plans })(), [])
 eq('no LED program: nothing', plan([hold()], []).plans, [])
 eq('LED days outside the window (60 days past the end): nothing', plan([hold()], led('1261', ['2027-03-01'])).plans, [])
@@ -139,3 +144,18 @@ eq('a city in another state than the label gives: nothing',
 eq('a suburb filed under the labelled city\'s standard market',
   plan([multi({ market: 'Multi-market: New York, NY, Detroit, MI' })], led('1261', ['2026-11-03'], { market: 'Jersey City', state: 'NJ', standard_market_name: 'New York, NY' })).plans.length, 1)
 eq('labelCities: a state belongs to the city before it', labelCities('Multi-market: Detroit, Los Angeles, CA'), [{ city: 'detroit', state: null }, { city: 'los angeles', state: 'CA' }])
+
+section('review #177: a stand-in day never pins a hold, and unrun days are checked')
+{
+  const first = led('1261', ['2026-11-02'])
+  const once = mirror([hold()], first)
+  eq('a one-day stand-in so far: that day on the stand-in, the rest stays on the held truck', shape(once), ['1002 2026-11-03 2026-11-27', '1261 2026-11-02 2026-11-02'])
+  const rest = [...first, ...led('1002', weekdays('2026-11-03', '2026-11-27'))]
+  eq('LED then runs the rest on the held truck: nothing to change', plan(once, rest).plans, [])
+  const allY = led('1002', weekdays('2026-11-02', '2026-11-27'))
+  eq('LED then moves the stand-in day back too: one hold on the held truck, the stand-in released', shape(mirror(once, allY)), ['1002 2026-11-02 2026-11-27'])
+  eq('the weekend inside a run on a new truck is checked against other bookings',
+    plan([hold({ end_date: '2026-11-13' })], led('1261', weekdays('2026-11-02', '2026-11-13'))).plans[0].unrun, [{ truck: '1261', start: '2026-11-07', end: '2026-11-08' }])
+  eq('days kept on the truck the booking already held aren\'t',
+    plan([hold()], first).plans[0].unrun, [])
+}

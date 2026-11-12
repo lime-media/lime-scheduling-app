@@ -12,9 +12,10 @@
  *
  * For the paths that choose trucks (Quote page, planner, client portal, AI
  * chat, MCP, grid holds, swaps, edits, reinstate). Mirror paths (the
- * Salesforce hold webhook, the AT&T sync, the LED truck follow in
- * lib/ledTruckFollow.ts) record what exists elsewhere and
- * never refuse, so they don't use it (REVIEW.md "Mirror paths record").
+ * Salesforce hold webhook, the AT&T sync) record what exists elsewhere and
+ * never refuse, so they don't use it (REVIEW.md "Mirror paths record"). The
+ * LED mirror (lib/ledTruckFollow.ts) takes the same truck locks (lockTrucks)
+ * and checks only the days LED doesn't itself run on a truck.
  * Server only.
  */
 
@@ -66,6 +67,25 @@ export function clashesWith(spans: HoldSpan[], holds: { id: string; truck_number
 }
 
 /**
+ * Takes each truck's write lock for the rest of the transaction, in sorted
+ * order so two writers sharing trucks can't deadlock; throws
+ * HoldLockTimeoutError if another holds one past the shared budget. Used by
+ * writeHoldsExclusive and by the LED mirror (lib/ledTruckFollow.ts), so a
+ * mirror and a booking of the same truck never interleave.
+ */
+export async function lockTrucks(tx: Prisma.TransactionClient, trucks: string[]): Promise<void> {
+  const deadline = Date.now() + LOCK_TIMEOUT_MS
+  for (const truck of [...new Set(trucks)].sort()) {
+    const wait = Math.max(0, deadline - Date.now())
+    const [lock] = await tx.$queryRaw<{ r: number }[]>`
+      DECLARE @r int;
+      EXEC @r = sp_getapplock @Resource = ${`hold-truck:${truck}`}, @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = ${wait};
+      SELECT @r AS r;`
+    if (!lock || lock.r < 0) throw new HoldLockTimeoutError(truck)
+  }
+}
+
+/**
  * Run `write` with each span's truck locked and no other live hold on its
  * dates; throws HoldClashError (and writes nothing) if one is. `ignoreHoldIds`
  * are holds this write replaces or moves (a revision's old holds, the hold
@@ -82,17 +102,7 @@ export async function writeHoldsExclusive<T>(
   const trucks = [...new Set(spans.map(s => s.truck))].sort()
   const ignore = new Set(opts.ignoreHoldIds ?? [])
   return prisma.$transaction(async tx => {
-    // Sorted, so two bookings sharing trucks take the locks in the same order
-    // and can't deadlock.
-    const deadline = Date.now() + LOCK_TIMEOUT_MS
-    for (const truck of trucks) {
-      const wait = Math.max(0, deadline - Date.now())
-      const [lock] = await tx.$queryRaw<{ r: number }[]>`
-        DECLARE @r int;
-        EXEC @r = sp_getapplock @Resource = ${`hold-truck:${truck}`}, @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = ${wait};
-        SELECT @r AS r;`
-      if (!lock || lock.r < 0) throw new HoldLockTimeoutError(truck)
-    }
+    await lockTrucks(tx, trucks)
     if (spans.length) {
       const from = spans.map(s => s.start).sort()[0]
       const to = spans.map(s => s.end).sort().reverse()[0]

@@ -44,7 +44,7 @@ import { getToken } from 'next-auth/jwt'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
-import { bookingHoldExpiry, holdUntilRefusal, reviseHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
+import { bookingHoldExpiry, holdUntilRefusal, parseHoldUntilFrom, reviseHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
 import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner, readOnlyPreview, salesforceWritesOff, WRITES_OFF_MESSAGE, WRITES_STOPPED_ERROR } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { chosenClientType } from '@/lib/pricing/brandMarkup'
@@ -131,8 +131,11 @@ async function handlePost(req: NextRequest) {
   // limit needs the routed starts, so reviseHoldExpiry checks it below.
   const holdUntilBad = body.holdUntil !== undefined && body.quoteOnly !== true ? holdUntilRefusal(body.holdUntil) : null
   if (holdUntilBad) return NextResponse.json({ error: holdUntilBad }, { status: 400 })
-  // A full ISO timestamp: a bare date would parse as UTC midnight, the day before in Central.
-  const holdUntilFrom = typeof body.holdUntilFrom === 'string' && body.holdUntilFrom.includes('T') && !isNaN(new Date(body.holdUntilFrom).getTime()) ? new Date(body.holdUntilFrom) : null
+  // The expiry the form opened on comes with every holdUntil: without it an
+  // unchanged date can't be told from a deliberate one (see parseHoldUntilFrom).
+  const opened = body.holdUntil !== undefined && body.quoteOnly !== true ? parseHoldUntilFrom(body.holdUntilFrom) : null
+  if (opened && 'error' in opened) return NextResponse.json({ error: opened.error }, { status: 400 })
+  const holdUntilFrom = opened ? opened.from : null
   // A new opportunity's lead source: the seller picks one off Salesforce's
   // picklist. A revision or an attach keeps the opportunity's own (a
   // revision with no opportunity left makes one: checked once that's known).
@@ -298,9 +301,9 @@ async function handlePost(req: NextRequest) {
     // A revision that shows the expiry date keeps it unless the rep changed it.
     const heldStarts = stints.map(x => x.stint.start)
     // A quote-only revision holds nothing, so it has no expiry to check.
-    const revisedExpiry = heldStarts.length > 0 && reviseKey && !quoteOnly && body.holdUntil !== undefined
-      ? reviseHoldExpiry(heldStarts, body.holdUntil, keepUntil, holdClock, STAFF_MIN_DAYS_BEFORE_START,
-        holdUntilFrom ? centralDate(holdUntilFrom) : keepUntil ? centralDate(keepUntil) : null)
+    // holdUntilFrom is always set with holdUntil here (refused above otherwise).
+    const revisedExpiry = heldStarts.length > 0 && reviseKey && body.holdUntil !== undefined && holdUntilFrom
+      ? reviseHoldExpiry(heldStarts, body.holdUntil, keepUntil, holdClock, STAFF_MIN_DAYS_BEFORE_START, centralDate(holdUntilFrom))
       : null
     if (revisedExpiry && 'error' in revisedExpiry) return NextResponse.json({ error: revisedExpiry.error, lastDate: revisedExpiry.lastDate }, { status: 400 })
     const bookingExpiry = revisedExpiry ?? (heldStarts.length ? bookingHoldExpiry(heldStarts, holdDays, holdClock, keepUntil, STAFF_MIN_DAYS_BEFORE_START) : null)

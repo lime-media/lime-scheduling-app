@@ -12,7 +12,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { availableHoldDays, bookingHoldExpiry, lastExpiryDate, holdUntilRefusal, reviseHoldExpiry, computeHoldExpiresAt, DEFAULT_HOLD_DAYS, HOLD_EXPIRATION_HOURS, MIN_HOLD_WINDOW_HOURS, STAFF_MIN_DAYS_BEFORE_START, holdExpiry, parseHoldDays } from '@/lib/holdExpiry'
+import { availableHoldDays, bookingHoldExpiry, lastExpiryDate, holdUntilRefusal, parseHoldUntilFrom, reviseHoldExpiry, computeHoldExpiresAt, DEFAULT_HOLD_DAYS, HOLD_EXPIRATION_HOURS, MIN_HOLD_WINDOW_HOURS, STAFF_MIN_DAYS_BEFORE_START, holdExpiry, parseHoldDays } from '@/lib/holdExpiry'
 import { centralDate, endOfDayCentral, holdExpDate } from '@/lib/dateOnly'
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -182,4 +182,14 @@ section('holdUntilRefusal: the date checks the route runs before Salesforce and 
   eq('an impossible date: refused', holdUntilRefusal('2026-02-31', now), 'Choose a valid hold expiry date.')
   eq('not a date: refused', holdUntilRefusal('soon', now), 'Choose a valid hold expiry date.')
   eq('late evening Central is still that day', holdUntilRefusal('2026-10-20', new Date('2026-10-21T03:00:00Z')), null)
+}
+
+section('parseHoldUntilFrom: a hold expiry date needs the expiry the form opened on')
+{
+  const refused = "A hold expiry date needs the expiry the form opened on. Reload the booking and try again."
+  const ok = parseHoldUntilFrom('2026-10-24T22:00:00.000Z')
+  eq('a full ISO timestamp: used', 'from' in ok ? ok.from.toISOString() : ok.error, '2026-10-24T22:00:00.000Z')
+  eq('absent: refused, not defaulted to the current expiry', parseHoldUntilFrom(undefined), { error: refused })
+  eq('a bare date (would read as the day before in Central): refused', parseHoldUntilFrom('2026-10-24'), { error: refused })
+  eq('malformed: refused', [parseHoldUntilFrom('2026-10-24Tsoon'), parseHoldUntilFrom(''), parseHoldUntilFrom(12345)], [{ error: refused }, { error: refused }, { error: refused }])
 }

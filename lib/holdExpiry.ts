@@ -125,6 +125,21 @@ export function holdUntilRefusal(holdUntil: string, now: Date = new Date()): str
 }
 
 /**
+ * The expiry the revise form opened on (`holdUntilFrom`), which must come
+ * with any `holdUntil`: a full ISO timestamp (a bare date would parse as UTC
+ * midnight, the day before in Central). Without a usable one the route can't
+ * tell "left as it opened" from "changed back to an older date", so it
+ * refuses rather than guess: guessing the current expiry would cut a hold
+ * extended elsewhere since the form opened back to the form's stale date.
+ */
+export function parseHoldUntilFrom(holdUntilFrom: unknown): { from: Date } | { error: string } {
+  const from = typeof holdUntilFrom === 'string' && holdUntilFrom.includes('T') ? new Date(holdUntilFrom) : null
+  return from && !isNaN(from.getTime())
+    ? { from }
+    : { error: "A hold expiry date needs the expiry the form opened on. Reload the booking and try again." }
+}
+
+/**
  * A revision's one expiry, when the rep sees the booking's expiry date in the
  * revise form (`holdUntil`, YYYY-MM-DD Central, opened on `heldUntil`'s date).
  * Left as it opened, the revision keeps `heldUntil` exactly, capped (with the

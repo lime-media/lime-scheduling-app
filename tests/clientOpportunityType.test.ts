@@ -31,5 +31,10 @@ eq('LED opportunities with a Type, newest first', /Job_Type__c = 'LED' AND Type 
 section('client booking paths set it')
 for (const file of ['lib/clientBooking.ts', 'lib/clientMultiMarket.ts']) {
   const src = readFileSync(join(process.cwd(), file), 'utf8')
-  eq(`${file} passes the client opportunity type`, src.includes('opportunityType: await clientOpportunityType('), true)
+  // Read with the account in one Promise.all, never awaited on its own just
+  // before the create (a serial Salesforce round trip on every booking).
+  const all = src.match(/await Promise\.all\(\[[\s\S]*?\]\)/g) ?? []
+  eq(`${file} reads the type alongside the account`, all.some(a => a.includes('getSfdcAccountInfo(') && a.includes('clientOpportunityType(')), true)
+  eq(`${file} never awaits the type lookup on its own`, src.includes('await clientOpportunityType('), false)
+  eq(`${file} passes the type to the opportunity`, /opportunityType(: p\.opportunityType)?,/.test(src), true)
 }

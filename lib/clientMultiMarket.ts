@@ -38,6 +38,7 @@ import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { CLIENT_PORTAL_LEAD_SOURCE } from '@/lib/sfdcLeadSource'
 import { clientOpportunityType } from '@/lib/clientOpportunityType'
+import type { OpportunityType } from '@/lib/sfdcOpportunityType'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { afterClientHolds, clientHoldCreator } from '@/lib/holdRequestService'
@@ -58,19 +59,27 @@ type Rates = { overrides: RateOverrides | null; basis: string }
 
 type Prepared =
   | { refused: CoreResult }
-  | { refused: null; req: QuoteRequest; rates: Rates; sfdcAccountId?: string; accountInfo: AccountInfo }
+  | { refused: null; req: QuoteRequest; rates: Rates; sfdcAccountId?: string; accountInfo: AccountInfo; opportunityType?: OpportunityType }
 
-/** The request by the client rules, priced on the client's rate card. */
-async function prepare(session: ClientSession, input: unknown): Promise<Prepared> {
+/**
+ * The request by the client rules, priced on the client's rate card. For a
+ * booking (`forBooking`), the opportunity's Type is read with the account, so
+ * the create doesn't wait on a Salesforce query of its own.
+ */
+async function prepare(session: ClientSession, input: unknown, opts: { forBooking?: boolean } = {}): Promise<Prepared> {
   const parsed = parseClientPlan(input)
   if ('error' in parsed) return { refused: reply({ error: parsed.error }, { status: 400 }) }
   const [card, links] = await Promise.all([clientRateCard(session), liveClientLinks(session)])
   // The account read once, for the price and the opportunity's owner: every
   // routing round prices with the same client type. Unreachable, the quote
   // engine tries again itself, as the single-market quote degrades.
-  const accountInfo = links.sfdcAccountId && isSfdcConfigured()
-    ? await getSfdcAccountInfo(links.sfdcAccountId).catch((err) => { console.error('[client/plan] account lookup failed:', err); return null })
-    : null
+  const sfdc = links.sfdcAccountId && isSfdcConfigured() ? links.sfdcAccountId : null
+  const [accountInfo, opportunityType] = sfdc
+    ? await Promise.all([
+      getSfdcAccountInfo(sfdc).catch((err) => { console.error('[client/plan] account lookup failed:', err); return null }),
+      opts.forBooking ? clientOpportunityType(sfdc) : Promise.resolve(undefined),
+    ])
+    : [null, undefined]
   return {
     refused: null,
     // No client type or markup from the client: the account's Brand Direct
@@ -80,6 +89,7 @@ async function prepare(session: ClientSession, input: unknown): Promise<Prepared
     rates: { overrides: card.overrides, basis: card.agreement ? 'agreement' : 'standard' },
     sfdcAccountId: links.sfdcAccountId,
     accountInfo,
+    opportunityType,
   }
 }
 
@@ -169,7 +179,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
     const retried = await placedEarlier()
     if (retried) return retried
 
-    const p = await prepare(session, body)
+    const p = await prepare(session, body, { forBooking: true })
     if (p.refused) return p.refused
     const routed = await route(p)
     if ('status' in routed) return routed
@@ -308,7 +318,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
           clientType: quote.clientType ?? accountInfo?.clientType,
           leadSource: CLIENT_PORTAL_LEAD_SOURCE,
           // No seller to pick one: the account's latest LED opportunity's, else New Client.
-          opportunityType: await clientOpportunityType(p.sfdcAccountId),
+          opportunityType: p.opportunityType,
           name: opportunityName(brand, company, `Multi-market (${plural(markets.length, 'market')}) - ${starts[0]} to ${ends[ends.length - 1]}`),
           brand: brand || undefined,
           stageName: DEFAULT_STAGE,

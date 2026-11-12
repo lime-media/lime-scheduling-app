@@ -10,7 +10,8 @@
  */
 import { defer, eq, section } from './harness'
 import { matchMarketKey, titleCaseMarket, normalizeMarketKey } from '@/lib/marketBounds'
-import { matchTopDma, resolveMarketSizeTierId } from '@/lib/pricing/resolvers'
+import { matchTopDma, resolveMarketSizeTierId, standardMarketCoords, marketCityState } from '@/lib/pricing/resolvers'
+import { placeCoords } from '@/lib/geo/places'
 import { TOP_DMAS } from '@/lib/pricing/topDmas'
 import { validateEmailList } from '@/lib/appSettings'
 import { marketSizeTierFromDmaCode, NON_DMA_MARKET_TIER, MARKET_SIZE_TIERS } from '@/lib/pricing/config'
@@ -61,6 +62,51 @@ section('key normalization')
 eq('leading space stripped', normalizeMarketKey(' Boston, MA'), 'boston, ma')
 eq('comma spacing normalized', normalizeMarketKey('Boston,MA'), 'boston, ma')
 eq('inner whitespace collapsed', normalizeMarketKey('  North   Palm Beach ,  FL '), 'north palm beach, fl')
+
+section('standard market coordinates: a stated state is never swapped')
+// A stand-in for the standard list's centroids: one Dallas, Canton, Greenville
+// and Allentown each, in the states the real list has them.
+const STANDARD = new Map([
+  ['dallas, tx', 'Dallas TX'],
+  ['canton, oh', 'Canton OH'],
+  ['greenville, sc', 'Greenville SC'],
+  ['allentown, pa', 'Allentown PA'],
+])
+eq('exact entry', standardMarketCoords('Dallas, TX', STANDARD), 'Dallas TX')
+eq('exact entry without the comma', standardMarketCoords('Dallas TX', STANDARD), 'Dallas TX')
+eq('a city alone takes its entry', standardMarketCoords('Allentown', STANDARD), 'Allentown PA')
+// These were located in the wrong state: wrong distances, transport and tier.
+eq('Dallas, PA is not Dallas, TX', standardMarketCoords('Dallas, PA', STANDARD), null)
+eq('Canton, TX is not Canton, OH', standardMarketCoords('Canton, TX', STANDARD), null)
+eq('Greenville, TX is not Greenville, SC', standardMarketCoords('Greenville, TX', STANDARD), null)
+eq('a stated state with no comma is still a state', standardMarketCoords('Dallas PA', STANDARD), null)
+eq('a ZIP after the state still finds the entry', standardMarketCoords('Dallas, TX 75201', STANDARD), 'Dallas TX')
+eq('a country after the state still finds the entry', standardMarketCoords('Dallas, TX, USA', STANDARD), 'Dallas TX')
+eq('a ZIP after another state is still that state', standardMarketCoords('Dallas, PA 18612', STANDARD), null)
+eq('a dotted state still finds the entry', standardMarketCoords('Washington, D.C.', new Map([['washington, dc', 'DC']])), 'DC')
+// A stateless entry could be anywhere, so a stated state never takes it.
+eq('a stated state never takes an entry naming no state', standardMarketCoords('Columbus, GA', new Map([['columbus', 'bare']])), null)
+eq('a city alone still takes an entry naming no state', standardMarketCoords('Columbus', new Map([['columbus', 'bare']])), 'bare')
+eq('a full state name finds its entry', standardMarketCoords('Dallas, Texas', STANDARD), 'Dallas TX')
+eq('a full state name is still that state', standardMarketCoords('Dallas, Pennsylvania', STANDARD), null)
+eq('a two-word state name finds its entry', standardMarketCoords('Charlotte, North Carolina', new Map([['charlotte, nc', 'CLT']])), 'CLT')
+eq('a full state name then a ZIP finds its entry', standardMarketCoords('Dallas, Texas 75201', STANDARD), 'Dallas TX')
+eq('an entry named with no comma is found as typed', standardMarketCoords('Northern NJ', new Map([['northern nj', 'NNJ']])), 'NNJ')
+eq('an entry in the stated state beats one naming no state', standardMarketCoords('Dallas, TX 75201', new Map([['dallas', 'bare'], ['dallas, tx', 'TX']])), 'TX')
+eq('a dotted entry state still matches', standardMarketCoords('Washington, DC 20001', new Map([['washington, d.c.', 'DC']])), 'DC')
+eq('a dotted city matches an undotted entry', standardMarketCoords('St. Louis, MO', new Map([['st louis, mo', 'STL']])), 'STL')
+eq('a ZIP alone after the comma names no state', standardMarketCoords('Allentown, 18101', STANDARD), 'Allentown PA')
+eq('a country alone after the comma names no state', standardMarketCoords('Allentown, USA', STANDARD), 'Allentown PA')
+eq('other text after the comma is still kept as a state', standardMarketCoords('Dallas, Tex', STANDARD), null)
+// What they fall through to: the US place list, in the right state. NaN when
+// the place is missing, so a missing place fails rather than passing.
+eq('Dallas, PA is located in Pennsylvania', (placeCoords('Dallas, PA')?.lng ?? NaN) > -80, true)
+eq('Canton, TX is located in Texas', (placeCoords('Canton, TX')?.lng ?? NaN) < -94, true)
+eq('Greenville, TX is located in Texas', (placeCoords('Greenville, TX')?.lng ?? NaN) < -95, true)
+// A full state name or a ZIP after the state is looked up by city and code.
+eq('a full state name is read as its code', marketCityState('canton, texas'), { city: 'canton', state: 'tx' })
+eq('a state then a ZIP is read as its code', marketCityState('dallas, pa 18612'), { city: 'dallas', state: 'pa' })
+eq('Canton, Texas is located in Texas', (placeCoords('canton', 'tx')?.lng ?? NaN) < -94, true)
 
 section('top-50 DMA matching (market size tier)')
 eq('exact city + state', matchTopDma('Chicago, IL', TOP_DMAS)?.dma_code, 'DMA-602')

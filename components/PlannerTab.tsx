@@ -135,7 +135,6 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
   const [rows, setRows] = useState<QuoteRow[]>([newRow()])
   const [rowErrors, setRowErrors] = useState<RowError[]>([])
   const [features, setFeatures] = useState({ shadowFencing: true, smartDirectional: false, deviceId: false })
-  const [alloyRenews, setAlloyRenews] = useState(false)
   // Brand Direct accounts: a premium folded into every price (internal control only).
   const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
   // The opportunity's Client Type and Lead Source: the seller picks both,
@@ -246,7 +245,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
   // something other than what is on screen.
   useEffect(() => {
     setQuote(null); setHoldResult(null)
-  }, [rows, features, alloyRenews, account, brandMarkupPct])
+  }, [rows, features, account, brandMarkupPct])
   // A new client starts at the default markup.
   // A new account starts at the default markup; a revised booking at the one it was sold at.
   const revisedMarkup = useRef<number | null>(null)
@@ -327,7 +326,6 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
     sfdcAccountId: account?.id,
     sfdcAccountName: account?.name,
     features,
-    alloyRenews,
     clientType: account ? clientType : undefined,
     brandMarkupPct: isBrandDirect ? clampBrandMarkup(brandMarkupPct) : undefined,
     // Revising: the server frees the booking's trucks and keeps them where they fit.
@@ -564,7 +562,6 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           <label className="flex items-center gap-2"><input type="checkbox" checked={features.shadowFencing} onChange={e => setFeatures(f => ({ ...f, shadowFencing: e.target.checked }))} /> Shadow fencing</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={features.smartDirectional} onChange={e => setFeatures(f => ({ ...f, smartDirectional: e.target.checked }))} /> Smart directional</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={features.deviceId} onChange={e => setFeatures(f => ({ ...f, deviceId: e.target.checked }))} /> Device ID passback</label>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={alloyRenews} onChange={e => setAlloyRenews(e.target.checked)} /> Keep AT&amp;T Alloy Build trucks reserved</label>
         </div>
         {/* A new opportunity's lead source; a revision or an attach keeps its opportunity's own. */}
         {!keepsOpportunity && (

@@ -7,7 +7,7 @@
  * should check in LED afterwards. Any signed-in staff user.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Navbar } from '@/components/Navbar'
 import { LedClientLink } from '@/components/LedClientLink'
 import type { Issue } from '@/lib/campaignRequests'
@@ -23,15 +23,21 @@ export default function LedRequestsPage() {
 
   // Also run after an account is linked below, so its bookings clear or move
   // on without a page reload.
+  // Only the latest reload may set the list: two quick links start two
+  // reloads, and an older one finishing last must not overwrite the newer.
+  const latest = useRef(0)
   const load = useCallback(async () => {
+    const run = ++latest.current
     try {
       const res = await fetch('/api/ops/led-requests')
       // A gateway timeout or crash page isn't JSON: show our message, not a parse error.
       const body = await res.json().catch(() => null)
+      if (run !== latest.current) return
       if (!res.ok || !body) throw new Error(body?.error || 'Bookings could not be loaded.')
       setData(body)
       setError(null)
     } catch (e) {
+      if (run !== latest.current) return
       setError(e instanceof Error ? e.message : 'Bookings could not be loaded.')
     }
   }, [])

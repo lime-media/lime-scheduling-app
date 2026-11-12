@@ -13,13 +13,14 @@ import { activeHoldWhere } from '@/lib/holdFilters'
 import { reconcileSfdcOpportunities, closeOpportunityAsLost } from '@/lib/sfdcOpportunityReconcile'
 import { syncOpportunityLedWindow } from '@/lib/sfdcBooking'
 import { warnExpiringHolds } from '@/lib/holdExpiryWarnings'
-import { SCHEDULED_QUERY, SCHEDULED_WINDOW } from '@/lib/scheduleQuery'
+import { SCHEDULED_QUERY } from '@/lib/scheduleQuery'
 import { sendConflictEmail } from '@/lib/emailService'
 import { syncAttSoftHolds } from '@/lib/attSoftHolds'
 import { freeRanges } from '@/lib/ranges'
 import { isOwnLedProgram, jobKey, linkedJob } from '@/lib/jobNumber'
-import { followLedTrucks, syncFollowedOpportunities } from '@/lib/ledTruckFollow'
-import { daysSold } from '@/lib/ledJobs'
+import { applyLedMirror, ledMirrorJobs, ledMirrorPlans, syncFollowedOpportunities, type FollowHold } from '@/lib/ledTruckFollow'
+import { ledJobShifts } from '@/lib/ledJobs'
+import { bookingKey } from '@/lib/bookings'
 import { centralDate } from '@/lib/dateOnly'
 import { assignStandardMarkets } from '@/lib/standardMarkets'
 import { waitUntil } from '@vercel/functions'
@@ -172,35 +173,43 @@ export async function refreshCache(): Promise<RefreshSummary> {
     state:               h.state,
   }))
 
-  // A won hold follows the truck LED scheduled it on (lib/ledTruckFollow.ts),
-  // before conflicts are judged, so they're judged on LED's truck. Salesforce's
-  // LED Trucks follow too. Never fails the sweep. Only holds inside the dates
-  // SCHEDULED_QUERY covers (a day in from each edge, to spare the edges'
-  // shifts) can be judged.
+  // A won booking mirrors what LED runs, trucks and dates (lib/ledTruckFollow.ts),
+  // before conflicts are judged, so they're judged on what LED runs.
+  // Salesforce's LED Trucks follow too. Never fails the sweep.
   const today = centralDate(new Date())
-  const shift = (n: number) => { const d = new Date(`${today}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10) }
-  const ledFollow = await followLedTrucks(
-    holdsRaw.filter((h) => linkedJob(h)).map((h) => ({
-      id: h.id, truck_number: h.truck_number, market: h.market, state: h.state, job_number: linkedJob(h),
-      start_date: toDateStr(h.start_date), end_date: toDateStr(h.end_date),
-      days_sold: daysSold(h.features, toDateStr(h.start_date), toDateStr(h.end_date)),
-      sfdc_opportunity_id: h.sfdc_opportunity_id, created_by: h.created_by,
-    })),
-    // An archived program or truck is never a truck to follow.
-    schedulesRaw.filter((r) => !Number(r.program_deleted) && !Number(r.truck_deleted)).map((r) => ({
-      truck_number: String(r.truck_number ?? ''), job_number: String(r.job_number ?? ''), shift_start: toDateStr(r.shift_start),
-      market: String(r.market ?? ''), state: String(r.state ?? ''), standard_market_name: String(r.standard_market_name ?? ''),
-    })),
-    today,
-    holds,
-    { from: shift(1 - SCHEDULED_WINDOW.pastDays), to: shift(SCHEDULED_WINDOW.aheadDays - 1) },
-  ).catch((err) => {
-    console.error('[scheduleCache] LED truck follow failed:', err)
-    return { moved: [], opportunities: [] as string[] }
+  const followHolds: FollowHold[] = holdsRaw.filter((h) => linkedJob(h)).map((h) => ({
+    id: h.id, truck_number: h.truck_number, market: h.market, state: h.state, job_number: linkedJob(h),
+    start_date: toDateStr(h.start_date), end_date: toDateStr(h.end_date),
+    booking: bookingKey(h) ?? h.id, features: h.features, sfdc_opportunity_id: h.sfdc_opportunity_id,
+  }))
+  const mirrored = await (async () => {
+    if (!followHolds.length) return []
+    const rows = await ledJobShifts(ledMirrorJobs(followHolds))
+    return applyLedMirror(ledMirrorPlans(followHolds, rows, today).plans, new Map(holdsRaw.map((h) => [h.id, h])))
+  })().catch((err) => {
+    console.error('[scheduleCache] LED mirror failed:', err)
+    return []
   })
-  for (const m of ledFollow.moved) {
-    const hold = holds.find((h) => h.id === m.holdId)
-    if (hold) hold.truck_number = m.to
+  // Conflicts below are judged on the holds as mirrored.
+  for (const m of mirrored) {
+    for (const u of m.updated) {
+      const hold = holds.find((h) => h.id === u.id)
+      if (hold) Object.assign(hold, { truck_number: u.to.truck, start_date: u.to.start, end_date: u.to.end })
+    }
+    for (const c of m.created) {
+      const like = holds.find((h) => h.id === c.templateId)
+      if (like) holds.push({ ...like, id: c.id, truck_number: c.to.truck, start_date: c.to.start, end_date: c.to.end })
+    }
+    for (const id of m.removed) {
+      const i = holds.findIndex((h) => h.id === id)
+      if (i >= 0) holds.splice(i, 1)
+    }
+  }
+  const ledFollow = {
+    // Holds moved to another truck, measured as swaps below.
+    moved: mirrored.flatMap((m) => m.updated.filter((u) => u.from.truck !== u.to.truck).map((u) => ({ holdId: u.id, by: m.by }))),
+    changed: mirrored.reduce((n, m) => n + m.updated.length + m.created.length + m.removed.length, 0),
+    opportunities: [...new Set(mirrored.filter((m) => m.opportunity && (m.updated.length || m.created.length || m.removed.length)).map((m) => m.opportunity!))],
   }
   // Retried every sweep until Salesforce takes it (a mark on the moved holds).
   const ledFollowPending = await syncFollowedOpportunities(ledFollow.opportunities).catch((err) => {
@@ -246,7 +255,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     `${sfdc.committed} committed / ${sfdc.uncommitted} back to hold / ${sfdc.released} released from ${sfdc.checked} SFDC opportunit${sfdc.checked === 1 ? 'y' : 'ies'}, ` +
     `${warnings.warned} expiry warning(s) to ${warnings.recipients} user(s), ` +
     `${reconciled.resolved} conflict(s) auto-resolved, ` +
-    `${ledFollow.moved.length} hold(s) moved to LED's truck, ${ledFollowPending.length} opportunit${ledFollowPending.length === 1 ? 'y' : 'ies'} awaiting its LED Trucks sync` +
+    `${ledFollow.changed} hold(s) mirrored to LED (${ledFollow.moved.length} on another truck), ${ledFollowPending.length} opportunit${ledFollowPending.length === 1 ? 'y' : 'ies'} awaiting its LED Trucks sync` +
     (warnings.skipped_no_email > 0 ? ` (${warnings.skipped_no_email} unwarned — no email)` : '')
   )
 
@@ -264,7 +273,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     expiry_warnings_sent:      warnings.warned,
     expiry_warning_recipients: warnings.recipients,
     conflicts_auto_resolved:   reconciled.resolved,
-    led_trucks_followed:       ledFollow.moved.length,
+    led_trucks_followed:       ledFollow.changed,
     led_follow_sync_pending:   ledFollowPending.length,
     standard_markets_set:       standardMarkets.updated,
     standard_markets_failed:    standardMarkets.failed,

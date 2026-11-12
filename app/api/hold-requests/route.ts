@@ -6,11 +6,12 @@ import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { reservationOwners } from '@/lib/reservationOwners'
 import { ledClientNames } from '@/lib/ledClients'
-import { stillListed } from '@/lib/bookings'
+import { bookingKey, stillListed } from '@/lib/bookings'
+import { linkedJob } from '@/lib/jobNumber'
 import { centralDate } from '@/lib/dateOnly'
+import { FOLLOW_SYNC_OVERDUE_MS, ledMirrorJobs, ledMirrorPlans, ledMirrorStandings, mirrorClashFlags, mirrorFlagKey, type FollowHold, type MirrorFlag } from '@/lib/ledTruckFollow'
+import { daysSold, ledJobShifts, ledShiftsForHolds, ledStandings, type JobHold, type LedStanding } from '@/lib/ledJobs'
 import { salesforceInstanceUrl } from '@/lib/salesforceClient'
-import { FOLLOW_SYNC_OVERDUE_MS } from '@/lib/ledTruckFollow'
-import { daysSold, ledShiftsForHolds, ledStandings, type JobHold, type LedStanding } from '@/lib/ledJobs'
 
 /** How long the page waits for Salesforce's address before leaving the links out. */
 const SFDC_LINK_WAIT_MS = 3000
@@ -103,13 +104,18 @@ export async function GET() {
   // Won holds the sweep moved onto LED's truck in the last week (lib/ledTruckFollow.ts),
   // so the card says the truck changed: from the audit rows the move wrote.
   const anyWon = holds.some(h => h.status === 'COMMITTED')
+  const wonFollow: FollowHold[] = holds.filter(h => linkedJob(h)).map(h => ({
+    id: h.id, truck_number: h.truck_number, market: h.market, state: h.state, job_number: linkedJob(h),
+    start_date: h.start_date.toISOString().slice(0, 10), end_date: h.end_date.toISOString().slice(0, 10),
+    booking: bookingKey(h) ?? h.id, features: h.features, sfdc_opportunity_id: h.sfdc_opportunity_id,
+  }))
   // The org's address for the cards' Salesforce links (staff only; null leaves them out).
   // A cold connection signs in first; never hold the page for it past a few seconds.
   const sfdcBase = Promise.race([
     salesforceInstanceUrl(),
     new Promise<null>(resolve => setTimeout(() => resolve(null), SFDC_LINK_WAIT_MS)),
   ])
-  const [owners, inLed, linked, followed] = await Promise.all([
+  const [owners, inLedByHold, linked, followed, mirrorFlags] = await Promise.all([
     reservationOwners(holds.map(h => ({ id: h.id, created_by: h.created_by, created_by_name: h.user?.name ?? null, sfdc_opportunity_id: h.sfdc_opportunity_id }))),
     ledShiftsForHolds(committed)
       .then(shifts => ledStandings(committed, shifts))
@@ -135,8 +141,26 @@ export async function GET() {
           orderBy: { created_at: 'asc' },
         }).catch((err) => { console.error('[hold-requests] LED follow read failed:', err); return [] })
       : [],
+    // A won booking market the mirror can't follow, or follows with a note
+    // (lib/ledTruckFollow.ts): the card says so. A mirror another booking
+    // blocks is checked here on every load, so it shows while the clash lasts.
+    (wonFollow.length
+      ? ledJobShifts(ledMirrorJobs(wonFollow)).then(async rows => {
+          const { plans, flags } = ledMirrorPlans(wonFollow, rows, today)
+          return [...flags, ...await mirrorClashFlags(plans)]
+        })
+      : Promise.resolve([] as MirrorFlag[]))
+      .catch((err): MirrorFlag[] => {
+        console.error('[hold-requests] LED mirror check failed:', err)
+        return []
+      }),
   ])
   const { linkOf, clientNames } = linked
+  // A mirrored market is judged against what was sold, not its runs.
+  const inLed = ledMirrorStandings(wonFollow, inLedByHold)
+  // A clash is carried apart from the other kinds, so it never hides one (or is hidden by one).
+  const flagOf = new Map(mirrorFlags.filter(f => f.kind !== 'clash').map(f => [mirrorFlagKey(f.booking, f.market), f.kind]))
+  const clashOf = new Map(mirrorFlags.filter(f => f.kind === 'clash').map(f => [mirrorFlagKey(f.booking, f.market), f.blockedBy ?? '']))
   const ledClientOf = (accountId: string | null) => {
     const uid = accountId ? linkOf.get(accountId) : undefined
     if (!uid) return null
@@ -195,6 +219,10 @@ export async function GET() {
     led_days:          inLed.get(h.id)?.days ?? 0,
     led_days_sold:     inLed.get(h.id)?.of ?? null,
     led_followed:      followedOf.get(h.id) ?? null,
+    // The LED mirror can't follow this market, or follows it with a note (lib/ledTruckFollow.ts).
+    led_flag:          h.status === 'COMMITTED' ? flagOf.get(mirrorFlagKey(bookingKey(h) ?? h.id, h.market)) ?? null : null,
+    // The mirror is refused because another booking holds days it needs: who (lib/ledTruckFollow.ts mirrorClashFlags).
+    led_clash:         h.status === 'COMMITTED' ? clashOf.get(mirrorFlagKey(bookingKey(h) ?? h.id, h.market)) ?? null : null,
     // Moved to LED's truck but Salesforce's LED Trucks still refuses it (lib/ledTruckFollow.ts).
     led_trucks_unsynced_since: h.status === 'COMMITTED' && h.sfdc_opportunity_id && h.led_follow_sync_pending && h.led_follow_sync_pending.getTime() < overdueBefore
       ? h.led_follow_sync_pending.toISOString() : null,

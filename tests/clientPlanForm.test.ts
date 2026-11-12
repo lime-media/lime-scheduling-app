@@ -13,6 +13,7 @@ section('client multi-market form')
   eq('one request id per quote, so a retry after a network error books once', src.includes('requestId: quote.requestId') && src.includes('requestId: requestIdFor()'), true)
   eq('any change to the order clears the quote', src.includes('const clear = () => { setQuote(null)') && (src.match(/clear\(\)/g) ?? []).length >= 4, true)
   eq('a moved "what fits" is shown, never booked without a new click', src.includes("res.status === 409 && data.fits") && src.includes('setChanged(data.error)'), true)
+  eq('the booked message gives the booking\'s one expiry from the server', src.includes('heldUntil(data.expiresAt)'), true)
   const page = fs.readFileSync('app/client/ai/page.tsx', 'utf8')
   eq('the Assistant page offers one market or several', page.includes("mode === 'several' ? <ClientMultiMarketQuote />"), true)
 }

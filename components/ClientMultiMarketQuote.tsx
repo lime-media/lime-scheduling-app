@@ -13,7 +13,7 @@
 import { useCallback, useState } from 'react'
 import { MarketInput } from '@/components/MarketInput'
 import { BrandInput } from '@/components/BrandInput'
-import { centralDate } from '@/lib/dateOnly'
+import { APP_TIME_ZONE, centralDate } from '@/lib/dateOnly'
 
 type Row = { id: string; market: string; startDate: string; endDate: string; trucks: number | undefined; daysPerWeek: 5 | 6 | 7; hours: 8 | 10 | 12 }
 
@@ -45,6 +45,11 @@ const money = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
 const fmt = (d: string) => new Date(d + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
 const calDays = (r: Row) => (r.startDate && r.endDate ? Math.round((Date.parse(r.endDate) - Date.parse(r.startDate)) / 864e5) + 1 : 0)
 const schedule = (dpw: number) => (dpw === 7 ? 'Every day' : dpw === 6 ? 'Mon-Sat' : 'Mon-Fri')
+/** When the booking's hold lapses, in Central time as the rest of the portal shows it. */
+const heldUntil = (iso: string) => {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: APP_TIME_ZONE, timeZoneName: 'short' })
+}
 /** One id per booking attempt, without "_" (lib/clientMultiMarket.ts). */
 const requestIdFor = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${newId()}`)
 
@@ -128,7 +133,9 @@ export function ClientMultiMarketQuote() {
       })
       const data = await res.json()
       if (res.ok) {
-        setBooked(data.message)
+        // The booking's one expiry (capped by the earliest market start), as the server set it.
+        const until = typeof data.expiresAt === 'string' ? heldUntil(data.expiresAt) : null
+        setBooked(until ? `${data.message} Held until ${until}.` : data.message)
       } else if (res.status === 409 && data.fits) {
         // What can be booked moved since the quote: show it, and book only on a new click.
         setQuote(q => (q ? { ...q, fits: data.fits, short: data.short ?? q.short, requestId: requestIdFor() } : q))

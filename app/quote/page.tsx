@@ -94,9 +94,12 @@ export default function InternalQuotePage() {
   const [activeTab, setActiveTab] = useState<'builder' | 'planner'>('builder')
   // Reservations → Revise opens /quote?revise=<booking>: the planner, with that booking loaded.
   const [reviseKey, setReviseKey] = useState<string | null>(null)
+  // Reservations → Quotes → Reserve adds &reserve=1: open the quote to reserve its trucks.
+  const [reserveQuote, setReserveQuote] = useState(false)
   useEffect(() => {
-    const key = new URLSearchParams(window.location.search).get('revise')
-    if (key) { setReviseKey(key); setActiveTab('planner') }
+    const params = new URLSearchParams(window.location.search)
+    const key = params.get('revise')
+    if (key) { setReviseKey(key); setReserveQuote(params.get('reserve') === '1'); setActiveTab('planner') }
   }, [])
 
   // SFDC Account
@@ -350,7 +353,7 @@ export default function InternalQuotePage() {
         </div>
 
         {activeTab === 'planner' ? (
-          <PlannerTab reviseKey={reviseKey} onReviseDone={() => { setReviseKey(null); window.history.replaceState(null, '', '/quote') }} />
+          <PlannerTab reviseKey={reviseKey} reserve={reserveQuote} onReviseDone={() => { setReviseKey(null); setReserveQuote(false); window.history.replaceState(null, '', '/quote') }} />
         ) : (
         <>
 

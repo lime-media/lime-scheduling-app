@@ -38,7 +38,7 @@ import { withUsageLog } from '@/lib/usageLog'
 import { opportunityName, savedBrand } from '@/lib/brand'
 import { PARTY_KEY, bookingParty } from '@/lib/bookingParty'
 import { readOpportunityType, suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
-import { QUOTE_ONLY_GROUP_PREFIX, QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
+import { QUOTE_ONLY_GROUP_PREFIX, QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS, bookingEvent } from '@/lib/quoteOnly'
 import { openStage } from '@/lib/sfdcStages'
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
@@ -631,7 +631,9 @@ async function handlePost(req: NextRequest) {
     }
 
     // Transport and deal-value metrics (best-effort; never fails the booking).
-    if (!quoteOnly) await recordBooking({ event: reviseKey ? 'REVISED' : 'BOOKED', groups: quote.lines.map(l => ({ groupId: groupOf.get(l.id)!, legs: legsFromArrivals(l.arrivals) })), appQuotedTotal: quote.summary.grandTotal, createdBy, ...(reviseKey ? { revised: { holdIds: reviseIds, bookingKey: reviseKey } } : {}) })
+    // Reserving a quote-only log is the first real booking (bookingEvent).
+    const revisesBooking = bookingEvent(reviseKey, reviseHolds) === 'REVISED'
+    if (!quoteOnly) await recordBooking({ event: revisesBooking ? 'REVISED' : 'BOOKED', groups: quote.lines.map(l => ({ groupId: groupOf.get(l.id)!, legs: legsFromArrivals(l.arrivals) })), appQuotedTotal: quote.summary.grandTotal, createdBy, ...(revisesBooking ? { revised: { holdIds: reviseIds, bookingKey: reviseKey! } } : {}) })
 
     const leftOut = notSelected.length + unavailable.length
     // Which opportunity, and what happened to it.

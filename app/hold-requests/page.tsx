@@ -1078,7 +1078,10 @@ export default function HoldRequestsPage() {
                                   {SOURCE_LABEL[r.source] ?? r.source}
                                 </span>
                               </td>
-                              <td className="px-4 py-3 text-gray-500 text-xs">{r.created_by_name || '—'}</td>
+                              <td className="px-4 py-3 text-gray-500 text-xs">
+                                <div>{r.created_by_name || '—'}</div>
+                                <SalesforceLinks base={sfdcBase} rows={[r]} />
+                              </td>
                               <td className="px-4 py-3">
                                 <PricingBadge tier={r.pricing_tier} total={r.quoted_total} />
                               </td>

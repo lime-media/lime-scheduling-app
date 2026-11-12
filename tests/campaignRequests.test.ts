@@ -80,6 +80,8 @@ eq('a truck in two markets is flagged, not blocking', shared.issues.map(i => [i.
 section('buildRequest: what needs ops')
 eq('no linked LED client blocks', kinds(buildRequest([hold({ sfdc_account_id: '001Hs00002zzzZZZZZ' })], linked, unsent)), ['no_led_client!'])
 eq('no account at all blocks', kinds(buildRequest([hold({ sfdc_account_id: null })], linked, unsent)), ['no_led_client!'])
+eq('an unlinked account carries the account to link', buildRequest([hold({ sfdc_account_id: '001Hs00002zzzZZZZZ' })], linked, unsent)!.issues.map(i => i.accountId), ['001Hs00002zzzZZZZZ'])
+eq('no account: nothing to link', buildRequest([hold({ sfdc_account_id: null })], linked, unsent)!.issues.map(i => i.accountId ?? null), [null])
 const label = buildRequest([
   hold({ market: 'Multi-market: Austin, Dallas', state: '', standard_market_uid: null, features: null, quoted_total: null }),
   hold({ market: 'Multi-market: Austin, Dallas', state: '', standard_market_uid: null, features: null, quoted_total: null, truck_number: '0202' }),

@@ -7,10 +7,11 @@
  * should check in LED afterwards. Any signed-in staff user.
  */
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Navbar } from '@/components/Navbar'
+import { LedClientLink } from '@/components/LedClientLink'
+import type { Issue } from '@/lib/campaignRequests'
 
-type Issue = { kind: string; blocking: boolean; message: string; markets?: string[]; trucks?: string[] }
 type Booking = { key: string; client: string; won: boolean; start: string; end: string; markets: { name: string; trucks: string[] }[]; issues: Issue[] }
 type Data = { total: number; blocked: number; bookings: Booking[] }
 
@@ -20,19 +21,28 @@ export default function LedRequestsPage() {
   const [data, setData] = useState<Data | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    ;(async () => {
-      try {
-        const res = await fetch('/api/ops/led-requests')
-        // A gateway timeout or crash page isn't JSON: show our message, not a parse error.
-        const body = await res.json().catch(() => null)
-        if (!res.ok || !body) throw new Error(body?.error || 'Bookings could not be loaded.')
-        setData(body)
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Bookings could not be loaded.')
-      }
-    })()
+  // Also run after an account is linked below, so its bookings clear or move
+  // on without a page reload.
+  // Only the latest reload may set the list: two quick links start two
+  // reloads, and an older one finishing last must not overwrite the newer.
+  const latest = useRef(0)
+  const load = useCallback(async () => {
+    const run = ++latest.current
+    try {
+      const res = await fetch('/api/ops/led-requests')
+      // A gateway timeout or crash page isn't JSON: show our message, not a parse error.
+      const body = await res.json().catch(() => null)
+      if (run !== latest.current) return
+      if (!res.ok || !body) throw new Error(body?.error || 'Bookings could not be loaded.')
+      setData(body)
+      setError(null)
+    } catch (e) {
+      if (run !== latest.current) return
+      setError(e instanceof Error ? e.message : 'Bookings could not be loaded.')
+    }
   }, [])
+
+  useEffect(() => { load() }, [load])
 
   return (
     <>
@@ -73,6 +83,10 @@ export default function LedRequestsPage() {
                           {i.message}
                           {i.markets && i.kind !== 'market_label' && <span className="text-gray-500"> ({i.markets.join('; ')})</span>}
                           {i.trucks && <span className="text-gray-500"> Trucks {i.trucks.join(', ')}.</span>}
+                          {/* Link the account here rather than hunting for it on Reservations. */}
+                          {i.kind === 'no_led_client' && i.accountId && (
+                            <span className="ml-1.5"><LedClientLink accountId={i.accountId} linked={null} onSaved={load} /></span>
+                          )}
                         </div>
                       ))}
                     </td>

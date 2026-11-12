@@ -6,7 +6,7 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { eq, section } from './harness'
-import { bookingCreator, buildRequest, buildRequests, marketDays, requestFingerprint, type RequestHold } from '@/lib/campaignRequests'
+import { bookingCreator, buildRequest, buildRequests, leftOutOfLed, marketDays, requestFingerprint, type RequestHold } from '@/lib/campaignRequests'
 
 const DALLAS = '11111111-1111-1111-1111-111111111111'
 const AUSTIN = '22222222-2222-2222-2222-222222222222'
@@ -151,6 +151,10 @@ section('the Salesforce bot user\'s bookings are left out of LED')
 const BOT = '005VP00000MNXcvYAH'
 eq('a person\'s opportunity: sent, no creator issue', [buildRequest([hold()], linked, unsent)!.creator, kinds(buildRequest([hold()], linked, unsent)).includes('creator_unknown!')], ['person', false])
 eq('the bot\'s opportunity: excluded', buildRequest([hold({ sfdc_created_by_id: BOT })], linked, unsent)!.creator, 'bot')
+eq('leftOutOfLed: the bot\'s open deal is left out', leftOutOfLed({ creator: 'bot', won: false }), true)
+eq('leftOutOfLed: the bot\'s Closed Won deal goes to LED like any other', leftOutOfLed({ creator: 'bot', won: true }), false)
+eq('leftOutOfLed: a person\'s deal, won or not, is never left out', [leftOutOfLed({ creator: 'person', won: false }), leftOutOfLed({ creator: 'person', won: true })], [false, false])
+eq('leftOutOfLed: not read yet is not left out (it waits, blocked, instead)', leftOutOfLed({ creator: 'unknown', won: false }), false)
 eq('not read yet: waits, blocked', [buildRequest([hold({ sfdc_created_by_id: null })], linked, unsent)!.creator, kinds(buildRequest([hold({ sfdc_created_by_id: null })], linked, unsent)).includes('creator_unknown!')], ['unknown', true])
 eq('no opportunity: a person\'s (nothing to wait on)', buildRequest([hold({ sfdc_opportunity_id: null, sfdc_created_by_id: null })], linked, unsent)!.creator, 'person')
 eq('one bot hold makes the booking the bot\'s, even with one unread', bookingCreator([{ sfdc_opportunity_id: '006a', sfdc_created_by_id: null }, { sfdc_opportunity_id: '006a', sfdc_created_by_id: BOT }]), 'bot')

@@ -99,7 +99,7 @@ export type Issue = { kind: IssueKind; blocking: boolean; message: string; marke
  * it, in `request.markets` order. `holdsEnd`: the last day any live hold
  * reserves a truck (travel included), which can be after `request.endDate`.
  * `creator`: who made its Salesforce opportunity (bookingCreator); a 'bot'
- * booking is never sent to LED.
+ * booking isn't sent to LED unless it's Closed Won (leftOutOfLed).
  */
 export type BookingRequest = { bookingKey: string; request: CampaignRequest; issues: Issue[]; won: boolean; marketNames: string[]; holdsEnd: string; creator: 'bot' | 'person' | 'unknown' }
 
@@ -112,6 +112,15 @@ export function bookingCreator(holds: Pick<RequestHold, 'sfdc_opportunity_id' | 
   const each = holds.map(opportunityCreator)
   return each.includes('bot') ? 'bot' : each.includes('unknown') ? 'unknown' : 'person'
 }
+
+/**
+ * Whether a booking is left out of LED: the Salesforce bot's, until it's
+ * Closed Won (Andrew, 2026-11-12). The bot doesn't follow the app's process,
+ * so nothing is designed around its deals: they block availability in the
+ * app for the life of their opportunity, but reach LED only if they close won,
+ * like any other deal. Pure.
+ */
+export const leftOutOfLed = (b: Pick<BookingRequest, 'creator' | 'won'>): boolean => b.creator === 'bot' && !b.won
 
 /** A Salesforce hold that names several markets in one label ("Multi-market: Austin, Dallas"). */
 export const isMarketLabel = (market: string) => /^\s*multi-market\s*:/i.test(market)

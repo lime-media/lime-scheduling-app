@@ -5,7 +5,8 @@
  * (/api/ops/led-requests, lib/campaignRequests.ts). Blocked ones can't convert
  * until the issue is fixed; the rest convert with something assumed that ops
  * should check in LED afterwards. Bookings the Salesforce bot user made are
- * listed apart, collapsed: they are never sent to LED. Any signed-in staff user.
+ * listed apart, collapsed, until they're Closed Won: then they're handled like
+ * any other booking. Any signed-in staff user.
  */
 
 import { useEffect, useState } from 'react'
@@ -88,10 +89,10 @@ export default function LedRequestsPage() {
         {data && data.excluded.length > 0 && (
           <details className="mt-4 bg-white border border-gray-200 rounded-xl">
             <summary className="px-4 py-3 text-sm font-medium text-gray-700 cursor-pointer">
-              Made by the Salesforce bot (not sent to LED): {data.excluded.length}
+              Made by the Salesforce bot, not won (not sent to LED): {data.excluded.length}
             </summary>
             <p className="px-4 pb-2 text-xs text-gray-500">
-              Their Salesforce opportunity was made by the bot user, which is to be switched off. They stay on Reservations but are never sent to LED.
+              Their Salesforce opportunity was made by the bot user, which is to be switched off. They hold their trucks on Reservations like any open deal. If one closes won, it moves up into the list above and goes to LED like any other booking.
             </p>
             <ul className="divide-y divide-gray-100 text-sm">
               {data.excluded.map(b => (

@@ -6,9 +6,9 @@
  * convert with something assumed that ops should check in LED. Bookings
  * whose dates have all passed, and quote-only logs, are left out; a booking
  * still running is built whole, its finished markets included. Any
- * signed-in staff user. Bookings the Salesforce bot user made are never sent
- * to LED (lib/sfdcBots.ts): they come back apart, as `excluded`, not as
- * issues to fix.
+ * signed-in staff user. Bookings the Salesforce bot user made aren't sent to
+ * LED unless they're Closed Won (lib/campaignRequests.ts leftOutOfLed): until
+ * then they come back apart, as `excluded`, not as issues to fix.
  */
 
 import { NextResponse } from 'next/server'
@@ -17,7 +17,7 @@ import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { centralDate } from '@/lib/dateOnly'
 import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
-import { buildRequests, type RequestHold } from '@/lib/campaignRequests'
+import { buildRequests, leftOutOfLed, type RequestHold } from '@/lib/campaignRequests'
 
 export const dynamic = 'force-dynamic'
 
@@ -48,7 +48,7 @@ export async function GET() {
     const rows: RequestHold[] = holds.map(h => ({ ...h, start_date: day(h.start_date), end_date: day(h.end_date) }))
     const refOf = new Map(sent.map(r => [r.booking_key, r.external_ref]))
     const current = buildRequests(rows, a => clientOf.get(a) ?? null, k => refOf.get(k) ?? null).filter(b => b.holdsEnd >= today)
-    const all = current.filter(b => b.creator !== 'bot')
+    const all = current.filter(b => !leftOutOfLed(b))
     const summary = (b: (typeof current)[number]) => ({
       key: b.bookingKey,
       client: b.request.campaignName,
@@ -57,7 +57,7 @@ export async function GET() {
       end: b.request.endDate,
       markets: b.request.markets.map((m, i) => ({ name: b.marketNames[i], trucks: m.trucks })),
     })
-    const excluded = current.filter(b => b.creator === 'bot').map(summary).sort((a, b) => a.start.localeCompare(b.start))
+    const excluded = current.filter(leftOutOfLed).map(summary).sort((a, b) => a.start.localeCompare(b.start))
     const bookings = all
       .filter(b => b.issues.length > 0)
       .map(b => ({ ...summary(b), issues: b.issues }))

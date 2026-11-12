@@ -37,6 +37,7 @@ import type { RateOverrides } from '@/lib/pricing/config'
 import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { CLIENT_PORTAL_LEAD_SOURCE } from '@/lib/sfdcLeadSource'
+import { clientOpportunityType } from '@/lib/clientOpportunityType'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { afterClientHolds, clientHoldCreator } from '@/lib/holdRequestService'
@@ -304,6 +305,8 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
           ownerId: accountInfo?.ownerId ?? undefined,
           clientType: quote.clientType ?? accountInfo?.clientType,
           leadSource: CLIENT_PORTAL_LEAD_SOURCE,
+          // No seller to pick one: the account's latest LED opportunity's, else New Client.
+          opportunityType: await clientOpportunityType(p.sfdcAccountId),
           name: opportunityName(brand, company, `Multi-market (${plural(markets.length, 'market')}) - ${starts[0]} to ${ends[ends.length - 1]}`),
           brand: brand || undefined,
           stageName: DEFAULT_STAGE,

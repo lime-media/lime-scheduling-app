@@ -6,9 +6,10 @@
  *
  * The suggestion: Existing Client when the account already has a won
  * opportunity, else New Client. A seller on the Quote Builder or the
- * Multi-market Plan confirms or changes it; anything else that creates an
- * opportunity (the staff chat and MCP, the client portal, partner MCP) gets
- * the suggestion. When the picklist changes in Salesforce, change this list.
+ * Multi-market Plan confirms or changes it; the staff chat and MCP get the
+ * suggestion. The client portal and partner MCP take the account's latest LED
+ * opportunity's Type instead (lib/clientOpportunityType.ts). When the picklist
+ * changes in Salesforce, change this list.
  */
 
 export const OPPORTUNITY_TYPES = ['New Client', 'Existing Client', 'External Referral', 'Internal Referral'] as const

@@ -7,7 +7,7 @@
  */
 
 import { opportunityName, savedBrand } from '@/lib/brand'
-import { suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
+import { clientOpportunityType } from '@/lib/clientOpportunityType'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
@@ -142,7 +142,7 @@ export async function placeClientBooking(
   // relink reaches the next booking rather than the next login.
   const { sfdcAccountId } = await liveClientLinks(session)
   const accountInfo = sfdcAccountId && isSfdcConfigured()
-    ? await getSfdcAccountInfo(sfdcAccountId, { withWon: true }).catch(() => null)
+    ? await getSfdcAccountInfo(sfdcAccountId).catch(() => null)
     : null
   const markupPct = brandMarkupFor(accountInfo?.clientType)
 
@@ -297,8 +297,8 @@ export async function placeClientBooking(
         clientType: accountInfo?.clientType,
         // No seller to pick one: the website, or a partner booking through MCP.
         leadSource: opts.origination === 'mcp' ? MCP_LEAD_SOURCE : CLIENT_PORTAL_LEAD_SOURCE,
-        // Existing Client once the account has won a deal (lib/sfdcOpportunityType.ts).
-        opportunityType: suggestedOpportunityType(accountInfo?.hasWon),
+        // No seller to pick one: the account's latest LED opportunity's, else New Client.
+        opportunityType: await clientOpportunityType(sfdcAccountId),
         name: oppName,
         brand: brand || undefined,
         stageName: DEFAULT_STAGE, // a client's own request: no seller to choose

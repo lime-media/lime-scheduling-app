@@ -117,7 +117,12 @@ type Revision = {
   reopenOpportunity: boolean
 }
 
-export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: string | null; onReviseDone?: () => void } = {}) {
+export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: {
+  reviseKey?: string | null
+  /** Opened from Reservations → Quotes → Reserve: a quote-only log opens to reserve its trucks. */
+  reserve?: boolean
+  onReviseDone?: () => void
+} = {}) {
   const [account, setAccount] = useState<SfdcAccount | null>(null)
   const [revision, setRevision] = useState<Revision | null>(null)
   const [reviseError, setReviseError] = useState<string | null>(null)
@@ -200,8 +205,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           newRow({ market: r.market, startDate: r.startDate, endDate: r.endDate, trucks: r.trucks, daysPerWeek: r.daysPerWeek, hours: r.hours })))
         setFeatures(b.features)
         // Reopen in the mode it was logged in: a quote-only log reserved nothing,
-        // so revising it must not reserve trucks unless the rep unticks it.
-        setQuoteOnly(b.quoteOnly === true)
+        // so revising it must not reserve trucks unless the rep unticks it, or
+        // opened it with Reserve (Reservations → Quotes).
+        setQuoteOnly(b.quoteOnly === true && !reserve)
         if (typeof b.brandMarkupPct === 'number') { revisedMarkup.current = b.brandMarkupPct; setBrandMarkupPct(b.brandMarkupPct) }
         setAttachTo(null)
         setRevision({ key: b.key, opportunityName: b.opportunityName, clientName: b.clientName, live: b.live, heldUntil: b.heldUntil ?? null, committedMarkets: Array.isArray(b.committedMarkets) ? b.committedMarkets : [], reopenOpportunity: reopenAgreed })

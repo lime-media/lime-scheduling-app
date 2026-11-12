@@ -1,7 +1,7 @@
 'use client'
 
 import { ATT_RELEASE_WARNING, ATT_RELEASE_MAX_DAYS, validateReleaseRange } from '@/lib/attSoftRules'
-import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
+import { QUOTE_ONLY_ORIGINATION, listedQuotes } from '@/lib/quoteOnly'
 import { SERVICE_AREA_RADIUS_MILES } from '@/lib/pricing/config'
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
@@ -75,6 +75,12 @@ const LED_SCHEDULED = 'LED_SCHEDULED'
  * end (lib/bookings.ts stillListed).
  */
 const WON_ENDED = 'WON_ENDED'
+/**
+ * The filter for quote-only logs: priced in Salesforce, nothing reserved. One
+ * per opportunity until it's reserved or its start date passes
+ * (lib/quoteOnly.ts listedQuotes); every other filter but All leaves them out.
+ */
+const QUOTES = 'QUOTES'
 
 const STATUS_BADGE: Record<string, string> = {
   HOLD:                 'bg-yellow-100 text-yellow-800 border border-yellow-200',
@@ -92,6 +98,7 @@ const STATUS_LABEL: Record<string, string> = {
   EXTENSION_REQUESTED: 'Extension Requested',
   [LED_SCHEDULED]: 'Scheduled in LED',
   [WON_ENDED]: 'Won, ended',
+  [QUOTES]: 'Quotes',
 }
 
 /** Tab names where they differ from the status name. */
@@ -164,8 +171,27 @@ function ReviseLink({ rows, booking }: { rows: HoldRequest[]; booking?: HoldRequ
   if ((booking ?? rows).some(r => r.status === 'EXTENSION_REQUESTED')) {
     return <span title="An extension request on this booking is waiting: approve or decline it first" className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 text-gray-400 cursor-not-allowed">Revise</span>
   }
+  const href = `/quote?revise=${encodeURIComponent(key)}`
+  // A quote-only log: open it as quoted, or open it to reserve its trucks
+  // (the planner's own booking path re-checks them and refuses what's taken).
+  if (rows.every(r => r.origination === QUOTE_ONLY_ORIGINATION)) {
+    return (
+      <>
+        <a href={href}
+          title="Open the quote as logged, to change or re-log it"
+          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-200 text-blue-700 hover:bg-blue-50 transition-colors">
+          Open quote
+        </a>
+        <a href={`${href}&reserve=1`}
+          title="Open the quote to reserve its trucks, if they're still free"
+          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-green-600 hover:bg-green-700 text-white transition-colors">
+          Reserve
+        </a>
+      </>
+    )
+  }
   return (
-    <a href={`/quote?revise=${encodeURIComponent(key)}`}
+    <a href={href}
       title="Add, drop or change markets and dates on the same opportunity"
       className="px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-200 text-blue-700 hover:bg-blue-50 transition-colors">
       Revise
@@ -629,6 +655,14 @@ export default function HoldRequestsPage() {
     return bookingInLed(rows) && !rows.some(x => x.led_followed || x.led_trucks_unsynced_since)
   }, [rowsByBooking])
 
+  // The quote-only logs listed under Quotes (one per opportunity, until it's
+  // reserved or starts). Read over every row, not the search, so a search
+  // never brings back a superseded quote.
+  const quoteKeys = useMemo(
+    () => listedQuotes(requests, r => bookingKey(r) ?? r.id, centralDate(new Date())),
+    [requests],
+  )
+
   // A won booking whose dates have all passed: listed only under its own filter.
   // Today (Central) is read once per fetch, not once per row.
   const endedOf = useMemo(() => {
@@ -669,6 +703,9 @@ export default function HoldRequestsPage() {
   // A filter picks whole bookings by the booking's status, never part of one.
   const filtered = useMemo(
     () => narrowed.filter((r: HoldRequest) => {
+      // Quote-only logs: under Quotes and All only, while listed.
+      if (r.origination === QUOTE_ONLY_ORIGINATION) return (filterStatus === QUOTES || !filterStatus) && quoteKeys.has(bookingKey(r) ?? r.id)
+      if (filterStatus === QUOTES) return false
       if (filterStatus === LED_SCHEDULED) return inLedOf(r) && !endedOf(r)
       if (filterStatus === WON_ENDED) return endedOf(r)
       // All is everything listed, scheduled-in-LED and ended included.
@@ -681,7 +718,7 @@ export default function HoldRequestsPage() {
         ? status === 'HOLD' || status === 'COMMITTED' || status === 'EXTENSION_REQUESTED'
         : status === filterStatus
     }),
-    [narrowed, filterStatus, statusOf, inLedOf, endedOf]
+    [narrowed, filterStatus, statusOf, inLedOf, endedOf, quoteKeys]
   )
 
   // The last date the card being edited can be held to: a booking has one
@@ -756,9 +793,8 @@ export default function HoldRequestsPage() {
     }
     if (status === 'EXPIRED') {
       // A quote-only log is not a lapsed reservation: nothing to reinstate.
-      if (quoteOnly) {
-        return <span className="text-xs text-gray-400" title="Re-quote to reserve trucks">Quote only</span>
-      }
+      // Its Open quote and Reserve links come with ReviseLink.
+      if (quoteOnly) return null
       return (
         <button
           disabled={busy}
@@ -821,6 +857,11 @@ export default function HoldRequestsPage() {
                 Showing expired reservations from the last {expiredWindowDays} days. Older ones are kept but not listed here.
               </p>
             )}
+            {filterStatus === QUOTES && (
+              <p className="text-xs text-gray-400 mt-1">
+                Quotes logged to Salesforce with no trucks reserved: the latest for each opportunity, until it&apos;s reserved or its start date passes.
+              </p>
+            )}
             {(filterStatus === WON_ENDED || filterStatus === '') && (
               <p className="text-xs text-gray-400 mt-1">
                 Won bookings are listed for {WON_ENDED_LISTED_DAYS.inLed} days after they end once LED has fully scheduled them, and {WON_ENDED_LISTED_DAYS.notInLed} days if it hasn&apos;t.
@@ -829,7 +870,7 @@ export default function HoldRequestsPage() {
           </div>
           <div className="flex gap-2 flex-shrink-0 flex-wrap">
             {/* Opens on Reservations; All (everything listed) is last. */}
-            {(['HOLD', 'ATT_SOFT', 'EXPIRED', LED_SCHEDULED, WON_ENDED, ''] as const).map((s) => (
+            {(['HOLD', QUOTES, 'ATT_SOFT', 'EXPIRED', LED_SCHEDULED, WON_ENDED, ''] as const).map((s) => (
               <button
                 key={s}
                 onClick={() => setFilterStatus(s)}

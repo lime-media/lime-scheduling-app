@@ -91,6 +91,9 @@ eq('LED runs more trucks than sold: mirrored, and flagged',
   [['1261 2026-11-02 2026-11-27', '5688 2026-11-02 2026-11-27'], ['more_trucks']])
 
 section('safety')
+eq('LED has scheduled only the first two weeks so far: the hold follows LED\'s truck and keeps its sold end',
+  shape(mirror([hold()], led('1261', weekdays('2026-11-02', '2026-11-13')))), ['1261 2026-11-02 2026-11-27'])
+eq('… and run again, nothing changes', (() => { const rows = led('1261', weekdays('2026-11-02', '2026-11-13')); return plan(mirror([hold()], rows), rows).plans })(), [])
 eq('no LED program: nothing', plan([hold()], []).plans, [])
 eq('LED days outside the window (60 days past the end): nothing', plan([hold()], led('1261', ['2027-03-01'])).plans, [])
 eq('another job: nothing', plan([hold()], led('1261', ['2026-11-03'], { job_number: '26-0999-300' })).plans, [])

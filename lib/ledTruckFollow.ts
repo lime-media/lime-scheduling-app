@@ -17,6 +17,9 @@
  * - The market's holds become those runs: one hold per truck and run, with its
  *   dates. Holds are reused (same truck first) and re-dated rather than
  *   replaced, so their history stays; extra runs copy the market's first hold.
+ * - LED still scheduling it (fewer truck-days than sold, its last day before
+ *   the reservation's): the last-running trucks stay held to the reservation's
+ *   end, so sold days LED hasn't reached aren't freed. Later dates are followed.
  * - LED running fewer trucks at once than were sold: that many of the market's
  *   holds on trucks LED doesn't use stay as they are, so the shortfall is still
  *   held and still shows. If there aren't enough such holds the market is left
@@ -236,11 +239,21 @@ export function ledMirrorPlans(holds: FollowHold[], rows: FollowRow[], today: st
       .filter(r => jobKey(r.job_number) === job && r.shift_start >= from && r.shift_start <= to && inHoldMarket(g[0], r))
       .map(r => ({ truck: r.truck_number, day: r.shift_start }))
     if (!days.length) continue
-    const runs = ledRuns(days)
+    const found = ledRuns(days)
     const sold = g.map(h => soldShapeOf(h.features)).find(Boolean) ?? {
       trucks: concurrency(g.map(h => ({ truck: h.truck_number, start: h.start_date, end: h.end_date }))),
       truckDays: g.reduce((n, h) => n + Math.max(daysSold(h.features, h.start_date, h.end_date), 0), 0),
     }
+    // LED still scheduling it (fewer truck-days than sold, ending before the
+    // reservation does): the trucks that run last stay held to the
+    // reservation's end, so sold days LED hasn't reached yet aren't freed.
+    // LED's dates later than the reservation's are followed as they are.
+    const heldEnd = g.reduce((m, h) => h.end_date > m ? h.end_date : m, g[0].end_date)
+    const ledEnd = found.reduce((m, r) => r.end > m ? r.end : m, found[0].end)
+    const ledTruckDays = found.reduce((n, r) => n + r.days, 0)
+    const runs = ledTruckDays < sold.truckDays && ledEnd < heldEnd
+      ? found.map(r => r.end === ledEnd ? { ...r, end: heldEnd } : r)
+      : found
     const ledAtOnce = concurrency(runs)
     if (ledAtOnce > sold.trucks) flags.push({ booking, market, job, kind: 'more_trucks' })
     // The sold trucks LED isn't running yet stay held where they are.

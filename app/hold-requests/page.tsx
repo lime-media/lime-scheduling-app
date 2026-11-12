@@ -21,6 +21,7 @@ import { CLOSED_WON_READ_ONLY, WON_ENDED_LISTED_DAYS, bookingCapStarts, bookingE
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
 import { ownedBy, ownerOptions, runsBetween, wholeBookings, type OwnerFilter } from '@/lib/reservationFilters'
 import { useSession } from 'next-auth/react'
+import { accountUrl, opportunityUrl } from '@/lib/sfdcLinks'
 
 type HoldRequest = {
   id: string
@@ -368,6 +369,8 @@ export default function HoldRequestsPage() {
   const [expiredWindowDays, setExpiredWindowDays] = useState<number | null>(null)
   // The LED schedule couldn't be read: won bookings' LED badges say so.
   const [ledUnavailable, setLedUnavailable] = useState(false)
+  // The org's address for the Salesforce links on each card; null when it couldn't be read.
+  const [sfdcBase, setSfdcBase] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   // A change to the AT&T truck list being drafted (components/AttRosterPanel.tsx).
@@ -418,6 +421,7 @@ export default function HoldRequestsPage() {
       setRequests(data.holdRequests || [])
       setExpiredWindowDays(typeof data.expired_window_days === 'number' ? data.expired_window_days : null)
       setLedUnavailable(data.led_unavailable === true)
+      setSfdcBase(typeof data.sfdc_base_url === 'string' ? data.sfdc_base_url : null)
     } catch (err) {
       toast.error('Failed to load hold requests')
       console.error(err)
@@ -982,6 +986,7 @@ export default function HoldRequestsPage() {
                       {first.created_by_name && (
                         <span className="text-xs text-gray-400">by {first.created_by_name}</span>
                       )}
+                      <SalesforceLinks base={sfdcBase} rows={groupItems} />
                     </div>
                     <div className="flex items-center gap-3">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${SOURCE_BADGE[first.source] ?? SOURCE_BADGE.INTERNAL}`}>
@@ -1118,7 +1123,10 @@ export default function HoldRequestsPage() {
                                   {SOURCE_LABEL[r.source] ?? r.source}
                                 </span>
                               </td>
-                              <td className="px-4 py-3 text-gray-500 text-xs">{r.created_by_name || '—'}</td>
+                              <td className="px-4 py-3 text-gray-500 text-xs">
+                                <div>{r.created_by_name || '—'}</div>
+                                <SalesforceLinks base={sfdcBase} rows={[r]} />
+                              </td>
                               <td className="px-4 py-3">
                                 <PricingBadge tier={r.pricing_tier} total={r.quoted_total} />
                               </td>
@@ -1479,5 +1487,28 @@ export default function HoldRequestsPage() {
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * The booking's Salesforce opportunity (one per booking; a legacy booking with
+ * several lists each) and its account, opening in a new tab. Staff only: this
+ * page is behind the staff sign-in.
+ */
+function SalesforceLinks({ base, rows }: { base: string | null; rows: { sfdc_opportunity_id: string | null; sfdc_account_id: string | null }[] }) {
+  const opps = [...new Set(rows.map(r => r.sfdc_opportunity_id).filter((id): id is string => !!id))]
+    .flatMap(id => { const url = opportunityUrl(base, id); return url ? [url] : [] })
+  const account = accountUrl(base, rows.find(r => r.sfdc_account_id)?.sfdc_account_id)
+  if (!opps.length && !account) return null
+  const link = 'text-xs text-blue-700 hover:underline'
+  return (
+    <span className="flex items-center gap-2">
+      {opps.map((url, i) => (
+        <a key={url} href={url} target="_blank" rel="noopener noreferrer" className={link}>
+          {opps.length === 1 ? 'Opportunity' : `Opportunity ${i + 1}`} ↗
+        </a>
+      ))}
+      {account && <a href={account} target="_blank" rel="noopener noreferrer" className={link}>Account ↗</a>}
+    </span>
   )
 }

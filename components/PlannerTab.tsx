@@ -16,7 +16,7 @@ import { MarketInput } from '@/components/MarketInput'
 import { SHORT_RANGE_MAX_DAYS } from '@/lib/pricing/schedule'
 import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, chosenClientType, clampBrandMarkup, type ClientType } from '@/lib/pricing/brandMarkup'
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { copyDatesDown, holdStartDates } from '@/lib/planner/rows'
 import { ClientTypePicker, LeadSourcePicker, OpportunityTypePicker } from '@/components/OpportunityFields'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
@@ -76,11 +76,12 @@ const SCHEDULE_OPTIONS: { value: number; label: string }[] = [
 const scheduleLabel = (dpw: number) => (dpw === 3 ? '3 days/wk' : dpw === 5 ? 'Mon-Fri' : dpw === 6 ? 'Mon-Sat' : '7 days')
 
 /** Like the single-market quote: a range of 6 days or fewer is priced Mon-Fri; longer ranges pick a schedule. */
-function ScheduleSelect({ start, end, value, onChange }: { start: string; end: string; value: number; onChange: (v: number) => void }) {
+function ScheduleSelect({ start, end, value, onChange, fill }: { start: string; end: string; value: number; onChange: (v: number) => void; fill?: boolean }) {
   const cal = calendarDays(start, end)
   if (cal > 0 && cal <= SHORT_RANGE_MAX_DAYS) return <div className="text-xs text-gray-500 px-1 py-2 whitespace-nowrap" title="A range of 6 days or fewer runs, and is billed, every day">Every day ({cal} day{cal === 1 ? '' : 's'})</div>
   return (
-    <select className={input + ' min-w-[12rem]'} value={value} onChange={e => onChange(Number(e.target.value))}>
+    // `fill`: takes its grid cell's width (the markets list); otherwise wide enough for its longest option.
+    <select className={input + (fill ? '' : ' min-w-[12rem]')} value={value} onChange={e => onChange(Number(e.target.value))}>
       {SCHEDULE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
     </select>
   )
@@ -111,6 +112,17 @@ const input = 'border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outli
 const th = 'text-left text-xs font-medium text-gray-500 px-2 py-1.5 border-b border-gray-200 whitespace-nowrap'
 const td = 'px-2 py-1.5 border-b border-gray-100 text-sm text-gray-800 align-top'
 const tdNum = td + ' text-right tabular-nums'
+// A quote line's first row: its trucks follow on a second row, so no bottom border here.
+const tdTop = 'px-2 pt-1.5 pb-0.5 text-sm text-gray-800 align-top'
+const tdTopNum = tdTop + ' text-right tabular-nums'
+// An unselected market greys out: on the cells themselves, since each cell sets its own text colour.
+const unselectedRow = '[&>td]:text-gray-400'
+// The markets list: one line per market from lg up, a two-column card per market below.
+const marketGridCols = 'lg:grid-cols-[minmax(10rem,1.3fr)_minmax(17rem,2fr)_4.5rem_minmax(12rem,1.2fr)_5.5rem_1.5rem]'
+const marketGrid = 'gap-x-2 ' + marketGridCols
+const gridTh = 'text-left text-xs font-medium text-gray-500 py-1.5 whitespace-nowrap'
+const cell = 'lg:py-1.5 text-sm text-gray-800'
+const cellLabel = 'block lg:hidden text-xs font-medium text-gray-500 mb-0.5'
 
 /** A booking being revised (Reservations → Revise; /api/bookings/revise). */
 type Revision = {
@@ -486,20 +498,20 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           />
         )}
 
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr>
-                <th className={th}>Market</th><th className={th} colSpan={2}>Start / End</th>
-                <th className={th}>Trucks</th><th className={th}>Schedule</th><th className={th}>Hours</th><th className={th}></th>
-              </tr>
-            </thead>
-            <tbody>
+        {/* A grid, not a table, so it fits the card: one line per market on a
+            laptop, a stacked card per market below lg. No sideways scrolling. */}
+        <div>
+          <div className={'hidden lg:grid border-b border-gray-200 ' + marketGrid}>
+            <div className={gridTh}>Market</div><div className={gridTh}>Start / End</div>
+            <div className={gridTh}>Trucks</div><div className={gridTh}>Schedule</div><div className={gridTh}>Hours</div><div />
+          </div>
+          <div>
               {rows.map((r, i) => {
                 const err = errorFor(r.id)
                 return (
-                  <tr key={r.id}>
-                    <td className={td + ' min-w-[12rem]'}>
+                  <div key={r.id} className={'grid grid-cols-2 gap-x-2 gap-y-1 py-2 border-b border-gray-100 lg:gap-y-0 lg:py-0 ' + marketGridCols}>
+                    <div className={cell + ' col-span-2 lg:col-span-1 min-w-0'}>
+                      <span className={cellLabel}>Market</span>
                       <MarketInput className={input} value={r.market} ariaLabel="Market"
                         onChange={v => updateRow(r.id, { market: v, lat: undefined, lng: undefined })} />
                       {r.lat !== undefined && <div className="text-[11px] text-gray-400 mt-0.5">From client file</div>}
@@ -516,8 +528,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
                           )}
                         </div>
                       )}
-                    </td>
-                    <td className={td} colSpan={2}>
+                    </div>
+                    <div className={cell + ' col-span-2 lg:col-span-1 min-w-0'}>
+                      <span className={cellLabel}>Start / End</span>
                       <div className="flex gap-2">
                         <input type="date" className={input} aria-label="Start" min={todayStr()} value={r.startDate} onChange={e => updateRow(r.id, { startDate: e.target.value })} />
                         <input type="date" className={input} aria-label="End" min={r.startDate || todayStr()} value={r.endDate} onChange={e => updateRow(r.id, { endDate: e.target.value })} />
@@ -532,26 +545,28 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
                           ↓ Copy dates to markets below
                         </button>
                       )}
-                    </td>
-                    <td className={td}><input type="number" min={1} max={50} className={input + ' min-w-[4.5rem]'} value={r.trucks} onChange={e => updateRow(r.id, { trucks: Math.max(1, parseInt(e.target.value) || 1) })} /></td>
-                    <td className={td}>
-                      <ScheduleSelect start={r.startDate} end={r.endDate} value={r.daysPerWeek} onChange={v => updateRow(r.id, { daysPerWeek: v })} />
-                    </td>
-                    <td className={td}>
-                      <select className={input + ' min-w-[5.5rem]'} value={r.hours} onChange={e => updateRow(r.id, { hours: Number(e.target.value) })}>
+                    </div>
+                    <div className={cell}>
+                      <span className={cellLabel}>Trucks</span>
+                      <input type="number" min={1} max={50} className={input} aria-label="Trucks" value={r.trucks} onChange={e => updateRow(r.id, { trucks: Math.max(1, parseInt(e.target.value) || 1) })} />
+                    </div>
+                    <div className={cell + ' min-w-0'}>
+                      <span className={cellLabel}>Schedule</span>
+                      <ScheduleSelect fill start={r.startDate} end={r.endDate} value={r.daysPerWeek} onChange={v => updateRow(r.id, { daysPerWeek: v })} />
+                    </div>
+                    <div className={cell}>
+                      <span className={cellLabel}>Hours</span>
+                      <select className={input} aria-label="Hours" value={r.hours} onChange={e => updateRow(r.id, { hours: Number(e.target.value) })}>
                         {[8, 10, 12].map(h => <option key={h} value={h}>{h} hr</option>)}
                       </select>
-                    </td>
-                    <td className={td + ' whitespace-nowrap'}>
-                      <div className="flex items-center gap-3">
-                        <button onClick={() => setRows(rs => (rs.length > 1 ? rs.filter(x => x.id !== r.id) : rs))} className="text-gray-400 hover:text-red-600 text-sm" title="Remove">✕</button>
-                      </div>
-                    </td>
-                  </tr>
+                    </div>
+                    <div className={cell + ' self-end lg:self-auto'}>
+                      <button onClick={() => setRows(rs => (rs.length > 1 ? rs.filter(x => x.id !== r.id) : rs))} className="text-gray-400 hover:text-red-600 text-sm" title="Remove" aria-label="Remove market">✕<span className="lg:hidden"> Remove</span></button>
+                    </div>
+                  </div>
                 )
               })}
-            </tbody>
-          </table>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-3 mt-3">
           <button onClick={() => setRows(rs => [...rs, newRow(rs.length ? { startDate: rs[rs.length - 1].startDate, endDate: rs[rs.length - 1].endDate, daysPerWeek: rs[rs.length - 1].daysPerWeek, hours: rs[rs.length - 1].hours } : {})])}
@@ -811,46 +826,54 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
           </div>
         )}
 
+        {/* Fits the card on a laptop; the scroll is only a fallback on a phone. */}
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr>
                 <th className={th}>Book</th><th className={th}>Market</th><th className={th}>Dates</th><th className={th}>Schedule</th>
                 <th className={th + ' text-right'}>Media</th><th className={th + ' text-right'}>Transport</th><th className={th + ' text-right'}>Total</th>
-                <th className={th}>Trucks</th>
               </tr>
             </thead>
             <tbody>
+              {/* Each market's trucks go on a second line under it, full width, so the
+                  table fits the card instead of scrolling sideways. */}
               {quote.lines.map(l => (
-                <tr key={l.id} className={selected.has(l.id) ? '' : 'text-gray-400'}>
-                  <td className={td}>
+                <Fragment key={l.id}>
+                <tr className={selected.has(l.id) ? '' : unselectedRow}>
+                  <td className={tdTop}>
                     <input type="checkbox" checked={selected.has(l.id)} disabled={booked || (!quoteOnly && l.missing >= l.trucks)} onChange={() => onToggle(l.id)}
                       title={l.missing >= l.trucks ? 'No truck can cover this market' : 'Book this market'} />
                   </td>
-                  <td className={td}>{l.market}</td>
-                  <td className={td + ' whitespace-nowrap'}><DeliveryDates l={l} /></td>
-                  <td className={td + ' whitespace-nowrap'}><DeliveryDays l={l} /></td>
-                  <td className={tdNum}>{fmtMoney(l.media - l.studiesTotal)}</td>
-                  <td className={tdNum}>
+                  <td className={tdTop}>{l.market}</td>
+                  <td className={tdTop + ' whitespace-nowrap'}><DeliveryDates l={l} /></td>
+                  <td className={tdTop}><DeliveryDays l={l} /></td>
+                  <td className={tdTopNum}>{fmtMoney(l.media - l.studiesTotal)}</td>
+                  <td className={tdTopNum}>
                     {l.transport.billed > 0 ? fmtMoney(l.transport.billed) : <span className="text-gray-400">{l.transport.outcome === 'ABSORBED' ? 'included' : '—'}</span>}
                   </td>
-                  <td className={tdNum + ' font-medium'}>
+                  <td className={tdTopNum + ' font-medium'}>
                     {/* The order's studies are their own row below (priced once for the order). */}
                     {fmtMoney(l.total - l.studiesTotal)}
                     {l.priceKept && <span className="block text-[11px] font-normal text-blue-700" title="Unchanged in this revision: keeps the price already booked">booked price kept</span>}
                   </td>
-                  <td className={td + ' text-xs min-w-[16rem]'}>
-                    {l.arrivals.map(a => <ArrivalLine key={a.truckNumber} a={a} />)}
-                    {l.missing > 0 && <div className="text-red-700">{l.missing} not covered</div>}
+                </tr>
+                <tr className={selected.has(l.id) ? '' : unselectedRow}>
+                  <td className={td} />
+                  <td className={td + ' text-xs pt-0'} colSpan={6}>
+                    <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+                      {l.arrivals.map(a => <ArrivalLine key={a.truckNumber} a={a} />)}
+                      {l.missing > 0 && <div className="text-red-700">{l.missing} not covered</div>}
+                    </div>
                   </td>
                 </tr>
+                </Fragment>
               ))}
               {quote.studies.total > 0 && (
                 <tr>
                   <td className={td}></td>
                   <td className={td} colSpan={5}>Lift studies, one for the whole order ({quote.studies.studies.filter(x => x !== 'sales_lift').map(x => STUDY_LABELS[x]).join(', ')})</td>
                   <td className={tdNum}>{fmtMoney(quote.studies.total)}</td>
-                  <td className={td}></td>
                 </tr>
               )}
               <tr className="font-medium">
@@ -858,7 +881,6 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
                 <td className={tdNum}>{fmtMoney(summary.media)}</td>
                 <td className={tdNum}>{summary.transportBilled > 0 ? fmtMoney(summary.transportBilled) : '—'}</td>
                 <td className={tdNum + ' font-bold'}>{fmtMoney(summary.grandTotal)}</td>
-                <td className={td}></td>
               </tr>
             </tbody>
           </table>

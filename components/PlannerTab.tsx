@@ -16,7 +16,7 @@ import { MarketInput } from '@/components/MarketInput'
 import { SHORT_RANGE_MAX_DAYS } from '@/lib/pricing/schedule'
 import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, chosenClientType, clampBrandMarkup, type ClientType } from '@/lib/pricing/brandMarkup'
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { copyDatesDown, holdStartDates } from '@/lib/planner/rows'
 import { ClientTypePicker, LeadSourcePicker, OpportunityTypePicker } from '@/components/OpportunityFields'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
@@ -29,6 +29,9 @@ import { useReopenConfirm } from '@/components/ReopenOpportunityDialog'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { ReviewFinding } from '@/lib/planning/claude'
 import type { Arrival, LineQuote, MultiMarketQuote, QuoteRow, RowError } from '@/lib/planning/quote'
+import { selectionTotal } from '@/lib/planning/studies'
+import { STUDY_MIN_IMPRESSIONS, STUDY_PRICE, VALID_STUDIES, type StudyType } from '@/lib/pricing/config'
+import { BRAND_LIFT_PRICE, STUDY_EXTRA_MARKET_PRICE, STUDY_INCLUDED_MARKETS } from '@/lib/pricing/studies'
 
 type BuiltAreas = AreaBuildResult & { source: string; parsedRows: ZipRow[]; notes: string[] }
 
@@ -55,6 +58,7 @@ async function fileToBase64(f: File): Promise<string> {
 
 const fmtMoney = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
 const fmtNum = (n: number) => Math.round(n).toLocaleString('en-US')
+const STUDY_LABELS: Record<StudyType, string> = { web_lift: 'Web lift', foot_traffic: 'Foot traffic', brand_lift: 'Brand lift', sales_lift: 'Sales lift' }
 const fmtDate = (d: string) => new Date(d + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
 const todayStr = () => new Date().toISOString().split('T')[0]
 
@@ -72,11 +76,12 @@ const SCHEDULE_OPTIONS: { value: number; label: string }[] = [
 const scheduleLabel = (dpw: number) => (dpw === 3 ? '3 days/wk' : dpw === 5 ? 'Mon-Fri' : dpw === 6 ? 'Mon-Sat' : '7 days')
 
 /** Like the single-market quote: a range of 6 days or fewer is priced Mon-Fri; longer ranges pick a schedule. */
-function ScheduleSelect({ start, end, value, onChange }: { start: string; end: string; value: number; onChange: (v: number) => void }) {
+function ScheduleSelect({ start, end, value, onChange, fill }: { start: string; end: string; value: number; onChange: (v: number) => void; fill?: boolean }) {
   const cal = calendarDays(start, end)
   if (cal > 0 && cal <= SHORT_RANGE_MAX_DAYS) return <div className="text-xs text-gray-500 px-1 py-2 whitespace-nowrap" title="A range of 6 days or fewer runs, and is billed, every day">Every day ({cal} day{cal === 1 ? '' : 's'})</div>
   return (
-    <select className={input + ' min-w-[12rem]'} value={value} onChange={e => onChange(Number(e.target.value))}>
+    // `fill`: takes its grid cell's width (the markets list); otherwise wide enough for its longest option.
+    <select className={input + (fill ? '' : ' min-w-[12rem]')} value={value} onChange={e => onChange(Number(e.target.value))}>
       {SCHEDULE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
     </select>
   )
@@ -107,6 +112,17 @@ const input = 'border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outli
 const th = 'text-left text-xs font-medium text-gray-500 px-2 py-1.5 border-b border-gray-200 whitespace-nowrap'
 const td = 'px-2 py-1.5 border-b border-gray-100 text-sm text-gray-800 align-top'
 const tdNum = td + ' text-right tabular-nums'
+// A quote line's first row: its trucks follow on a second row, so no bottom border here.
+const tdTop = 'px-2 pt-1.5 pb-0.5 text-sm text-gray-800 align-top'
+const tdTopNum = tdTop + ' text-right tabular-nums'
+// An unselected market greys out: on the cells themselves, since each cell sets its own text colour.
+const unselectedRow = '[&>td]:text-gray-400'
+// The markets list: one line per market from lg up, a two-column card per market below.
+const marketGridCols = 'lg:grid-cols-[minmax(10rem,1.3fr)_minmax(17rem,2fr)_4.5rem_minmax(12rem,1.2fr)_5.5rem_1.5rem]'
+const marketGrid = 'gap-x-2 ' + marketGridCols
+const gridTh = 'text-left text-xs font-medium text-gray-500 py-1.5 whitespace-nowrap'
+const cell = 'lg:py-1.5 text-sm text-gray-800'
+const cellLabel = 'block lg:hidden text-xs font-medium text-gray-500 mb-0.5'
 
 /** A booking being revised (Reservations → Revise; /api/bookings/revise). */
 type Revision = {
@@ -134,7 +150,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
   const [brand, setBrand] = useState('')
   const [rows, setRows] = useState<QuoteRow[]>([newRow()])
   const [rowErrors, setRowErrors] = useState<RowError[]>([])
-  const [features, setFeatures] = useState({ shadowFencing: true, smartDirectional: false, deviceId: false })
+  const [features, setFeatures] = useState<{ shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean; studies: StudyType[] }>({ shadowFencing: true, smartDirectional: false, deviceId: false, studies: [] })
   // Brand Direct accounts: a premium folded into every price (internal control only).
   const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
   // The opportunity's Client Type and Lead Source: the seller picks both,
@@ -197,7 +213,8 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
         setBrand(b.brand ?? '')
         setRows(b.rows.map((r: { market: string; startDate: string; endDate: string; trucks: number; daysPerWeek: number; hours: number }) =>
           newRow({ market: r.market, startDate: r.startDate, endDate: r.endDate, trucks: r.trucks, daysPerWeek: r.daysPerWeek, hours: r.hours })))
-        setFeatures(b.features)
+        // The booking's lift studies come back with it (lib/bookings.ts reviseRows).
+        setFeatures({ ...b.features, studies: Array.isArray(b.features?.studies) ? b.features.studies : [] })
         // Reopen in the mode it was logged in: a quote-only log reserved nothing,
         // so revising it must not reserve trucks unless the rep unticks it.
         setQuoteOnly(b.quoteOnly === true)
@@ -351,7 +368,7 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
 
   const placeHolds = async (allowPartial = false, expectedTotal?: number, reopenAgreed = revision?.reopenOpportunity === true): Promise<void> => {
     if (!account || !contact || !quote) return
-    const shown = expectedTotal ?? quote.lines.filter(l => selected.has(l.id)).reduce((n, l) => n + l.total, 0)
+    const shown = expectedTotal ?? selectionTotal(quote.lines, selected, quote.studies, quote.brandMarkupPct).total
     setHolding(true); setHoldResult(null)
     try {
       const res = await fetch('/api/plan/hold', {
@@ -481,20 +498,20 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           />
         )}
 
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr>
-                <th className={th}>Market</th><th className={th} colSpan={2}>Start / End</th>
-                <th className={th}>Trucks</th><th className={th}>Schedule</th><th className={th}>Hours</th><th className={th}></th>
-              </tr>
-            </thead>
-            <tbody>
+        {/* A grid, not a table, so it fits the card: one line per market on a
+            laptop, a stacked card per market below lg. No sideways scrolling. */}
+        <div>
+          <div className={'hidden lg:grid border-b border-gray-200 ' + marketGrid}>
+            <div className={gridTh}>Market</div><div className={gridTh}>Start / End</div>
+            <div className={gridTh}>Trucks</div><div className={gridTh}>Schedule</div><div className={gridTh}>Hours</div><div />
+          </div>
+          <div>
               {rows.map((r, i) => {
                 const err = errorFor(r.id)
                 return (
-                  <tr key={r.id}>
-                    <td className={td + ' min-w-[12rem]'}>
+                  <div key={r.id} className={'grid grid-cols-2 gap-x-2 gap-y-1 py-2 border-b border-gray-100 lg:gap-y-0 lg:py-0 ' + marketGridCols}>
+                    <div className={cell + ' col-span-2 lg:col-span-1 min-w-0'}>
+                      <span className={cellLabel}>Market</span>
                       <MarketInput className={input} value={r.market} ariaLabel="Market"
                         onChange={v => updateRow(r.id, { market: v, lat: undefined, lng: undefined })} />
                       {r.lat !== undefined && <div className="text-[11px] text-gray-400 mt-0.5">From client file</div>}
@@ -511,8 +528,9 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
                           )}
                         </div>
                       )}
-                    </td>
-                    <td className={td} colSpan={2}>
+                    </div>
+                    <div className={cell + ' col-span-2 lg:col-span-1 min-w-0'}>
+                      <span className={cellLabel}>Start / End</span>
                       <div className="flex gap-2">
                         <input type="date" className={input} aria-label="Start" min={todayStr()} value={r.startDate} onChange={e => updateRow(r.id, { startDate: e.target.value })} />
                         <input type="date" className={input} aria-label="End" min={r.startDate || todayStr()} value={r.endDate} onChange={e => updateRow(r.id, { endDate: e.target.value })} />
@@ -527,26 +545,28 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
                           ↓ Copy dates to markets below
                         </button>
                       )}
-                    </td>
-                    <td className={td}><input type="number" min={1} max={50} className={input + ' min-w-[4.5rem]'} value={r.trucks} onChange={e => updateRow(r.id, { trucks: Math.max(1, parseInt(e.target.value) || 1) })} /></td>
-                    <td className={td}>
-                      <ScheduleSelect start={r.startDate} end={r.endDate} value={r.daysPerWeek} onChange={v => updateRow(r.id, { daysPerWeek: v })} />
-                    </td>
-                    <td className={td}>
-                      <select className={input + ' min-w-[5.5rem]'} value={r.hours} onChange={e => updateRow(r.id, { hours: Number(e.target.value) })}>
+                    </div>
+                    <div className={cell}>
+                      <span className={cellLabel}>Trucks</span>
+                      <input type="number" min={1} max={50} className={input} aria-label="Trucks" value={r.trucks} onChange={e => updateRow(r.id, { trucks: Math.max(1, parseInt(e.target.value) || 1) })} />
+                    </div>
+                    <div className={cell + ' min-w-0'}>
+                      <span className={cellLabel}>Schedule</span>
+                      <ScheduleSelect fill start={r.startDate} end={r.endDate} value={r.daysPerWeek} onChange={v => updateRow(r.id, { daysPerWeek: v })} />
+                    </div>
+                    <div className={cell}>
+                      <span className={cellLabel}>Hours</span>
+                      <select className={input} aria-label="Hours" value={r.hours} onChange={e => updateRow(r.id, { hours: Number(e.target.value) })}>
                         {[8, 10, 12].map(h => <option key={h} value={h}>{h} hr</option>)}
                       </select>
-                    </td>
-                    <td className={td + ' whitespace-nowrap'}>
-                      <div className="flex items-center gap-3">
-                        <button onClick={() => setRows(rs => (rs.length > 1 ? rs.filter(x => x.id !== r.id) : rs))} className="text-gray-400 hover:text-red-600 text-sm" title="Remove">✕</button>
-                      </div>
-                    </td>
-                  </tr>
+                    </div>
+                    <div className={cell + ' self-end lg:self-auto'}>
+                      <button onClick={() => setRows(rs => (rs.length > 1 ? rs.filter(x => x.id !== r.id) : rs))} className="text-gray-400 hover:text-red-600 text-sm" title="Remove" aria-label="Remove market">✕<span className="lg:hidden"> Remove</span></button>
+                    </div>
+                  </div>
                 )
               })}
-            </tbody>
-          </table>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-3 mt-3">
           <button onClick={() => setRows(rs => [...rs, newRow(rs.length ? { startDate: rs[rs.length - 1].startDate, endDate: rs[rs.length - 1].endDate, daysPerWeek: rs[rs.length - 1].daysPerWeek, hours: rs[rs.length - 1].hours } : {})])}
@@ -563,6 +583,18 @@ export function PlannerTab({ reviseKey = null, onReviseDone }: { reviseKey?: str
           <label className="flex items-center gap-2"><input type="checkbox" checked={features.smartDirectional} onChange={e => setFeatures(f => ({ ...f, smartDirectional: e.target.checked }))} /> Smart directional</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={features.deviceId} onChange={e => setFeatures(f => ({ ...f, deviceId: e.target.checked }))} /> Device ID passback</label>
         </div>
+        {/* Lift studies: one study covers the whole order (lib/pricing/studies.ts). */}
+        <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-gray-700">
+          <span className="text-xs font-medium text-gray-600">Lift studies</span>
+          {VALID_STUDIES.map(st => (
+            <label key={st} className="flex items-center gap-2">
+              <input type="checkbox" checked={features.studies.includes(st)}
+                onChange={e => setFeatures(f => ({ ...f, studies: e.target.checked ? [...f.studies, st] : f.studies.filter(x => x !== st) }))} />
+              {STUDY_LABELS[st]}{st === 'sales_lift' && <span className="text-xs text-gray-500">(the team quotes it)</span>}
+            </label>
+          ))}
+        </div>
+        <p className="mt-1 text-xs text-gray-500">One study covers the whole order: {fmtMoney(STUDY_PRICE)} with {STUDY_INCLUDED_MARKETS} markets, +{fmtMoney(STUDY_EXTRA_MARKET_PRICE)} per extra market (a client&apos;s rate card may set its own base); brand lift {fmtMoney(BRAND_LIFT_PRICE)}. Studies need {STUDY_MIN_IMPRESSIONS.toLocaleString('en-US')} estimated impressions across the order.</p>
         {/* A new opportunity's lead source; a revision or an attach keeps its opportunity's own. */}
         {!keepsOpportunity && (
           <div className="mt-3">
@@ -762,7 +794,12 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
   const [openTruck, setOpenTruck] = useState<string | null>(null)
   const short = quote.lines.filter(l => l.missing > 0)
   const chosen = quote.lines.filter(l => selected.has(l.id))
-  const chosenTotal = chosen.reduce((s, l) => s + l.total, 0)
+  // The order's studies priced again for just the selected markets, as the
+  // server books them: the panel below and the button both describe that.
+  const selection = selectionTotal(quote.lines, selected, quote.studies, quote.brandMarkupPct)
+  const chosenTotal = selection.total
+  const st = selection.studies
+  const chosenLines = quote.lines.filter(l => selected.has(l.id))
   const booked = holdResult?.ok === true
   const outOfMarket = quote.lines.flatMap(l => l.arrivals).filter(a => a.outOfMarket)
 
@@ -789,48 +826,82 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
           </div>
         )}
 
+        {/* Fits the card on a laptop; the scroll is only a fallback on a phone. */}
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr>
                 <th className={th}>Book</th><th className={th}>Market</th><th className={th}>Dates</th><th className={th}>Schedule</th>
                 <th className={th + ' text-right'}>Media</th><th className={th + ' text-right'}>Transport</th><th className={th + ' text-right'}>Total</th>
-                <th className={th}>Trucks</th>
               </tr>
             </thead>
             <tbody>
+              {/* Each market's trucks go on a second line under it, full width, so the
+                  table fits the card instead of scrolling sideways. */}
               {quote.lines.map(l => (
-                <tr key={l.id} className={selected.has(l.id) ? '' : 'text-gray-400'}>
-                  <td className={td}>
+                <Fragment key={l.id}>
+                <tr className={selected.has(l.id) ? '' : unselectedRow}>
+                  <td className={tdTop}>
                     <input type="checkbox" checked={selected.has(l.id)} disabled={booked || (!quoteOnly && l.missing >= l.trucks)} onChange={() => onToggle(l.id)}
                       title={l.missing >= l.trucks ? 'No truck can cover this market' : 'Book this market'} />
                   </td>
-                  <td className={td}>{l.market}</td>
-                  <td className={td + ' whitespace-nowrap'}><DeliveryDates l={l} /></td>
-                  <td className={td + ' whitespace-nowrap'}><DeliveryDays l={l} /></td>
-                  <td className={tdNum}>{fmtMoney(l.media)}</td>
-                  <td className={tdNum}>
+                  <td className={tdTop}>{l.market}</td>
+                  <td className={tdTop + ' whitespace-nowrap'}><DeliveryDates l={l} /></td>
+                  <td className={tdTop}><DeliveryDays l={l} /></td>
+                  <td className={tdTopNum}>{fmtMoney(l.media - l.studiesTotal)}</td>
+                  <td className={tdTopNum}>
                     {l.transport.billed > 0 ? fmtMoney(l.transport.billed) : <span className="text-gray-400">{l.transport.outcome === 'ABSORBED' ? 'included' : '—'}</span>}
                   </td>
-                  <td className={tdNum + ' font-medium'}>
-                    {fmtMoney(l.total)}
+                  <td className={tdTopNum + ' font-medium'}>
+                    {/* The order's studies are their own row below (priced once for the order). */}
+                    {fmtMoney(l.total - l.studiesTotal)}
                     {l.priceKept && <span className="block text-[11px] font-normal text-blue-700" title="Unchanged in this revision: keeps the price already booked">booked price kept</span>}
                   </td>
-                  <td className={td + ' text-xs min-w-[16rem]'}>
-                    {l.arrivals.map(a => <ArrivalLine key={a.truckNumber} a={a} />)}
-                    {l.missing > 0 && <div className="text-red-700">{l.missing} not covered</div>}
+                </tr>
+                <tr className={selected.has(l.id) ? '' : unselectedRow}>
+                  <td className={td} />
+                  <td className={td + ' text-xs pt-0'} colSpan={6}>
+                    <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+                      {l.arrivals.map(a => <ArrivalLine key={a.truckNumber} a={a} />)}
+                      {l.missing > 0 && <div className="text-red-700">{l.missing} not covered</div>}
+                    </div>
                   </td>
                 </tr>
+                </Fragment>
               ))}
+              {quote.studies.total > 0 && (
+                <tr>
+                  <td className={td}></td>
+                  <td className={td} colSpan={5}>Lift studies, one for the whole order ({quote.studies.studies.filter(x => x !== 'sales_lift').map(x => STUDY_LABELS[x]).join(', ')})</td>
+                  <td className={tdNum}>{fmtMoney(quote.studies.total)}</td>
+                </tr>
+              )}
               <tr className="font-medium">
                 <td className={td} colSpan={4}>Totals</td>
                 <td className={tdNum}>{fmtMoney(summary.media)}</td>
                 <td className={tdNum}>{summary.transportBilled > 0 ? fmtMoney(summary.transportBilled) : '—'}</td>
                 <td className={tdNum + ' font-bold'}>{fmtMoney(summary.grandTotal)}</td>
-                <td className={td}></td>
               </tr>
             </tbody>
           </table>
+        </div>
+
+        {/* Reach and lift studies for the markets selected to book (lib/planning/studies.ts selectionTotal). */}
+        <div className="mt-3 text-xs text-gray-600 space-y-1">
+          <p>
+            Estimated reach: {fmtNum(st.estimatedImpressions)} impressions across the {chosenLines.length === quote.lines.length ? 'order' : `${chosenLines.length} selected market${chosenLines.length === 1 ? '' : 's'}`}
+            {chosenLines.length > 0 && <>{' '}({chosenLines.map(l => `${l.market} ${fmtNum(l.estimatedImpressions)}`).join(' · ')})</>}: truck-days × each market tier&apos;s daily A18+ impressions per truck.
+            {' '}{st.reachOk ? `Lift studies are available (${fmtNum(st.reachMinimum)} needed).` : `Lift studies need ${fmtNum(st.reachMinimum)}.`}
+          </p>
+          {st.requested.length > 0 && (st.reachOk ? (
+            <p>
+              Lift studies ({st.uniqueMarkets} unique market{st.uniqueMarkets === 1 ? '' : 's'}): {st.studies.filter(x => x !== 'sales_lift').map(x => `${STUDY_LABELS[x]} ${fmtMoney(st.prices[x])}`).join(', ') || 'none priced'}
+              {st.total > 0 && <>, {fmtMoney(st.total)} in all, booked with {st.carriedBy}</>}.
+              {st.salesLiftRequested && <> Sales lift: the team quotes it; noted on the booking.</>}
+            </p>
+          ) : (
+            <p className="text-amber-700">The selected lift studies aren&apos;t included: the order&apos;s estimated reach is under {fmtNum(st.reachMinimum)}.</p>
+          ))}
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-3 text-sm">

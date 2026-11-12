@@ -117,6 +117,8 @@ export function bookingCreator(holds: Pick<RequestHold, 'sfdc_opportunity_id' | 
 export const isMarketLabel = (market: string) => /^\s*multi-market\s*:/i.test(market)
 
 const LIVE = new Set(['HOLD', 'EXTENSION_REQUESTED', 'COMMITTED'])
+/** An id the reconcile can read (lib/sfdcOpportunityReconcile.ts SFDC_ID). */
+const SFDC_ID = /^[a-zA-Z0-9]{15,18}$/
 
 type Features = { daysPerWeek?: unknown; operatingHours?: unknown; requestedStart?: unknown; requestedEnd?: unknown }
 function featuresOf(h: RequestHold): Features {
@@ -242,7 +244,15 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
   }).sort((a, b) => a.startDate.localeCompare(b.startDate) || a.key.localeCompare(b.key))
 
   const creator = bookingCreator(live)
-  if (creator === 'unknown') issues.push({ kind: 'creator_unknown', blocking: true, message: 'Waiting for the next sweep (15 minutes) to read who made its Salesforce opportunity.' })
+  // The reconcile fills the creator only for an opportunity it can read: a
+  // malformed id never is, and a deleted or hidden one never comes back, so
+  // the message can't promise the next sweep clears it.
+  if (creator === 'unknown') {
+    const badId = live.some(h => h.sfdc_opportunity_id && !SFDC_ID.test(h.sfdc_opportunity_id))
+    issues.push({ kind: 'creator_unknown', blocking: true, message: badId
+      ? 'Its Salesforce opportunity id isn\'t valid, so who made the opportunity can\'t be read: correct the opportunity on the reservation.'
+      : 'Who made its Salesforce opportunity isn\'t read yet. The sweep reads it within 15 minutes; if this stays, the opportunity may be deleted or hidden from the app\'s Salesforce user: check it exists.' })
+  }
 
   const accountId = live.map(h => h.sfdc_account_id).find(Boolean) ?? null
   const clientUid = accountId ? clientUidOf(accountId) : null

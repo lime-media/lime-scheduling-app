@@ -155,3 +155,5 @@ eq('not read yet: waits, blocked', [buildRequest([hold({ sfdc_created_by_id: nul
 eq('no opportunity: a person\'s (nothing to wait on)', buildRequest([hold({ sfdc_opportunity_id: null, sfdc_created_by_id: null })], linked, unsent)!.creator, 'person')
 eq('one bot hold makes the booking the bot\'s, even with one unread', bookingCreator([{ sfdc_opportunity_id: '006a', sfdc_created_by_id: null }, { sfdc_opportunity_id: '006a', sfdc_created_by_id: BOT }]), 'bot')
 eq('unread beats person', bookingCreator([{ sfdc_opportunity_id: '006a', sfdc_created_by_id: '005Hs000000PERSONA' }, { sfdc_opportunity_id: '006a', sfdc_created_by_id: null }]), 'unknown')
+eq('a malformed opportunity id says so, not "the next sweep"', buildRequest([hold({ sfdc_opportunity_id: 'not-an-id', sfdc_created_by_id: null })], linked, unsent)!.issues.find(i => i.kind === 'creator_unknown')?.message.includes('isn\'t valid'), true)
+eq('an unread valid id says what to check if it stays', buildRequest([hold({ sfdc_created_by_id: null })], linked, unsent)!.issues.find(i => i.kind === 'creator_unknown')?.message.includes('check it exists'), true)

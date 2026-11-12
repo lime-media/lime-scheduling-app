@@ -34,6 +34,8 @@ export type RequestHold = {
   sfdc_opportunity_id: string | null
   sfdc_account_id: string | null
   sfdc_job_number: string | null
+  /** Who made its Salesforce opportunity (the reconcile fills it; null until then). */
+  sfdc_created_by_id: string | null
   standard_market_uid: string | null
   quoted_total: number | null
   features: string | null
@@ -91,6 +93,13 @@ export type Issue = { kind: IssueKind; blocking: boolean; message: string; marke
  * reserves a truck (travel included), which can be after `request.endDate`.
  */
 export type BookingRequest = { bookingKey: string; request: CampaignRequest; issues: Issue[]; won: boolean; marketNames: string[]; holdsEnd: string }
+
+/**
+ * The one rule for the Salesforce bot's deals (Andrew, 2026-11-12; lib/sfdcBots.ts):
+ * they block availability like any booking but go to LED only once Closed Won.
+ * The send (lib/coreSend.ts) and the LED Readiness list both ask this.
+ */
+export const leftOutOfLed = (b: { creator: 'bot' | 'person' | 'unknown'; won: boolean }): boolean => b.creator === 'bot' && !b.won
 
 /** A Salesforce hold that names several markets in one label ("Multi-market: Austin, Dallas"). */
 export const isMarketLabel = (market: string) => /^\s*multi-market\s*:/i.test(market)

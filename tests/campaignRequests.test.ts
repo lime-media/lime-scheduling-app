@@ -6,7 +6,7 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { eq, section } from './harness'
-import { buildRequest, buildRequests, marketDays, requestFingerprint, type RequestHold } from '@/lib/campaignRequests'
+import { buildRequest, buildRequests, leftOutOfLed, marketDays, requestFingerprint, type RequestHold } from '@/lib/campaignRequests'
 
 const DALLAS = '11111111-1111-1111-1111-111111111111'
 const AUSTIN = '22222222-2222-2222-2222-222222222222'
@@ -29,6 +29,7 @@ const hold = (over: Partial<RequestHold> = {}): RequestHold => ({
   sfdc_opportunity_id: '006Hs00000000001',
   sfdc_account_id: ACCOUNT,
   sfdc_job_number: null,
+  sfdc_created_by_id: '005Hs000000PERSONA',
   standard_market_uid: DALLAS,
   quoted_total: 20000,
   features: JSON.stringify({ daysPerWeek: 5, operatingHours: 10 }),
@@ -145,3 +146,9 @@ const holdRoute = readFileSync(join(process.cwd(), 'app/api/plan/hold/route.ts')
 const writeAll = holdRoute.slice(holdRoute.indexOf('const writeAll = async'), holdRoute.indexOf('const writeAll = async') + 2000)
 eq('the revise renames its request row in the same transaction as the holds; a quote-only one leaves it to be declined',
   /if \(reviseKey && !quoteOnly\) await tx\.campaignRequestSync\.updateMany\(\{ where: \{ booking_key: reviseKey \}, data: \{ booking_key: newKey \} \}\)/.test(writeAll), true)
+
+section('leftOutOfLed: the Salesforce bot rule')
+eq('an open bot deal stays out of LED', leftOutOfLed({ creator: 'bot', won: false }), true)
+eq('a Closed Won bot deal goes to LED', leftOutOfLed({ creator: 'bot', won: true }), false)
+eq("a person's deal goes to LED", leftOutOfLed({ creator: 'person', won: false }), false)
+eq('unknown is not this rule: it waits as its own refusal', leftOutOfLed({ creator: 'unknown', won: false }), false)

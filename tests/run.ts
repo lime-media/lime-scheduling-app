@@ -55,6 +55,7 @@ import './shiftDay.test'
 import './ledTruckFollow.test'
 import './standardMarkets.test'
 import './clientPlan.test'
+import './coreSend.test'
 import './clientPlanForm.test'
 import { report, settle } from './harness'
 

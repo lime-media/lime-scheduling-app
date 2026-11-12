@@ -13,6 +13,7 @@ import { dmaForPoint } from '@/lib/pricing/dmaArea'
 import { TOP_DMAS } from '@/lib/pricing/topDmas'
 import type { ClientSession } from '@/lib/clientAuth'
 import { liveClientLinks } from '@/lib/clientLinks'
+import { stateCode } from '@/lib/usStates'
 
 // ---------------------------------------------------------------------------
 // Market size tier
@@ -192,6 +193,53 @@ export async function resolveRateOverridesBySfdcAccount(sfdcAccountId: string): 
 export type CampaignCoords = { lat: number; lng: number; source: 'coords_map' | 'standard_market' | 'us_place' | 'top_dma' }
 
 /**
+ * A market's place on the standard market list: its exact entry, or, when the
+ * market names no state ("Allentown"), the entry with that city name. Sorted so
+ * an ambiguous city resolves the same way every time rather than following Map
+ * insertion order.
+ *
+ * A market that names a state matches only in that state ("Dallas, TX 75201"
+ * and "Dallas, TX, USA" still find "Dallas, TX"). The city-only match used to
+ * ignore the state, so "Dallas, PA" was placed at "Dallas, TX" (and
+ * "Canton, TX" in Ohio): wrong distances, transport and impressions tier. Such
+ * a town falls through to the US place list instead. Pure.
+ */
+export function standardMarketCoords<T>(market: string, standardMarkets: ReadonlyMap<string, T>): T | null {
+  // Exact entry, as typed or with its state comma'd ("Dallas TX"). The list
+  // keys plain names, so an entry like "Northern NJ" is found as typed.
+  const key = normalizeMarketKey(withStateComma(market))
+  const exact = standardMarkets.get(normalizeMarketKey(market)) ?? standardMarkets.get(key)
+  if (exact) return exact
+  const { city, state } = marketCityState(key)
+  if (!city) return null
+  // A stated state matches only entries in that state, never one naming none.
+  // No state ("Allentown"): any entry with the city's name.
+  const hit = [...standardMarkets.entries()]
+    .map(([name, value]) => ({ name, value, ...marketCityState(name) }))
+    .filter(h => h.city === city && (!state || h.state === state))
+    .sort((a, b) => a.name.localeCompare(b.name))[0]
+  return hit ? hit.value : null
+}
+
+/**
+ * A normalized market name's city and state, read the same way for market
+ * text and list entries. Dots dropped, so "St. Louis" is "St Louis" and
+ * "Washington, D.C." is in DC. The state is the text after the comma as a code
+ * or a full name ("Texas", "New York"); a ZIP or ", USA" may follow it, and a
+ * ZIP or a country alone ("Allentown, 18101", "Dallas, USA") names no state.
+ * Other text there ("Dallas, Tex") is kept as the state, so it never takes
+ * another state's entry. Pure.
+ */
+export function marketCityState(name: string): { city: string; state: string | undefined } {
+  const [city, rest = ''] = name.replace(/\./g, '').split(',').map(p => p.trim())
+  const head = rest.replace(/\s*\d[\d-]*$/, '').trim()
+  const first = rest.split(' ')[0]
+  const isCountry = /^(usa?|united states( of america)?|america)$/i.test(head)
+  const s = stateCode(head) || stateCode(first) || (first && !/^\d/.test(first) && !isCountry ? first : '')
+  return { city, state: s ? s.toLowerCase() : undefined }
+}
+
+/**
  * Resolve a campaign market string to lat/lng coordinates.
  *
  * Tries in order:
@@ -211,28 +259,18 @@ export async function resolveCampaignCoords(market: string): Promise<CampaignCoo
 
   // Then the authoritative market list, which covers everything schedulable
   try {
-    const standardMarkets = await loadStandardMarketCoords()
-    const key = normalizeMarketKey(market)
-    const exact = standardMarkets.get(key)
-    if (exact) return { ...exact, source: 'standard_market' }
-
-    // City-only match, for "Allentown" against "Allentown, PA"
-    // City-only, e.g. "Allentown" against "Allentown, PA". Sorted so an
-    // ambiguous city resolves the same way every time rather than following
-    // Map insertion order.
-    const city = key.split(',')[0].trim()
-    if (city) {
-      const hits = [...standardMarkets.entries()]
-        .filter(([name]) => name.split(',')[0].trim() === city)
-        .sort(([a], [b]) => a.localeCompare(b))
-      if (hits.length > 0) return { ...hits[0][1], source: 'standard_market' }
-    }
+    const standard = standardMarketCoords(market, await loadStandardMarketCoords())
+    if (standard) return { ...standard, source: 'standard_market' }
   } catch (err) {
     console.error('[resolvers] standard market coord lookup failed:', err)
   }
 
   // Any US city, town or ZIP the lists do not know (lib/geo/places.ts).
-  const place = placeCoords(market)
+  // A state written in full or followed by a ZIP ("Canton, Texas",
+  // "Dallas, PA 18612") is looked up by its city and state code.
+  const named = marketCityState(normalizeMarketKey(withStateComma(market)))
+  const place = placeCoords(market) ??
+    (named.city && named.state && stateCode(named.state) ? placeCoords(named.city, named.state) : null)
   if (place) return { lat: place.lat, lng: place.lng, source: 'us_place' }
 
   // Last, a top-50 DMA's own name ("Dallas-Fort Worth, TX"), matched strictly:

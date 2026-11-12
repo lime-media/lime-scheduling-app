@@ -587,7 +587,10 @@ async function handlePost(req: NextRequest) {
     }
 
     // Transport and deal-value metrics (best-effort; never fails the booking).
-    if (!quoteOnly) await recordBooking({ event: reviseKey ? 'REVISED' : 'BOOKED', groups: quote.lines.map(l => ({ groupId: groupOf.get(l.id)!, legs: legsFromArrivals(l.arrivals) })), appQuotedTotal: quote.summary.grandTotal, createdBy, ...(reviseKey ? { revised: { holdIds: reviseIds, bookingKey: reviseKey } } : {}) })
+    // Reserving a quote-only log is the first real booking: BOOKED, not a
+    // revision (a quote-only log has no transport legs to carry on from).
+    const revisesBooking = !!reviseKey && !(reviseHolds.length > 0 && reviseHolds.every(h => h.origination === QUOTE_ONLY_ORIGINATION))
+    if (!quoteOnly) await recordBooking({ event: revisesBooking ? 'REVISED' : 'BOOKED', groups: quote.lines.map(l => ({ groupId: groupOf.get(l.id)!, legs: legsFromArrivals(l.arrivals) })), appQuotedTotal: quote.summary.grandTotal, createdBy, ...(revisesBooking ? { revised: { holdIds: reviseIds, bookingKey: reviseKey! } } : {}) })
 
     const leftOut = notSelected.length + unavailable.length
     // Which opportunity, and what happened to it.

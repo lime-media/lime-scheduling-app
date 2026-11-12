@@ -39,6 +39,12 @@ export type QuoteListRow = {
   sfdc_opportunity_id: string | null
   start_date: string
   created_at: string
+  /**
+   * When the newest hold of this row's opportunity was made, any status or
+   * kind, loaded or not (the list API reads it). A quote made before it was
+   * replaced: by a newer quote, or by the booking Reserve made of it.
+   */
+  opp_latest_at?: string | null
 }
 
 /** The statuses that mean an opportunity's trucks are reserved: its quote is taken up. */
@@ -46,10 +52,11 @@ const RESERVED_STATUSES = new Set(['HOLD', 'COMMITTED', 'EXTENSION_REQUESTED'])
 
 /**
  * The quote-only logs Reservations lists under Quotes, by booking key:
- * - one per opportunity, the latest logged (a later quote-only log of the
- *   same opportunity supersedes the earlier one; a quote with no opportunity
- *   stands alone);
- * - not once that opportunity has a reservation (the quote was taken up);
+ * - one per opportunity, the latest: anything made on the opportunity after
+ *   it (a newer quote, the booking Reserve made of it, in any status since)
+ *   replaces it (`opp_latest_at`), and of the quotes loaded the newest wins;
+ *   a quote with no opportunity stands alone;
+ * - not while that opportunity has a live reservation (the quote was taken up);
  * - not once the booking's first start date has passed.
  * `today` is YYYY-MM-DD (Central). Pure.
  */
@@ -57,6 +64,14 @@ export function listedQuotes<R extends QuoteListRow>(rows: readonly R[], keyOf: 
   const reserved = new Set(rows
     .filter(r => r.origination !== QUOTE_ONLY_ORIGINATION && RESERVED_STATUSES.has(r.status) && r.sfdc_opportunity_id)
     .map(r => r.sfdc_opportunity_id!))
+  // The newest anything on each opportunity: what the API read, else what's loaded.
+  const newest = new Map<string, string>()
+  for (const r of rows) {
+    if (!r.sfdc_opportunity_id) continue
+    for (const at of [r.created_at, r.opp_latest_at]) {
+      if (at && at > (newest.get(r.sfdc_opportunity_id) ?? '')) newest.set(r.sfdc_opportunity_id, at)
+    }
+  }
   const quotes = new Map<string, { start: string; created: string; opp: string | null }>()
   for (const r of rows) {
     if (r.origination !== QUOTE_ONLY_ORIGINATION) continue
@@ -81,7 +96,7 @@ export function listedQuotes<R extends QuoteListRow>(rows: readonly R[], keyOf: 
   const out = new Set<string>()
   for (const [key, q] of quotes) {
     if (q.start < today) continue
-    if (q.opp && (reserved.has(q.opp) || latest.get(q.opp) !== key)) continue
+    if (q.opp && (reserved.has(q.opp) || latest.get(q.opp) !== key || q.created < newest.get(q.opp)!)) continue
     out.add(key)
   }
   return out

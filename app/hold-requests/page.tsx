@@ -45,6 +45,8 @@ type HoldRequest = {
   truck_count: number | null
   campaign_group_id: string | null
   sfdc_opportunity_id: string | null
+  /** Quote-only rows: when the newest hold of the opportunity was made (lib/quoteOnly.ts listedQuotes). */
+  opp_latest_at?: string | null
   /** The opportunity's job number, and how LED stands on it for this truck: days run of days sold (lib/ledJobs.ts). */
   job_number: string | null
   /** The opportunity's account and its LED client, once staff have linked it (lib/ledClients.ts). */
@@ -250,7 +252,9 @@ function LedFollowBadge({ rows }: { rows: HoldRequest[] }) {
   )
 }
 
-function ExpirationBadge({ expiresAt, status, cancelled }: { expiresAt: string | null; status: string; cancelled?: { reason: string | null } | null }) {
+function ExpirationBadge({ expiresAt, status, cancelled, quoteOnly = false }: { expiresAt: string | null; status: string; cancelled?: { reason: string | null } | null; quoteOnly?: boolean }) {
+  // A quote-only log reserved nothing, so it has no expiry to show (it's stored EXPIRED).
+  if (quoteOnly) return null
   if (status === 'EXPIRED' && cancelled) {
     return <span className="text-xs text-red-700" title={cancelled.reason ?? undefined}>Cancelled{cancelled.reason ? `: ${cancelled.reason}` : ''}</span>
   }
@@ -990,7 +994,7 @@ export default function HoldRequestsPage() {
                         </span>
                       )}
                       {/* The earliest expiry in the booking is the one to act on. */}
-                      <ExpirationBadge expiresAt={expiry} status={status} cancelled={cancelledOf(groupItems)} />
+                      <ExpirationBadge expiresAt={expiry} status={status} cancelled={cancelledOf(groupItems)} quoteOnly={groupItems.every(g => g.origination === QUOTE_ONLY_ORIGINATION)} />
                       <LedBadge progress={ledProgress(groupItems)} inLed={bookingInLed(groupItems)} unavailable={ledUnavailable} />
                       {status === 'COMMITTED' && first.sfdc_account_id && (
                         <LedClientLink accountId={first.sfdc_account_id} linked={first.led_client} onSaved={fetchRequests} />
@@ -1124,7 +1128,7 @@ export default function HoldRequestsPage() {
                                 </span>
                               </td>
                               <td className="px-4 py-3">
-                                <ExpirationBadge expiresAt={r.expires_at} status={r.status} cancelled={cancelledOf([r])} />
+                                <ExpirationBadge expiresAt={r.expires_at} status={r.status} cancelled={cancelledOf([r])} quoteOnly={r.origination === QUOTE_ONLY_ORIGINATION} />
                               </td>
                               <td className="px-4 py-3">
                                 <div className="flex items-center gap-2 flex-wrap">

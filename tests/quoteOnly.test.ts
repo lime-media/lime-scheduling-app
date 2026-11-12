@@ -106,6 +106,16 @@ section('quote-only: which quotes Reservations lists under Quotes')
   eq('a superseded quote whose successor passed its start is not brought back', list([
     q('old', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'), q('new', 'opp1', '2026-11-10', '2026-11-05T10:00:00Z'),
   ]), [])
+  eq('a newer quote no longer loaded (it ended) still replaces an older one', list([
+    { ...q('old', 'opp1', '2027-02-01', '2026-10-01T10:00:00Z'), opp_latest_at: '2026-10-05T10:00:00Z' },
+  ]), [])
+  eq('a booking Reserve made, lapsed since, still replaces the older quote', list([
+    q('old', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'),
+    { ...live('booked', 'opp1', 'EXPIRED'), created_at: '2026-11-06T10:00:00Z' },
+  ]), [])
+  eq("the quote's own rows don't replace it", list([
+    { ...q('a', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'), opp_latest_at: '2026-11-01T10:00:00Z' },
+  ]), ['a'])
   eq('equal log times pick one, stably', list([
     q('a', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'), q('b', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'),
   ]), ['b'])

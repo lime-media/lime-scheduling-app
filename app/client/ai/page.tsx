@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { ClientHeader } from '@/components/ClientHeader'
 import { useClientAuth, hasAiAssistantAccess } from '@/lib/useClientAuth'
 import { centralDate } from '@/lib/dateOnly'
+import { STUDY_WINDOW_DAYS, studiesCost } from '@/lib/pricing/studies'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,7 +42,7 @@ type QuoteResponse = {
     shadowFencing: { included: boolean; cost: number; floored: boolean; digitalImpressions: number }
     smartDirectional: { included: boolean; cost: number }
     deviceId: { included: boolean; cost: number }
-    studies: { available: boolean; selected: string[]; costPerStudy: number; estimatedImpressions: number; reachMinimum: number }
+    studies: { available: boolean; selected: string[]; costPerStudy: number; prices: Record<string, number>; salesLiftRequested: boolean; warning: string | null; estimatedImpressions: number; reachMinimum: number }
   }
   transport: {
     outcome: string
@@ -226,9 +227,7 @@ function InteractiveQuoteCard({
   if (toggles.shadowFencing) mediaTotal += features.shadowFencing.cost
   if (toggles.smartDirectional) mediaTotal += features.smartDirectional.cost
   if (toggles.deviceId) mediaTotal += features.deviceId.cost
-  if (features.studies.available && toggles.studies.length > 0) {
-    mediaTotal += toggles.studies.length * features.studies.costPerStudy
-  }
+  if (features.studies.available) mediaTotal += studiesCost(toggles.studies, features.studies.prices)
   const transportCharge = data.transportCharge
   const grandTotal = mediaTotal + transportCharge
 
@@ -349,7 +348,7 @@ function InteractiveQuoteCard({
           <div className="flex items-center justify-between mb-2">
             <div>
               <p className="text-sm font-medium text-gray-900">Lift Studies</p>
-              <p className="text-xs text-gray-500">{fmtMoney(features.studies.costPerStudy)} per study</p>
+              <p className="text-xs text-gray-500">One study covers the whole campaign; sales lift is quoted by our team</p>
             </div>
             {!features.studies.available && (
               <span className="text-[10px] text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
@@ -384,10 +383,14 @@ function InteractiveQuoteCard({
                 >
                   <span className="mr-1.5">{isSelected ? '\u2713' : '\u25CB'}</span>
                   {STUDY_LABELS[study] || study}
+                  <span className="block text-[10px] text-gray-500 font-normal">{study === 'sales_lift' ? 'Our team will quote it' : fmtMoney(features.studies.prices[study] ?? 0)}</span>
                 </button>
               )
             })}
           </div>
+          {features.studies.available && toggles.studies.length > 0 && pricing.calendarDays > STUDY_WINDOW_DAYS && (
+            <p className="mt-2 text-xs text-amber-700">Lift studies cover up to 3 months. This campaign runs longer, so our team will confirm the study with you.</p>
+          )}
         </div>
       </div>
 
@@ -416,10 +419,16 @@ function InteractiveQuoteCard({
               <span>+ {fmtMoney(features.deviceId.cost)}</span>
             </div>
           )}
-          {toggles.studies.length > 0 && features.studies.available && (
-            <div className="flex justify-between text-gray-600">
-              <span>{toggles.studies.length} lift {toggles.studies.length === 1 ? 'study' : 'studies'}</span>
-              <span>+ {fmtMoney(toggles.studies.length * features.studies.costPerStudy)}</span>
+          {features.studies.available && toggles.studies.filter((s) => s !== 'sales_lift').map((s) => (
+            <div key={s} className="flex justify-between text-gray-600">
+              <span>{STUDY_LABELS[s] || s} study</span>
+              <span>+ {fmtMoney(features.studies.prices[s] ?? 0)}</span>
+            </div>
+          ))}
+          {features.studies.available && toggles.studies.includes('sales_lift') && (
+            <div className="flex justify-between text-gray-500 text-xs">
+              <span>Sales lift: our team will quote it</span>
+              <span>not included</span>
             </div>
           )}
           {transportCharge > 0 && (

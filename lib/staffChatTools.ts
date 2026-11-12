@@ -47,7 +47,7 @@ const QUOTE_PROPERTIES = {
   shadow_fencing: { type: 'boolean', description: 'Default true.' },
   smart_directional: { type: 'boolean', description: 'Default false.' },
   device_id: { type: 'boolean', description: 'Default false.' },
-  studies: { type: 'array', items: { type: 'string', enum: [...VALID_STUDIES] }, description: 'Lift studies. Only priced when projected reach meets the minimum.' },
+  studies: { type: 'array', items: { type: 'string', enum: [...VALID_STUDIES] }, description: 'Lift studies. One study covers the order (foot traffic / web lift: the base includes 2 markets, then a charge per extra market; brand lift is flat). Sales lift is not priced: the team quotes it, and the booking notes the request. Studies need the projected reach to meet the minimum.' },
   days_per_week: { type: 'integer', enum: [5, 6, 7], description: 'Omit unless the rep says; the engine decides from the dates.' },
   operating_hours: { type: 'number', description: 'Hours per day. Default 8.' },
   sfdc_account_id: { type: 'string', description: 'Salesforce Account id from find_account. Sets agreement pricing and Brand Direct.' },

@@ -21,7 +21,8 @@ import {
 } from '@/lib/pricing'
 import { billedDaysPerWeek, countCalendarDays } from '@/lib/pricing/schedule'
 import { resolveDefaultRateOverrides, resolveRateOverridesBySfdcAccount, resolveMarketInputAll } from '@/lib/pricing/resolvers'
-import type { RateOverrides } from '@/lib/pricing/config'
+import type { RateOverrides, StudyType } from '@/lib/pricing/config'
+import { applyStudies, type OrderStudies } from './studies'
 import { centralDate } from '@/lib/dateOnly'
 import { canonicalMarketName, loadStandardMarketCoords, titleCaseMarket } from '@/lib/marketBounds'
 import { haversineDistance } from '@/lib/marketCoordinates'
@@ -55,7 +56,8 @@ export type QuoteRow = {
 export type QuoteRequest = {
   rows: QuoteRow[]
   sfdcAccountId?: string
-  features: { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean }
+  /** `studies`: lift studies for the whole order (lib/pricing/studies.ts). */
+  features: { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean; studies?: StudyType[] }
   reserveSoftHolds?: boolean
   alloyRenews?: boolean
   hopLimitRoadMiles?: number
@@ -146,6 +148,13 @@ export type LineQuote = {
   missing: number
   /** Revising a live booking: this market is unchanged and keeps its booked price (lib/bookings.ts keptPrices). */
   priceKept?: boolean
+  /** Estimated reach: truck-days x the market tier's daily A18+ impressions per truck. */
+  estimatedImpressions: number
+  marketSizeTier: { id: number; label: string; dailyA18: number }
+  /** The order's lift studies are carried on its first market (one booking total); 0 elsewhere. */
+  studiesTotal: number
+  /** The market a study counts it as: its standard market (lib/pricing/studies.ts uniqueMarketCount). */
+  studyMarket: string
 }
 
 export type Arrival = {
@@ -188,8 +197,11 @@ export type QuoteSummary = {
   leftForOthers: number
 }
 
+export type { OrderStudies } from './studies'
+
 export type MultiMarketQuote = {
   lines: LineQuote[]
+  studies: OrderStudies
   summary: QuoteSummary
   itineraries: Itinerary[]
   alternatives: Alternative[]
@@ -336,6 +348,10 @@ async function priceLines(
       arrivals,
       transportNote: t.absorbedReason ?? null,
       missing: missing.get(line.id) ?? 0,
+      estimatedImpressions: q.best.estimatedImpressions,
+      marketSizeTier: q.input.marketSizeTier,
+      studiesTotal: 0,
+      studyMarket: line.standardMarket ?? line.market,
     }
   })
 }
@@ -419,16 +435,22 @@ export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: O
 
   const run = (ls: OrderLine[], settings = s) => planOrder(ls, fleet.trucks, settings)
   const plan = run(lines)
-  const priced = keepBookedPrices(await priceLines(lines, plan, req.features, overrides, tiers, markupPct), kept, markupPct)
+  const routed = keepBookedPrices(await priceLines(lines, plan, req.features, overrides, tiers, markupPct), kept, markupPct)
+  // Alternatives compare routing and transport, priced without the order's studies.
+  const routedSummary = summarize(routed, plan)
+  // A request's studies are only trusted as a list (priceStudies keeps the known ones).
+  const asked = Array.isArray(req.features?.studies) ? req.features.studies : []
+  const { lines: priced, studies } = applyStudies(routed, asked, overrides?.study_cost, markupPct)
   const summary = summarize(priced, plan)
 
-  const alternatives = opts.alternatives === false ? [] : await buildAlternatives(lines, plan, summary, { run, price: (ls, p) => priceLines(ls, p, req.features, overrides, tiers, markupPct), s, trucks: fleet.trucks })
+  const alternatives = opts.alternatives === false ? [] : await buildAlternatives(lines, plan, routedSummary, { run, price: (ls, p) => priceLines(ls, p, req.features, overrides, tiers, markupPct), s, trucks: fleet.trucks })
 
   const warnings: string[] = []
   if (plan.approximateClusters > 0) warnings.push('Some markets were too many to pair exactly in the time allowed. The truck count is still the minimum, but the weekly hops may not be the shortest possible.')
   if (fleet.trucks.some(t => !t.gps)) warnings.push(`${fleet.trucks.filter(t => !t.gps).length} truck(s) have no live position and were only considered where a scheduled job shows where they will be.`)
   if (rules.reserveSoftHolds && !fleet.reserved.some(r => r.reason.startsWith('AT&T soft'))) warnings.push('No AT&T soft holds are on file, so no AT&T trucks are held back.')
   if (req.alloyRenews && !fleet.reserved.some(r => !r.reason.startsWith('AT&T soft'))) warnings.push('Alloy Build is marked as renewing, but no truck is currently on an Alloy Build job.')
+  if (studies.warning) warnings.push(studies.warning)
   for (const l of priced) {
     // State plainly any market whose trucks deliver less than asked, with the
     // real last working day and the part-week that accounts for it.
@@ -446,7 +468,7 @@ export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: O
   }
 
   return {
-    quote: { lines: priced, summary, itineraries: itineraries(plan), alternatives, reserved: fleet.reserved, pricingBasis: basis, brandMarkupPct: markupPct, clientType, warnings },
+    quote: { lines: priced, studies, summary, itineraries: itineraries(plan), alternatives, reserved: fleet.reserved, pricingBasis: basis, brandMarkupPct: markupPct, clientType, warnings },
     lines,
     plan,
   }
@@ -655,6 +677,8 @@ export function keepBookedPrices(lines: LineQuote[], kept?: Map<string, KeptPric
     try { f = k.features ? JSON.parse(k.features) : {} } catch { /* booked total alone */ }
     const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback)
     const billed = num(f.transportCharge, 0)
+    // The order's studies are priced again for the whole order (applyStudies), not kept with a market.
+    const studies = num(f.studiesTotal, 0)
     return {
       ...l,
       dailyRate: num(f.dailyRate, l.dailyRate),
@@ -663,9 +687,9 @@ export function keepBookedPrices(lines: LineQuote[], kept?: Map<string, KeptPric
       shadowFencing: num(f.shadowFencing, l.shadowFencing),
       smartDirectional: num(f.smartDirectional, l.smartDirectional),
       deviceId: num(f.deviceId, l.deviceId),
-      media: k.total - billed,
+      media: k.total - billed - studies,
       transport: { ...l.transport, billed, outcome: billed > 0 ? 'BILLED' : l.transport.outcome === 'BILLED' ? 'ABSORBED' : l.transport.outcome },
-      total: k.total,
+      total: k.total - studies,
       priceKept: true,
     }
   })

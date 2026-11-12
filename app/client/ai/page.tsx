@@ -855,7 +855,10 @@ export default function ClientAiPage() {
           </div>
         </div>
 
-        {mode === 'several' ? <ClientMultiMarketQuote /> : <>
+        {/* Always mounted, only hidden: a quote or booking in flight, its request id and its
+            confirmation survive a switch to One market. */}
+        <div className={mode === 'several' ? 'contents' : 'hidden'}><ClientMultiMarketQuote /></div>
+        {mode === 'one' && <>
         {/* Quote Box */}
         <QuoteBox
           form={quoteForm}

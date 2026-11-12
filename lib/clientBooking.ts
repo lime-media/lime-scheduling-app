@@ -154,6 +154,7 @@ export async function placeClientBooking(
     includeSmartDirectional,
     includeDeviceId,
     studies,
+    spanDays: calendarDays,
     rateOverrides,
     markupPct,
   })
@@ -162,9 +163,7 @@ export async function placeClientBooking(
   if (includeShadowFencing) mediaTotal += quote.better.shadowFencing
   if (includeSmartDirectional) mediaTotal += quote.better.smartDirectional
   if (includeDeviceId) mediaTotal += quote.better.deviceId
-  if (quote.best.reachOk && studies.length > 0) {
-    mediaTotal += studies.length * quote.best.studyCost
-  }
+  mediaTotal += quote.best.studiesTotal
 
   const transport = priceTransport({
     activationDays,
@@ -223,9 +222,10 @@ export async function placeClientBooking(
     smartDirectional: includeSmartDirectional ? quote.better.smartDirectional : 0,
     deviceIdIncluded: includeDeviceId,
     deviceId: includeDeviceId ? quote.better.deviceId : 0,
-    studies,
+    studies: quote.best.studies,
     studyCost: quote.best.studyCost,
-    studiesTotal: quote.best.reachOk ? studies.length * quote.best.studyCost : 0,
+    studiesTotal: quote.best.studiesTotal,
+    ...(quote.best.salesLiftRequested ? { salesLiftRequested: true } : {}),
     transportCharge,
     successorImpact,
   })
@@ -273,7 +273,9 @@ export async function placeClientBooking(
     market,
     startDate:    start_date,
     endDate:      end_date,
-    notes:        [brand ? `Brand: ${brand}` : null, notes || null, `${pricingTier} tier at $${Math.round(serverTotal).toLocaleString('en-US')}`].filter(Boolean).join(' | '),
+    notes:        [brand ? `Brand: ${brand}` : null, notes || null, `${pricingTier} tier at $${Math.round(serverTotal).toLocaleString('en-US')}`,
+      // An ask, not a price (lib/pricing/studies.ts): this email is how the team hears of it.
+      quote.best.salesLiftRequested ? 'Sales lift requested: the team quotes it with the client' : null].filter(Boolean).join(' | '),
   }).catch((e) => console.error('[client/hold-requests] email failed:', e))
 
   // Create Salesforce Opportunity if the client has an SFDC Account ID

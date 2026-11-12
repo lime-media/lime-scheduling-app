@@ -319,9 +319,10 @@ Optional: `user_id`, `token_id`, `request_params`, `response_summary`.
 | `SFDC_WRITES` | Optional. On a preview deployment (UAT shares production's Salesforce org) the app reads Salesforce but never creates or updates anything there: each write is refused with a message saying so. `on` turns writes on for a preview on purpose; `off` turns them off anywhere. On production `off` is an emergency stop: refused writes still have to be made, so reps are told what to fix in Salesforce by hand (a preview never tells them to) |
 | `EMAIL_REDIRECT_TO` | Optional, for UAT. Every email goes to this one address instead of its recipients, who are named in the subject. A preview deployment without it sends no email, except login codes, which always reach the person logging in. UAT shares production's SMTP |
 | `CORE_SEND_ENABLED` | `true` turns on Ops → LED Readiness's "Send to LED" (lib/coreSend.ts). Anything else, or a missing `CORE_*` setting below, sends nothing and the page says why |
-| `CORE_AUTH_URL` | CampaignIQ Core's login URL; the Scheduling App service account exchanges its credentials there for a token |
-| `CORE_API_URL` | CampaignIQ Core's base URL; requests go to `{CORE_API_URL}/api/v1/campaigns` |
+| `CORE_AUTH_URL` | The Node service's sign-in URL; the Scheduling App service account exchanges its credentials there for a token |
+| `CORE_API_URL` | The same origin as `CORE_AUTH_URL` (not a separate Core host): requests go to `{CORE_API_URL}/api/v1/campaigns` with `x-forward-to: java`, which the Node service forwards to Core |
 | `CORE_USERNAME`, `CORE_PASSWORD` | The "Scheduling App" service account's email address and password |
+| `CORE_CRYPTO_KEY` | The key shared with Core that encrypts the sign-in's `loginData` |
 
 ---
 

@@ -34,6 +34,8 @@ export type RequestHold = {
   sfdc_opportunity_id: string | null
   sfdc_account_id: string | null
   sfdc_job_number: string | null
+  /** Who made its Salesforce opportunity (the reconcile fills it; null until then). */
+  sfdc_created_by_id: string | null
   standard_market_uid: string | null
   quoted_total: number | null
   features: string | null

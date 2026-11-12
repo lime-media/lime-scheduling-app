@@ -29,6 +29,7 @@ const hold = (over: Partial<RequestHold> = {}): RequestHold => ({
   sfdc_opportunity_id: '006Hs00000000001',
   sfdc_account_id: ACCOUNT,
   sfdc_job_number: null,
+  sfdc_created_by_id: '005Hs000000PERSONA',
   standard_market_uid: DALLAS,
   quoted_total: 20000,
   features: JSON.stringify({ daysPerWeek: 5, operatingHours: 10 }),

@@ -13,11 +13,11 @@
 import { prisma } from '@/lib/prisma'
 import { requestFingerprint, type BookingRequest } from '@/lib/campaignRequests'
 import { coreClient, coreConfig, corePayload, CoreError, type CoreCreated, type CorePayload } from '@/lib/coreClient'
-import { isReady, loadLedBookings, type SentRow } from '@/lib/ledReadiness'
+import { isReady, loadLedBookings, type Creator, type SentRow } from '@/lib/ledReadiness'
 
 export type SendDeps = {
   env: Record<string, string | undefined>
-  load: () => Promise<{ bookings: BookingRequest[]; sent: Map<string, SentRow> }>
+  load: () => Promise<{ bookings: BookingRequest[]; sent: Map<string, SentRow>; creators: Map<string, Creator> }>
   /** Create the booking's row with its first reference, or keep the one there; null when another booking's row already has that reference. */
   ensureRow: (bookingKey: string, externalRef: string) => Promise<SentRow | null>
   /** `fingerprint`: what LED now holds, or null when it may hold an earlier version. */
@@ -33,11 +33,17 @@ export async function sendBookingToCore(bookingKey: string, deps: SendDeps): Pro
   const config = coreConfig(deps.env)
   if (!config.ok) return { status: 409, body: { error: config.reason } }
 
-  const { bookings, sent } = await deps.load()
+  const { bookings, sent, creators } = await deps.load()
   const booking = bookings.find(b => b.bookingKey === bookingKey)
   if (!booking) return { status: 404, body: { error: 'This booking is no longer live, so there is nothing to send.' } }
   const before = sent.get(bookingKey)
   if (before?.core_uid) return { status: 200, body: { sent: true, already: true, coreUid: before.core_uid, requestId: before.request_id } }
+  // The Salesforce bot's deals reach LED only once Closed Won (Andrew,
+  // 2026-11-12; lib/sfdcBots.ts). Checked here, not only on the list, so no
+  // caller can send one; a creator not read yet waits rather than counting as a person.
+  const creator = creators.get(bookingKey) ?? 'unknown'
+  if (creator === 'bot' && !booking.won) return { status: 409, body: { error: 'Not sent: the Salesforce bot made this opportunity, and its deals go to LED only once Closed Won.' } }
+  if (creator === 'unknown') return { status: 409, body: { error: 'Not sent yet: who made its Salesforce opportunity isn\'t read yet. The sweep reads it within 15 minutes; if this stays, check the opportunity exists.' } }
   if (!isReady(booking)) {
     return { status: 409, body: { error: `Not ready for LED: ${booking.issues.filter(i => i.blocking).map(i => i.message).join(' ')}` } }
   }

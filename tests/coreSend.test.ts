@@ -7,20 +7,22 @@
  */
 import { defer, eq, section } from './harness'
 import { buildRequest, type BookingRequest, type RequestHold } from '@/lib/campaignRequests'
-import { clearCoreTokens, coreClient, coreConfig, corePayload, CoreError, type CoreConfig, type CorePayload } from '@/lib/coreClient'
+import { clearCoreTokens, coreClient, coreConfig, coreDecrypt, coreEncrypt, coreLoginBody, corePayload, CoreError, type CoreConfig, type CorePayload } from '@/lib/coreClient'
 import { sendBookingToCore, type SendDeps } from '@/lib/coreSend'
-import type { SentRow } from '@/lib/ledReadiness'
+import { creatorsByBooking, type Creator, type SentRow } from '@/lib/ledReadiness'
 
 const DALLAS = '11111111-1111-1111-1111-111111111111'
 const CLIENT = '33333333-3333-3333-3333-333333333333'
-const ON = { CORE_SEND_ENABLED: 'true', CORE_AUTH_URL: 'https://auth.test/login', CORE_API_URL: 'https://core.test/', CORE_USERNAME: 'app@test', CORE_PASSWORD: 'pw' }
+const ON = { CORE_SEND_ENABLED: 'true', CORE_AUTH_URL: 'https://auth.test/login', CORE_API_URL: 'https://core.test/', CORE_USERNAME: 'app@test', CORE_PASSWORD: 'pw', CORE_CRYPTO_KEY: 'shared-key' }
+const BOT = '005VP00000MNXcvYAH'
+const PERSON = '005Hs00000000001AA'
 
 let n = 0
 const hold = (over: Partial<RequestHold> = {}): RequestHold => ({
   id: `h${++n}`, truck_number: '0101', market: 'Dallas, TX', state: 'TX', client_name: 'Acme Outdoor',
   start_date: '2026-12-07', end_date: '2026-12-20', status: 'HOLD', campaign_group_id: 'cg_1',
   sfdc_opportunity_id: '006Hs00000000001', sfdc_account_id: '001A', sfdc_job_number: null,
-  standard_market_uid: DALLAS, quoted_total: 20000, features: JSON.stringify({ daysPerWeek: 5, operatingHours: 10 }),
+  sfdc_created_by_id: PERSON, standard_market_uid: DALLAS, quoted_total: 20000, features: JSON.stringify({ daysPerWeek: 5, operatingHours: 10 }),
   ...over,
 })
 const linked = () => CLIENT
@@ -33,6 +35,25 @@ const partial = coreConfig({ ...ON, CORE_PASSWORD: '' })
 eq('a setting missing names it', !partial.ok && partial.reason.includes('CORE_PASSWORD'), true)
 const full = coreConfig(ON)
 eq('enabled and complete; trailing slash dropped', full.ok && full.config.apiUrl, 'https://core.test')
+const noKey = coreConfig({ ...ON, CORE_CRYPTO_KEY: ' ' })
+eq('no crypto key: off, and says so', !noKey.ok && noKey.reason.includes('CORE_CRYPTO_KEY'), true)
+
+section('coreEncrypt: the login is encrypted as CryptoJS.AES with a passphrase')
+// An independent vector from OpenSSL (the format CryptoJS follows):
+//   printf '<json>' | openssl enc -aes-256-cbc -md md5 -S 0102030405060708 -pass pass:shared-key -base64 -A
+// OpenSSL leaves out the "Salted__" header when the salt is given, so it's added here.
+const SALT = Buffer.from('0102030405060708', 'hex')
+const LOGIN_JSON = '{"emailAddress":"app@test","password":"pw","applicationType":"web"}'
+const OPENSSL_CT = '6StICbY58BEt7fs592OGQkXaYM9Er4Ryc9LnvWlJhAf9a51r2OjK4/yEabKXNE2788eBYHF/5+WRi9nEPoHg2PV+djY5/kx7U8/I4A9yiiM='
+const VECTOR = Buffer.concat([Buffer.from('Salted__'), SALT, Buffer.from(OPENSSL_CT, 'base64')]).toString('base64')
+eq('matches OpenSSL byte for byte', coreEncrypt(LOGIN_JSON, 'shared-key', SALT), VECTOR)
+eq('starts with "Salted__" (U2FsdGVkX1)', coreEncrypt('x', 'k').startsWith('U2FsdGVkX1'), true)
+eq('random salt: two encryptions differ', coreEncrypt('x', 'k') !== coreEncrypt('x', 'k'), true)
+eq('round trip', coreDecrypt(coreEncrypt('héllo', 'k'), 'k'), 'héllo')
+const lb = coreLoginBody({ username: 'app@test', password: 'pw', cryptoKey: 'shared-key' }, SALT)
+eq('login body: one field, loginData, with applicationType inside', [Object.keys(lb), JSON.parse(coreDecrypt(lb.loginData, 'shared-key'))],
+  [['loginData'], { emailAddress: 'app@test', password: 'pw', applicationType: 'web' }])
+eq('login body matches the OpenSSL vector', lb.loginData, VECTOR)
 
 section('corePayload: the contract body')
 const two = build([hold({ truck_number: '0102' }), hold({ truck_number: '0101' })])
@@ -58,14 +79,15 @@ eq('not on the market list: refused, named', !offList.ok && offList.error.includ
 eq('stored reference is the one sent', (() => { const r = corePayload(build([hold()], 'mm_first').request); return r.ok && r.body.externalRef })(), 'mm_first')
 
 section('coreClient: login, token reuse, re-login on 401, otp')
-type Call = { url: string; auth: string | null }
+type Call = { url: string; auth: string | null; forward: string | null; body: unknown }
 function fakeCore(script: { login?: (i: number) => Response; create?: (i: number, auth: string | null) => Response }) {
   const calls: Call[] = []
   let logins = 0
   let creates = 0
   const doFetch = async (url: string, init: RequestInit) => {
-    const auth = (init.headers as Record<string, string> | undefined)?.Authorization ?? null
-    calls.push({ url, auth })
+    const headers = init.headers as Record<string, string> | undefined
+    const auth = headers?.Authorization ?? null
+    calls.push({ url, auth, forward: headers?.['x-forward-to'] ?? null, body: JSON.parse(String(init.body)) })
     if (url === ON.CORE_AUTH_URL) return (script.login ?? (i => json({ success: true, token: `tok${i}` })))(++logins)
     return (script.create ?? (() => json({ statusCode: 200, data: { campaignRequestUid: 'UID-1', requestId: 'REQ-2026-0001', status: 'SUBMITTED' } })))(++creates, auth)
   }
@@ -84,11 +106,14 @@ defer((async () => {
   eq('created: uid and request id', [first.coreUid, first.requestId, first.status], ['UID-1', 'REQ-2026-0001', 'SUBMITTED'])
   eq('one login, token reused, posted to /api/v1/campaigns', f.calls.map(x => [x.url, x.auth]),
     [[ON.CORE_AUTH_URL, null], ['https://core.test/api/v1/campaigns', 'Bearer tok1'], ['https://core.test/api/v1/campaigns', 'Bearer tok1']])
+  eq('x-forward-to: java on Core calls, not on the login', f.calls.map(x => x.forward), [null, 'java', 'java'])
+  eq('login posts only loginData, never the plain password', [Object.keys(f.calls[0].body as object), JSON.stringify(f.calls[0].body).includes('pw')], [['loginData'], false])
 
   clearCoreTokens()
   const expired = fakeCore({ create: (i) => (i === 1 ? json({ message: 'expired' }, 401) : json({ statusCode: 200, data: { campaignRequestUid: 'UID-2' } })) })
   const r = await coreClient(config, expired.doFetch).createCampaign(body)
   eq('401: logs in again once and retries', [r.coreUid, expired.calls.map(x => x.auth)], ['UID-2', [null, 'Bearer tok1', null, 'Bearer tok2']])
+  eq('the retry is forwarded too', expired.calls.map(x => x.forward), [null, 'java', null, 'java'])
 
   clearCoreTokens()
   const otp = fakeCore({ login: () => json({ success: true, otpRequired: true }) })
@@ -104,17 +129,42 @@ defer((async () => {
   const badLogin = fakeCore({ login: () => json({ success: false, message: 'Invalid credentials' }, 401) })
   const e3 = await coreClient(config, badLogin.doFetch).createCampaign(body).catch(e => e)
   eq('bad credentials: says so, password never in the message', [/credentials/.test(e3.message), e3.message.includes('pw')], [true, false])
+
+  // Core's sign-in answers 200 with success: false and the reason in `error`.
+  clearCoreTokens()
+  const notFound = fakeCore({ login: () => json({ success: false, error: 'User not found.' }) })
+  const e4 = await coreClient(config, notFound.doFetch).createCampaign(body).catch(e => e)
+  eq('200 with success: false: a refused login, with its error, no create call',
+    [e4 instanceof CoreError, e4.message.includes('User not found.'), /credentials/.test(e4.message), notFound.calls.length], [true, true, true, 1])
+
+  clearCoreTokens()
+  const tokenAnyway = fakeCore({ login: () => json({ success: false, error: 'Account disabled', token: 'stale' }) })
+  const e5 = await coreClient(config, tokenAnyway.doFetch).createCampaign(body).catch(e => e)
+  eq('success: false wins over a token in the body', [e5.message.includes('Account disabled'), tokenAnyway.calls.length], [true, 1])
+
+  clearCoreTokens()
+  const nested = fakeCore({ login: () => json({ success: true, data: { token: 'tokN' } }) })
+  await coreClient(config, nested.doFetch).createCampaign(body)
+  eq('token under data is read', nested.calls[1].auth, 'Bearer tokN')
+
+  clearCoreTokens()
+  const createRefused = fakeCore({ create: () => json({ success: false, error: 'not found' }) })
+  const e6 = await coreClient(config, createRefused.doFetch).createCampaign(body).catch(e => e)
+  eq('create answering 200 with success: false: refused with its error', e6.message, 'LED refused it: not found')
 })())
 
 section('sendBookingToCore: refusals and idempotency')
-function deps(over: Partial<SendDeps> & { bookings?: BookingRequest[]; rows?: Map<string, SentRow> } = {}) {
+function deps(over: Partial<SendDeps> & { bookings?: BookingRequest[]; rows?: Map<string, SentRow>; creators?: Map<string, Creator> } = {}) {
   const rows = over.rows ?? new Map<string, SentRow>()
   const posted: CorePayload[] = []
   const saved: (string | null)[] = []
   const audited: unknown[] = []
   const d: SendDeps = {
     env: ON,
-    load: async () => ({ bookings: over.bookings ?? [two], sent: rows }),
+    load: async () => {
+      const bookings = over.bookings ?? [two]
+      return { bookings, sent: rows, creators: over.creators ?? new Map(bookings.map(b => [b.bookingKey, 'person' as Creator])) }
+    },
     ensureRow: async (key, ref) => {
       const have = rows.get(key)
       if (have) return have
@@ -168,8 +218,37 @@ defer((async () => {
   eq('first send stores the fingerprint', typeof ok.saved[0], 'string')
   eq('a send after an earlier attempt leaves the fingerprint unknown', re.saved[0], null)
 
+  const botOpen = deps({ creators: new Map([[two.bookingKey, 'bot' as Creator]]) })
+  const rb = await sendBookingToCore(two.bookingKey, botOpen.d)
+  eq("the bot's booking, not won: refused with the reason, nothing posted, no row",
+    [rb.status, /Salesforce bot/.test(String(rb.body.error)), botOpen.posted.length, botOpen.rows.size], [409, true, 0, 0])
+
+  const wonBot = build([hold({ status: 'COMMITTED', sfdc_job_number: '26-0001' })])
+  const botWon = deps({ bookings: [wonBot], creators: new Map([[wonBot.bookingKey, 'bot' as Creator]]) })
+  const rw = await sendBookingToCore(wonBot.bookingKey, botWon.d)
+  eq("the bot's booking once Closed Won: sent like any other", [wonBot.won, rw.status, botWon.posted.length], [true, 200, 1])
+
+  const unread = deps({ creators: new Map([[two.bookingKey, 'unknown' as Creator]]) })
+  const ru = await sendBookingToCore(two.bookingKey, unread.d)
+  eq('creator not read yet: waits, nothing posted', [ru.status, /isn't read yet/.test(String(ru.body.error)), unread.posted.length], [409, true, 0])
+
+  const absent = deps({ creators: new Map() })
+  eq('creator missing from the map: treated as not read, nothing posted', [(await sendBookingToCore(two.bookingKey, absent.d)).status, absent.posted.length], [409, 0])
+
   const failing = deps({ create: async () => { throw new CoreError('LED refused it: no timezone', 400) } })
   const r4 = await sendBookingToCore(two.bookingKey, failing.d)
   eq("Core refuses: 502 with its message, recorded on the row", [r4.status, r4.body.error, failing.rows.get(two.bookingKey)?.last_error],
     [502, 'LED refused it: no timezone', 'LED refused it: no timezone'])
 })())
+
+section('creatorsByBooking: who made each booking\'s opportunity')
+{
+  const row = (id: string, group: string | null, opp: string | null, by: string | null) => ({ id, campaign_group_id: group, sfdc_opportunity_id: opp, sfdc_created_by_id: by })
+  const m = creatorsByBooking([
+    row('a1', 'cg_a', '006A', PERSON), row('a2', 'cg_a', '006A', PERSON),
+    row('b1', 'cg_b', '006B', PERSON), row('b2', 'cg_b', '006B', BOT),
+    row('c1', 'cg_c', '006C', null),
+    row('d1', null, null, null),
+  ])
+  eq('person / any bot hold makes it bot / not read / no opportunity', [m.get('cg_a'), m.get('cg_b'), m.get('cg_c'), m.get('d1')], ['person', 'bot', 'unknown', 'person'])
+}

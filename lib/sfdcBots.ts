@@ -5,10 +5,11 @@
  * opportunities don't fit how the app books (one "Multi-market: city, city…"
  * label for every truck, no market per truck, no schedule), and it is to be
  * switched off once the app's own booking works well (Andrew, 2026-11-09).
- * So nothing new is built for its opportunities: they are to be left out of
- * what the app sends to LED (CampaignIQ requests, LED Readiness), rather than
- * handled. Nothing calls opportunityCreator yet; those senders will. The reconcile
- * records each opportunity's creator on its holds
+ * So nothing is designed around its opportunities: they come in from
+ * Salesforce and hold their trucks for the life of the opportunity like any
+ * deal, but are left out of what the app sends to LED (CampaignIQ requests,
+ * LED Readiness) unless they close won (Andrew, 2026-11-12;
+ * lib/campaignRequests.ts leftOutOfLed). The reconcile records each opportunity's creator on its holds
  * (app_holds.sfdc_created_by_id), so it is null until the first sweep after a
  * hold is made, which opportunityCreator reports as 'unknown': a sender
  * waits on it rather than reading it as a person.
@@ -36,6 +37,10 @@ export const SFDC_BOT_USER_IDS: ReadonlySet<string> = new Set([
  */
 export function opportunityCreator(h: { sfdc_opportunity_id: string | null; sfdc_created_by_id: string | null }): 'bot' | 'person' | 'unknown' {
   if (!h.sfdc_opportunity_id) return 'person'
-  if (!h.sfdc_created_by_id) return 'unknown'
+  // A stored id that isn't an 18-character user id (a 15-character one, or
+  // anything else) can't be checked against the bot list, so it is not known
+  // rather than a person: fail safe. The reconcile rewrites any creator that
+  // differs from the opportunity's, so it clears on the next sweep.
+  if (!h.sfdc_created_by_id || !isUserId(h.sfdc_created_by_id)) return 'unknown'
   return SFDC_BOT_USER_IDS.has(h.sfdc_created_by_id) ? 'bot' : 'person'
 }

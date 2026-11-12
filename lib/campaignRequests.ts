@@ -12,13 +12,20 @@
  * It also says what stops a booking converting cleanly, for the "needs ops"
  * list. Blocking: Core would refuse the convert, or the app can't say which
  * market a truck works. Warnings: it converts, but something was assumed that
- * ops should check in LED. Pure.
+ * ops should check in LED.
+ *
+ * Bookings whose Salesforce opportunity the bot user made (lib/sfdcBots.ts)
+ * are left out of LED rather than handled: `creator` says so, and the builder
+ * still builds them so the list can show them as excluded. A booking whose
+ * creator the reconcile hasn't read yet waits (a blocking issue), so the
+ * first sweep's window can't send a bot booking. Pure.
  */
 
 import { createHash } from 'crypto'
 import { NO_TRUCK, bookingKey, isMultiMarket } from '@/lib/bookings'
 import { SHORT_RANGE_MAX_DAYS, billedDaysPerWeek, countCalendarDays } from '@/lib/pricing/schedule'
 import { realJobNumber } from '@/lib/jobNumber'
+import { opportunityCreator } from '@/lib/sfdcBots'
 
 /** A hold as the builder reads it. Dates YYYY-MM-DD. */
 export type RequestHold = {
@@ -34,6 +41,8 @@ export type RequestHold = {
   sfdc_opportunity_id: string | null
   sfdc_account_id: string | null
   sfdc_job_number: string | null
+  /** Who made its Salesforce opportunity (the reconcile fills it; null until then). */
+  sfdc_created_by_id: string | null
   standard_market_uid: string | null
   quoted_total: number | null
   features: string | null
@@ -81,7 +90,7 @@ export type CampaignRequest = {
 
 export type IssueKind =
   | 'no_led_client' | 'market_label' | 'no_standard_market' | 'no_job_number'
-  | 'no_trucks' | 'days_not_confirmed' | 'hours_not_confirmed' | 'hours_off_shift' | 'hours_rounded' | 'shared_truck'
+  | 'no_trucks' | 'creator_unknown' | 'days_not_confirmed' | 'hours_not_confirmed' | 'hours_off_shift' | 'hours_rounded' | 'shared_truck'
 
 export type Issue = { kind: IssueKind; blocking: boolean; message: string; markets?: string[]; trucks?: string[] }
 
@@ -89,13 +98,36 @@ export type Issue = { kind: IssueKind; blocking: boolean; message: string; marke
  * `bookingKey`: the booking's key now. `won`: any hold is Closed Won. `marketNames`: each market as the holds name
  * it, in `request.markets` order. `holdsEnd`: the last day any live hold
  * reserves a truck (travel included), which can be after `request.endDate`.
+ * `creator`: who made its Salesforce opportunity (bookingCreator); a 'bot'
+ * booking isn't sent to LED unless it's Closed Won (leftOutOfLed).
  */
-export type BookingRequest = { bookingKey: string; request: CampaignRequest; issues: Issue[]; won: boolean; marketNames: string[]; holdsEnd: string }
+export type BookingRequest = { bookingKey: string; request: CampaignRequest; issues: Issue[]; won: boolean; marketNames: string[]; holdsEnd: string; creator: 'bot' | 'person' | 'unknown' }
+
+/**
+ * Who made a booking's Salesforce opportunity: 'bot' when any of its holds'
+ * opportunities is the bot user's (a booking is one opportunity, so one says
+ * it for all), else 'unknown' while any isn't read yet, else 'person'. Pure.
+ */
+export function bookingCreator(holds: Pick<RequestHold, 'sfdc_opportunity_id' | 'sfdc_created_by_id'>[]): 'bot' | 'person' | 'unknown' {
+  const each = holds.map(opportunityCreator)
+  return each.includes('bot') ? 'bot' : each.includes('unknown') ? 'unknown' : 'person'
+}
+
+/**
+ * Whether a booking is left out of LED: the Salesforce bot's, until it's
+ * Closed Won (Andrew, 2026-11-12). The bot doesn't follow the app's process,
+ * so nothing is designed around its deals: they block availability in the
+ * app for the life of their opportunity, but reach LED only if they close won,
+ * like any other deal. Pure.
+ */
+export const leftOutOfLed = (b: Pick<BookingRequest, 'creator' | 'won'>): boolean => b.creator === 'bot' && !b.won
 
 /** A Salesforce hold that names several markets in one label ("Multi-market: Austin, Dallas"). */
 export const isMarketLabel = (market: string) => /^\s*multi-market\s*:/i.test(market)
 
 const LIVE = new Set(['HOLD', 'EXTENSION_REQUESTED', 'COMMITTED'])
+/** An id the reconcile can read (lib/sfdcOpportunityReconcile.ts SFDC_ID). */
+const SFDC_ID = /^[a-zA-Z0-9]{15,18}$/
 
 type Features = { daysPerWeek?: unknown; operatingHours?: unknown; requestedStart?: unknown; requestedEnd?: unknown }
 function featuresOf(h: RequestHold): Features {
@@ -220,6 +252,17 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
     }
   }).sort((a, b) => a.startDate.localeCompare(b.startDate) || a.key.localeCompare(b.key))
 
+  const creator = bookingCreator(live)
+  // The reconcile fills the creator only for an opportunity it can read: a
+  // malformed id never is, and a deleted or hidden one never comes back, so
+  // the message can't promise the next sweep clears it.
+  if (creator === 'unknown') {
+    const badId = live.some(h => h.sfdc_opportunity_id && !SFDC_ID.test(h.sfdc_opportunity_id))
+    issues.push({ kind: 'creator_unknown', blocking: true, message: badId
+      ? 'Its Salesforce opportunity id isn\'t valid, so who made the opportunity can\'t be read: correct the opportunity on the reservation.'
+      : 'Who made its Salesforce opportunity isn\'t read yet. The sweep reads it within 15 minutes; if this stays, the opportunity may be deleted or hidden from the app\'s Salesforce user: check it exists.' })
+  }
+
   const accountId = live.map(h => h.sfdc_account_id).find(Boolean) ?? null
   const clientUid = accountId ? clientUidOf(accountId) : null
   if (!clientUid) issues.push({ kind: 'no_led_client', blocking: true, message: accountId ? 'Its Salesforce account is not linked to an LED client: link it on Reservations.' : 'It has no Salesforce account to link to an LED client.' })
@@ -271,6 +314,7 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
     won,
     marketNames: markets.map(m => names.get(m.key)!),
     holdsEnd: live.map(h => h.end_date).sort().reverse()[0],
+    creator,
   }
 }
 

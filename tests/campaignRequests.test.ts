@@ -6,7 +6,7 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { eq, section } from './harness'
-import { buildRequest, buildRequests, marketDays, requestFingerprint, type RequestHold } from '@/lib/campaignRequests'
+import { bookingCreator, buildRequest, buildRequests, leftOutOfLed, marketDays, requestFingerprint, type RequestHold } from '@/lib/campaignRequests'
 
 const DALLAS = '11111111-1111-1111-1111-111111111111'
 const AUSTIN = '22222222-2222-2222-2222-222222222222'
@@ -29,6 +29,7 @@ const hold = (over: Partial<RequestHold> = {}): RequestHold => ({
   sfdc_opportunity_id: '006Hs00000000001',
   sfdc_account_id: ACCOUNT,
   sfdc_job_number: null,
+  sfdc_created_by_id: '005Hs000000PERSONA',
   standard_market_uid: DALLAS,
   quoted_total: 20000,
   features: JSON.stringify({ daysPerWeek: 5, operatingHours: 10 }),
@@ -145,3 +146,18 @@ const holdRoute = readFileSync(join(process.cwd(), 'app/api/plan/hold/route.ts')
 const writeAll = holdRoute.slice(holdRoute.indexOf('const writeAll = async'), holdRoute.indexOf('const writeAll = async') + 2000)
 eq('the revise renames its request row in the same transaction as the holds; a quote-only one leaves it to be declined',
   /if \(reviseKey && !quoteOnly\) await tx\.campaignRequestSync\.updateMany\(\{ where: \{ booking_key: reviseKey \}, data: \{ booking_key: newKey \} \}\)/.test(writeAll), true)
+
+section('the Salesforce bot user\'s bookings are left out of LED')
+const BOT = '005VP00000MNXcvYAH'
+eq('a person\'s opportunity: sent, no creator issue', [buildRequest([hold()], linked, unsent)!.creator, kinds(buildRequest([hold()], linked, unsent)).includes('creator_unknown!')], ['person', false])
+eq('the bot\'s opportunity: excluded', buildRequest([hold({ sfdc_created_by_id: BOT })], linked, unsent)!.creator, 'bot')
+eq('leftOutOfLed: the bot\'s open deal is left out', leftOutOfLed({ creator: 'bot', won: false }), true)
+eq('leftOutOfLed: the bot\'s Closed Won deal goes to LED like any other', leftOutOfLed({ creator: 'bot', won: true }), false)
+eq('leftOutOfLed: a person\'s deal, won or not, is never left out', [leftOutOfLed({ creator: 'person', won: false }), leftOutOfLed({ creator: 'person', won: true })], [false, false])
+eq('leftOutOfLed: not read yet is not left out (it waits, blocked, instead)', leftOutOfLed({ creator: 'unknown', won: false }), false)
+eq('not read yet: waits, blocked', [buildRequest([hold({ sfdc_created_by_id: null })], linked, unsent)!.creator, kinds(buildRequest([hold({ sfdc_created_by_id: null })], linked, unsent)).includes('creator_unknown!')], ['unknown', true])
+eq('no opportunity: a person\'s (nothing to wait on)', buildRequest([hold({ sfdc_opportunity_id: null, sfdc_created_by_id: null })], linked, unsent)!.creator, 'person')
+eq('one bot hold makes the booking the bot\'s, even with one unread', bookingCreator([{ sfdc_opportunity_id: '006a', sfdc_created_by_id: null }, { sfdc_opportunity_id: '006a', sfdc_created_by_id: BOT }]), 'bot')
+eq('unread beats person', bookingCreator([{ sfdc_opportunity_id: '006a', sfdc_created_by_id: '005Hs000000PERSONA' }, { sfdc_opportunity_id: '006a', sfdc_created_by_id: null }]), 'unknown')
+eq('a malformed opportunity id says so, not "the next sweep"', buildRequest([hold({ sfdc_opportunity_id: 'not-an-id', sfdc_created_by_id: null })], linked, unsent)!.issues.find(i => i.kind === 'creator_unknown')?.message.includes('isn\'t valid'), true)
+eq('an unread valid id says what to check if it stays', buildRequest([hold({ sfdc_created_by_id: null })], linked, unsent)!.issues.find(i => i.kind === 'creator_unknown')?.message.includes('check it exists'), true)

@@ -13,6 +13,7 @@ import { useRouter } from 'next/navigation'
 import { Navbar } from '@/components/Navbar'
 import { PlannerTab } from '@/components/PlannerTab'
 import { MARKET_SIZE_TIERS, NON_DMA_MARKET_TIER } from '@/lib/pricing/config'
+import { STUDY_LONG_WARNING, STUDY_WINDOW_DAYS, studiesCost } from '@/lib/pricing/studies'
 import { ClientTypePicker, LeadSourcePicker, OpportunityTypePicker } from '@/components/OpportunityFields'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
@@ -41,7 +42,7 @@ type QuoteResponse = {
     shadowFencing: { included: boolean; cost: number; floored: boolean; digitalImpressions: number }
     smartDirectional: { included: boolean; cost: number }
     deviceId: { included: boolean; cost: number }
-    studies: { available: boolean; selected: string[]; costPerStudy: number; estimatedImpressions: number; reachMinimum: number }
+    studies: { available: boolean; selected: string[]; costPerStudy: number; prices: Record<string, number>; salesLiftRequested: boolean; warning: string | null; estimatedImpressions: number; reachMinimum: number }
   }
   transport: { outcome: string; charge?: number; absorbed?: boolean; absorbedReason?: string; repositioning?: { truckCount: number; charge: number; trucks: { distanceMiles: number; transportDays: number; charge: number; from: string }[] }; localCount?: number }
   _internal?: { chainFlags?: { truckNumber: string; successorMarket: string; successorStart: string; deltaTransportDays: number; deltaCost: number }[] }
@@ -233,7 +234,7 @@ export default function InternalQuotePage() {
     if (toggles.shadowFencing) media += features.shadowFencing.cost
     if (toggles.smartDirectional) media += features.smartDirectional.cost
     if (toggles.deviceId) media += features.deviceId.cost
-    if (features.studies.available && toggles.studies.length > 0) media += toggles.studies.length * features.studies.costPerStudy
+    if (features.studies.available) media += studiesCost(toggles.studies, features.studies.prices)
     return media + quoteResult.transportCharge
   }
 
@@ -650,7 +651,7 @@ export default function InternalQuotePage() {
               ))}
               <div className="pt-2 border-t border-gray-100">
                 <div className="flex items-center justify-between mb-2">
-                  <div><p className="text-sm font-medium text-gray-900">Lift Studies</p><p className="text-xs text-gray-500">{fmtMoney(quoteResult.features.studies.costPerStudy)} per study</p></div>
+                  <div><p className="text-sm font-medium text-gray-900">Lift Studies</p><p className="text-xs text-gray-500">One study covers the order; sales lift is quoted by the team</p></div>
                   {!quoteResult.features.studies.available && <span className="text-[10px] text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">Requires {quoteResult.features.studies.reachMinimum.toLocaleString()}+ impressions</span>}
                 </div>
                 {/* How the reach behind the lift-study gate is estimated (lib/pricing/engine.ts): trucks × activation days × the market tier's daily A18+ impressions per truck. */}
@@ -669,10 +670,12 @@ export default function InternalQuotePage() {
                       <button key={s} onClick={() => can && setToggles(p => ({ ...p, studies: sel ? p.studies.filter(x => x !== s) : [...p.studies, s] }))} disabled={!can}
                         className={`text-left text-xs rounded-lg border px-3 py-2 transition-all ${sel ? 'border-purple-300 bg-purple-50 text-purple-800 font-medium' : can ? 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50' : 'border-gray-100 bg-gray-50 text-gray-400 cursor-not-allowed'}`}>
                         <span className="mr-1.5">{sel ? '\u2713' : '\u25CB'}</span>{STUDY_LABELS[s]}
+                        <span className="block text-[10px] text-gray-500 font-normal">{s === 'sales_lift' ? 'Ask the team' : fmtMoney(quoteResult.features.studies.prices[s] ?? 0)}</span>
                       </button>
                     )
                   })}
                 </div>
+                {quoteResult.features.studies.available && toggles.studies.length > 0 && quoteResult.pricing.calendarDays > STUDY_WINDOW_DAYS && <p className="mt-2 text-xs text-amber-700">{STUDY_LONG_WARNING}</p>}
               </div>
             </div>
 
@@ -683,7 +686,7 @@ export default function InternalQuotePage() {
               if (toggles.shadowFencing) mediaTotal += features.shadowFencing.cost
               if (toggles.smartDirectional) mediaTotal += features.smartDirectional.cost
               if (toggles.deviceId) mediaTotal += features.deviceId.cost
-              if (features.studies.available && toggles.studies.length > 0) mediaTotal += toggles.studies.length * features.studies.costPerStudy
+              if (features.studies.available) mediaTotal += studiesCost(toggles.studies, features.studies.prices)
               const transport = quoteResult.transportCharge
               const total = mediaTotal + transport
 
@@ -694,7 +697,8 @@ export default function InternalQuotePage() {
                     {toggles.shadowFencing && <div className="flex justify-between text-gray-600"><span>Shadow fencing</span><span>+ {fmtMoney(features.shadowFencing.cost)}</span></div>}
                     {toggles.smartDirectional && <div className="flex justify-between text-gray-600"><span>Smart Directional</span><span>+ {fmtMoney(features.smartDirectional.cost)}</span></div>}
                     {toggles.deviceId && <div className="flex justify-between text-gray-600"><span>Device ID Passback</span><span>+ {fmtMoney(features.deviceId.cost)}</span></div>}
-                    {toggles.studies.length > 0 && features.studies.available && <div className="flex justify-between text-gray-600"><span>{toggles.studies.length} lift {toggles.studies.length === 1 ? 'study' : 'studies'}</span><span>+ {fmtMoney(toggles.studies.length * features.studies.costPerStudy)}</span></div>}
+                    {features.studies.available && toggles.studies.filter(s => s !== 'sales_lift').map(s => <div key={s} className="flex justify-between text-gray-600"><span>{STUDY_LABELS[s]} study</span><span>+ {fmtMoney(features.studies.prices[s] ?? 0)}</span></div>)}
+                    {features.studies.available && toggles.studies.includes('sales_lift') && <div className="flex justify-between text-gray-500 text-xs"><span>Sales lift: the team quotes it</span><span>not included</span></div>}
                     {transport > 0 && <div className="flex justify-between text-gray-600 pt-1.5 border-t border-gray-100"><span>Transport</span><span>+ {fmtMoney(transport)}</span></div>}
                     <div className="flex justify-between font-bold text-gray-900 pt-2 border-t border-gray-200 text-base"><span>Total</span><span>{fmtMoney(total)}</span></div>
                   </div>

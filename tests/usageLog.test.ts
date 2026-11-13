@@ -4,7 +4,7 @@
  */
 import { eq, section } from './harness'
 import { outcomeFor, pruneFormEntries, pruneInputs, reportFields, summarizeResult } from '@/lib/usageLog'
-import { describeInputs, describeResult, isQuoteOnlyRun, runLabel, toolLabel } from '@/lib/usageFormat'
+import { describeInputs, describeResult, isQuoteOnlyRun, parseToolFilter, runLabel, toolFilterOptions, toolLabel } from '@/lib/usageFormat'
 
 section('usage log: inputs kept')
 eq('primitives kept', pruneInputs({ market: 'Ames, IA', truck_count: 2, shadow_fencing: true }), { market: 'Ames, IA', truck_count: 2, shadow_fencing: true })
@@ -39,7 +39,7 @@ eq('a chat', describeInputs({ message: 'Which trucks are free in Denver next wee
 eq('a result', describeResult({ total: 3800.4, holds: 1 }), '$3,800 · 1 hold')
 eq('a refusal', describeResult({ insufficient: true, error: 'Automatic quote not feasible' }), 'not enough trucks · Automatic quote not feasible')
 eq('an MCP result', describeResult({ best_total: 12000 }), '$12,000')
-eq('tool names', [toolLabel('quote_classic'), toolLabel('get_rate_quote'), toolLabel('something_new')], ['Quote (Quote Builder)', 'MCP: rate quote', 'something_new'])
+eq('tool names', [toolLabel('quote_classic'), toolLabel('get_rate_quote'), toolLabel('something_new')], ['Quote price check (Quote Builder)', 'MCP: rate quote', 'something_new'])
 
 section('usage log: file uploads are redacted the same way')
 eq('the field kept, the key dropped, the file as name + size',
@@ -76,7 +76,7 @@ eq('a real hold keeps its label', runLabel('hold_classic', { holds: 2 }, { quote
 eq('older rows: read from the request (quote_only on the Quote Builder, quoteOnly on the planner)',
   [runLabel('hold_classic', { total: 3800 }, { quote_only: true }), runLabel('hold_multi', null, { quoteOnly: true })],
   ['Quote only, no reservation (Quote Builder)', 'Quote only, no reservation (Multi-market)'])
-eq('only hold tools are relabelled', runLabel('quote_classic', null, { quote_only: true }), 'Quote (Quote Builder)')
+eq('only hold tools are relabelled', runLabel('quote_classic', null, { quote_only: true }), 'Quote price check (Quote Builder)')
 eq('a quote-only log counts no holds', summarizeResult({ ok: true, created: 1, quoteOnly: true }).holds, undefined)
 eq('a flag the route ignores does not relabel', [runLabel('hold_client', { holds: 1 }, { quote_only: true }), runLabel('hold_classic', { holds: 1 }, { quoteOnly: true })],
   ['Hold placed (client portal)', 'Hold placed (Quote Builder)'])
@@ -87,3 +87,25 @@ eq('backfilled quote-only bookings are recognised by the backfill note',
 eq('a backfilled real hold keeps its label', runLabel('hold_classic', { total: 3800, holds: 2 }, { backfilled_from: 'holds' }), 'Hold placed (Quote Builder)')
 eq('the label doesn\'t claim Salesforce worked: a failed quote-only submit reads the same, its outcome shows the error',
   runLabel('hold_classic', { error: 'Salesforce is unavailable' }, { quote_only: true }), 'Quote only, no reservation (Quote Builder)')
+
+section('usage log: Tool filter')
+// As prod logged a Quote Builder quote-only submit on 2026-11-13: the flag is in the request, the result predates quote_only.
+const loggedQuoteOnly = { inputs: { market: 'Phoenix, AZ', truck_count: 3, stage: 'WARM', quote_only: true }, result: { holds: 3, error: 'Quote logged for Evergreen Trading; no trucks reserved. Salesforce opportunity created.' } }
+eq('a logged quote-only submit reads as a quote', runLabel('hold_classic', loggedQuoteOnly.result, loggedQuoteOnly.inputs), 'Quote only, no reservation (Quote Builder)')
+eq('each hold tool that can log a quote only has its own quote-only option, right after it',
+  toolFilterOptions().map(o => o.v).filter(v => /^(hold_classic|hold_multi|quote_only_)/.test(v)),
+  ['hold_classic', 'quote_only_classic', 'hold_multi', 'quote_only_multi'])
+eq('the quote-only options read as the rows do',
+  toolFilterOptions().filter(o => o.v.startsWith('quote_only_')).map(o => o.l),
+  ['Quote only, no reservation (Quote Builder)', 'Quote only, no reservation (Multi-market)'])
+eq('MCP options stay', toolFilterOptions().some(o => o.v === 'mcp') && toolFilterOptions().some(o => o.v === 'mcp_book_campaign'), true)
+eq('quote-only filters select their hold tool\'s quote-only runs',
+  [parseToolFilter('quote_only_classic'), parseToolFilter('quote_only_multi')],
+  [{ tool: 'hold_classic', quoteOnly: true }, { tool: 'hold_multi', quoteOnly: true }])
+eq('"Hold placed" filters leave quote-only runs out',
+  [parseToolFilter('hold_classic'), parseToolFilter('hold_multi')],
+  [{ tool: 'hold_classic', quoteOnly: false }, { tool: 'hold_multi', quoteOnly: false }])
+eq('other tools and no filter are unchanged',
+  [parseToolFilter('hold_client'), parseToolFilter('mcp'), parseToolFilter(null), parseToolFilter('')],
+  [{ tool: 'hold_client', quoteOnly: null }, { tool: 'mcp', quoteOnly: null }, { tool: null, quoteOnly: null }, { tool: null, quoteOnly: null }])
+eq('an inherited property name is not a filter', parseToolFilter('toString'), { tool: 'toString', quoteOnly: null })

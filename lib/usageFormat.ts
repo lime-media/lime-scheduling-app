@@ -73,6 +73,41 @@ const QUOTE_ONLY_RUNS: Record<string, { flag: string; label: string }> = {
   hold_multi: { flag: 'quoteOnly', label: 'Quote only, no reservation (Multi-market)' },
 }
 
+/**
+ * The Usage page's Tool filter. A quote-only submit is logged under the same
+ * tool as a real hold, so filtering by tool alone listed quotes under "Hold
+ * placed". Each hold tool that can log a quote only gets a second option, and
+ * the "Hold placed" option leaves quote-only runs out.
+ */
+export const QUOTE_ONLY_FILTERS: Record<string, string> = {
+  quote_only_classic: 'hold_classic',
+  quote_only_multi: 'hold_multi',
+}
+
+/** The Tool filter's options, in the order the page lists them (browser-safe). */
+export function toolFilterOptions(): { v: string; l: string }[] {
+  return [
+    ...Object.entries(TOOL_LABELS).flatMap(([v, l]) => {
+      const qo = Object.entries(QUOTE_ONLY_FILTERS).find(([, tool]) => tool === v)
+      return qo ? [{ v, l }, { v: qo[0], l: QUOTE_ONLY_RUNS[v].label }] : [{ v, l }]
+    }),
+    { v: 'mcp', l: 'MCP: all tools' },
+    ...Object.entries(MCP_TOOL_LABELS).map(([k, l]) => ({ v: `mcp_${k}`, l })),
+  ]
+}
+
+/**
+ * What a Tool filter value selects: the logged tool ('mcp' for every MCP
+ * tool), and whether only quote-only runs (true), only real holds (false), or
+ * every run (null) of it. Pure.
+ */
+export function parseToolFilter(value: string | null): { tool: string | null; quoteOnly: boolean | null } {
+  if (!value) return { tool: null, quoteOnly: null }
+  if (Object.hasOwn(QUOTE_ONLY_FILTERS, value)) return { tool: QUOTE_ONLY_FILTERS[value], quoteOnly: true }
+  if (Object.hasOwn(QUOTE_ONLY_RUNS, value)) return { tool: value, quoteOnly: false }
+  return { tool: value, quoteOnly: null }
+}
+
 type Bag = Record<string, unknown>
 const s = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
 const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)

@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { isQuoteOnlyRun, runLabel } from '@/lib/usageFormat'
+import { isQuoteOnlyRun, parseToolFilter, runLabel } from '@/lib/usageFormat'
 
 const MAX_ROWS = 1000
 const parse = (v: string | null) => { if (!v) return null; try { return JSON.parse(v) } catch { return v } }
@@ -30,7 +30,8 @@ export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams
   const to = isDate(sp.get('to')) ? new Date(sp.get('to') + 'T23:59:59.999Z') : new Date()
   const from = isDate(sp.get('from')) ? new Date(sp.get('from') + 'T00:00:00Z') : new Date(to.getTime() - 7 * 86_400_000)
-  const tool = sp.get('tool') || null
+  // A hold tool's filter can ask for its quote-only runs, or its real holds only (lib/usageFormat.ts).
+  const { tool, quoteOnly: onlyQuoteOnly } = parseToolFilter(sp.get('tool') || null)
   const actor = sp.get('actor') || null
   // 'mcp' = every MCP tool; anything else is one tool's exact name.
   const toolWhere = !tool ? {} : tool === 'mcp' ? { tool: { startsWith: 'mcp_' } } : { tool }
@@ -50,7 +51,7 @@ export async function GET(req: NextRequest) {
       ...clients.map(c => [c.id, `${c.company_name} (${c.username})`] as [string, string]),
     ])
 
-    const rows: UsageRow[] = logRows.map(r => {
+    const allRows: UsageRow[] = logRows.map(r => {
       const inputs = parse(r.inputs)
       const parsed = parse(r.result)
       // A quote-only run reserved nothing. Rows logged before summarizeResult
@@ -65,6 +66,9 @@ export async function GET(req: NextRequest) {
         outcome: r.outcome, latencyMs: r.latency_ms, inputs, result,
       }
     })
+
+    const rows = onlyQuoteOnly === null ? allRows
+      : allRows.filter(r => isQuoteOnlyRun(r.tool, r.result as Record<string, unknown> | null, r.inputs as Record<string, unknown> | null) === onlyQuoteOnly)
 
     const count = (key: (r: UsageRow) => string) => {
       const m = new Map<string, number>()

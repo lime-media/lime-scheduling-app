@@ -9,7 +9,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { useSession } from 'next-auth/react'
 import { Navbar } from '@/components/Navbar'
-import { MCP_TOOL_LABELS, TOOL_LABELS, describeInputs, describeResult } from '@/lib/usageFormat'
+import { describeInputs, describeResult, toolFilterOptions } from '@/lib/usageFormat'
 
 type Row = {
   id: string; at: string; source: 'app' | 'mcp'; tool: string; toolLabel: string
@@ -56,11 +56,8 @@ export default function UsagePage() {
   }, [from, to, tool, actor])
   useEffect(() => { if (session?.user?.role === 'OPERATIONS') load() }, [load, session])
 
-  const toolOptions = useMemo(() => [
-    ...Object.entries(TOOL_LABELS).map(([v, l]) => ({ v, l })),
-    { v: 'mcp', l: 'MCP: all tools' },
-    ...Object.entries(MCP_TOOL_LABELS).map(([k, l]) => ({ v: `mcp_${k}`, l })),
-  ], [])
+  // Hold tools list their quote-only runs as their own option (lib/usageFormat.ts).
+  const toolOptions = useMemo(toolFilterOptions, [])
 
   if (status === 'loading') return null
   if (session?.user?.role !== 'OPERATIONS') {
@@ -110,23 +107,35 @@ export default function UsagePage() {
               ))}
             </div>
 
-            <div className="bg-white border border-gray-200 rounded-xl overflow-x-auto mb-6">
-              <table className="w-full text-sm">
+            {/* Fits the page: fixed column widths, long text wraps (What and
+                Result to two lines; the full text is on hover and in the
+                expanded row). Narrow screens drop What and Time. */}
+            <div className="bg-white border border-gray-200 rounded-xl overflow-hidden mb-6">
+              <table className="w-full table-fixed text-sm">
                 <thead className="bg-gray-50 border-b border-gray-200 text-left text-xs uppercase tracking-wider text-gray-500">
-                  <tr><th className="px-3 py-2">When</th><th className="px-3 py-2">Person</th><th className="px-3 py-2">Tool</th><th className="px-3 py-2">What</th><th className="px-3 py-2">Result</th><th className="px-3 py-2">Outcome</th><th className="px-3 py-2 text-right">Time</th></tr>
+                  <tr>
+                    {/* table-fixed takes its column widths from this row. */}
+                    <th className="w-[5.5rem] sm:w-28 px-2 sm:px-3 py-2">When</th>
+                    <th className="w-24 sm:w-32 px-2 sm:px-3 py-2">Person</th>
+                    <th className="w-28 sm:w-44 px-2 sm:px-3 py-2">Tool</th>
+                    <th className="hidden md:table-cell px-3 py-2">What</th>
+                    <th className="px-2 sm:px-3 py-2">Result</th>
+                    <th className="w-[5.5rem] sm:w-28 px-2 sm:px-3 py-2">Outcome</th>
+                    <th className="hidden md:table-cell w-20 px-3 py-2 text-right">Time</th>
+                  </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {data.rows.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-500">No runs in this range.</td></tr>}
                   {data.rows.map(r => (
                     <Fragment key={r.id}>
                       <tr className="hover:bg-gray-50 cursor-pointer" onClick={() => setOpen(open === r.id ? null : r.id)} aria-expanded={open === r.id}>
-                        <td className="px-3 py-2 whitespace-nowrap text-gray-600">{when(r.at)}</td>
-                        <td className="px-3 py-2 whitespace-nowrap text-gray-900">{r.actorName}{r.actorType === 'client_user' && <span className="ml-1 text-[10px] text-gray-400 uppercase">client</span>}</td>
-                        <td className="px-3 py-2 whitespace-nowrap text-gray-700">{r.toolLabel}</td>
-                        <td className="px-3 py-2 text-gray-600 max-w-xs truncate" title={describeInputs(r.inputs)}>{describeInputs(r.inputs) || '—'}</td>
-                        <td className="px-3 py-2 text-gray-600 max-w-xs truncate" title={describeResult(r.result)}>{describeResult(r.result) || '—'}</td>
-                        <td className="px-3 py-2"><span className={`text-xs font-medium px-2 py-0.5 rounded-full ${(OUTCOME[r.outcome] ?? OUTCOME.refused).cls}`}>{(OUTCOME[r.outcome] ?? { label: r.outcome }).label}</span></td>
-                        <td className="px-3 py-2 text-right tabular-nums text-gray-500">{r.latencyMs <= 0 ? '—' : r.latencyMs >= 1000 ? `${(r.latencyMs / 1000).toFixed(1)} s` : `${r.latencyMs} ms`}</td>
+                        <td className="px-2 sm:px-3 py-2 align-top text-gray-600">{when(r.at)}</td>
+                        <td className="px-2 sm:px-3 py-2 align-top text-gray-900 break-words">{r.actorName}{r.actorType === 'client_user' && <span className="ml-1 text-[10px] text-gray-400 uppercase">client</span>}</td>
+                        <td className="px-2 sm:px-3 py-2 align-top text-gray-700 break-words">{r.toolLabel}</td>
+                        <td className="hidden md:table-cell px-3 py-2 align-top text-gray-600" title={describeInputs(r.inputs)}><span className="line-clamp-2 break-words">{describeInputs(r.inputs) || '—'}</span></td>
+                        <td className="px-2 sm:px-3 py-2 align-top text-gray-600" title={describeResult(r.result)}><span className="line-clamp-2 break-words">{describeResult(r.result) || '—'}</span></td>
+                        <td className="px-2 sm:px-3 py-2 align-top"><span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${(OUTCOME[r.outcome] ?? OUTCOME.refused).cls}`}>{(OUTCOME[r.outcome] ?? { label: r.outcome }).label}</span></td>
+                        <td className="hidden md:table-cell px-3 py-2 align-top text-right tabular-nums text-gray-500">{r.latencyMs <= 0 ? '—' : r.latencyMs >= 1000 ? `${(r.latencyMs / 1000).toFixed(1)} s` : `${r.latencyMs} ms`}</td>
                       </tr>
                       {open === r.id && (
                         <tr className="bg-gray-50"><td colSpan={7} className="px-3 py-3">

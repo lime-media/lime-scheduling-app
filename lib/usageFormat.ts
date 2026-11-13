@@ -12,15 +12,16 @@ export type UsageTool =
 export const TOOL_LABELS: Record<UsageTool, string> = {
   // The Quote Builder's /api/quote and /api/quote/hold; the key predates the
   // Classic Quote Tool's removal and stays so older rows keep their label.
-  quote_classic: 'Quote (Quote Builder)',
-  quote_multi: 'Quote (Multi-market)',
-  quote_client: 'Quote (client portal)',
-  quote_chat: 'Quote (AI chat)',
+  // Pricing runs save nothing (no opportunity, no hold): a price check.
+  quote_classic: 'Quote price check (Quote Builder)',
+  quote_multi: 'Quote price check (Multi-market)',
+  quote_client: 'Quote price check (client portal)',
+  quote_chat: 'Quote price check (AI chat)',
   hold_classic: 'Hold placed (Quote Builder)',
   hold_multi: 'Hold placed (Multi-market)',
   hold_client: 'Hold placed (client portal)',
   hold_chat: 'Hold placed (AI chat)',
-  quote_client_multi: 'Quote (client portal, multi-market)',
+  quote_client_multi: 'Quote price check (client portal, multi-market)',
   hold_client_multi: 'Hold placed (client portal, multi-market)',
   ai_chat_staff: 'AI chat (staff)',
   ai_chat_client: 'AI chat (client portal)',

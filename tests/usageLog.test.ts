@@ -39,7 +39,7 @@ eq('a chat', describeInputs({ message: 'Which trucks are free in Denver next wee
 eq('a result', describeResult({ total: 3800.4, holds: 1 }), '$3,800 · 1 hold')
 eq('a refusal', describeResult({ insufficient: true, error: 'Automatic quote not feasible' }), 'not enough trucks · Automatic quote not feasible')
 eq('an MCP result', describeResult({ best_total: 12000 }), '$12,000')
-eq('tool names', [toolLabel('quote_classic'), toolLabel('get_rate_quote'), toolLabel('something_new')], ['Quote (Quote Builder)', 'MCP: rate quote', 'something_new'])
+eq('tool names', [toolLabel('quote_classic'), toolLabel('get_rate_quote'), toolLabel('something_new')], ['Quote price check (Quote Builder)', 'MCP: rate quote', 'something_new'])
 
 section('usage log: file uploads are redacted the same way')
 eq('the field kept, the key dropped, the file as name + size',
@@ -76,7 +76,7 @@ eq('a real hold keeps its label', runLabel('hold_classic', { holds: 2 }, { quote
 eq('older rows: read from the request (quote_only on the Quote Builder, quoteOnly on the planner)',
   [runLabel('hold_classic', { total: 3800 }, { quote_only: true }), runLabel('hold_multi', null, { quoteOnly: true })],
   ['Quote only, no reservation (Quote Builder)', 'Quote only, no reservation (Multi-market)'])
-eq('only hold tools are relabelled', runLabel('quote_classic', null, { quote_only: true }), 'Quote (Quote Builder)')
+eq('only hold tools are relabelled', runLabel('quote_classic', null, { quote_only: true }), 'Quote price check (Quote Builder)')
 eq('a quote-only log counts no holds', summarizeResult({ ok: true, created: 1, quoteOnly: true }).holds, undefined)
 eq('a flag the route ignores does not relabel', [runLabel('hold_client', { holds: 1 }, { quote_only: true }), runLabel('hold_classic', { holds: 1 }, { quoteOnly: true })],
   ['Hold placed (client portal)', 'Hold placed (Quote Builder)'])

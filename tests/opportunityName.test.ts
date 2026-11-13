@@ -9,7 +9,7 @@ import { opportunityName } from '@/lib/brand'
 import { OPPORTUNITY_NAME_MAX, planOpportunityName, readOpportunityName, singleMarketOpportunityName } from '@/lib/opportunityName'
 
 section('Opportunity name: defaults (the Closed Won form, Brand / Account / date)')
-eq('single market: brand / account / first day', singleMarketOpportunityName('Hardees', 'GNF Marketing', '2026-12-11'), 'Hardees / GNF Marketing / 2026-12-11')
+eq('single market: brand / account / first day', singleMarketOpportunityName('Nike', 'Rolling Adz', '2026-12-11'), 'Nike / Rolling Adz / 2026-12-11')
 eq('single market: the shared builder', singleMarketOpportunityName('Nike', 'Rolling Adz', '2026-10-02'), opportunityName('Nike', 'Rolling Adz', '2026-10-02'))
 eq('single market: no brand, no account', singleMarketOpportunityName('', undefined, '2026-12-01'), 'Client / 2026-12-01')
 eq('plan: dated by the earliest delivery day, else the requested start',

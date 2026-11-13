@@ -67,7 +67,7 @@ export function brandChange(raw: string | null | undefined): 'none' | 'stripped'
 
 /**
  * The Opportunity name, in the form sellers give a deal at Closed Won:
- * "Brand / Account / date" ("Hardees / GNF Marketing / 2026-11-13"). Closed
+ * "Brand / Account / date" ("Nike / Rolling Adz / 2026-11-13"). Closed
  * Won names carry the close date; a new opportunity carries its flight's
  * first day until then. Without a brand: "Account / date". Salesforce allows
  * 120 characters.

@@ -535,6 +535,9 @@ async function handlePost(req: NextRequest) {
       : []
 
     let sfdcOpportunityId: string | null = null
+    // The name a new opportunity was given, for the confirmation: the default is
+    // built from what was actually booked, which can differ from the page's preview.
+    let createdOppName: string | null = null
     let sfdcError: string | null = null
     // Markets as the holds name them (the standard market an imported DMA
     // resolved to), so a later revision can tell which ones it drops
@@ -599,7 +602,7 @@ async function handlePost(req: NextRequest) {
           leadSource: leadSource ?? undefined,
           // As picked (the planner asks for one whenever a new opportunity is made), else Existing Client once the account has won a deal.
           opportunityType: oppType.opportunityType ?? suggestedOpportunityType(accountInfo?.hasWon),
-          name: oppNameRead.name ?? planOpportunityName(brand, accountName, quote.lines),
+          name: (createdOppName = oppNameRead.name ?? planOpportunityName(brand, accountName, quote.lines)),
           brand: brand || undefined,
           primaryContactId: body.primaryContactId,
           stageName: openStage(body.stage),
@@ -643,7 +646,7 @@ async function handlePost(req: NextRequest) {
 
     const leftOut = notSelected.length + unavailable.length
     // Which opportunity, and what happened to it.
-    const oppDone = !target ? 'Salesforce opportunity created'
+    const oppDone = !target ? `Salesforce opportunity${createdOppName ? ` "${createdOppName}"` : ''} created`
       : reviseKey ? 'Salesforce opportunity updated with the revision'
       : `Added to Salesforce opportunity "${target.Name}"`
     const lead = reviseKey ? 'Booking revised: ' : ''

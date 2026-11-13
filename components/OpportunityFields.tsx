@@ -73,7 +73,7 @@ export function OpportunityNameInput({ value, defaultName, onChange }: { value: 
       <input type="text" value={value ?? defaultName} maxLength={OPPORTUNITY_NAME_MAX} aria-label="Opportunity name"
         onChange={e => onChange(e.target.value)}
         className="mt-1 w-full border border-gray-200 rounded-lg px-2 py-1 text-xs text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-green-500" />
-      <span className="mt-0.5 block text-[11px] text-gray-400">{blank ? 'Left blank, the opportunity gets the default name.' : edited ? 'Salesforce gets this name.' : 'The name the app generates. Type to use your own.'}</span>
+      <span className="mt-0.5 block text-[11px] text-gray-400">{blank ? 'Left blank, the opportunity gets the default name.' : edited ? 'Salesforce gets this name.' : 'The name the app generates from what is booked (shown in the confirmation). Type to use your own.'}</span>
     </label>
   )
 }

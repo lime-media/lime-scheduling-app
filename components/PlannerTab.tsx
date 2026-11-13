@@ -420,6 +420,8 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
       if (res.status === 400 && data.needLeadSource && revision) setRevision(r => r && { ...r, opportunityName: null })
       if (!res.ok) throw new Error(data.error || 'Holds could not be placed')
       setHoldResult({ ok: true, message: data.confirmation ?? data.message, sfdcFailure: data.sfdcFailure ?? null })
+      // A typed name was for this opportunity: the next booking starts from its own default.
+      setOppName(null)
       setSfdcFailureOpen(Boolean(data.sfdcFailure))
       // A finished revision: the booking now stands as booked; leave revise mode.
       if (revision) { setRevision(null); setHoldUntil(null); onReviseDone?.() }

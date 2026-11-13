@@ -318,6 +318,8 @@ export default function InternalQuotePage() {
         return
       }
       setHoldResult({ ok: res.ok, message: (res.ok && data.confirmation) || data.message || data.error || 'Unknown error', sfdcFailure: res.ok ? data.sfdcFailure ?? null : null })
+      // A typed name was for this opportunity: the next booking starts from its own default.
+      if (res.ok) setOppName(null)
       setSfdcFailureOpen(Boolean(res.ok && data.sfdcFailure))
     } catch {
       setHoldResult({ ok: false, message: 'Network error.' })

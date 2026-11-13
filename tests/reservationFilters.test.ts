@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { ownedBy, ownerOptions, runsBetween, wholeBookings } from '@/lib/reservationFilters'
+import { defaultOwner, ownedBy, ownerOptions, runsBetween, wholeBookings } from '@/lib/reservationFilters'
 
 const r = (owner_id: string, owner_name: string, start_date = '2026-11-09', end_date = '2026-11-20') => ({ owner_id, owner_name, start_date, end_date })
 // u3 owns an opportunity but has no app login: kept under their Salesforce id and name.
@@ -41,3 +41,8 @@ section('Reservations: a filter keeps whole bookings')
   eq('a reservation on its own matches alone', ids(r => r.market === 'Reno, NV'), ['c1'])
   eq('nothing matches: nothing', ids(() => false), [])
 }
+
+section('reservations: the owner the page opens on')
+eq('someone with reservations opens on Me', defaultOwner(rows, 'u1'), 'me')
+eq('someone with none opens on Everyone', defaultOwner(rows, 'u9'), 'all')
+eq('no session opens on Everyone', defaultOwner(rows, null), 'all')

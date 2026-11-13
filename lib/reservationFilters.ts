@@ -51,3 +51,12 @@ export function wholeBookings<R extends { campaign_group_id: string | null; sfdc
   const cards = new Set(rows.filter(matches).map(r => bookingKey(r)).filter(Boolean))
   return rows.filter((r) => { const k = bookingKey(r); return k ? cards.has(k) : matches(r) })
 }
+
+/**
+ * The owner the page opens on when this browser has no choice remembered:
+ * Me for someone who owns a reservation listed, else Everyone (a manager or
+ * ops user with none of their own still sees the whole list).
+ */
+export function defaultOwner(rows: Pick<Row, 'owner_id'>[], meId: string | null): OwnerFilter {
+  return meId && rows.some(r => r.owner_id === meId) ? 'me' : 'all'
+}

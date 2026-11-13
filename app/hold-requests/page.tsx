@@ -19,7 +19,8 @@ import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
 import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
 import { CLOSED_WON_READ_ONLY, WON_ENDED_LISTED_DAYS, bookingCapStarts, bookingEnded, bookingInLed, bookingKey, closedWonRefusal, bookingStatus, ledProgress, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
-import { ownedBy, ownerOptions, runsBetween, wholeBookings, type OwnerFilter } from '@/lib/reservationFilters'
+import { defaultOwner, ownedBy, ownerOptions, runsBetween, wholeBookings, type OwnerFilter } from '@/lib/reservationFilters'
+import { ATTENTION_LABEL, EXPIRING_SOON_HOURS, attentionOf, expiringSoon, groupBookings, summaryTiles, type Attention } from '@/lib/reservationView'
 import { useSession } from 'next-auth/react'
 import { accountUrl, opportunityUrl } from '@/lib/sfdcLinks'
 
@@ -106,6 +107,9 @@ const STATUS_LABEL: Record<string, string> = {
 
 /** Tab names where they differ from the status name. */
 const TAB_LABEL: Record<string, string> = { HOLD: 'Reservations', '': 'All' }
+
+/** The status tabs, in order: opens on Reservations; All (everything listed) is last. */
+const TABS = ['HOLD', QUOTES, 'ATT_SOFT', 'EXPIRED', LED_SCHEDULED, WON_ENDED, ''] as const
 
 const SOURCE_BADGE: Record<string, string> = {
   CLIENT:     'bg-green-50 text-green-700 border border-green-200',
@@ -301,6 +305,84 @@ function PricingBadge({ tier, total }: { tier: string | null; total: number | nu
   )
 }
 
+/** A booking as its table row and detail show it: the same rows behind its total, status, expiry and actions. */
+type BookingView = {
+  rows: HoldRequest[]
+  /** The booking's one status, and markets out of step in an older booking (lib/bookings.ts bookingStatus). */
+  status: string
+  odd: { status: string; markets: string[] }[]
+  /** The row the booking speaks for: one in its status. */
+  first: HoldRequest
+  /** What its actions act on: its holds in the booking's status. */
+  ids: string[]
+  multi: boolean
+  summary: ReturnType<typeof summarizeBooking>
+  /** The expiry to act on: the booking's live holds'. */
+  expiry: string | null
+  quoteOnly: boolean
+  anyQuoteOnly: boolean
+  key: string | null
+  /** Every row of the booking across all statuses (for Revise). */
+  booking: HoldRequest[]
+  trucks: number
+  marketsLabel: string
+  datesLabel: string
+  flags: Attention[]
+}
+
+const TH_CELL = 'text-left px-3 py-3 font-semibold text-gray-500 text-xs uppercase tracking-wider'
+
+/** A summary tile over the bookings shown; clicking it narrows the list to them. */
+function SummaryTile({ title, value, detail, tone, active, onClick }: { title: string; value: string; detail: string; tone?: 'amber' | 'red'; active?: boolean; onClick: () => void }) {
+  const accent = tone === 'amber' ? 'text-amber-700' : tone === 'red' ? 'text-red-700' : 'text-gray-500'
+  return (
+    <button onClick={onClick} aria-pressed={active}
+      className={`text-left bg-white rounded-xl border px-4 py-3 shadow-sm transition-colors min-w-0 ${active ? 'border-green-600 ring-1 ring-green-600' : 'border-gray-200 hover:border-gray-300'}`}>
+      <div className={`text-xs font-medium ${accent}`}>{title}</div>
+      <div className="text-xl sm:text-2xl font-bold text-gray-900 mt-0.5">{value}</div>
+      <div className="text-xs text-gray-500 mt-0.5 break-words">{detail}</div>
+    </button>
+  )
+}
+
+/** The booking's price as its card showed it: a summed total for a multi-market booking, with any unpriced markets named. */
+function BookingPrice({ v }: { v: BookingView }) {
+  return (
+    <span className="inline-flex flex-col items-start gap-0.5">
+      <PricingBadge tier={v.multi ? v.summary.tier : v.first.pricing_tier} total={v.multi ? v.summary.total : v.first.quoted_total} />
+      {v.multi && v.summary.unpricedMarkets > 0 && (
+        <span className="text-xs text-amber-700" title="These markets have no price on file; the total leaves them out">
+          + {v.summary.unpricedMarkets} unpriced
+        </span>
+      )}
+    </span>
+  )
+}
+
+function StatusPill({ v }: { v: BookingView }) {
+  return (
+    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold whitespace-nowrap ${STATUS_BADGE[v.status] ?? STATUS_BADGE.HOLD}`}>
+      {v.first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[v.status] ?? v.status)}
+    </span>
+  )
+}
+
+/** Time left and the expiry date (Central), and the first thing that needs attention. */
+function ExpiryCell({ v }: { v: BookingView }) {
+  const live = (v.status === 'HOLD' || v.status === 'EXTENSION_REQUESTED') && !v.quoteOnly && v.expiry && !isPast(new Date(v.expiry))
+  return (
+    <div className="flex flex-col gap-0.5">
+      <ExpirationBadge expiresAt={v.expiry} status={v.status} cancelled={cancelledOf(v.rows)} quoteOnly={v.quoteOnly} />
+      {live && <span className="text-xs text-gray-700">{format(parseDateOnly(centralDate(new Date(v.expiry!))), 'EEE, MMM d')}</span>}
+      {v.flags.length > 0 && (
+        <span className="text-xs text-red-700" title={v.flags.map(f => ATTENTION_LABEL[f]).join('\n')}>
+          ⚠ {ATTENTION_LABEL[v.flags[0]]}{v.flags.length > 1 ? ` +${v.flags.length - 1}` : ''}
+        </span>
+      )}
+    </div>
+  )
+}
+
 type AvailableTruck = {
   truckNumber: string
   current: boolean
@@ -330,12 +412,14 @@ export default function HoldRequestsPage() {
   // The owner choice is remembered per browser; the dates are not.
   const { data: session } = useSession()
   const meId = session?.user?.id ?? null
-  const [owner, setOwnerState] = useState<OwnerFilter>('all')
+  // null: nothing remembered on this browser, so the page opens on Me for
+  // someone who owns a listed reservation, else Everyone (defaultOwner).
+  const [owner, setOwnerState] = useState<OwnerFilter | null>(null)
   // Remembered per login, so a shared browser doesn't hand one person's choice to the next.
   const ownerKey = meId ? `reservations.owner.${meId}` : null
   useEffect(() => {
     if (!ownerKey) return
-    try { setOwnerState(localStorage.getItem(ownerKey) ?? 'all') } catch { /* storage unavailable */ }
+    try { setOwnerState(localStorage.getItem(ownerKey)) } catch { /* storage unavailable */ }
   }, [ownerKey])
   const setOwner = (value: OwnerFilter) => {
     setOwnerState(value)
@@ -346,7 +430,9 @@ export default function HoldRequestsPage() {
   // this browser, or the session still loading for "Me") falls back to
   // Everyone, so the dropdown and the list always agree.
   const owners = useMemo(() => ownerOptions(requests, meId), [requests, meId])
-  const ownerShown: OwnerFilter = owners.some(o => o.value === owner) ? owner : 'all'
+  const ownerWanted = owner ?? defaultOwner(requests, meId)
+  const ownerShown: OwnerFilter = owners.some(o => o.value === ownerWanted) ? ownerWanted : 'all'
+  const ownerLabel = owners.find(o => o.value === ownerShown)?.label ?? 'Everyone'
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo,   setDateTo]   = useState('')
   // Keep From <= To: moving one end past the other moves both.
@@ -709,24 +795,49 @@ export default function HoldRequestsPage() {
   )
 
   // A filter picks whole bookings by the booking's status, never part of one.
+  const inTab = useCallback((r: HoldRequest, tab: string) => {
+    // Quote-only logs: under Quotes and All only, while listed.
+    if (r.origination === QUOTE_ONLY_ORIGINATION) return (tab === QUOTES || !tab) && quoteKeys.has(bookingKey(r) ?? r.id)
+    if (tab === QUOTES) return false
+    if (tab === LED_SCHEDULED) return inLedOf(r) && !endedOf(r)
+    if (tab === WON_ENDED) return endedOf(r)
+    // All is everything listed, scheduled-in-LED and ended included.
+    if (!tab) return true
+    if (inLedOf(r) || endedOf(r)) return false
+    const { status } = statusOf(r)
+    return tab === 'HOLD'
+      // A booking waiting on an extension request is still a reservation:
+      // listed here, its card marked Extension Requested (no tab of its own).
+      ? status === 'HOLD' || status === 'COMMITTED' || status === 'EXTENSION_REQUESTED'
+      : status === tab
+  }, [statusOf, inLedOf, endedOf, quoteKeys])
+
+  // The owner, dates and search chosen, as bookings, for the summary tiles
+  // (whatever the tab) and the tiles' quick filters (lib/reservationView.ts).
+  const narrowedBookings = useMemo(() => groupBookings(narrowed), [narrowed])
+  const tiles = useMemo(() => summaryTiles(narrowedBookings, new Date(), centralDate(new Date())), [narrowedBookings])
+  // A tile clicked: only the bookings expiring soon, or needing attention, across every tab.
+  const [quick, setQuick] = useState<'expiring' | 'attention' | null>(null)
+  const quickKeys = useMemo(() => {
+    if (!quick) return null
+    const now = new Date()
+    return new Set(narrowedBookings
+      .filter(b => (quick === 'expiring' ? expiringSoon(b.rows, now) !== null : attentionOf(b.rows).length > 0))
+      .flatMap(b => b.rows.map(r => r.id)))
+  }, [quick, narrowedBookings])
+
+  // How many bookings each tab lists, for its label.
+  const tabCounts = useMemo(() => {
+    const out = new Map<string, number>()
+    for (const tab of TABS) {
+      out.set(tab, new Set(narrowed.filter(r => inTab(r, tab)).map(r => bookingKey(r) ?? r.id)).size)
+    }
+    return out
+  }, [narrowed, inTab])
+
   const filtered = useMemo(
-    () => narrowed.filter((r: HoldRequest) => {
-      // Quote-only logs: under Quotes and All only, while listed.
-      if (r.origination === QUOTE_ONLY_ORIGINATION) return (filterStatus === QUOTES || !filterStatus) && quoteKeys.has(bookingKey(r) ?? r.id)
-      if (filterStatus === QUOTES) return false
-      if (filterStatus === LED_SCHEDULED) return inLedOf(r) && !endedOf(r)
-      if (filterStatus === WON_ENDED) return endedOf(r)
-      // All is everything listed, scheduled-in-LED and ended included.
-      if (!filterStatus) return true
-      if (inLedOf(r) || endedOf(r)) return false
-      const { status } = statusOf(r)
-      return filterStatus === 'HOLD'
-        // A booking waiting on an extension request is still a reservation:
-        // listed here, its card marked Extension Requested (no tab of its own).
-        ? status === 'HOLD' || status === 'COMMITTED' || status === 'EXTENSION_REQUESTED'
-        : status === filterStatus
-    }),
-    [narrowed, filterStatus, statusOf, inLedOf, endedOf, quoteKeys]
+    () => (quickKeys ? narrowed.filter(r => quickKeys.has(r.id)) : narrowed.filter(r => inTab(r, filterStatus))),
+    [narrowed, filterStatus, inTab, quickKeys]
   )
 
   // The last date the card being edited can be held to: a booking has one
@@ -739,43 +850,25 @@ export default function HoldRequestsPage() {
     return lastExpiryDate([...starts].sort()[0], new Date(), STAFF_MIN_DAYS_BEFORE_START)
   }, [editingGroup, rowsByBooking])
 
-  // Group by booking (lib/bookings.ts) so multi-truck and multi-market
-  // reservations are reviewed and managed as one unit: every market of a
-  // multi-market quote, a campaign group, or a Salesforce opportunity. Then the chosen sort orders the table
-  // rows, the campaign cards, and the trucks within each card; with none
-  // chosen, the API's order (newest first) stands. Memoized with the filter
-  // above, so typing in a dialog does not regroup and re-sort the list.
-  const { sortedGroups, sortedUngrouped } = useMemo(() => {
-    const grouped = new Map<string, HoldRequest[]>()
-    const ungrouped: HoldRequest[] = []
-    for (const r of filtered) {
-      // One card per booking (lib/bookings.ts bookingKey): a booking is one
-      // quote, so its totals, expiry, status and actions cover all of it.
-      const groupKey = bookingKey(r)
-      if (groupKey) {
-        const group = grouped.get(groupKey) ?? []
-        group.push(r)
-        grouped.set(groupKey, group)
-      } else {
-        ungrouped.push(r)
-      }
-    }
-    // Single-item "groups" aren't really groups — move them to ungrouped
-    for (const [key, items] of grouped) {
-      if (items.length === 1) {
-        ungrouped.push(items[0])
-        grouped.delete(key)
-      }
-    }
-    return {
-      sortedUngrouped: sortRows(ungrouped, sort, sortValue),
-      sortedGroups: sortRows(
-        Array.from(grouped.entries()).map(([id, rows]) => [id, sortRows(rows, sort, sortValue)] as const),
-        sort,
-        ([, rows], key) => groupSortValue([...rows], key),
-      ),
-    }
-  }, [filtered, sort])
+  // One table row per booking (lib/bookings.ts bookingKey): multi-truck and
+  // multi-market reservations are reviewed and managed as one unit, so a
+  // row's total, status, expiry and actions cover all of it. Then the chosen
+  // sort orders the bookings and the trucks within each; with none chosen,
+  // the API's order (newest first) stands. Memoized with the filter above, so
+  // typing in a dialog does not regroup and re-sort the list.
+  const sortedBookings = useMemo(() => sortRows(
+    groupBookings(filtered).map(b => ({ key: b.key, rows: sortRows(b.rows, sort, sortValue) })),
+    sort,
+    (b, key) => groupSortValue(b.rows, key),
+  ), [filtered, sort])
+
+  // Which bookings' rows are open to show their detail.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const toggle = (key: string) => setExpanded(prev => {
+    const next = new Set(prev)
+    if (next.has(key)) next.delete(key); else next.add(key)
+    return next
+  })
 
   function Actions({ ids, status, groupKey, requests: actionRequests, quoteOnly = false }: { ids: string[]; status: string; groupKey: string; requests?: HoldRequest[]; quoteOnly?: boolean }) {
     const busy = acting === groupKey
@@ -849,319 +942,409 @@ export default function HoldRequestsPage() {
     return null
   }
 
+  // A booking's row figures: the same ones its card showed (lib/bookings.ts).
+  const bookingView = (rows: HoldRequest[]): BookingView => {
+    // `odd` is only ever set for a booking made before the one-expiry rule
+    // (#118) whose markets lapsed apart.
+    const { status, odd } = bookingStatus(rows)
+    const first = rows.find(g => g.status === status) ?? rows[0]
+    const multi = isMultiMarket(first)
+    const summary = summarizeBooking(rows)
+    const key = bookingKey(first)
+    return {
+      rows, status, odd, first, multi, summary, key,
+      ids: rows.filter(g => g.status === status).map(g => g.id),
+      expiry: summarizeBooking(rows.filter(g => g.status === status)).earliestExpiry,
+      quoteOnly: rows.every(g => g.origination === QUOTE_ONLY_ORIGINATION),
+      anyQuoteOnly: rows.some(g => g.origination === QUOTE_ONLY_ORIGINATION),
+      booking: (key ? rowsByBooking.get(key) : undefined) ?? rows,
+      trucks: rows.length === 1 ? 1 : multi ? summary.trucks : (first.truck_count ?? rows.length),
+      marketsLabel: [...new Set(rows.map(r => formatMarketState(r.market, r.state)))].join(' · '),
+      datesLabel: `${format(parseDateOnly(summary.start), 'MMM d')} – ${format(parseDateOnly(summary.end), 'MMM d, yyyy')}`,
+      flags: attentionOf(rows),
+    }
+  }
+
+  // An opened booking: its flight and trucks, its quote, its Salesforce and
+  // LED standing, and every action its card had.
+  const renderDetail = (groupKey: string, rows: HoldRequest[], v: BookingView) => {
+    const { status, first, multi } = v
+    // One market's breakdown would misstate a multi-market booking.
+    const parsedFeatures = multi ? null : parseQuoteFeatures(first.features)
+    const panel = 'bg-white rounded-lg border border-gray-200 p-3 min-w-0'
+    const panelTitle = 'text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2'
+    return (
+      <div className="space-y-3">
+        {v.odd.length > 0 && (
+          // Only an older booking (before #118) can be split; the row stays whole.
+          <div className="px-3 py-1.5 rounded-lg text-xs text-amber-800 bg-amber-50 border border-amber-100">
+            Older booking with markets out of step:{' '}
+            {v.odd.map(o => `${o.markets.join(', ')} ${STATUS_LABEL[o.status] ?? o.status}`).join('; ')}.
+            {' '}Actions here apply to the {STATUS_LABEL[status] ?? status} markets.
+          </div>
+        )}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          {/* Flight and trucks: each market in flight order, then its trucks. */}
+          <div className={panel}>
+            <div className={panelTitle}>Flight &amp; trucks</div>
+            {multi ? (
+              <div className="space-y-2">
+                {marketGroups(rows).map((m) => (
+                  <div key={m.key} className="text-sm">
+                    <div className="font-semibold text-gray-900">{formatMarketState(m.market, m.rows[0].state)}</div>
+                    <div className="text-xs text-gray-600">
+                      {format(parseDateOnly(m.start), 'MMM d')} &ndash; {format(parseDateOnly(m.end), 'MMM d, yyyy')}
+                      {' · '}{m.days} {m.daysKind === 'activation' ? 'activation' : 'calendar'} day{m.days === 1 ? '' : 's'}
+                    </div>
+                    <div className="text-xs text-gray-700 mt-0.5">
+                      {m.rows.map((r, i) => (
+                        <span key={r.id}>
+                          {i > 0 && ', '}Truck {r.truck_number}
+                          {/* A truck's own dates, when it covers only part of the market's (alternating trucks). */}
+                          {(r.start_date.slice(0, 10) !== m.start || r.end_date.slice(0, 10) !== m.end) && (
+                            <span className="text-gray-500"> ({format(parseDateOnly(r.start_date), 'MMM d')} &ndash; {format(parseDateOnly(r.end_date), 'MMM d')})</span>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-sm">
+                <div className="font-semibold text-gray-900">{v.marketsLabel}</div>
+                <div className="text-xs text-gray-600">{v.datesLabel}</div>
+                <div className="mt-1 space-y-0.5">
+                  {rows.map((r) => (
+                    <div key={r.id} className="text-xs text-gray-700">
+                      Truck <span className="font-medium text-gray-900">{r.truck_number}</span>
+                      {(r.start_date !== v.summary.start || r.end_date !== v.summary.end) && (
+                        <span className="text-gray-500"> ({format(parseDateOnly(r.start_date), 'MMM d')} &ndash; {format(parseDateOnly(r.end_date), 'MMM d')})</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* The quote, as stored on the booking. */}
+          <div className={`${panel} overflow-x-auto`}>
+            <div className={panelTitle}>Quote</div>
+            {parsedFeatures ? (
+              <QuoteBreakdown features={parsedFeatures} />
+            ) : multi ? (
+              <div className="text-sm space-y-1">
+                {marketGroups(rows).map((m) => (
+                  <div key={m.key} className="flex items-center justify-between gap-2">
+                    <span className="text-gray-700 min-w-0 break-words">{formatMarketState(m.market, m.rows[0].state)}</span>
+                    <span className="tabular-nums text-gray-900">{m.rows[0].quoted_total != null ? fmtMoney(m.rows[0].quoted_total) : 'No quote'}</span>
+                  </div>
+                ))}
+                <div className="flex items-center justify-between gap-2 border-t border-gray-200 pt-1 font-semibold">
+                  <span>Total{v.summary.unpricedMarkets > 0 ? ` (${v.summary.unpricedMarkets} market${v.summary.unpricedMarkets === 1 ? '' : 's'} unpriced)` : ''}</span>
+                  <span className="tabular-nums">{v.summary.total != null ? fmtMoney(v.summary.total) : '—'}</span>
+                </div>
+              </div>
+            ) : (
+              <PricingBadge tier={first.pricing_tier} total={first.quoted_total} />
+            )}
+          </div>
+
+          {/* Who it's for and where it stands in Salesforce and LED. */}
+          <div className={panel}>
+            <div className={panelTitle}>Salesforce &amp; LED</div>
+            <dl className="text-xs grid grid-cols-[auto,1fr] gap-x-3 gap-y-1">
+              <dt className="text-gray-500">Owner</dt><dd className="text-gray-900 break-words">{first.owner_name || '—'}</dd>
+              <dt className="text-gray-500">Created by</dt><dd className="text-gray-900 break-words">{first.created_by_name || '—'}</dd>
+              <dt className="text-gray-500">Source</dt>
+              <dd>
+                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${SOURCE_BADGE[first.source] ?? SOURCE_BADGE.INTERNAL}`}>
+                  {SOURCE_LABEL[first.source] ?? first.source}
+                </span>
+              </dd>
+              {first.job_number && (<><dt className="text-gray-500">Job number</dt><dd className="text-gray-900">{first.job_number}</dd></>)}
+            </dl>
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <SalesforceLinks base={sfdcBase} rows={rows} />
+              <LedBadge progress={ledProgress(rows)} inLed={bookingInLed(rows)} unavailable={ledUnavailable} />
+              {status === 'COMMITTED' && first.sfdc_account_id && (
+                <LedClientLink accountId={first.sfdc_account_id} linked={first.led_client} onSaved={fetchRequests} />
+              )}
+              <LedFollowBadge rows={rows} />
+            </div>
+            {v.flags.length > 0 && (
+              <ul className="mt-2 px-2.5 py-1.5 rounded-lg bg-red-50 border border-red-100 text-xs text-red-800 space-y-0.5">
+                {v.flags.map(f => <li key={f}>{ATTENTION_LABEL[f]}</li>)}
+              </ul>
+            )}
+          </div>
+        </div>
+
+        {status === 'EXTENSION_REQUESTED' && (
+          <div className="px-3 py-2 rounded-lg text-xs text-amber-800 bg-amber-50 border border-amber-100">
+            Extension requested for the whole booking{first.extension_until ? ` until ${format(parseDateOnly(centralDate(new Date(first.extension_until))), 'MMM d')}` : ''}.
+            {first.extension_reason ? ` Reason: ${first.extension_reason}` : ''}
+          </div>
+        )}
+        {status === 'COMMITTED' && closedWonRefusal(rows) && (
+          <div className="px-3 py-1.5 rounded-lg text-xs text-gray-600 bg-gray-50 border border-gray-100">
+            Closed Won: only a truck swap can be made here. Change anything else in Salesforce.
+          </div>
+        )}
+
+        {/* The booking's actions, as its card had them. */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {status === 'HOLD' || status === 'COMMITTED' ? (
+            <button
+              onClick={() => openEdit(first)}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 text-gray-600 bg-white hover:bg-gray-50 transition-colors"
+            >
+              {closedWonRefusal(rows) ? 'Swap trucks' : 'Edit'}
+            </button>
+          ) : (
+            <Actions ids={v.ids} status={status} groupKey={groupKey} requests={rows} quoteOnly={v.anyQuoteOnly} />
+          )}
+          {(status === 'HOLD' || status === 'COMMITTED' || status === 'EXPIRED') && <ReviseLink rows={rows} booking={v.booking} />}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col min-h-dvh bg-gray-50">
       <Navbar />
       {reopen.dialog}
 
       <div className="flex-1 p-4 sm:p-6 max-w-7xl mx-auto w-full">
-        {/* Header */}
-        <div className="flex items-start sm:items-center justify-between mb-6 gap-3 flex-wrap">
-          <div>
+        {/* Header: whose reservations, and what the page is showing */}
+        <div className="flex items-start justify-between mb-4 gap-3 flex-wrap">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">Reservations</h1>
-            <p className="text-sm text-gray-500 mt-0.5">All hold requests and reservations — edit, cancel, or manage extensions</p>
-            {expiredWindowDays !== null && (filterStatus === '' || filterStatus === 'EXPIRED') && (
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <label htmlFor="reservations-owner" className="text-sm text-gray-600">Owner</label>
+              <select
+                id="reservations-owner"
+                value={ownerShown}
+                onChange={(e) => setOwner(e.target.value)}
+                className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm font-medium bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+              >
+                {owners.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <span className="text-xs text-gray-500">
+                {sortedBookings.length} booking{sortedBookings.length === 1 ? '' : 's'} shown · Owner: {ownerLabel}
+              </span>
+            </div>
+            {expiredWindowDays !== null && !quick && (filterStatus === '' || filterStatus === 'EXPIRED') && (
               <p className="text-xs text-gray-400 mt-1">
                 Showing expired reservations from the last {expiredWindowDays} days. Older ones are kept but not listed here.
               </p>
             )}
-            {filterStatus === QUOTES && (
+            {filterStatus === QUOTES && !quick && (
               <p className="text-xs text-gray-400 mt-1">
                 Quotes logged to Salesforce with no trucks reserved: the latest for each opportunity, until it&apos;s reserved or its start date passes.
               </p>
             )}
-            {(filterStatus === WON_ENDED || filterStatus === '') && (
+            {(filterStatus === WON_ENDED || filterStatus === '') && !quick && (
               <p className="text-xs text-gray-400 mt-1">
                 Won bookings are listed for {WON_ENDED_LISTED_DAYS.inLed} days after they end once LED has fully scheduled them, and {WON_ENDED_LISTED_DAYS.notInLed} days if it hasn&apos;t.
               </p>
             )}
           </div>
-          <div className="flex gap-2 flex-shrink-0 flex-wrap">
-            {/* Opens on Reservations; All (everything listed) is last. */}
-            {(['HOLD', QUOTES, 'ATT_SOFT', 'EXPIRED', LED_SCHEDULED, WON_ENDED, ''] as const).map((s) => (
-              <button
-                key={s}
-                onClick={() => setFilterStatus(s)}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
-                  filterStatus === s
-                    ? 'bg-green-600 text-white border-green-600'
-                    : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                }`}
-              >
-                {TAB_LABEL[s] ?? STATUS_LABEL[s] ?? s}
-                {s === 'HOLD' && extensionRequests > 0 && (
-                  <span className="ml-1.5 inline-flex items-center px-1.5 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-800" title="Bookings with a client extension request waiting">
-                    {extensionRequests} extension request{extensionRequests === 1 ? '' : 's'}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
         </div>
+
+        {/* Summary for the owner, dates and search chosen (lib/reservationView.ts). */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+          <SummaryTile
+            title="Open reservations"
+            value={fmtMoney(tiles.open.value)}
+            detail={`${tiles.open.count} booking${tiles.open.count === 1 ? '' : 's'}${tiles.open.unpriced ? ` · ${tiles.open.unpriced} missing a quote` : ''}`}
+            active={!quick && filterStatus === 'HOLD'}
+            onClick={() => { setQuick(null); setFilterStatus('HOLD') }}
+          />
+          <SummaryTile
+            title={`Expiring within ${EXPIRING_SOON_HOURS} hours`}
+            value={fmtMoney(tiles.expiring.value)}
+            detail={`${tiles.expiring.count} booking${tiles.expiring.count === 1 ? '' : 's'}`}
+            tone={tiles.expiring.count ? 'amber' : undefined}
+            active={quick === 'expiring'}
+            onClick={() => setQuick(q => (q === 'expiring' ? null : 'expiring'))}
+          />
+          <SummaryTile
+            title="Committed (won)"
+            value={fmtMoney(tiles.won.value)}
+            detail={`${tiles.won.count} booking${tiles.won.count === 1 ? '' : 's'}${tiles.won.ledUnlinked ? ` · ${tiles.won.ledUnlinked} not linked to an LED client` : ''}`}
+            onClick={() => { setQuick(null); setFilterStatus('HOLD') }}
+          />
+          <SummaryTile
+            title="Needs attention"
+            value={String(tiles.attention.count)}
+            detail={(Object.entries(tiles.attention.byKind) as [keyof typeof ATTENTION_LABEL, number][])
+              .map(([k, n]) => `${n} ${ATTENTION_LABEL[k].toLowerCase()}`).join(' · ') || 'Nothing flagged'}
+            tone={tiles.attention.count ? 'red' : undefined}
+            active={quick === 'attention'}
+            onClick={() => setQuick(q => (q === 'attention' ? null : 'attention'))}
+          />
+        </div>
+
+        {/* Status tabs, with how many bookings each lists */}
+        <div className="flex flex-wrap items-end gap-x-1 gap-y-1 border-b border-gray-200 mb-4">
+          {TABS.map((s) => (
+            <button
+              key={s}
+              onClick={() => { setQuick(null); setFilterStatus(s) }}
+              className={`px-3 py-2 -mb-px text-sm font-medium border-b-2 transition-colors ${
+                !quick && filterStatus === s
+                  ? 'border-green-600 text-gray-900'
+                  : 'border-transparent text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              {TAB_LABEL[s] ?? STATUS_LABEL[s] ?? s} <span className="text-gray-400">({tabCounts.get(s) ?? 0})</span>
+              {s === 'HOLD' && extensionRequests > 0 && (
+                <span className="ml-1.5 inline-flex items-center px-1.5 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-800" title="Bookings with a client extension request waiting">
+                  {extensionRequests} extension request{extensionRequests === 1 ? '' : 's'}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+        {quick && (
+          <div className="mb-4 flex items-center gap-2 text-sm">
+            <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-gray-900 text-white text-xs font-medium">
+              {quick === 'expiring' ? `Expiring within ${EXPIRING_SOON_HOURS} hours` : 'Needs attention'}, every tab
+              <button onClick={() => setQuick(null)} aria-label="Clear" className="text-gray-300 hover:text-white">✕</button>
+            </span>
+          </div>
+        )}
 
         {/* Also shown when "Take off list" is clicked on a soft hold under another filter. */}
         {(filterStatus === 'ATT_SOFT' || rosterDraft) && (
           <AttRosterPanel draft={rosterDraft} setDraft={setRosterDraft} onChanged={fetchRequests} />
         )}
 
-        {/* Search and sort */}
-        <div className="flex flex-wrap items-center gap-3 mb-6">
-        <div className="relative flex-1 min-w-[16rem] max-w-md">
-          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35m0 0A7.5 7.5 0 104.35 4.35a7.5 7.5 0 0012.3 12.3z" />
-          </svg>
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by client, truck, market, or notes…"
-            className="w-full border border-gray-200 rounded-lg pl-9 pr-8 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-          />
-          {search && (
-            <button onClick={() => setSearch('')} aria-label="Clear search" className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
-              ✕
-            </button>
-          )}
-        </div>
-        <select
-          value={ownerShown}
-          onChange={(e) => setOwner(e.target.value)}
-          aria-label="Owner"
-          className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
-        >
-          {owners.map(o => <option key={o.value} value={o.value}>{o.value === 'all' ? 'Owner: Everyone' : o.label}</option>)}
-        </select>
-        <div className="flex items-center gap-1.5 text-sm text-gray-600">
-          <span>Running</span>
-          <input type="date" value={dateFrom} onChange={(e) => chooseFrom(e.target.value)} aria-label="Running from"
-            className="border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
-          <span>to</span>
-          <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => chooseTo(e.target.value)} aria-label="Running to"
-            className="border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
-          {(dateFrom || dateTo) && (
-            <button onClick={() => { setDateFrom(''); setDateTo('') }} aria-label="Clear dates" className="text-gray-400 hover:text-gray-600 px-1">✕</button>
-          )}
-        </div>
-        <SortSelect columns={SORT_COLUMNS} sort={sort} onChange={chooseSort} defaultLabel="Newest first" />
+        {/* Search, dates and sort */}
+        <div className="flex flex-wrap items-center gap-3 mb-4">
+          <div className="relative flex-1 min-w-[14rem] max-w-md">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35m0 0A7.5 7.5 0 104.35 4.35a7.5 7.5 0 0012.3 12.3z" />
+            </svg>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by client, truck, market, or notes…"
+              className="w-full border border-gray-200 rounded-lg pl-9 pr-8 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+            />
+            {search && (
+              <button onClick={() => setSearch('')} aria-label="Clear search" className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                ✕
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5 text-sm text-gray-600 flex-wrap">
+            <span>Running</span>
+            <input type="date" value={dateFrom} onChange={(e) => chooseFrom(e.target.value)} aria-label="Running from"
+              className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+            <span>to</span>
+            <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => chooseTo(e.target.value)} aria-label="Running to"
+              className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+            {(dateFrom || dateTo) && (
+              <button onClick={() => { setDateFrom(''); setDateTo('') }} aria-label="Clear dates" className="text-gray-400 hover:text-gray-600 px-1">✕</button>
+            )}
+          </div>
+          <SortSelect columns={SORT_COLUMNS} sort={sort} onChange={chooseSort} defaultLabel="Newest first" />
         </div>
 
         {loading ? (
           <TableSkeleton />
-        ) : filtered.length === 0 ? (
+        ) : sortedBookings.length === 0 ? (
           <div className="text-center py-20 text-gray-400">
             <p className="font-medium text-gray-500">No hold requests found</p>
             <p className="text-sm mt-1">
-              {search || filterStatus || ownerShown !== 'all' || dateFrom || dateTo ? 'Try a different search term or filter' : 'Requests submitted by clients will show up here'}
+              {search || filterStatus || quick || ownerShown !== 'all' || dateFrom || dateTo ? 'Try a different search term or filter' : 'Requests submitted by clients will show up here'}
             </p>
           </div>
         ) : (
-          <div className="space-y-4">
-            {/* Campaign groups — one card per campaign, actions apply to every truck in it */}
-            {sortedGroups.map(([groupId, groupItems]) => {
-              // The booking's one status; `odd` is only ever set for a booking made
-              // before the one-expiry rule (#118) whose markets lapsed apart.
-              const { status, odd } = bookingStatus(groupItems)
-              // The row the card speaks for: one in the booking's status.
-              const first = groupItems.find(g => g.status === status) ?? groupItems[0]
-              // What the card's actions act on: its holds in the booking's status.
-              const ids = groupItems.filter(g => g.status === status).map((g) => g.id)
-              // A multi-market booking: one card, its figures summed across markets.
-              const multi = isMultiMarket(first)
-              const booking = summarizeBooking(groupItems)
-              // The expiry to act on: the booking's live holds'.
-              const expiry = summarizeBooking(groupItems.filter(g => g.status === status)).earliestExpiry
-              const key = bookingKey(first)
-              return (
-                <div key={groupId} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-                  <div className="px-4 py-3 bg-gray-50/80 border-b border-gray-200 flex items-center justify-between flex-wrap gap-3">
-                    <div className="flex items-center gap-3 flex-wrap">
-                      <span className="text-sm font-semibold text-gray-900">
-                        {multi
-                          ? <>{first.company_name} — {booking.trucks} truck{booking.trucks === 1 ? '' : 's'} across {booking.markets.length} market{booking.markets.length === 1 ? '' : 's'}</>
-                          : <>{first.company_name} — {first.truck_count ?? groupItems.length} truck{(first.truck_count ?? groupItems.length) === 1 ? '' : 's'} · {formatMarketState(first.market, first.state)}</>}
-                      </span>
-                      <span className="text-xs text-gray-500">
-                        {format(parseDateOnly(booking.start), 'MMM d')} &ndash; {format(parseDateOnly(booking.end), 'MMM d, yyyy')}
-                      </span>
-                      {first.created_by_name && (
-                        <span className="text-xs text-gray-400">by {first.created_by_name}</span>
-                      )}
-                      <SalesforceLinks base={sfdcBase} rows={groupItems} />
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${SOURCE_BADGE[first.source] ?? SOURCE_BADGE.INTERNAL}`}>
-                        {SOURCE_LABEL[first.source] ?? first.source}
-                      </span>
-                      <PricingBadge tier={multi ? booking.tier : first.pricing_tier} total={multi ? booking.total : first.quoted_total} />
-                      {multi && booking.unpricedMarkets > 0 && (
-                        <span className="text-xs text-amber-700" title="These markets have no price on file; the total above leaves them out">
-                          + {booking.unpricedMarkets} unpriced
-                        </span>
-                      )}
-                      {/* The earliest expiry in the booking is the one to act on. */}
-                      <ExpirationBadge expiresAt={expiry} status={status} cancelled={cancelledOf(groupItems)} quoteOnly={groupItems.every(g => g.origination === QUOTE_ONLY_ORIGINATION)} />
-                      <LedBadge progress={ledProgress(groupItems)} inLed={bookingInLed(groupItems)} unavailable={ledUnavailable} />
-                      {status === 'COMMITTED' && first.sfdc_account_id && (
-                        <LedClientLink accountId={first.sfdc_account_id} linked={first.led_client} onSaved={fetchRequests} />
-                      )}
-                      <LedFollowBadge rows={groupItems} />
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[status] ?? STATUS_BADGE.HOLD}`}>
-                        {first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[status] ?? status)}
-                      </span>
-                    </div>
-                  </div>
-                  {odd.length > 0 && (
-                    // Only an older booking (before #118) can be split; the card stays whole.
-                    <div className="px-4 py-1.5 text-xs text-amber-800 bg-amber-50 border-b border-amber-100">
-                      Older booking with markets out of step:{' '}
-                      {odd.map(o => `${o.markets.join(', ')} ${STATUS_LABEL[o.status] ?? o.status}`).join('; ')}.
-                      {' '}Actions here apply to the {STATUS_LABEL[status] ?? status} markets.
-                    </div>
-                  )}
-                  {(() => {
-                    // One market's breakdown would misstate a multi-market booking.
-                    const parsedFeatures = multi ? null : parseQuoteFeatures(first.features)
-                    return parsedFeatures ? (
-                      <div className="px-4 py-3 bg-white border-b border-gray-100">
-                        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Quote breakdown</div>
-                        <QuoteBreakdown features={parsedFeatures} />
-                      </div>
-                    ) : null
-                  })()}
-                  {multi ? (
-                    // Each market as its own subgroup, in flight order: its dates and length, then its trucks.
-                    // The same rows as the card's totals and actions (groupItems), only arranged.
-                    <div className="divide-y divide-gray-100">
-                      {marketGroups(groupItems).map((m) => (
-                        <div key={m.key}>
-                          <div className="px-4 py-2 bg-gray-50 flex items-center justify-between text-sm">
-                            <span className="font-semibold text-gray-900">{formatMarketState(m.market, m.rows[0].state)}</span>
-                            <span className="text-xs text-gray-600">
-                              {format(parseDateOnly(m.start), 'MMM d')} &ndash; {format(parseDateOnly(m.end), 'MMM d, yyyy')}
-                              {' · '}{m.days} {m.daysKind === 'activation' ? 'activation' : 'calendar'} day{m.days === 1 ? '' : 's'}
-                            </span>
-                          </div>
-                          {m.rows.map((r) => (
-                            <div key={r.id} className="pl-8 pr-4 py-2 flex items-center justify-between text-sm">
-                              <span className="font-medium text-gray-900">Truck {r.truck_number}</span>
-                              {/* A truck's own dates, when it covers only part of the market's (alternating trucks). */}
-                              {(r.start_date.slice(0, 10) !== m.start || r.end_date.slice(0, 10) !== m.end) && (
-                                <span className="text-xs text-gray-500">{format(parseDateOnly(r.start_date), 'MMM d')} &ndash; {format(parseDateOnly(r.end_date), 'MMM d')}</span>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="divide-y divide-gray-100">
-                      {groupItems.map((r) => (
-                        <div key={r.id} className="px-4 py-2.5 flex items-center justify-between text-sm">
-                          <span className="font-medium text-gray-900">Truck {r.truck_number}</span>
-                          <span className="text-gray-500">{formatMarketState(r.market, r.state)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {status === 'EXTENSION_REQUESTED' && (
-                    <div className="px-4 py-2 text-xs text-amber-800 bg-amber-50 border-t border-amber-100">
-                      Extension requested for the whole booking{first.extension_until ? ` until ${format(parseDateOnly(centralDate(new Date(first.extension_until))), 'MMM d')}` : ''}.
-                      {first.extension_reason ? ` Reason: ${first.extension_reason}` : ''}
-                    </div>
-                  )}
-                  {status === 'COMMITTED' && closedWonRefusal(groupItems) && (
-                    <div className="px-4 py-1.5 text-xs text-gray-600 bg-gray-50 border-t border-gray-100">
-                      Closed Won: only a truck swap can be made here. Change anything else in Salesforce.
-                    </div>
-                  )}
-                  {(status === 'HOLD' || status === 'COMMITTED' || status === 'EXTENSION_REQUESTED' || status === 'EXPIRED') && (
-                    <div className="px-4 py-3 border-t border-gray-100 bg-gray-50/80 flex items-center gap-2">
-                      {status === 'EXTENSION_REQUESTED' || status === 'EXPIRED' ? (
-                        <Actions ids={ids} status={status} groupKey={groupId} quoteOnly={groupItems.some(g => g.origination === QUOTE_ONLY_ORIGINATION)} />
-                      ) : (
-                        <button
-                          onClick={() => openEdit(first)}
-                          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
-                        >
-                          {closedWonRefusal(groupItems) ? 'Swap trucks' : 'Edit'}
-                        </button>
-                      )}
-                      {status !== 'EXTENSION_REQUESTED' && <ReviseLink rows={groupItems} booking={(key ? rowsByBooking.get(key) : undefined) ?? groupItems} />}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
+          <>
+            {/* Wide screens: one row per booking, opened for its detail. */}
+            <div className="hidden md:block bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+              <table className="w-full text-sm table-fixed">
+                <thead className="bg-gray-50/80 border-b border-gray-200">
+                  <tr>
+                    <th className="w-8" aria-label="Open" />
+                    <SortableTh label="Client" sortKey="client" sort={sort} onSort={sortBy} className={`${TH_CELL} w-[22%]`} />
+                    <SortableTh label="Markets" sortKey="market" sort={sort} onSort={sortBy} className={`${TH_CELL} w-[20%]`} />
+                    <SortableTh label="Trucks" sortKey="truck" sort={sort} onSort={sortBy} className={`${TH_CELL} w-[7%]`} />
+                    <SortableTh label="Dates" sortKey="dates" sort={sort} onSort={sortBy} className={`${TH_CELL} w-[14%]`} />
+                    <SortableTh label="Pricing" sortKey="pricing" sort={sort} onSort={sortBy} className={`${TH_CELL} w-[12%]`} />
+                    <SortableTh label="Status" sortKey="status" sort={sort} onSort={sortBy} className={`${TH_CELL} w-[12%]`} />
+                    <SortableTh label="Expires" sortKey="expires" sort={sort} onSort={sortBy} className={TH_CELL} />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {sortedBookings.map(({ key: groupKey, rows }) => {
+                    const v = bookingView(rows)
+                    const open = expanded.has(groupKey)
+                    return (
+                      <Fragment key={groupKey}>
+                        <tr onClick={() => toggle(groupKey)} className={`cursor-pointer align-top transition-colors ${open ? 'bg-green-50/40' : 'hover:bg-gray-50/60'}`}>
+                          <td className="pl-3 py-3">
+                            <button aria-expanded={open} aria-label={open ? 'Close details' : 'Open details'} onClick={(e) => { e.stopPropagation(); toggle(groupKey) }}
+                              className="text-gray-400 hover:text-gray-700">
+                              <svg className={`w-4 h-4 transition-transform ${open ? 'rotate-90' : ''}`} viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.17 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" /></svg>
+                            </button>
+                          </td>
+                          <td className="px-3 py-3 min-w-0">
+                            <div className="font-semibold text-gray-900 break-words">{v.first.company_name}</div>
+                            <div className="text-xs text-gray-500 break-words">{v.first.owner_name || '—'} · {SOURCE_LABEL[v.first.source] ?? v.first.source}</div>
+                          </td>
+                          <td className="px-3 py-3 text-gray-700 break-words">{v.marketsLabel}</td>
+                          <td className="px-3 py-3 font-semibold text-gray-900">{v.trucks}</td>
+                          <td className="px-3 py-3 text-gray-700">{v.datesLabel}</td>
+                          <td className="px-3 py-3"><BookingPrice v={v} /></td>
+                          <td className="px-3 py-3"><StatusPill v={v} /></td>
+                          <td className="px-3 py-3"><ExpiryCell v={v} /></td>
+                        </tr>
+                        {open && (
+                          <tr className="bg-green-50/40">
+                            <td colSpan={8} className="px-4 pb-4 pt-1">{renderDetail(groupKey, rows, v)}</td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
 
-            {/* Ungrouped (single-truck requests without a campaign group, or legacy rows) */}
-            {sortedUngrouped.length > 0 && (
-              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-gray-50/80 border-b border-gray-200">
-                      <tr>
-                        {SORT_COLUMNS.map((c) => (
-                          <SortableTh key={c.key} label={c.label} sortKey={c.key} sort={sort} onSort={sortBy} />
-                        ))}
-                        <SortableTh label="Actions" sort={sort} onSort={sortBy} />
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100">
-                      {sortedUngrouped.map((r) => {
-                        const parsedFeatures = parseQuoteFeatures(r.features)
-                        return (
-                          <Fragment key={r.id}>
-                            <tr className="hover:bg-gray-50/60 transition-colors">
-                              <td className="px-4 py-3 font-semibold text-gray-900">{r.truck_number}</td>
-                              <td className="px-4 py-3 text-gray-600">{r.company_name}</td>
-                              <td className="px-4 py-3 text-gray-600">{formatMarketState(r.market, r.state)}</td>
-                              <td className="px-4 py-3 text-gray-600">
-                                {format(parseDateOnly(r.start_date), 'MMM d')} &ndash; {format(parseDateOnly(r.end_date), 'MMM d')}
-                              </td>
-                              <td className="px-4 py-3">
-                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${SOURCE_BADGE[r.source] ?? SOURCE_BADGE.INTERNAL}`}>
-                                  {SOURCE_LABEL[r.source] ?? r.source}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3 text-gray-500 text-xs">
-                                <div>{r.created_by_name || '—'}</div>
-                                <SalesforceLinks base={sfdcBase} rows={[r]} />
-                              </td>
-                              <td className="px-4 py-3">
-                                <PricingBadge tier={r.pricing_tier} total={r.quoted_total} />
-                              </td>
-                              <td className="px-4 py-3">
-                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_BADGE[r.status] ?? STATUS_BADGE.HOLD}`}>
-                                  {r.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[r.status] ?? r.status)}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3">
-                                <ExpirationBadge expiresAt={r.expires_at} status={r.status} cancelled={cancelledOf([r])} quoteOnly={r.origination === QUOTE_ONLY_ORIGINATION} />
-                              </td>
-                              <td className="px-4 py-3">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <Actions ids={[r.id]} status={r.status} groupKey={r.id} requests={[r]} quoteOnly={r.origination === QUOTE_ONLY_ORIGINATION} />
-                                  {['HOLD', 'COMMITTED', 'EXPIRED'].includes(r.status) && <ReviseLink rows={[r]} booking={(bookingKey(r) ? rowsByBooking.get(bookingKey(r)!) : undefined) ?? [r]} />}
-                                </div>
-                              </td>
-                            </tr>
-                            {parsedFeatures && (
-                              <tr className="bg-gray-50/50">
-                                <td colSpan={10} className="px-4 pb-3 pt-0">
-                                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Quote breakdown</div>
-                                  <QuoteBreakdown features={parsedFeatures} />
-                                </td>
-                              </tr>
-                            )}
-                          </Fragment>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </div>
+            {/* Phones: a card per booking, opened the same way. */}
+            <div className="md:hidden space-y-3">
+              {sortedBookings.map(({ key: groupKey, rows }) => {
+                const v = bookingView(rows)
+                const open = expanded.has(groupKey)
+                return (
+                  <div key={groupKey} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                    <button onClick={() => toggle(groupKey)} aria-expanded={open} className="w-full text-left px-4 py-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-semibold text-gray-900 break-words">{v.first.company_name}</div>
+                          <div className="text-xs text-gray-500 break-words">{v.first.owner_name || '—'} · {SOURCE_LABEL[v.first.source] ?? v.first.source}</div>
+                        </div>
+                        <StatusPill v={v} />
+                      </div>
+                      <div className="mt-2 text-sm text-gray-700 break-words">{v.marketsLabel}</div>
+                      <div className="mt-1 flex items-center justify-between gap-2 flex-wrap text-xs text-gray-600">
+                        <span>{v.trucks} truck{v.trucks === 1 ? '' : 's'} · {v.datesLabel}</span>
+                        <BookingPrice v={v} />
+                      </div>
+                      <div className="mt-1"><ExpiryCell v={v} /></div>
+                    </button>
+                    {open && <div className="px-3 pb-3">{renderDetail(groupKey, rows, v)}</div>}
+                  </div>
+                )
+              })}
+            </div>
+          </>
         )}
       </div>
 

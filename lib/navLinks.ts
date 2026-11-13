@@ -27,7 +27,7 @@ export function settingsLinks(role: string | undefined): NavLink[] {
     { href: '/ops/led-requests',      label: 'LED Readiness' },
     { href: '/users',                 label: 'Users' },
     ...(role === 'OPERATIONS' ? [{ href: '/usage', label: 'Usage' }] : []),
-    { href: '/settings',              label: 'Settings' },
+    { href: '/settings',              label: 'Notifications' },
   ]
 }
 

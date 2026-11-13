@@ -13,6 +13,7 @@
 import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { centralDate } from '@/lib/dateOnly'
 import { chosenClientType, type ClientType } from '@/lib/pricing/brandMarkup'
+import { VALID_STUDIES, type StudyType } from '@/lib/pricing/config'
 import { ASKED_DATES_MOVED_KEY, askedDates } from '@/lib/quoteFeatures'
 
 type BookingRow = {
@@ -333,11 +334,26 @@ const parseFeatures = (json: string | null): Record<string, unknown> => {
 }
 
 /**
+ * What a booking holds right now: the distinct trucks and markets of its holds
+ * that still reserve a truck (live: HOLD, or COMMITTED by ops on a booking
+ * without an opportunity, which a revision replaces too). A lapsed or expired
+ * hold of a partly lapsed booking, or a quote-only log, isn't counted. The
+ * planner's warning before a quote-only revision names what it releases. Pure.
+ */
+export function heldNow(holds: RevisableHold[]): { trucks: number; markets: number } {
+  const held = holds.filter(h => h.live && !NO_TRUCK.has(h.truck_number))
+  return {
+    trucks: new Set(held.map(h => h.truck_number)).size,
+    markets: new Set(held.map(h => h.market.trim().toLowerCase())).size,
+  }
+}
+
+/**
  * Why a booking cannot be revised in the planner, or null. Only bookings made
  * in the quote tools: a Salesforce push is managed in Salesforce, and a client
  * portal booking belongs to the client. A committed (Closed Won) booking is
- * changed in Salesforce, never here. Lift studies are a single-market
- * option the multi-market quote does not price, so revising would drop them.
+ * changed in Salesforce, never here. Lift studies come along: the planner
+ * prices them for the whole order (lib/pricing/studies.ts).
  */
 export function reviseRefusal(holds: RevisableHold[]): string | null {
   if (holds.length === 0) return 'That booking no longer exists.'
@@ -349,10 +365,6 @@ export function reviseRefusal(holds: RevisableHold[]): string | null {
   // Committed = Closed Won: read-only in the app (closedWonRefusal).
   const won = closedWonRefusal(holds)
   if (won) return won
-  if (holds.some(h => {
-    const f = parseFeatures(h.features)
-    return Array.isArray(f.studies) && f.studies.length > 0
-  })) return 'This booking includes lift studies, which the multi-market quote does not price. Change it in the single-market quote instead.'
   // Revising replaces the holds, which would drop the request unanswered.
   if (holds.some(h => h.status === 'EXTENSION_REQUESTED')) return 'This booking has an extension request waiting. Approve or decline it on Reservations first, then revise.'
   return null
@@ -367,7 +379,7 @@ export function reviseRefusal(holds: RevisableHold[]): string | null {
  */
 export function reviseRows(holds: RevisableHold[]): {
   rows: RevisedRow[]
-  features: { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean }
+  features: { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean; studies: StudyType[] }
   live: boolean
   quoteOnly: boolean
   /** The Brand Direct markup it was sold at, or null when the holds predate recording it. */
@@ -407,12 +419,30 @@ export function reviseRows(holds: RevisableHold[]): {
       shadowFencing: Number(f.shadowFencing) > 0,
       smartDirectional: f.smartDirectionalIncluded === true,
       deviceId: f.deviceIdIncluded === true,
+      // The order's studies: every hold of a booking records the same ones.
+      studies: bookedStudies(holds),
     },
     live,
     quoteOnly: holds.every(h => h.origination === QUOTE_ONLY_ORIGINATION),
     brandMarkupPct: typeof f.brandMarkupPct === 'number' ? f.brandMarkupPct : null,
     clientType: chosenClientType(f.clientType),
   }
+}
+
+/**
+ * The lift studies a booking was sold, from its holds' features. Only what was
+ * sold: a hold whose studies were priced (studiesTotal > 0), or a sales lift
+ * asked for (salesLiftRequested). Bookings made before studies were stored as
+ * sold recorded the studies requested even when reach was short and nothing
+ * was charged; those are not restored. Pure.
+ */
+export function bookedStudies(holds: { features: string | null }[]): StudyType[] {
+  const valid = (v: unknown): StudyType[] => (Array.isArray(v) ? [...new Set(v.filter((x): x is StudyType => (VALID_STUDIES as readonly unknown[]).includes(x)))] : [])
+  for (const h of holds) {
+    const f = parseFeatures(h.features)
+    if (Number(f.studiesTotal) > 0) return valid(f.studies)
+  }
+  return holds.some(h => parseFeatures(h.features).salesLiftRequested === true) ? ['sales_lift'] : []
 }
 
 /** A market whose booked price a revision keeps, for the truck count and Brand Direct markup (null: not recorded) it was booked with. */

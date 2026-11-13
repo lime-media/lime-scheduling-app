@@ -30,6 +30,8 @@ export type QuoteFeatures = {
   studies?: string[]
   studyCost?: number
   studiesTotal?: number
+  /** Sales lift was asked for: the team quotes it (lib/pricing/studies.ts). */
+  salesLiftRequested?: boolean
   transportCharge?: number
   /**
    * The dates the client asked for in this market (YYYY-MM-DD). A hold's own
@@ -70,11 +72,27 @@ export type QuoteFeatures = {
 export const ASKED_DATES_MOVED_KEY = 'askedDatesMoved'
 
 /**
+ * The key in a hold's features JSON recording who the booking is for: its
+ * Salesforce account, primary contact and brand (lib/bookingParty.ts).
+ */
+export const PARTY_KEY = 'party'
+
+/**
+ * The app's bookkeeping keys in `features`, never part of a quote breakdown:
+ * the LED Hold Exp it last wrote, the dates-moved marker, and the booking
+ * party. One list, read by both INTERNAL_KEYS and parseQuoteFeatures, so a
+ * key added here is kept out of client view AND out of the "is this a quote"
+ * test.
+ */
+const BOOKKEEPING_KEYS: readonly string[] = [APP_HOLD_EXP_KEY, ASKED_DATES_MOVED_KEY, PARTY_KEY]
+
+/**
  * Keys in `features` that are internal, never sent to a client: Brand Direct
  * pricing (markup, client type), the deadhead cost a booking adds to the next
- * job, and the app's Salesforce bookkeeping.
+ * job, and the app's bookkeeping (BOOKKEEPING_KEYS: its Salesforce
+ * bookkeeping and the account and contact the booking was made for).
  */
-const INTERNAL_KEYS = ['brandMarkupPct', 'clientType', 'successorImpact', APP_HOLD_EXP_KEY, ASKED_DATES_MOVED_KEY] as const
+const INTERNAL_KEYS: readonly string[] = ['brandMarkupPct', 'clientType', 'successorImpact', ...BOOKKEEPING_KEYS]
 
 /**
  * A hold's `features` as a client may see them: the internal keys removed
@@ -164,14 +182,14 @@ export function askedDates(holds: { features: string | null; start_date: string;
 /**
  * A hold's quote breakdown, or null when its features hold no quote: a
  * Salesforce-made hold's features may carry only the app's bookkeeping (the
- * LED Hold Exp it last wrote, APP_HOLD_EXP_KEY), which
- * must not render as an empty breakdown.
+ * LED Hold Exp it last wrote, the dates-moved marker, the booking party:
+ * BOOKKEEPING_KEYS), which must not render as an empty breakdown.
  */
 export function parseQuoteFeatures(features: string | null | undefined): QuoteFeatures | null {
   if (!features) return null
   try {
     const f = JSON.parse(features) as QuoteFeatures
-    return f && typeof f === 'object' && Object.keys(f).some(k => k !== APP_HOLD_EXP_KEY && k !== ASKED_DATES_MOVED_KEY) ? f : null
+    return f && typeof f === 'object' && Object.keys(f).some(k => !BOOKKEEPING_KEYS.includes(k)) ? f : null
   } catch {
     return null
   }
@@ -206,8 +224,12 @@ export function buildActivationNotes(features: QuoteFeatures, tier?: string | nu
   if (features.shadowFencing) featureList.push('Shadow Fencing')
   if (features.smartDirectionalIncluded) featureList.push('Smart Directional')
   if (features.deviceIdIncluded) featureList.push('Device ID Passback')
-  if (features.studies && features.studies.length > 0) {
-    featureList.push(`Lift Studies (${features.studies.map(s => s.replace(/_/g, ' ')).join(', ')})`)
+  const priced = (features.studies ?? []).filter(s => s !== 'sales_lift')
+  if (priced.length > 0) {
+    featureList.push(`Lift Studies (${priced.map(s => s.replace(/_/g, ' ')).join(', ')})`)
+  }
+  if (features.salesLiftRequested || features.studies?.includes('sales_lift')) {
+    featureList.push('Sales lift requested (the team quotes it)')
   }
   if (featureList.length > 0) parts.push(`Features: ${featureList.join(', ')}`)
 

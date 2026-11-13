@@ -1,7 +1,7 @@
 /**
  * GET /api/bookings/revise?key=<booking key> — a booking as the multi-market
  * planner opens it for revision: its account, opportunity, primary contact,
- * brand, markets (as planner rows, with the trucks a live booking keeps) and
+ * brand (from the opportunity, else as booked: lib/bookingParty.ts), markets (as planner rows, with the trucks a live booking keeps) and
  * options. Staff only. Refuses what cannot be revised (lib/bookings.ts
  * reviseRefusal; a lost opportunity: lib/sfdcBooking.ts opportunityRefusal).
  * A Closed Lost opportunity answers 409 `reopenable` so the planner can ask
@@ -13,10 +13,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireStaff } from '@/lib/planning/http'
 import { loadBookingHolds } from '@/lib/bookingLoad'
-import { reviseRefusal, reviseRows } from '@/lib/bookings'
+import { heldNow, reviseRefusal, reviseRows } from '@/lib/bookings'
 import { getBookingOpportunity, opportunityRefusal } from '@/lib/sfdcBooking'
 import { reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { clientTypeOf } from '@/lib/pricing/brandMarkup'
+import { reviseParty } from '@/lib/bookingParty'
 import { isSfdcConfigured } from '@/lib/salesforceClient'
 
 export async function GET(req: NextRequest) {
@@ -52,18 +53,20 @@ export async function GET(req: NextRequest) {
   }
 
   const { rows, features, live, quoteOnly, brandMarkupPct, clientType } = reviseRows(holds)
+  const { account, contact, brand } = reviseParty({
+    opp, holds, clientType,
+    oppClientType: opp ? clientTypeOf(opp.Account?.Client_Type2__c ?? null) : undefined,
+  })
   return NextResponse.json({
     booking: {
       key,
       opportunityId: opp?.Id ?? null,
       opportunityName: opp?.Name ?? null,
-      // Without an opportunity (Salesforce was down when it was booked), the
-      // planner asks for the account again.
-      account: opp ? { id: opp.AccountId, name: opp.Account?.Name ?? holds[0].client_name, clientType: clientTypeOf(opp.Account?.Client_Type2__c ?? null) } : null,
-      contact: opp?.Primary_Contact__c && opp.Primary_Contact__r
-        ? { id: opp.Primary_Contact__c, name: opp.Primary_Contact__r.Name, email: opp.Primary_Contact__r.Email, title: opp.Primary_Contact__r.Title }
-        : null,
-      brand: opp?.Brand_Job_Name__c ?? '',
+      // From the opportunity where it has them, else as the booking recorded
+      // them (lib/bookingParty.ts): a booking with no opportunity (Salesforce
+      // was down or writes were off) reopens with its account, contact and
+      // brand. Only a booking with neither asks for the account again.
+      account, contact, brand,
       clientName: holds[0].client_name,
       rows, features, live, quoteOnly, brandMarkupPct,
       // The client type it was priced as (null on older holds).
@@ -72,6 +75,8 @@ export async function GET(req: NextRequest) {
       // live holds, and the markets ops marked committed.
       heldUntil: holds.filter(h => h.live && h.expires_at).map(h => h.expires_at!.toISOString()).sort().reverse()[0] ?? null,
       committedMarkets: [...new Set(holds.filter(h => h.live && h.status === 'COMMITTED').map(h => h.market.trim().toLowerCase()))],
+      // What it holds now, which a quote-only revision releases (the planner's warning).
+      held: heldNow(holds),
     },
   })
 }

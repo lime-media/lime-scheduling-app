@@ -38,6 +38,9 @@ section('the app\'s Hold Exp marker lives in features, never in sfdc_hold_exp')
   eq('nothing recorded', appHoldExpOf(null), null)
   eq('a marker alone is not a quote breakdown', parseQuoteFeatures('{"appHoldExp":"2026-10-23"}'), null)
   eq('a real quote with the marker still is', parseQuoteFeatures('{"dailyRate":1200,"appHoldExp":"2026-10-23"}')?.dailyRate, 1200)
+  eq('bookkeeping alone (Hold Exp + booking party) is not a quote breakdown',
+    parseQuoteFeatures('{"appHoldExp":"2026-10-23","party":{"accountId":"001000000000001AAA","contactId":null,"brand":null}}'), null)
+  eq('a real quote with the party still is', parseQuoteFeatures('{"dailyRate":1200,"party":{"accountId":"001000000000001AAA"}}')?.dailyRate, 1200)
 }
 
 section('Salesforce: which expiries close the Opportunity')

@@ -39,6 +39,7 @@ import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { legsFromSelectedTrucks } from '@/lib/transportMetrics'
 import { reply, type CoreResult } from '@/lib/coreResult'
+import { PARTY_KEY, bookingParty } from '@/lib/bookingParty'
 import { holdExpDate } from '@/lib/dateOnly'
 
 /** The staff member booking it: who the holds and the opportunity are attributed to. */
@@ -180,14 +181,14 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   const quote = computeQuote({
     truckCount: truck_count, days: activationDays, operatingHours: opHours,
     marketSizeTierId, includeSmartDirectional: includeSD, includeDeviceId: includeDID, studies,
-    rateOverrides, markupPct,
+    spanDays: calendarDays, rateOverrides, markupPct,
   })
 
   let mediaTotal = quote.good.baseMedia
   if (includeSF) mediaTotal += quote.better.shadowFencing
   if (includeSD) mediaTotal += quote.better.smartDirectional
   if (includeDID) mediaTotal += quote.better.deviceId
-  if (quote.best.reachOk && studies.length > 0) mediaTotal += studies.length * quote.best.studyCost
+  mediaTotal += quote.best.studiesTotal
 
   const transport = priceTransport({
     activationDays,
@@ -242,8 +243,10 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
     shadowFencingFloored: quote.better.shadowFencingFloored,
     smartDirectionalIncluded: includeSD, smartDirectional: includeSD ? quote.better.smartDirectional : 0,
     deviceIdIncluded: includeDID, deviceId: includeDID ? quote.better.deviceId : 0,
-    studies, studyCost: quote.best.studyCost,
-    studiesTotal: quote.best.reachOk ? studies.length * quote.best.studyCost : 0,
+    // What was sold: a study with no reach behind it isn't (quote.best.studies).
+    studies: quote.best.studies, studyCost: quote.best.studyCost,
+    studiesTotal: quote.best.studiesTotal,
+    ...(quote.best.salesLiftRequested ? { salesLiftRequested: true } : {}),
     transportCharge,
     successorImpact,
     // How it was priced, so a revision reopens the same way (lib/bookings.ts reviseRows).
@@ -251,6 +254,11 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
     ...(clientType ? { clientType } : {}),
     // Added to an existing opportunity: lapsing never closes it (expiryClosesOpportunity).
     ...(target ? { attachedToOpportunity: true } : {}),
+    // Who it's for, so a revision reopens with them even without an opportunity (lib/bookingParty.ts).
+    [PARTY_KEY]: bookingParty({
+      accountId: sfdc_account_id, accountName: sfdc_account_name,
+      contactId: primary_contact_id, contactName: body.primary_contact_name, verified: contact.contact, brand,
+    }),
   })
 
   // Find a ClientUser linked to this SFDC Account if one exists.

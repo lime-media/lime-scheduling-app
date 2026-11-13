@@ -538,7 +538,9 @@ export default function MapView({ clientView = false }: { clientView?: boolean }
       </div>
 
       {/* ── Map (full width on mobile, flex-1 on desktop) ───────────────────── */}
-      <div className="flex-1 relative">
+      {/* isolate: Leaflet's panes (z-index 400+) stay inside the map, so the
+          top menu's dropdowns open over it, not under it. */}
+      <div className="flex-1 relative isolate">
         <MapContainer center={[39.5, -98.35]} zoom={4} scrollWheelZoom style={{ width: '100%', height: '100%' }}>
           <TileLayer
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"

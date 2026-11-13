@@ -47,7 +47,7 @@ const QUOTE_PROPERTIES = {
   shadow_fencing: { type: 'boolean', description: 'Default true.' },
   smart_directional: { type: 'boolean', description: 'Default false.' },
   device_id: { type: 'boolean', description: 'Default false.' },
-  studies: { type: 'array', items: { type: 'string', enum: [...VALID_STUDIES] }, description: 'Lift studies. Only priced when projected reach meets the minimum.' },
+  studies: { type: 'array', items: { type: 'string', enum: [...VALID_STUDIES] }, description: 'Lift studies. One study covers the order (foot traffic / web lift: the base includes 2 markets, then a charge per extra market; brand lift is flat). Sales lift is not priced: the team quotes it, and the booking notes the request. Studies need the projected reach to meet the minimum.' },
   days_per_week: { type: 'integer', enum: [5, 6, 7], description: 'Omit unless the rep says; the engine decides from the dates.' },
   operating_hours: { type: 'number', description: 'Hours per day. Default 8.' },
   sfdc_account_id: { type: 'string', description: 'Salesforce Account id from find_account. Sets agreement pricing and Brand Direct.' },
@@ -61,7 +61,7 @@ const QUOTE_REQUIRED = ['market', 'start_date', 'end_date', 'truck_count']
 const BOOKING_TERMS = {
   sfdc_account_name: { type: 'string', description: 'The account name from find_account.' },
   primary_contact_id: { type: 'string', description: 'Salesforce Contact id from find_contacts.' },
-  brand: { type: 'string', description: 'The brand being advertised. Ask the rep; pass "none" only when they say there is none. Required to book.' },
+  brand: { type: 'string', description: 'The brand being advertised. Ask the rep once, plainly; never suggest "none" or "N/A". Pass "none" only when the rep says there is no brand. Required to book.' },
   hold_days: { type: 'integer', minimum: 1, maximum: MAX_HOLD_DAYS, description: 'Days to hold. Default 3; it never runs past 2 days before the start.' },
   stage: { type: 'string', enum: OPEN_STAGES.map(s => s.value), description: 'Opportunity stage. Default WARM.' },
   lead_source: { type: 'string', enum: [...LEAD_SOURCES], description: "The opportunity's Lead Source, exactly one of Salesforce's values. Suggest the account's leadSource (find_account) if it has one, else ask the rep. Required to book." },
@@ -79,7 +79,7 @@ export const CHAT_TOOLS: Anthropic.Beta.BetaTool[] = [
   },
   {
     name: 'get_quote',
-    description: 'Price one market exactly as the internal Quote page does: trucks picked, media, features, transport, total. Returns quote_ref when the trucks are there to book it. When the rep may book, include sfdc_account_id (agreement and Brand Direct pricing) and the booking terms (account name, primary contact, brand (or "none"; place_hold needs one), hold days, stage, lead source) and client_type: the ref covers them, so place_hold books exactly what the rep confirmed.',
+    description: 'Price one market exactly as the internal Quote page does: trucks picked, media, features, transport, total. Returns quote_ref when the trucks are there to book it. When the rep may book, include sfdc_account_id (agreement and Brand Direct pricing) and the booking terms (account name, primary contact, brand ("none" only when the rep said there is none; place_hold needs one), hold days, stage, lead source) and client_type: the ref covers them, so place_hold books exactly what the rep confirmed.',
     input_schema: { type: 'object', properties: { ...QUOTE_PROPERTIES, ...BOOKING_TERMS }, required: QUOTE_REQUIRED },
   },
   {
@@ -280,8 +280,7 @@ async function quote(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
     && !!q.client_type && !!terms.lead_source && !('error' in readBrand(terms.brand, true))
   // The summary is what the rep confirms when the reply leaves the ref out, so
   // it names everything the ref covers that changes the opportunity.
-  // terms.brand is already the saved brand (bookingTerms): cleaning it again
-  // could cut more (cleanBrand isn't idempotent past its 50-character cut).
+  // terms.brand is already the saved brand (bookingTerms), so it is shown as is.
   const savedAs = terms.brand === 'none' ? '' : terms.brand ?? ''
   return {
     content: json({ ...body, quote_ref: ref }),

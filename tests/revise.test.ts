@@ -5,7 +5,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { keptPrices, reviseRefusal, reviseRows, type RevisableHold } from '@/lib/bookings'
+import { heldNow, keptPrices, reviseRefusal, reviseRows, type RevisableHold } from '@/lib/bookings'
 import { askedDates, withAskedDates } from '@/lib/quoteFeatures'
 import { keepBookedPrices } from '@/lib/planning/quote'
 import { mergedOpportunityFields, type LinkedHold } from '@/lib/opportunityMerge'
@@ -25,7 +25,8 @@ eq('gone', reviseRefusal([]), 'That booking no longer exists.')
 eq('a Salesforce push is changed in Salesforce', reviseRefusal([hold({ source: 'SALESFORCE' })]), 'This booking came from Salesforce; change it there.')
 eq('a client booking is the client\'s', reviseRefusal([hold({ source: 'CLIENT' })])?.startsWith('This booking was made in the client portal'), true)
 eq('a pending extension request: refused until it is answered', reviseRefusal([hold(), hold({ id: 'h2', status: 'EXTENSION_REQUESTED' })])?.startsWith('This booking has an extension request waiting'), true)
-eq('lift studies would be dropped: refused', reviseRefusal([hold({ features: feat({ studies: ['web_lift'] }) })])?.includes('lift studies'), true)
+eq('a booking with lift studies can be revised (the planner prices them)', reviseRefusal([hold({ features: feat({ studies: ['web_lift'] }) })]), null)
+eq('its studies come back with it', reviseRows([hold({ features: feat({ studies: ['web_lift', 'brand_lift', 'bogus'], studiesTotal: 20000 }) })]).features.studies, ['web_lift', 'brand_lift'])
 
 section('revise: the booking as planner rows')
 const booking = [
@@ -37,13 +38,25 @@ const r = reviseRows(booking)
 eq('one row per market', r.rows.map(x => x.market), ['Albany, NY', 'Buffalo, NY'])
 eq('dates span the market\'s holds', [r.rows[0].startDate, r.rows[0].endDate], ['2026-11-09', '2026-12-06'])
 eq('trucks, schedule and hours as booked', r.rows.map(x => [x.trucks, x.daysPerWeek, x.hours]), [[2, 5, 10], [1, 7, 8]])
-eq('options as booked', r.features, { shadowFencing: true, smartDirectional: false, deviceId: true })
+eq('options as booked', r.features, { shadowFencing: true, smartDirectional: false, deviceId: true, studies: [] })
 eq('live: each market keeps its trucks', r.rows.map(x => x.keepTrucks), [['0382', '0912'], ['4840']])
 const expired = reviseRows(booking.map(h => ({ ...h, live: false, status: 'EXPIRED' })))
 eq('expired: nothing kept, re-picked and re-priced', [expired.live, expired.rows.every(x => x.keepTrucks.length === 0)], [false, true])
 eq('quote-only logs are recognized', reviseRows([hold({ origination: 'quote_only', status: 'EXPIRED', live: false, truck_number: 'UNASSIGNED' })]).quoteOnly, true)
 eq('quote-only placeholder truck is never "kept"',
   reviseRows([hold({ origination: 'quote_only', truck_number: 'UNASSIGNED' })]).rows[0].keepTrucks, [])
+
+section('revise: what a quote-only revision releases (heldNow)')
+eq('a live booking: its distinct trucks and markets', heldNow(booking), { trucks: 3, markets: 2 })
+eq('partly lapsed: the expired market\'s truck isn\'t counted',
+  heldNow(booking.map(h => (h.market === 'Buffalo, NY' ? { ...h, live: false, status: 'EXPIRED' } : h))), { trucks: 2, markets: 1 })
+eq('a hold past its expiry but not yet swept (not live) isn\'t counted', heldNow([hold({ live: false })]), { trucks: 0, markets: 0 })
+eq('an extension request still holds its truck', heldNow([hold({ status: 'EXTENSION_REQUESTED' })]), { trucks: 1, markets: 1 })
+eq('a quote-only placeholder holds nothing', heldNow([hold({ origination: 'quote_only', truck_number: 'UNASSIGNED' })]), { trucks: 0, markets: 0 })
+eq('a market ops committed (no opportunity) is released too, so it counts',
+  heldNow([hold(), hold({ id: 'h2', campaign_group_id: 'mm_abc_2', market: 'Troy, NY', truck_number: '0912', status: 'COMMITTED' })]), { trucks: 2, markets: 2 })
+eq('a quote-only booking holds nothing', heldNow([hold({ origination: 'quote_only', status: 'EXPIRED', live: false, truck_number: '0382' })]), { trucks: 0, markets: 0 })
+eq('a shared truck counts once', heldNow([hold(), hold({ id: 'h2', campaign_group_id: 'mm_abc_2', market: 'Troy, NY' })]), { trucks: 1, markets: 2 })
 
 section('revise: a market keeps its truck where it still fits')
 const S = { ...DEFAULT_ENGINE, today: '2026-10-16' }

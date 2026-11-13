@@ -3,7 +3,7 @@
  * These pin the guarantees it relies on. Run with: npm test
  */
 import { eq, section } from './harness'
-import { QUOTE_ONLY_STATUS, QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
+import { QUOTE_ONLY_STATUS, QUOTE_ONLY_ORIGINATION, bookingEvent, listedQuotes, type QuoteListRow } from '@/lib/quoteOnly'
 import { activeHoldWhere } from '@/lib/holdFilters'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -67,4 +67,68 @@ section('Single-market booking: the price shown is the price booked')
   const page = fs.readFileSync('app/quote/page.tsx', 'utf8')
   eq('the page sends the total it shows', page.includes('expected_total: expectedOverride ?? shownTotal()'), true)
   eq('booking waits while a markup change is not re-priced', page.includes('markupPending ||'), true)
+}
+
+section('quote-only: which quotes Reservations lists under Quotes')
+{
+  const q = (key: string, opp: string | null, start: string, created: string) =>
+    ({ key, origination: QUOTE_ONLY_ORIGINATION, status: 'EXPIRED', sfdc_opportunity_id: opp, start_date: start, created_at: created })
+  const live = (key: string, opp: string, status = 'HOLD') =>
+    ({ key, origination: 'frontend', status, sfdc_opportunity_id: opp, start_date: '2026-12-01', created_at: '2026-11-01T00:00:00Z' })
+  const keyOf = (r: { key: string }) => r.key
+  const today = '2026-11-11'
+  const list = (rows: (QuoteListRow & { key: string })[]) => [...listedQuotes(rows, keyOf, today)].sort()
+
+  eq('a quote still to start is listed', list([q('a', 'opp1', '2026-12-01', '2026-11-10T10:00:00Z')]), ['a'])
+  eq('a quote starting today is still listed', list([q('a', 'opp1', today, '2026-11-10T10:00:00Z')]), ['a'])
+  eq('a quote whose start has passed drops off', list([q('a', 'opp1', '2026-11-10', '2026-11-01T10:00:00Z')]), [])
+  eq('a multi-market quote drops off when its FIRST market starts', list([
+    q('m', 'opp1', '2026-11-10', '2026-11-01T10:00:00Z'), q('m', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'),
+  ]), [])
+  eq('a later quote of the same opportunity supersedes the earlier', list([
+    q('old', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'), q('new', 'opp1', '2026-12-05', '2026-11-05T10:00:00Z'),
+  ]), ['new'])
+  eq('quotes of different opportunities both list', list([
+    q('a', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'), q('b', 'opp2', '2026-12-01', '2026-11-01T10:00:00Z'),
+  ]), ['a', 'b'])
+  eq('a quote with no opportunity stands alone', list([
+    q('a', null, '2026-12-01', '2026-11-01T10:00:00Z'), q('b', null, '2026-12-01', '2026-11-02T10:00:00Z'),
+  ]), ['a', 'b'])
+  eq('a reserved opportunity takes its quote off the list', list([
+    q('a', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'), live('h', 'opp1'),
+  ]), [])
+  eq('a won (committed) opportunity takes it off too', list([
+    q('a', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'), live('h', 'opp1', 'COMMITTED'),
+  ]), [])
+  eq('an expired reservation of the opportunity does not', list([
+    q('a', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'), live('h', 'opp1', 'EXPIRED'),
+  ]), ['a'])
+  eq('a superseded quote whose successor passed its start is not brought back', list([
+    q('old', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'), q('new', 'opp1', '2026-11-10', '2026-11-05T10:00:00Z'),
+  ]), [])
+  eq('a newer quote no longer loaded (it ended) still replaces an older one', list([
+    { ...q('old', 'opp1', '2027-02-01', '2026-10-01T10:00:00Z'), opp_latest_at: '2026-10-05T10:00:00Z' },
+  ]), [])
+  eq('a booking Reserve made, lapsed since, still replaces the older quote', list([
+    q('old', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'),
+    { ...live('booked', 'opp1', 'EXPIRED'), created_at: '2026-11-06T10:00:00Z' },
+  ]), [])
+  eq("the quote's own rows don't replace it", list([
+    { ...q('a', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'), opp_latest_at: '2026-11-01T10:00:00Z' },
+  ]), ['a'])
+  eq('equal log times pick one, stably', list([
+    q('a', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'), q('b', 'opp1', '2026-12-01', '2026-11-01T10:00:00Z'),
+  ]), ['b'])
+}
+
+section('quote-only: reserving a quote is recorded as BOOKED (transport KPIs see it)')
+{
+  const q = { origination: QUOTE_ONLY_ORIGINATION }
+  const real = { origination: 'manual' }
+  eq('a new booking is BOOKED', bookingEvent(null, []), 'BOOKED')
+  eq('Reserve on a quote: every replaced hold is a quote-only log, so BOOKED', bookingEvent('mmq_abc', [q, q]), 'BOOKED')
+  eq('revising a real booking stays REVISED', bookingEvent('mm_abc', [real, real]), 'REVISED')
+  eq('any real hold replaced keeps the lineage: REVISED', bookingEvent('mm_abc', [q, real]), 'REVISED')
+  eq('replaced holds not found (a retry) stays REVISED', bookingEvent('mm_abc', []), 'REVISED')
+  eq('a hold with no origination counts as real', bookingEvent('mm_abc', [{ origination: null }]), 'REVISED')
 }

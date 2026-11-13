@@ -7,7 +7,7 @@
  */
 
 import { opportunityName, savedBrand } from '@/lib/brand'
-import { suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
+import { clientOpportunityType } from '@/lib/clientOpportunityType'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
@@ -141,9 +141,11 @@ export async function placeClientBooking(
   // Read from the client's row, not the session's 30-day-old copy, so an ops
   // relink reaches the next booking rather than the next login.
   const { sfdcAccountId } = await liveClientLinks(session)
-  const accountInfo = sfdcAccountId && isSfdcConfigured()
-    ? await getSfdcAccountInfo(sfdcAccountId, { withWon: true }).catch(() => null)
-    : null
+  // The opportunity's Type is read alongside the account, not in series
+  // before the create (clientOpportunityType never throws).
+  const [accountInfo, opportunityType] = sfdcAccountId && isSfdcConfigured()
+    ? await Promise.all([getSfdcAccountInfo(sfdcAccountId).catch(() => null), clientOpportunityType(sfdcAccountId)])
+    : [null, undefined]
   const markupPct = brandMarkupFor(accountInfo?.clientType)
 
   const quote = computeQuote({
@@ -154,6 +156,7 @@ export async function placeClientBooking(
     includeSmartDirectional,
     includeDeviceId,
     studies,
+    spanDays: calendarDays,
     rateOverrides,
     markupPct,
   })
@@ -162,9 +165,7 @@ export async function placeClientBooking(
   if (includeShadowFencing) mediaTotal += quote.better.shadowFencing
   if (includeSmartDirectional) mediaTotal += quote.better.smartDirectional
   if (includeDeviceId) mediaTotal += quote.better.deviceId
-  if (quote.best.reachOk && studies.length > 0) {
-    mediaTotal += studies.length * quote.best.studyCost
-  }
+  mediaTotal += quote.best.studiesTotal
 
   const transport = priceTransport({
     activationDays,
@@ -223,9 +224,10 @@ export async function placeClientBooking(
     smartDirectional: includeSmartDirectional ? quote.better.smartDirectional : 0,
     deviceIdIncluded: includeDeviceId,
     deviceId: includeDeviceId ? quote.better.deviceId : 0,
-    studies,
+    studies: quote.best.studies,
     studyCost: quote.best.studyCost,
-    studiesTotal: quote.best.reachOk ? studies.length * quote.best.studyCost : 0,
+    studiesTotal: quote.best.studiesTotal,
+    ...(quote.best.salesLiftRequested ? { salesLiftRequested: true } : {}),
     transportCharge,
     successorImpact,
   })
@@ -273,7 +275,9 @@ export async function placeClientBooking(
     market,
     startDate:    start_date,
     endDate:      end_date,
-    notes:        [brand ? `Brand: ${brand}` : null, notes || null, `${pricingTier} tier at $${Math.round(serverTotal).toLocaleString('en-US')}`].filter(Boolean).join(' | '),
+    notes:        [brand ? `Brand: ${brand}` : null, notes || null, `${pricingTier} tier at $${Math.round(serverTotal).toLocaleString('en-US')}`,
+      // An ask, not a price (lib/pricing/studies.ts): this email is how the team hears of it.
+      quote.best.salesLiftRequested ? 'Sales lift requested: the team quotes it with the client' : null].filter(Boolean).join(' | '),
   }).catch((e) => console.error('[client/hold-requests] email failed:', e))
 
   // Create Salesforce Opportunity if the client has an SFDC Account ID
@@ -297,8 +301,8 @@ export async function placeClientBooking(
         clientType: accountInfo?.clientType,
         // No seller to pick one: the website, or a partner booking through MCP.
         leadSource: opts.origination === 'mcp' ? MCP_LEAD_SOURCE : CLIENT_PORTAL_LEAD_SOURCE,
-        // Existing Client once the account has won a deal (lib/sfdcOpportunityType.ts).
-        opportunityType: suggestedOpportunityType(accountInfo?.hasWon),
+        // No seller to pick one: the account's latest LED opportunity's, else New Client.
+        opportunityType,
         name: oppName,
         brand: brand || undefined,
         stageName: DEFAULT_STAGE, // a client's own request: no seller to choose

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { ATT_RELEASE_ORIGINATION } from '@/lib/attSoftRules'
-import { QUOTE_ONLY_LIST_DAYS, QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
+import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
@@ -8,8 +8,12 @@ import { reservationOwners } from '@/lib/reservationOwners'
 import { ledClientNames } from '@/lib/ledClients'
 import { stillListed } from '@/lib/bookings'
 import { centralDate } from '@/lib/dateOnly'
+import { salesforceInstanceUrl } from '@/lib/salesforceClient'
 import { FOLLOW_SYNC_OVERDUE_MS } from '@/lib/ledTruckFollow'
 import { daysSold, ledShiftsForHolds, ledStandings, type JobHold, type LedStanding } from '@/lib/ledJobs'
+
+/** How long the page waits for Salesforce's address before leaving the links out. */
+const SFDC_LINK_WAIT_MS = 3000
 
 // EXPIRED holds accumulate forever — every lapsed hold and every Closed Lost
 // Opportunity lands here and never leaves. Ops only care about the recent tail,
@@ -41,9 +45,10 @@ export async function GET() {
       OR: [
         { status: { not: 'EXPIRED' } },
         { status: 'EXPIRED', updated_at: { gte: expiredCutoff } },
-        // Quote-only logs stay listed for QUOTE_ONLY_LIST_DAYS from creation
-        // (their updated_at never moves, so the expired window would drop them).
-        { origination: QUOTE_ONLY_ORIGINATION, created_at: { gte: new Date(Date.now() - QUOTE_ONLY_LIST_DAYS * 864e5) } },
+        // Quote-only logs, while their dates haven't all passed (their
+        // updated_at never moves, so the expired window would drop them). The
+        // page lists one per opportunity until its start (lib/quoteOnly.ts listedQuotes).
+        { origination: QUOTE_ONLY_ORIGINATION, end_date: { gte: new Date(`${centralDate(new Date())}T00:00:00Z`) } },
       ],
       // AT&T soft-hold release records are not reservations (lib/attSoftRelease.ts).
       NOT: { origination: ATT_RELEASE_ORIGINATION },
@@ -54,6 +59,14 @@ export async function GET() {
       user: { select: { name: true } },
     },
   })
+
+  // When the newest hold of each quote's opportunity was made, any status or
+  // kind, so a quote replaced by a later quote or booking (even one no longer
+  // listed) stays replaced (lib/quoteOnly.ts listedQuotes).
+  const quoteOpps = [...new Set(fetched.filter(h => h.origination === QUOTE_ONLY_ORIGINATION && h.sfdc_opportunity_id).map(h => h.sfdc_opportunity_id!))]
+  const oppLatest = new Map((quoteOpps.length
+    ? await prisma.hold.groupBy({ by: ['sfdc_opportunity_id'], where: { sfdc_opportunity_id: { in: quoteOpps } }, _max: { created_at: true } })
+    : []).map(g => [g.sfdc_opportunity_id!, g._max.created_at?.toISOString() ?? null]))
 
   // A won booking that ended more than WON_ENDED_LISTED_DAYS.notInLed ago is
   // retired whatever LED says (lib/bookings.ts stillListed), so it's dropped
@@ -90,6 +103,12 @@ export async function GET() {
   // Won holds the sweep moved onto LED's truck in the last week (lib/ledTruckFollow.ts),
   // so the card says the truck changed: from the audit rows the move wrote.
   const anyWon = holds.some(h => h.status === 'COMMITTED')
+  // The org's address for the cards' Salesforce links (staff only; null leaves them out).
+  // A cold connection signs in first; never hold the page for it past a few seconds.
+  const sfdcBase = Promise.race([
+    salesforceInstanceUrl(),
+    new Promise<null>(resolve => setTimeout(() => resolve(null), SFDC_LINK_WAIT_MS)),
+  ])
   const [owners, inLed, linked, followed] = await Promise.all([
     reservationOwners(holds.map(h => ({ id: h.id, created_by: h.created_by, created_by_name: h.user?.name ?? null, sfdc_opportunity_id: h.sfdc_opportunity_id }))),
     ledShiftsForHolds(committed)
@@ -168,6 +187,7 @@ export async function GET() {
     truck_count:       h.truck_count ?? null,
     campaign_group_id: h.campaign_group_id ?? null,
     sfdc_opportunity_id: h.sfdc_opportunity_id ?? null,
+    opp_latest_at:     h.origination === QUOTE_ONLY_ORIGINATION && h.sfdc_opportunity_id ? oppLatest.get(h.sfdc_opportunity_id) ?? null : null,
     job_number:        h.sfdc_job_number ?? null,
     sfdc_account_id:   h.sfdc_account_id ?? null,
     led_client:        ledClientOf(h.sfdc_account_id),
@@ -196,6 +216,7 @@ export async function GET() {
   return NextResponse.json({
     expired_window_days: EXPIRED_WINDOW_DAYS,
     led_unavailable: ledUnavailable,
+    sfdc_base_url: await sfdcBase,
     holdRequests: stillListed(rows, today),
   })
 }

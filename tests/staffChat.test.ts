@@ -41,6 +41,9 @@ eq('an opportunity type as Salesforce spells it or not: the same ref', withTerms
 eq('no opportunity type: the ref is as before (the booking uses the suggestion)', withTerms({}), withTerms({ opportunity_type: '' }))
 eq('bookingTerms carries the opportunity type as Salesforce spells it', (bookingTerms({ opportunity_type: 'new client' }) as { opportunity_type?: string }).opportunity_type, 'New Client')
 eq('bookingTerms refuses one off the picklist', typeof bookingTerms({ opportunity_type: 'Renewal' }), 'string')
+eq('bookingTerms refuses an opportunity type that is not text', bookingTerms({ opportunity_type: ['Existing Client'] }), 'opportunity_type is text')
+eq('bookingTerms refuses an empty-array opportunity type', bookingTerms({ opportunity_type: [] }), 'opportunity_type is text')
+eq('bookingTerms refuses a lead source that is not text', bookingTerms({ lead_source: ['Phone Call'] }), 'lead_source is text')
 
 section('Staff chat: one engine')
 {

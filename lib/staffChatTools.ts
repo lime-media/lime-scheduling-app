@@ -171,7 +171,7 @@ function quoteInput(i: Bag): StaffQuoteInput | string {
 
 /** The booking terms, type-checked; a string saying what's wrong otherwise. Pure. */
 export function bookingTerms(i: Bag): BookingTerms | string {
-  for (const k of ['sfdc_account_name', 'primary_contact_id', 'brand', 'stage'] as const) {
+  for (const k of ['sfdc_account_name', 'primary_contact_id', 'brand', 'stage', 'lead_source', 'opportunity_type'] as const) {
     if (i[k] !== undefined && typeof i[k] !== 'string') return `${k} is text`
   }
   const leadSource = readLeadSource(i.lead_source, false)
@@ -297,7 +297,7 @@ async function findAccount(i: Bag): Promise<ChatToolOutcome> {
   if (!isSfdcConfigured()) return fail('Salesforce is not configured.')
   if (!isStr(i.query) || i.query.trim().length < 2) return fail('query needs at least 2 characters')
   try {
-    return { content: json({ accounts: await searchAccounts(i.query.trim()) }) }
+    return { content: json({ accounts: await searchAccounts(i.query.trim(), { suggestType: true }) }) }
   } catch (err) {
     console.error('[chat] account search failed:', err)
     return fail('Salesforce could not be reached for the account search.')

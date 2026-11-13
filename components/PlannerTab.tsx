@@ -18,7 +18,9 @@ import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, chosenClientType, clampBrandMarkup, type ClientType } from '@/lib/pricing/brandMarkup'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { copyDatesDown, holdStartDates } from '@/lib/planner/rows'
-import { ClientTypePicker, LeadSourcePicker, OpportunityTypePicker } from '@/components/OpportunityFields'
+import { ClientTypePicker, LeadSourcePicker, OpportunityNameInput, OpportunityTypePicker } from '@/components/OpportunityFields'
+import { planOpportunityName } from '@/lib/opportunityName'
+import { savedBrand } from '@/lib/brand'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
 import { HoldLength, HoldUntil, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
@@ -169,6 +171,8 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
   const [clientType, setClientType] = useState<ClientType>('Agency')
   const [leadSource, setLeadSource] = useState('')
   const [opportunityType, setOpportunityType] = useState('')
+  // The seller's own name for a new opportunity; null = the generated one (lib/opportunityName.ts).
+  const [oppName, setOppName] = useState<string | null>(null)
   const isBrandDirect = clientType === 'Brand Direct'
   // A revised booking that loaded without an account: the client type it was
   // priced as, applied when the seller picks its account.
@@ -220,6 +224,7 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
         // carry over one picked for an earlier quote's account.
         setLeadSource('')
         setOpportunityType('')
+        setOppName(null)
         setContact(b.contact)
         setBrand(b.brand ?? '')
         setRows(b.rows.map((r: { market: string; startDate: string; endDate: string; trucks: number; daysPerWeek: number; hours: number }) =>
@@ -388,7 +393,7 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: keepsOpportunity ? undefined : leadSource, opportunityType: keepsOpportunity ? undefined : opportunityType, quoteOnly, brand, primaryContactId: contact.id, primaryContactName: contact.name, holdDays, holdUntil: revision && holdUntil && !quoteOnly ? holdUntil : undefined, holdUntilFrom: revision && holdUntil && !quoteOnly ? revision.heldUntil ?? undefined : undefined, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: keepsOpportunity ? undefined : leadSource, opportunityType: keepsOpportunity ? undefined : opportunityType, opportunityName: keepsOpportunity || !oppName?.trim() ? undefined : oppName, quoteOnly, brand, primaryContactId: contact.id, primaryContactName: contact.name, holdDays, holdUntil: revision && holdUntil && !quoteOnly ? holdUntil : undefined, holdUntilFrom: revision && holdUntil && !quoteOnly ? revision.heldUntil ?? undefined : undefined, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
       })
       const data = await readJson(res)
       // The opportunity went Closed Lost after the booking was opened: ask now.
@@ -415,6 +420,8 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
       if (res.status === 400 && data.needLeadSource && revision) setRevision(r => r && { ...r, opportunityName: null })
       if (!res.ok) throw new Error(data.error || 'Holds could not be placed')
       setHoldResult({ ok: true, message: data.confirmation ?? data.message, sfdcFailure: data.sfdcFailure ?? null })
+      // A typed name was for this opportunity: the next booking starts from its own default.
+      setOppName(null)
       setSfdcFailureOpen(Boolean(data.sfdcFailure))
       // A finished revision: the booking now stands as booked; leave revise mode.
       if (revision) { setRevision(null); setHoldUntil(null); onReviseDone?.() }
@@ -473,7 +480,7 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
           const changingClient = !!revision && !!account
           if (changingClient && !window.confirm('Changing the client stops revising this booking and starts a new quote. Continue?')) return
           if (changingClient) stopRevising()
-          setAccount(a); setClientType((revision && !account ? revisedClientType.current : null) ?? a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setOpportunityType(a?.opportunityType ?? ''); setContact(null); setAttachTo(null); setQuote(null); setHoldResult(null)
+          setAccount(a); setClientType((revision && !account ? revisedClientType.current : null) ?? a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setOpportunityType(a?.opportunityType ?? ''); setOppName(null); setContact(null); setAttachTo(null); setQuote(null); setHoldResult(null)
         }} />
         {account && (
           <div className="mt-3">
@@ -616,11 +623,17 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
           ))}
         </div>
         <p className="mt-1 text-xs text-gray-500">One study covers the whole order: {fmtMoney(STUDY_PRICE)} with {STUDY_INCLUDED_MARKETS} markets, +{fmtMoney(STUDY_EXTRA_MARKET_PRICE)} per extra market (a client&apos;s rate card may set its own base); brand lift {fmtMoney(BRAND_LIFT_PRICE)}. Studies need {STUDY_MIN_IMPRESSIONS.toLocaleString('en-US')} estimated impressions across the order.</p>
-        {/* A new opportunity's lead source; a revision or an attach keeps its opportunity's own. */}
+        {/* A new opportunity's lead source, type and name; a revision or an attach keeps its opportunity's own. */}
         {!keepsOpportunity && (
           <div className="mt-3">
             <LeadSourcePicker value={leadSource} onChange={setLeadSource} />
             <div className="mt-2"><OpportunityTypePicker value={opportunityType} onChange={setOpportunityType} /></div>
+            <div className="mt-2 max-w-xl">
+              <OpportunityNameInput value={oppName} onChange={setOppName}
+                defaultName={planOpportunityName(savedBrand(brand), account?.name || 'Client', quote
+                  ? quote.lines.filter(l => selected.has(l.id))
+                  : rows.filter(r => r.market.trim() && r.startDate && r.endDate))} />
+            </div>
           </div>
         )}
         <div className="mt-3 flex items-center gap-2 text-xs">

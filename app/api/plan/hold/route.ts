@@ -35,7 +35,8 @@
  */
 
 import { withUsageLog } from '@/lib/usageLog'
-import { opportunityName, savedBrand } from '@/lib/brand'
+import { savedBrand } from '@/lib/brand'
+import { planOpportunityName, readOpportunityName } from '@/lib/opportunityName'
 import { PARTY_KEY, bookingParty } from '@/lib/bookingParty'
 import { readOpportunityType, suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
 import { QUOTE_ONLY_GROUP_PREFIX, QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS, bookingEvent } from '@/lib/quoteOnly'
@@ -78,6 +79,8 @@ type HoldBody = QuoteRequest & {
   expectedTotal?: number
   /** Opportunity stage the seller chose: Cold, Warm or Hot (never closed). */
   stage?: string
+  /** The seller's name for a new opportunity; blank or absent → the generated one (lib/opportunityName.ts). */
+  opportunityName?: unknown
   /** A new opportunity's Lead Source, from Salesforce's picklist (lib/sfdcLeadSource.ts). Required for one. */
   leadSource?: string
   /** Opportunity Type the seller picked (lib/sfdcOpportunityType.ts). */
@@ -148,6 +151,9 @@ async function handlePost(req: NextRequest) {
   // Its Opportunity Type, the same way: picked by the seller for a new one.
   const oppType = readOpportunityType(body.opportunityType, !body.revise?.bookingKey && !body.attachOpportunityId)
   if ('error' in oppType) return NextResponse.json({ error: oppType.error }, { status: 400 })
+  // The seller's own name for a new opportunity; never renames an existing one.
+  const oppNameRead = readOpportunityName(body.opportunityName)
+  if ('error' in oppNameRead) return NextResponse.json({ error: oppNameRead.error }, { status: 400 })
   // Every opportunity needs its primary contact, on this account — checked
   // after the cheap local guards. A definite no refuses; Salesforce being
   // unreachable only warns (see checkPrimaryContact).
@@ -529,6 +535,9 @@ async function handlePost(req: NextRequest) {
       : []
 
     let sfdcOpportunityId: string | null = null
+    // The name a new opportunity was given, for the confirmation: the default is
+    // built from what was actually booked, which can differ from the page's preview.
+    let createdOppName: string | null = null
     let sfdcError: string | null = null
     // Markets as the holds name them (the standard market an imported DMA
     // resolved to), so a later revision can tell which ones it drops
@@ -593,7 +602,7 @@ async function handlePost(req: NextRequest) {
           leadSource: leadSource ?? undefined,
           // As picked (the planner asks for one whenever a new opportunity is made), else Existing Client once the account has won a deal.
           opportunityType: oppType.opportunityType ?? suggestedOpportunityType(accountInfo?.hasWon),
-          name: opportunityName(brand, accountName, `Multi-market (${quote.summary.markets} markets) - ${starts[0]} to ${ends[ends.length - 1]}`),
+          name: (createdOppName = oppNameRead.name ?? planOpportunityName(brand, accountName, quote.lines)),
           brand: brand || undefined,
           primaryContactId: body.primaryContactId,
           stageName: openStage(body.stage),
@@ -637,7 +646,7 @@ async function handlePost(req: NextRequest) {
 
     const leftOut = notSelected.length + unavailable.length
     // Which opportunity, and what happened to it.
-    const oppDone = !target ? 'Salesforce opportunity created'
+    const oppDone = !target ? `Salesforce opportunity${createdOppName ? ` "${createdOppName}"` : ''} created`
       : reviseKey ? 'Salesforce opportunity updated with the revision'
       : `Added to Salesforce opportunity "${target.Name}"`
     const lead = reviseKey ? 'Booking revised: ' : ''

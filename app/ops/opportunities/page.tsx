@@ -12,13 +12,23 @@ import { Navbar } from '@/components/Navbar'
 import { centralDate } from '@/lib/dateOnly'
 
 type Opp = { id: string; createdAt: string; createdBy: string; owner: string; stage: string; week: string }
-type Data = {
-  from: string; to: string; truncated: boolean; markerReadable: boolean
+type Summary = {
   total: number; inApp: number; matched: number; direct: number; directPct: number
   weeks: { week: string; inApp: number; direct: number }[]
   byCreator: { createdBy: string; direct: number }[]
   direct_opportunities: Opp[]
 }
+type Data = {
+  from: string; to: string; truncated: boolean; markerReadable: boolean
+  /** Every opportunity, and the same without the Salesforce bots' (lib/sfdcBots.ts). */
+  all: Summary; withoutBots: Summary
+  bots: { names: string[]; count: number }
+}
+
+// The bot toggle, remembered per browser. Storage can be blocked: default on.
+const HIDE_BOTS_KEY = 'opportunityOrigins.hideBots'
+const readHideBots = () => { try { return localStorage.getItem(HIDE_BOTS_KEY) !== '0' } catch { return true } }
+const saveHideBots = (v: boolean) => { try { localStorage.setItem(HIDE_BOTS_KEY, v ? '1' : '0') } catch { /* not remembered */ } }
 
 // Central days, like the server's default range and its weeks.
 const iso = (d: Date) => centralDate(d)
@@ -41,6 +51,10 @@ export default function OpportunityOriginsPage() {
   const [data, setData] = useState<Data | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  // On by default; the saved choice is read after mount (no localStorage on the server render).
+  const [hideBots, setHideBots] = useState(true)
+  useEffect(() => { setHideBots(readHideBots()) }, [])
+  const toggleBots = (v: boolean) => { setHideBots(v); saveHideBots(v) }
 
   // Each date change refetches; a slower, older response never overwrites a newer range.
   useEffect(() => {
@@ -67,7 +81,10 @@ export default function OpportunityOriginsPage() {
   }, [from, to])
 
   const input = 'border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500'
-  const peak = Math.max(1, ...(data?.weeks ?? []).map(w => w.inApp + w.direct))
+  const view = data ? (hideBots ? data.withoutBots : data.all) : null
+  const peak = Math.max(1, ...(view?.weeks ?? []).map(w => w.inApp + w.direct))
+  // "Hide Leah Miles (bot) · 12": named from the data, so a new bot in lib/sfdcBots.ts shows up by name.
+  const botLabel = data?.bots.names.length ? `Hide ${data.bots.names.join(', ')} (bot${data.bots.names.length > 1 ? 's' : ''}) · ${data.bots.count}` : 'Hide bots'
   return (
     <>
       <Navbar />
@@ -76,6 +93,10 @@ export default function OpportunityOriginsPage() {
           <h1 className="text-xl font-bold text-gray-900 mr-auto">Opportunity origins</h1>
           <label className="text-xs text-gray-600">Created from<input type="date" value={from} max={to} onChange={e => setFrom(e.target.value)} className={`${input} block mt-1`} /></label>
           <label className="text-xs text-gray-600">To<input type="date" value={to} min={from} onChange={e => setTo(e.target.value)} className={`${input} block mt-1`} /></label>
+          <label className="flex items-center gap-2 text-sm text-gray-700 pb-1.5" title="Salesforce bot users (lib/sfdcBots.ts) that create LED opportunities">
+            <input type="checkbox" checked={hideBots} onChange={e => toggleBots(e.target.checked)} className="accent-green-600" />
+            {botLabel}
+          </label>
         </div>
         <p className="text-xs text-gray-500 mb-4">
           LED opportunities created in Salesforce, by Central week (Monday to Sunday; the last week runs only to the end date). <strong>Made in the app</strong>: the app recorded making it
@@ -87,19 +108,19 @@ export default function OpportunityOriginsPage() {
         {loading && !data && <div className="text-sm text-gray-500">Loading…</div>}
         {data?.truncated && <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm text-amber-800">More opportunities than can be read at once: narrow the dates for a complete count.</div>}
 
-        {data && (
+        {data && view && (
           <div className={`space-y-6 ${loading ? 'opacity-60' : ''}`}>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-              <Tile label="LED opportunities" value={String(data.total)} sub={`${day(data.from)} – ${day(data.to)}`} />
-              <Tile label="Made in the app" value={String(data.inApp)} sub={data.matched ? `${data.matched} matched by reservation time` : undefined} />
-              <Tile label="Made directly in Salesforce" value={String(data.direct)} />
-              <Tile label="Outside the app" value={`${data.directPct}%`} />
+              <Tile label="LED opportunities" value={String(view.total)} sub={`${day(data.from)} – ${day(data.to)}`} />
+              <Tile label="Made in the app" value={String(view.inApp)} sub={view.matched ? `${view.matched} matched by reservation time` : undefined} />
+              <Tile label="Made directly in Salesforce" value={String(view.direct)} />
+              <Tile label="Outside the app" value={`${view.directPct}%`} />
             </div>
 
             <section className="bg-white border border-gray-200 rounded-xl p-4">
               <h2 className="text-sm font-semibold text-gray-900 mb-3">By week</h2>
               <div className="space-y-1.5">
-                {data.weeks.map(w => (
+                {view.weeks.map(w => (
                   <div key={w.week} className="flex items-center gap-3 text-xs">
                     <span className="w-20 shrink-0 text-gray-600">{day(w.week)}</span>
                     <div className="flex-1 flex h-4 rounded overflow-hidden bg-gray-50" title={`${w.inApp} in the app, ${w.direct} directly in Salesforce`}>
@@ -126,8 +147,8 @@ export default function OpportunityOriginsPage() {
                     <tr><th className="px-3 py-2">Created by</th><th className="px-3 py-2 text-right">Opportunities</th></tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {data.byCreator.length === 0 && <tr><td colSpan={2} className="px-3 py-4 text-center text-gray-500">None in this range.</td></tr>}
-                    {data.byCreator.map(c => (
+                    {view.byCreator.length === 0 && <tr><td colSpan={2} className="px-3 py-4 text-center text-gray-500">None in this range.</td></tr>}
+                    {view.byCreator.map(c => (
                       <tr key={c.createdBy}><td className="px-3 py-1.5 text-gray-800">{c.createdBy}</td><td className="px-3 py-1.5 text-right tabular-nums">{c.direct}</td></tr>
                     ))}
                   </tbody>
@@ -140,8 +161,8 @@ export default function OpportunityOriginsPage() {
                     <tr><th className="px-3 py-2">Created</th><th className="px-3 py-2">Created by</th><th className="px-3 py-2">Owner</th><th className="px-3 py-2">Stage</th><th className="px-3 py-2">Opportunity</th></tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {data.direct_opportunities.length === 0 && <tr><td colSpan={5} className="px-3 py-4 text-center text-gray-500">None in this range.</td></tr>}
-                    {data.direct_opportunities.map(o => (
+                    {view.direct_opportunities.length === 0 && <tr><td colSpan={5} className="px-3 py-4 text-center text-gray-500">None in this range.</td></tr>}
+                    {view.direct_opportunities.map(o => (
                       <tr key={o.id}>
                         <td className="px-3 py-1.5 text-gray-700 whitespace-nowrap">{when(o.createdAt)}</td>
                         <td className="px-3 py-1.5 text-gray-800">{o.createdBy}</td>

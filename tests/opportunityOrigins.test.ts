@@ -5,7 +5,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { centralWeekStart, opportunityOrigin, summarizeOrigins, type OriginOpportunity } from '@/lib/opportunityOrigins'
+import { centralWeekStart, madeByBot, opportunityOrigin, originViews, summarizeOrigins, type OriginOpportunity } from '@/lib/opportunityOrigins'
 import { fieldRefusedOnWrite, reportFirstFailure } from '@/lib/salesforceClient'
 
 const opp = (id: string, createdAt: string, over: Partial<OriginOpportunity> = {}): OriginOpportunity =>
@@ -53,6 +53,29 @@ section('summarizeOrigins')
   eq('direct ones by who made them, most first', s.byCreator, [{ createdBy: 'Rep B', direct: 2 }, { createdBy: 'Rep C', direct: 1 }])
   eq('the direct ones, newest first', s.direct_opportunities.map(o => o.id), ['c', 'e', 'd'])
   eq('nothing in range', summarizeOrigins([], '2026-10-26', '2026-10-26').directPct, 0)
+}
+
+section('originViews: the bot toggle')
+{
+  const LEAH = '005VP00000MNXcvYAH'
+  const rows = [
+    { opp: opp('a', '2026-10-27T15:00:00Z', { createdById: '005VP00000repAAAAA' }), origin: 'app' as const },
+    { opp: opp('b', '2026-10-28T16:00:00Z', { createdBy: 'Rep B', createdById: '005VP00000repBBBBB' }), origin: 'salesforce' as const },
+    { opp: opp('c', '2026-10-28T17:00:00Z', { createdBy: 'Leah Miles', createdById: LEAH }), origin: 'salesforce' as const },
+    { opp: opp('d', '2026-10-29T17:00:00Z', { createdBy: 'Leah Miles', createdById: LEAH }), origin: 'salesforce' as const },
+    { opp: opp('e', '2026-10-29T18:00:00Z', { createdBy: 'Rep C' }), origin: 'salesforce' as const },
+  ]
+  eq('Leah Miles is a bot', madeByBot({ createdById: LEAH }), true)
+  eq('a person is not', madeByBot({ createdById: '005VP00000repBBBBB' }), false)
+  eq('no creator id (not read): kept as a person', madeByBot({}), false)
+  const v = originViews(rows, '2026-10-26', '2026-10-26')
+  eq('all: every opportunity', [v.all.total, v.all.direct, v.all.directPct], [5, 4, 80])
+  eq('without bots: totals and share', [v.withoutBots.total, v.withoutBots.inApp, v.withoutBots.direct, v.withoutBots.directPct], [3, 1, 2, 66.7])
+  eq('without bots: the week', v.withoutBots.weeks, [{ week: '2026-10-26', inApp: 1, direct: 2 }])
+  eq('without bots: by creator', v.withoutBots.byCreator.map(c => c.createdBy), ['Rep B', 'Rep C'])
+  eq('without bots: the list', v.withoutBots.direct_opportunities.map(o => o.id), ['e', 'b'])
+  eq('the bots, for the label', v.bots, { names: ['Leah Miles'], count: 2 })
+  eq('no bots in range', originViews(rows.slice(0, 2), '2026-10-26', '2026-10-26').bots, { names: [], count: 0 })
 }
 
 section('fieldRefusedOnWrite')

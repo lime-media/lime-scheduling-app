@@ -15,6 +15,7 @@
  */
 import { prisma } from '@/lib/prisma'
 import { centralDate } from '@/lib/dateOnly'
+import { SFDC_BOT_USER_IDS } from '@/lib/sfdcBots'
 import { CREATED_IN_APP_FIELD, createOpportunity, sfdcQueryAll, type CreateOpportunityInput, type SfdcOpportunityResult } from '@/lib/salesforceClient'
 
 /** How close an app reservation's creation must be to an opportunity's to count it as made in the app. */
@@ -43,6 +44,8 @@ export type OriginOpportunity = {
   id: string
   createdAt: string          // ISO instant
   createdBy: string
+  /** Salesforce user id (18 characters) of who created it, to tell bots apart. */
+  createdById?: string | null
   owner: string
   stage: string
   createdInApp?: boolean     // Created_In_App__c, when Salesforce has it
@@ -134,6 +137,29 @@ export function summarizeOrigins(
   }
 }
 
+/** Whether a bot (lib/sfdcBots.ts, e.g. Leah Miles) created the opportunity. Pure. */
+export const madeByBot = (opp: Pick<OriginOpportunity, 'createdById'>): boolean =>
+  !!opp.createdById && SFDC_BOT_USER_IDS.has(opp.createdById)
+
+/**
+ * The page's two views: every opportunity, and the same with the bots'
+ * opportunities left out (Ops → Opportunity origins' "Hide … (bot)" toggle),
+ * plus the bots' names for the toggle's label. Pure.
+ */
+export function originViews(
+  rows: { opp: OriginOpportunity; origin: Origin }[],
+  fromWeek: string,
+  toWeek: string,
+): { all: OriginSummary; withoutBots: OriginSummary; bots: { names: string[]; count: number } } {
+  const people = rows.filter(r => !madeByBot(r.opp))
+  const botRows = rows.filter(r => madeByBot(r.opp))
+  return {
+    all: summarizeOrigins(rows, fromWeek, toWeek),
+    withoutBots: summarizeOrigins(people, fromWeek, toWeek),
+    bots: { names: [...new Set(botRows.map(r => r.opp.createdBy))].sort(), count: botRows.length },
+  }
+}
+
 // SQL Server takes at most 2100 parameters per query. Each id is sent in both
 // its 18- and 15-character forms (1,800), leaving room for the queries' other
 // where values.
@@ -143,6 +169,7 @@ type SoqlOpportunity = {
   Id: string
   CreatedDate: string
   StageName: string
+  CreatedById?: string | null
   CreatedBy?: { Name?: string } | null
   Owner?: { Name?: string } | null
   Created_In_App__c?: boolean | null
@@ -153,13 +180,13 @@ type SoqlOpportunity = {
  * the end of `to` (YYYY-MM-DD), each with where it was made. Reads Salesforce
  * and the app's database; throws if Salesforce can't be read.
  */
-export async function opportunityOrigins(from: string, to: string): Promise<OriginSummary & { from: string; to: string; truncated: boolean; markerReadable: boolean }> {
+export async function opportunityOrigins(from: string, to: string): Promise<ReturnType<typeof originViews> & { from: string; to: string; truncated: boolean; markerReadable: boolean }> {
   const fromWeek = centralWeekStart(new Date(from + 'T12:00:00Z'))
   // A day wider each side in UTC, then cut to Central days below.
   const lo = new Date(Date.parse(fromWeek + 'T00:00:00Z') - 86_400_000).toISOString().replace(/\.\d+Z$/, 'Z')
   const hi = new Date(Date.parse(to + 'T00:00:00Z') + 2 * 86_400_000).toISOString().replace(/\.\d+Z$/, 'Z')
   const soql = (marker: boolean) =>
-    `SELECT Id, CreatedDate, StageName, CreatedBy.Name, Owner.Name${marker ? `, ${CREATED_IN_APP_FIELD}` : ''} FROM Opportunity`
+    `SELECT Id, CreatedDate, StageName, CreatedById, CreatedBy.Name, Owner.Name${marker ? `, ${CREATED_IN_APP_FIELD}` : ''} FROM Opportunity`
     // Newest first, so a range too large to read whole loses its oldest rows, not its latest weeks.
     + ` WHERE Asset_Type__c = 'LED' AND CreatedDate >= ${lo} AND CreatedDate < ${hi} ORDER BY CreatedDate DESC`
 
@@ -186,6 +213,7 @@ export async function opportunityOrigins(from: string, to: string): Promise<Orig
       id: r.Id,
       createdAt: new Date(r.CreatedDate).toISOString(),
       createdBy: r.CreatedBy?.Name ?? 'Unknown',
+      createdById: r.CreatedById ?? null,
       owner: r.Owner?.Name ?? 'Unknown',
       stage: r.StageName,
       ...(markerReadable ? { createdInApp: r.Created_In_App__c === true } : {}),
@@ -224,5 +252,5 @@ export async function opportunityOrigins(from: string, to: string): Promise<Orig
   }
 
   const rows = opps.map(opp => ({ opp, origin: opportunityOrigin(opp, recorded, appHoldTimes, firstRecord?.created_at ?? null) }))
-  return { ...summarizeOrigins(rows, fromWeek, centralWeekStart(new Date(to + 'T12:00:00Z'))), from: fromWeek, to, truncated: read.truncated, markerReadable }
+  return { ...originViews(rows, fromWeek, centralWeekStart(new Date(to + 'T12:00:00Z'))), from: fromWeek, to, truncated: read.truncated, markerReadable }
 }

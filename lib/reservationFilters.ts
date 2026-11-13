@@ -10,13 +10,16 @@ import { bookingKey } from '@/lib/bookings'
 
 export type OwnerFilter = 'all' | 'me' | string // a user id
 
-type Row = { owner_id: string; owner_name: string; start_date: string; end_date: string }
+type Row = { owner_id: string; owner_name: string; owner_unassigned?: boolean; start_date: string; end_date: string }
+
+/** How a reservation no person owns reads (lib/reservationOwners.ts owner_unassigned). */
+export const UNASSIGNED_OWNER_LABEL = 'Client request · no owner'
 
 /** The owner choices: Everyone, Me, then everyone else who owns a reservation, by name. */
 export function ownerOptions(rows: Row[], meId: string | null): { value: OwnerFilter; label: string }[] {
   const others = new Map<string, string>()
   for (const r of rows) {
-    if (r.owner_id && r.owner_id !== meId && !others.has(r.owner_id)) others.set(r.owner_id, r.owner_name || 'Unknown')
+    if (r.owner_id && r.owner_id !== meId && !others.has(r.owner_id)) others.set(r.owner_id, r.owner_unassigned ? UNASSIGNED_OWNER_LABEL : r.owner_name || 'Unknown')
   }
   return [
     { value: 'all', label: 'Everyone' },
@@ -25,10 +28,15 @@ export function ownerOptions(rows: Row[], meId: string | null): { value: OwnerFi
   ]
 }
 
-/** Is this reservation owned by the chosen owner? */
+/**
+ * Is this reservation owned by the chosen owner? "Me" also lists what no
+ * person owns (a client's request), so a seller's default view never hides
+ * a request waiting on someone.
+ */
 export function ownedBy(row: Row, owner: OwnerFilter, meId: string | null): boolean {
   if (owner === 'all') return true
-  return row.owner_id === (owner === 'me' ? meId : owner)
+  if (owner === 'me') return !!meId && (row.owner_id === meId || row.owner_unassigned === true)
+  return row.owner_id === owner
 }
 
 /**

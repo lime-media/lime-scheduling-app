@@ -16,11 +16,11 @@ import { formatMarketState } from '@/lib/format'
 import { parseQuoteFeatures, QuoteBreakdown } from '@/components/QuoteBreakdown'
 import { AttRosterPanel, newAddDraft, type RosterDraft } from '@/components/AttRosterPanel'
 import { SortableTh, SortSelect, useTableSort } from '@/components/SortableTh'
-import { minValue, sortRows, type SortValue } from '@/lib/tableSort'
+import { sortRows, type SortValue } from '@/lib/tableSort'
 import { CLOSED_WON_READ_ONLY, WON_ENDED_LISTED_DAYS, bookingCapStarts, bookingEnded, bookingInLed, bookingKey, closedWonRefusal, bookingStatus, ledProgress, earliestExpiryDate, expiryEdits, isMultiMarket, marketGroups, summarizeBooking } from '@/lib/bookings'
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
-import { defaultOwner, ownedBy, ownerOptions, runsBetween, wholeBookings, type OwnerFilter } from '@/lib/reservationFilters'
-import { ATTENTION_LABEL, EXPIRING_SOON_HOURS, attentionOf, expiringSoon, groupBookings, summaryTiles, type Attention } from '@/lib/reservationView'
+import { UNASSIGNED_OWNER_LABEL, defaultOwner, ownedBy, ownerOptions, runsBetween, wholeBookings, type OwnerFilter } from '@/lib/reservationFilters'
+import { ATTENTION_LABEL, EXPIRING_SOON_HOURS, attentionOf, groupBookings, summaryTiles, tileOf, type Attention } from '@/lib/reservationView'
 import { useSession } from 'next-auth/react'
 import { accountUrl, opportunityUrl } from '@/lib/sfdcLinks'
 
@@ -40,6 +40,8 @@ type HoldRequest = {
   /** The booking's owner: its opportunity's owner, else whoever made it (lib/reservationOwners.ts). */
   owner_id: string
   owner_name: string
+  /** No person owns it (a client's request): listed under every seller's Me. */
+  owner_unassigned?: boolean
   pricing_tier: string | null
   quoted_total: number | null
   daily_rate: number | null
@@ -111,6 +113,14 @@ const TAB_LABEL: Record<string, string> = { HOLD: 'Reservations', '': 'All' }
 /** The status tabs, in order: opens on Reservations; All (everything listed) is last. */
 const TABS = ['HOLD', QUOTES, 'ATT_SOFT', 'EXPIRED', LED_SCHEDULED, WON_ENDED, ''] as const
 
+/** The chip a clicked summary tile shows above the list. */
+const QUICK_LABEL = {
+  open: 'Open reservations',
+  expiring: `Expiring within ${EXPIRING_SOON_HOURS} hours`,
+  won: 'Committed (won)',
+  attention: 'Needs attention',
+} as const
+
 const SOURCE_BADGE: Record<string, string> = {
   CLIENT:     'bg-green-50 text-green-700 border border-green-200',
   SALESFORCE: 'bg-blue-50 text-blue-700 border border-blue-200',
@@ -158,9 +168,29 @@ function sortValue(r: HoldRequest, key: SortKey): SortValue {
   }
 }
 
-/** A campaign card sorts by its lowest truck number; everything else is shared by its trucks. */
+/**
+ * A booking sorts by what its row shows: its truck count, its total, its one
+ * status and its expiry (all from the rows in the booking's status, as the row
+ * and its actions use). Anything else is shared by its trucks.
+ */
 function groupSortValue(rows: HoldRequest[], key: SortKey): SortValue {
-  return key === 'truck' ? minValue(rows.map(r => r.truck_number)) : sortValue(rows[0], key)
+  const { status } = bookingStatus(rows)
+  const live = rows.filter(r => r.status === status)
+  const first = live[0] ?? rows[0]
+  switch (key) {
+    case 'truck': return bookingTrucks(live.length ? live : rows)
+    case 'pricing': return summarizeBooking(live).total
+    case 'status': return first.origination === QUOTE_ONLY_ORIGINATION ? 'Quote only' : (STATUS_LABEL[status] ?? status)
+    case 'expires': return status === 'COMMITTED' ? null : summarizeBooking(live).earliestExpiry
+    default: return sortValue(first, key)
+  }
+}
+
+/** The truck count a booking's row shows. */
+function bookingTrucks(rows: HoldRequest[]): number {
+  if (rows.length === 1) return 1
+  const first = rows[0]
+  return isMultiMarket(first) ? summarizeBooking(rows).trucks : (first.truck_count ?? rows.length)
 }
 
 /**
@@ -816,13 +846,15 @@ export default function HoldRequestsPage() {
   // (whatever the tab) and the tiles' quick filters (lib/reservationView.ts).
   const narrowedBookings = useMemo(() => groupBookings(narrowed), [narrowed])
   const tiles = useMemo(() => summaryTiles(narrowedBookings, new Date(), centralDate(new Date())), [narrowedBookings])
-  // A tile clicked: only the bookings expiring soon, or needing attention, across every tab.
-  const [quick, setQuick] = useState<'expiring' | 'attention' | null>(null)
+  // A tile clicked: exactly the bookings that tile counts (lib/reservationView.ts
+  // tileOf, attentionOf), across every tab, so the list matches the figure.
+  const [quick, setQuick] = useState<'open' | 'expiring' | 'won' | 'attention' | null>(null)
   const quickKeys = useMemo(() => {
     if (!quick) return null
     const now = new Date()
+    const today = centralDate(now)
     return new Set(narrowedBookings
-      .filter(b => (quick === 'expiring' ? expiringSoon(b.rows, now) !== null : attentionOf(b.rows).length > 0))
+      .filter(b => (quick === 'attention' ? attentionOf(b.rows, today).length > 0 : tileOf(b.rows, now, today)[quick]))
       .flatMap(b => b.rows.map(r => r.id)))
   }, [quick, narrowedBookings])
 
@@ -949,7 +981,10 @@ export default function HoldRequestsPage() {
     const { status, odd } = bookingStatus(rows)
     const first = rows.find(g => g.status === status) ?? rows[0]
     const multi = isMultiMarket(first)
-    const summary = summarizeBooking(rows)
+    // The row's figures come from the rows in the booking's status: the same
+    // rows its actions, expiry and the summary tiles use.
+    const live = rows.filter(g => g.status === status)
+    const summary = summarizeBooking(live.length ? live : rows)
     const key = bookingKey(first)
     return {
       rows, status, odd, first, multi, summary, key,
@@ -958,10 +993,10 @@ export default function HoldRequestsPage() {
       quoteOnly: rows.every(g => g.origination === QUOTE_ONLY_ORIGINATION),
       anyQuoteOnly: rows.some(g => g.origination === QUOTE_ONLY_ORIGINATION),
       booking: (key ? rowsByBooking.get(key) : undefined) ?? rows,
-      trucks: rows.length === 1 ? 1 : multi ? summary.trucks : (first.truck_count ?? rows.length),
+      trucks: bookingTrucks(live.length ? live : rows),
       marketsLabel: [...new Set(rows.map(r => formatMarketState(r.market, r.state)))].join(' · '),
       datesLabel: `${format(parseDateOnly(summary.start), 'MMM d')} – ${format(parseDateOnly(summary.end), 'MMM d, yyyy')}`,
-      flags: attentionOf(rows),
+      flags: attentionOf(rows, centralDate(new Date())),
     }
   }
 
@@ -1055,7 +1090,7 @@ export default function HoldRequestsPage() {
           <div className={panel}>
             <div className={panelTitle}>Salesforce &amp; LED</div>
             <dl className="text-xs grid grid-cols-[auto,1fr] gap-x-3 gap-y-1">
-              <dt className="text-gray-500">Owner</dt><dd className="text-gray-900 break-words">{first.owner_name || '—'}</dd>
+              <dt className="text-gray-500">Owner</dt><dd className="text-gray-900 break-words">{first.owner_unassigned ? UNASSIGNED_OWNER_LABEL : first.owner_name || '—'}</dd>
               <dt className="text-gray-500">Created by</dt><dd className="text-gray-900 break-words">{first.created_by_name || '—'}</dd>
               <dt className="text-gray-500">Source</dt>
               <dd>
@@ -1159,13 +1194,13 @@ export default function HoldRequestsPage() {
             title="Open reservations"
             value={fmtMoney(tiles.open.value)}
             detail={`${tiles.open.count} booking${tiles.open.count === 1 ? '' : 's'}${tiles.open.unpriced ? ` · ${tiles.open.unpriced} missing a quote` : ''}`}
-            active={!quick && filterStatus === 'HOLD'}
-            onClick={() => { setQuick(null); setFilterStatus('HOLD') }}
+            active={quick === 'open'}
+            onClick={() => setQuick(q => (q === 'open' ? null : 'open'))}
           />
           <SummaryTile
             title={`Expiring within ${EXPIRING_SOON_HOURS} hours`}
             value={fmtMoney(tiles.expiring.value)}
-            detail={`${tiles.expiring.count} booking${tiles.expiring.count === 1 ? '' : 's'}`}
+            detail={`${tiles.expiring.count} booking${tiles.expiring.count === 1 ? '' : 's'}${tiles.expiring.unpriced ? ` · ${tiles.expiring.unpriced} missing a quote` : ''}`}
             tone={tiles.expiring.count ? 'amber' : undefined}
             active={quick === 'expiring'}
             onClick={() => setQuick(q => (q === 'expiring' ? null : 'expiring'))}
@@ -1173,8 +1208,9 @@ export default function HoldRequestsPage() {
           <SummaryTile
             title="Committed (won)"
             value={fmtMoney(tiles.won.value)}
-            detail={`${tiles.won.count} booking${tiles.won.count === 1 ? '' : 's'}${tiles.won.ledUnlinked ? ` · ${tiles.won.ledUnlinked} not linked to an LED client` : ''}`}
-            onClick={() => { setQuick(null); setFilterStatus('HOLD') }}
+            detail={`${tiles.won.count} booking${tiles.won.count === 1 ? '' : 's'}${tiles.won.unpriced ? ` · ${tiles.won.unpriced} missing a quote` : ''}${tiles.won.ledUnlinked ? ` · ${tiles.won.ledUnlinked} not linked to an LED client` : ''}`}
+            active={quick === 'won'}
+            onClick={() => setQuick(q => (q === 'won' ? null : 'won'))}
           />
           <SummaryTile
             title="Needs attention"
@@ -1211,7 +1247,7 @@ export default function HoldRequestsPage() {
         {quick && (
           <div className="mb-4 flex items-center gap-2 text-sm">
             <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-gray-900 text-white text-xs font-medium">
-              {quick === 'expiring' ? `Expiring within ${EXPIRING_SOON_HOURS} hours` : 'Needs attention'}, every tab
+              {QUICK_LABEL[quick]}, every tab
               <button onClick={() => setQuick(null)} aria-label="Clear" className="text-gray-300 hover:text-white">✕</button>
             </span>
           </div>
@@ -1296,7 +1332,7 @@ export default function HoldRequestsPage() {
                           </td>
                           <td className="px-3 py-3 min-w-0">
                             <div className="font-semibold text-gray-900 break-words">{v.first.company_name}</div>
-                            <div className="text-xs text-gray-500 break-words">{v.first.owner_name || '—'} · {SOURCE_LABEL[v.first.source] ?? v.first.source}</div>
+                            <div className="text-xs text-gray-500 break-words">{v.first.owner_unassigned ? UNASSIGNED_OWNER_LABEL : v.first.owner_name || '—'} · {SOURCE_LABEL[v.first.source] ?? v.first.source}</div>
                           </td>
                           <td className="px-3 py-3 text-gray-700 break-words">{v.marketsLabel}</td>
                           <td className="px-3 py-3 font-semibold text-gray-900">{v.trucks}</td>
@@ -1328,7 +1364,7 @@ export default function HoldRequestsPage() {
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <div className="font-semibold text-gray-900 break-words">{v.first.company_name}</div>
-                          <div className="text-xs text-gray-500 break-words">{v.first.owner_name || '—'} · {SOURCE_LABEL[v.first.source] ?? v.first.source}</div>
+                          <div className="text-xs text-gray-500 break-words">{v.first.owner_unassigned ? UNASSIGNED_OWNER_LABEL : v.first.owner_name || '—'} · {SOURCE_LABEL[v.first.source] ?? v.first.source}</div>
                         </div>
                         <StatusPill v={v} />
                       </div>

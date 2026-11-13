@@ -63,20 +63,37 @@ export const ATTENTION_LABEL: Record<Attention, string> = {
 const isQuoteOnly = (rows: { origination: string }[]) => rows.length > 0 && rows.every(r => r.origination === QUOTE_ONLY_ORIGINATION)
 
 /**
- * What on a live booking (a reservation, a request waiting, or won) needs
- * someone to act, from what the page already knows. Expired, AT&T soft holds
- * and quote-only logs have none: nothing is reserved to fix.
+ * Made in Salesforce (the hold webhook): the app never stores a price for
+ * these and can't revise them, so a missing quote isn't something to fix here.
  */
-export function attentionOf(rows: ViewRow[]): Attention[] {
+const isSalesforceMade = (rows: { source: string }[]) => rows.length > 0 && rows.every(r => r.source === 'SALESFORCE')
+
+/**
+ * Missing a price for all or part of it, among bookings the app prices (an
+ * app-made booking with no total, or a market with none). Pure.
+ */
+export function missingQuote(live: ViewRow[]): boolean {
+  if (isSalesforceMade(live)) return false
+  const priced = summarizeBooking(live)
+  return priced.total === null || priced.unpricedMarkets > 0
+}
+
+/**
+ * What on a live booking (a reservation, a request waiting, or won and not
+ * yet over) needs someone to act, from what the page already knows. Expired,
+ * AT&T soft holds, quote-only logs and won bookings that have ended have
+ * none: nothing is left to fix. `today` (YYYY-MM-DD, Central) decides ended.
+ */
+export function attentionOf(rows: ViewRow[], today: string): Attention[] {
   if (!rows.length || isQuoteOnly(rows)) return []
   const { status } = bookingStatus(rows)
   if (status !== 'HOLD' && status !== 'EXTENSION_REQUESTED' && status !== 'COMMITTED') return []
+  if (status === 'COMMITTED' && bookingEnded(rows, today)) return []
   const live = rows.filter(r => r.status === status)
   const out: Attention[] = []
   if (status === 'EXTENSION_REQUESTED') out.push('extension_request')
   // No price on file for the booking, or for any market of it (lib/bookings.ts summarizeBooking).
-  const priced = summarizeBooking(live)
-  if (priced.total === null || priced.unpricedMarkets > 0) out.push('no_quote')
+  if (missingQuote(live)) out.push('no_quote')
   if (!rows.some(r => r.sfdc_opportunity_id)) out.push('no_opportunity')
   if (status === 'COMMITTED' && rows.some(r => r.sfdc_account_id) && !rows.some(r => r.led_client)) out.push('led_client_unlinked')
   if (rows.some(r => r.led_trucks_unsynced_since)) out.push('led_trucks_unsynced')
@@ -94,13 +111,23 @@ export function expiringSoon(rows: ViewRow[], now: Date): string | null {
   return ms > 0 && ms <= EXPIRING_SOON_HOURS * 3600e3 ? e : null
 }
 
+/** Which value tile a booking counts toward, if any: the tiles and their click-through lists share this. Pure. */
+export function tileOf(rows: ViewRow[], now: Date, today: string): { open: boolean; expiring: boolean; won: boolean } {
+  const none = { open: false, expiring: false, won: false }
+  if (!rows.length || isQuoteOnly(rows)) return none
+  const { status } = bookingStatus(rows)
+  if (status === 'HOLD' || status === 'EXTENSION_REQUESTED') return { open: true, expiring: expiringSoon(rows, now) !== null, won: false }
+  if (status === 'COMMITTED' && !bookingEnded(rows, today)) return { open: false, expiring: false, won: true }
+  return none
+}
+
 export type SummaryTiles = {
   /** Reservations not yet won (requests waiting included): their quoted value, how many, how many missing a price for all or part of it. */
   open: { value: number; count: number; unpriced: number }
   /** Of those, expiring within EXPIRING_SOON_HOURS. */
-  expiring: { value: number; count: number }
+  expiring: { value: number; count: number; unpriced: number }
   /** Won bookings still running or upcoming (ended ones have their own filter). */
-  won: { value: number; count: number; ledUnlinked: number }
+  won: { value: number; count: number; unpriced: number; ledUnlinked: number }
   /** Live bookings with anything in attentionOf, and the count of each flag. */
   attention: { count: number; byKind: Partial<Record<Attention, number>> }
 }
@@ -108,32 +135,30 @@ export type SummaryTiles = {
 /**
  * The tiles over the bookings the page lists for the owner, dates and search
  * chosen (whatever the status tab). Values are the bookings' quoted totals as
- * their rows show them; an unpriced market adds nothing and is counted.
+ * their rows show them; an unpriced market adds nothing and is counted, so
+ * each tile says when its sum is partial. Salesforce-made bookings have no
+ * app price by design: they add nothing and aren't counted as missing one.
  */
 export function summaryTiles(bookings: { rows: ViewRow[] }[], now: Date, today: string): SummaryTiles {
   const tiles: SummaryTiles = {
     open: { value: 0, count: 0, unpriced: 0 },
-    expiring: { value: 0, count: 0 },
-    won: { value: 0, count: 0, ledUnlinked: 0 },
+    expiring: { value: 0, count: 0, unpriced: 0 },
+    won: { value: 0, count: 0, unpriced: 0, ledUnlinked: 0 },
     attention: { count: 0, byKind: {} },
   }
   for (const { rows } of bookings) {
     if (!rows.length || isQuoteOnly(rows)) continue
     const { status } = bookingStatus(rows)
     const live = rows.filter(r => r.status === status)
-    const summary = summarizeBooking(live)
-    const total = summary.total
-    if (status === 'HOLD' || status === 'EXTENSION_REQUESTED') {
-      tiles.open.count++
-      tiles.open.value += total ?? 0
-      if (total === null || summary.unpricedMarkets > 0) tiles.open.unpriced++
-      if (expiringSoon(rows, now)) { tiles.expiring.count++; tiles.expiring.value += total ?? 0 }
-    } else if (status === 'COMMITTED' && !bookingEnded(rows, today)) {
-      tiles.won.count++
-      tiles.won.value += total ?? 0
-    }
-    const flags = attentionOf(rows)
-    if (status === 'COMMITTED' && flags.includes('led_client_unlinked') && !bookingEnded(rows, today)) tiles.won.ledUnlinked++
+    const total = summarizeBooking(live).total ?? 0
+    const missing = missingQuote(live) ? 1 : 0
+    const t = tileOf(rows, now, today)
+    if (t.open) { tiles.open.count++; tiles.open.value += total; tiles.open.unpriced += missing }
+    if (t.expiring) { tiles.expiring.count++; tiles.expiring.value += total; tiles.expiring.unpriced += missing }
+    if (t.won) { tiles.won.count++; tiles.won.value += total; tiles.won.unpriced += missing }
+    // Ended won bookings raise no flags (attentionOf), so the two tiles agree.
+    const flags = attentionOf(rows, today)
+    if (t.won && flags.includes('led_client_unlinked')) tiles.won.ledUnlinked++
     if (flags.length) {
       tiles.attention.count++
       for (const f of flags) tiles.attention.byKind[f] = (tiles.attention.byKind[f] ?? 0) + 1

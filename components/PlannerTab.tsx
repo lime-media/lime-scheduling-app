@@ -31,6 +31,7 @@ import { useReopenConfirm } from '@/components/ReopenOpportunityDialog'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { ReviewFinding } from '@/lib/planning/claude'
 import type { Arrival, LineQuote, MultiMarketQuote, QuoteRow, RowError } from '@/lib/planning/quote'
+import { mediaParts } from '@/lib/planning/mediaParts'
 import { selectionTotal } from '@/lib/planning/studies'
 import { STUDY_MIN_IMPRESSIONS, STUDY_PRICE, VALID_STUDIES, type StudyType } from '@/lib/pricing/config'
 import { BRAND_LIFT_PRICE, STUDY_EXTRA_MARKET_PRICE, STUDY_INCLUDED_MARKETS } from '@/lib/pricing/studies'
@@ -894,6 +895,10 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
                 <tr className={selected.has(l.id) ? '' : unselectedRow}>
                   <td className={td} />
                   <td className={td + ' text-xs pt-0'} colSpan={6}>
+                    {/* What the market's media is made of: base and each option chosen (as the single-market quote lists it). */}
+                    <div className="text-gray-600 mb-0.5">
+                      Media: {mediaParts(l).map(p => `${p.label} ${fmtMoney(p.amount)}`).join(' · ')}
+                    </div>
                     <div className="flex flex-wrap gap-x-4 gap-y-0.5">
                       {l.arrivals.map(a => <ArrivalLine key={a.truckNumber} a={a} />)}
                       {l.missing > 0 && <div className="text-red-700">{l.missing} not covered</div>}

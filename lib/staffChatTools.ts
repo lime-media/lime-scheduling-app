@@ -25,6 +25,7 @@ import { VALID_STUDIES } from '@/lib/pricing'
 import { DEFAULT_HOLD_DAYS, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
 import { OPEN_STAGES } from '@/lib/sfdcStages'
 import { LEAD_SOURCES, readLeadSource } from '@/lib/sfdcLeadSource'
+import { OPPORTUNITY_TYPES, readOpportunityType } from '@/lib/sfdcOpportunityType'
 import { chosenClientType } from '@/lib/pricing/brandMarkup'
 import { BRAND_REQUIRED, readBrand, savedBrand } from '@/lib/brand'
 import { isSfdcConfigured } from '@/lib/salesforceClient'
@@ -52,7 +53,7 @@ const QUOTE_PROPERTIES = {
   operating_hours: { type: 'number', description: 'Hours per day. Default 8.' },
   sfdc_account_id: { type: 'string', description: 'Salesforce Account id from find_account. Sets agreement pricing and Brand Direct.' },
   brand_markup_pct: { type: 'number', description: 'Brand Direct markup %, only if the rep gives one. Applies only to a Brand Direct quote.' },
-  client_type: { type: 'string', enum: ['Agency', 'Brand Direct'], description: "The opportunity's Client Type; Brand Direct is priced with its markup. Start from the account's clientType (find_account) and confirm it with the rep. Required to book." },
+  client_type: { type: 'string', enum: ['Agency', 'Brand Direct'], description: "The opportunity's Client Type; Brand Direct is priced with its markup. Use the account's clientType (find_account): it's inferred, so state it with the quote rather than asking. Ask only if the account has none. Required to book." },
 } as const
 
 const QUOTE_REQUIRED = ['market', 'start_date', 'end_date', 'truck_count']
@@ -64,7 +65,8 @@ const BOOKING_TERMS = {
   brand: { type: 'string', description: 'The brand being advertised. Ask the rep once, plainly; never suggest "none" or "N/A". Pass "none" only when the rep says there is no brand. Required to book.' },
   hold_days: { type: 'integer', minimum: 1, maximum: MAX_HOLD_DAYS, description: 'Days to hold. Default 3; it never runs past 2 days before the start.' },
   stage: { type: 'string', enum: OPEN_STAGES.map(s => s.value), description: 'Opportunity stage. Default WARM.' },
-  lead_source: { type: 'string', enum: [...LEAD_SOURCES], description: "The opportunity's Lead Source, exactly one of Salesforce's values. Suggest the account's leadSource (find_account) if it has one, else ask the rep. Required to book." },
+  opportunity_type: { type: 'string', enum: [...OPPORTUNITY_TYPES], description: "The opportunity's Type. Use the account's opportunityType (find_account): it's inferred, so state it with the quote rather than asking. Leave it out when find_account gave none; the booking then uses Existing Client once the account has won a deal, else New Client." },
+  lead_source: { type: 'string', enum: [...LEAD_SOURCES], description: "The opportunity's Lead Source, exactly one of Salesforce's values. Use the account's leadSource (find_account) when it has one: it's inferred, so state it with the quote rather than asking. Ask the rep only when it has none. Required to book." },
 } as const
 
 export const CHAT_TOOLS: Anthropic.Beta.BetaTool[] = [
@@ -79,12 +81,12 @@ export const CHAT_TOOLS: Anthropic.Beta.BetaTool[] = [
   },
   {
     name: 'get_quote',
-    description: 'Price one market exactly as the internal Quote page does: trucks picked, media, features, transport, total. Returns quote_ref when the trucks are there to book it. When the rep may book, include sfdc_account_id (agreement and Brand Direct pricing) and the booking terms (account name, primary contact, brand ("none" only when the rep said there is none; place_hold needs one), hold days, stage, lead source) and client_type: the ref covers them, so place_hold books exactly what the rep confirmed.',
+    description: 'Price one market exactly as the internal Quote page does: trucks picked, media, features, transport, total. Returns quote_ref when the trucks are there to book it. When the rep may book, include sfdc_account_id (agreement and Brand Direct pricing) and the booking terms (account name, primary contact, brand ("none" only when the rep said there is none; place_hold needs one), hold days, stage, lead source, opportunity type) and client_type: the ref covers them, so place_hold books exactly what the rep confirmed.',
     input_schema: { type: 'object', properties: { ...QUOTE_PROPERTIES, ...BOOKING_TERMS }, required: QUOTE_REQUIRED },
   },
   {
     name: 'find_account',
-    description: 'Search Salesforce Accounts by name. Returns id, name, client type (Agency or Brand Direct) and, when it has one, the lead source of its latest LED opportunity: the suggestions for a new quote.',
+    description: 'Search Salesforce Accounts by name. Returns id, name, client type (Agency or Brand Direct) and, when it has one, the lead source of its latest LED opportunity and the opportunity type (Existing Client once it has won a deal, else New Client): the values a new quote uses. State them with the quote; do not ask the rep to confirm them.',
     input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 2 } }, required: ['query'] },
   },
   {
@@ -169,11 +171,13 @@ function quoteInput(i: Bag): StaffQuoteInput | string {
 
 /** The booking terms, type-checked; a string saying what's wrong otherwise. Pure. */
 export function bookingTerms(i: Bag): BookingTerms | string {
-  for (const k of ['sfdc_account_name', 'primary_contact_id', 'brand', 'stage'] as const) {
+  for (const k of ['sfdc_account_name', 'primary_contact_id', 'brand', 'stage', 'lead_source', 'opportunity_type'] as const) {
     if (i[k] !== undefined && typeof i[k] !== 'string') return `${k} is text`
   }
   const leadSource = readLeadSource(i.lead_source, false)
   if ('error' in leadSource) return leadSource.error
+  const oppType = readOpportunityType(i.opportunity_type, false)
+  if ('error' in oppType) return oppType.error
   if (i.hold_days !== undefined && (typeof i.hold_days !== 'number' || !Number.isInteger(i.hold_days) || i.hold_days < 1 || i.hold_days > MAX_HOLD_DAYS)) return `hold_days is a whole number of days from 1 to ${MAX_HOLD_DAYS}`
   return {
     sfdc_account_name: i.sfdc_account_name as string | undefined, primary_contact_id: i.primary_contact_id as string | undefined,
@@ -184,6 +188,7 @@ export function bookingTerms(i: Bag): BookingTerms | string {
     brand: typeof i.brand === 'string' && i.brand.trim() ? savedBrand(i.brand) || 'none' : i.brand as string | undefined,
     hold_days: i.hold_days as number | undefined, stage: i.stage as string | undefined,
     lead_source: leadSource.leadSource ?? undefined,
+    opportunity_type: oppType.opportunityType ?? undefined,
   }
 }
 
@@ -284,7 +289,7 @@ async function quote(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
   const savedAs = terms.brand === 'none' ? '' : terms.brand ?? ''
   return {
     content: json({ ...body, quote_ref: ref }),
-    quote: bookable ? { ref, summary: `${body.market}, ${q.start_date} to ${q.end_date}, ${q.truck_count} truck${q.truck_count === 1 ? '' : 's'}${trucks ? ` (${trucks})` : ''}, ${money(body.grandTotal)}${terms.sfdc_account_name ? ` for ${terms.sfdc_account_name.trim()}` : ''}, ${q.client_type}, lead source ${terms.lead_source}, ${savedAs ? `brand ${savedAs}` : 'no brand'}, held ${terms.hold_days ?? DEFAULT_HOLD_DAYS} days` } : undefined,
+    quote: bookable ? { ref, summary: `${body.market}, ${q.start_date} to ${q.end_date}, ${q.truck_count} truck${q.truck_count === 1 ? '' : 's'}${trucks ? ` (${trucks})` : ''}, ${money(body.grandTotal)}${terms.sfdc_account_name ? ` for ${terms.sfdc_account_name.trim()}` : ''}, ${q.client_type}, lead source ${terms.lead_source}${terms.opportunity_type ? `, ${terms.opportunity_type}` : ''}, ${savedAs ? `brand ${savedAs}` : 'no brand'}, held ${terms.hold_days ?? DEFAULT_HOLD_DAYS} days` } : undefined,
   }
 }
 
@@ -292,7 +297,7 @@ async function findAccount(i: Bag): Promise<ChatToolOutcome> {
   if (!isSfdcConfigured()) return fail('Salesforce is not configured.')
   if (!isStr(i.query) || i.query.trim().length < 2) return fail('query needs at least 2 characters')
   try {
-    return { content: json({ accounts: await searchAccounts(i.query.trim()) }) }
+    return { content: json({ accounts: await searchAccounts(i.query.trim(), { suggestType: true }) }) }
   } catch (err) {
     console.error('[chat] account search failed:', err)
     return fail('Salesforce could not be reached for the account search.')
@@ -319,9 +324,10 @@ async function book(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
   if (!isStr(i.primary_contact_id)) return fail('primary_contact_id is required: find the contact with find_contacts.')
   const terms = bookingTerms(i)
   if (typeof terms === 'string') return fail(terms)
-  // The seller picks both on every quote, as on the Quote page: the ref covers them.
-  if (!q.client_type) return fail('client_type is required: confirm Agency or Brand Direct with the rep, then get_quote with it.')
-  if (!terms.lead_source) return fail('lead_source is required: confirm it with the rep, then get_quote with it.')
+  // Both are needed on every booking, as on the Quote page; usually inferred from
+  // the account (find_account) and stated with the quote. The ref covers them.
+  if (!q.client_type) return fail("client_type is required: use the account's clientType from find_account (ask the rep only if it has none), then get_quote with it.")
+  if (!terms.lead_source) return fail("lead_source is required: use the account's leadSource from find_account, or ask the rep if it has none, then get_quote with it.")
   // Asked, never assumed: "none" only when the rep says so (lib/brand.ts readBrand).
   if ('error' in readBrand(i.brand, true)) return fail(`${BRAND_REQUIRED} Then get_quote with it.`)
   if (!isStr(i.quote_ref) || typeof i.expected_total !== 'number' || !Number.isFinite(i.expected_total)) {
@@ -362,6 +368,7 @@ async function book(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
     hold_days: i.hold_days,
     stage: i.stage,
     lead_source: terms.lead_source,
+    opportunity_type: terms.opportunity_type,
     expected_total: i.expected_total,
   }
   const started = Date.now()

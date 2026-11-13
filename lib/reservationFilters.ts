@@ -10,13 +10,16 @@ import { bookingKey } from '@/lib/bookings'
 
 export type OwnerFilter = 'all' | 'me' | string // a user id
 
-type Row = { owner_id: string; owner_name: string; start_date: string; end_date: string }
+type Row = { owner_id: string; owner_name: string; owner_unassigned?: boolean; start_date: string; end_date: string }
+
+/** How a reservation no person owns reads (lib/reservationOwners.ts owner_unassigned). */
+export const UNASSIGNED_OWNER_LABEL = 'Client request · no owner'
 
 /** The owner choices: Everyone, Me, then everyone else who owns a reservation, by name. */
 export function ownerOptions(rows: Row[], meId: string | null): { value: OwnerFilter; label: string }[] {
   const others = new Map<string, string>()
   for (const r of rows) {
-    if (r.owner_id && r.owner_id !== meId && !others.has(r.owner_id)) others.set(r.owner_id, r.owner_name || 'Unknown')
+    if (r.owner_id && r.owner_id !== meId && !others.has(r.owner_id)) others.set(r.owner_id, r.owner_unassigned ? UNASSIGNED_OWNER_LABEL : r.owner_name || 'Unknown')
   }
   return [
     { value: 'all', label: 'Everyone' },
@@ -25,10 +28,15 @@ export function ownerOptions(rows: Row[], meId: string | null): { value: OwnerFi
   ]
 }
 
-/** Is this reservation owned by the chosen owner? */
+/**
+ * Is this reservation owned by the chosen owner? "Me" also lists what no
+ * person owns (a client's request), so a seller's default view never hides
+ * a request waiting on someone.
+ */
 export function ownedBy(row: Row, owner: OwnerFilter, meId: string | null): boolean {
   if (owner === 'all') return true
-  return row.owner_id === (owner === 'me' ? meId : owner)
+  if (owner === 'me') return !!meId && (row.owner_id === meId || row.owner_unassigned === true)
+  return row.owner_id === owner
 }
 
 /**
@@ -50,4 +58,13 @@ export function runsBetween(row: Row, from: string, to: string): boolean {
 export function wholeBookings<R extends { campaign_group_id: string | null; sfdc_opportunity_id: string | null }>(rows: R[], matches: (r: R) => boolean): R[] {
   const cards = new Set(rows.filter(matches).map(r => bookingKey(r)).filter(Boolean))
   return rows.filter((r) => { const k = bookingKey(r); return k ? cards.has(k) : matches(r) })
+}
+
+/**
+ * The owner the page opens on when this browser has no choice remembered:
+ * Me for someone who owns a reservation listed, else Everyone (a manager or
+ * ops user with none of their own still sees the whole list).
+ */
+export function defaultOwner(rows: Pick<Row, 'owner_id'>[], meId: string | null): OwnerFilter {
+  return meId && rows.some(r => r.owner_id === meId) ? 'me' : 'all'
 }

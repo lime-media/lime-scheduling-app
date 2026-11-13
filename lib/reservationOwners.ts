@@ -14,6 +14,7 @@
 import { waitUntil } from '@vercel/functions'
 import { prisma } from '@/lib/prisma'
 import { isSfdcConfigured, sfdcQuery } from '@/lib/salesforceClient'
+import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 
 const SFDC_ID = /^[a-zA-Z0-9]{15,18}$/
 const BATCH = 200
@@ -53,7 +54,30 @@ async function fetchOwners(oppIds: string[]): Promise<void> {
   }
 }
 
-export async function reservationOwners(holds: OwnerRow[]): Promise<Map<string, { owner_id: string; owner_name: string }>> {
+export type ReservationOwner = {
+  owner_id: string
+  owner_name: string
+  /**
+   * No person owns it: it fell back to a creator that is the Salesforce
+   * service user (client-portal requests, or a push whose opportunity owner
+   * couldn't be read). The page lists these under every seller's "Me", so a
+   * client request is never out of everyone's default view.
+   */
+  owner_unassigned: boolean
+}
+
+export async function reservationOwners(holds: OwnerRow[]): Promise<Map<string, ReservationOwner>> {
+  const out = await ownersOf(holds)
+  let serviceUserId: string | null = null
+  try {
+    serviceUserId = (await prisma.user.findFirst({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } }))?.id ?? null
+  } catch (err) {
+    console.error('[reservations] service user lookup failed:', err)
+  }
+  return new Map([...out].map(([id, o]) => [id, { ...o, owner_unassigned: !!serviceUserId && o.owner_id === serviceUserId }]))
+}
+
+async function ownersOf(holds: OwnerRow[]): Promise<Map<string, { owner_id: string; owner_name: string }>> {
   const byCreator = (h: OwnerRow) => ({ owner_id: h.created_by, owner_name: h.created_by_name || 'Unknown' })
   const out = new Map(holds.map(h => [h.id, byCreator(h)]))
   const oppIds = [...new Set(holds.map(h => h.sfdc_opportunity_id).filter((id): id is string => !!id && SFDC_ID.test(id)))]

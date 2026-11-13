@@ -719,7 +719,7 @@ export default function InternalQuotePage() {
                       <div className="mt-2"><OpportunityTypePicker value={opportunityType} onChange={setOpportunityType} /></div>
                       <div className="mt-2">
                         <OpportunityNameInput value={oppName} onChange={setOppName}
-                          defaultName={singleMarketOpportunityName(savedBrand(brand), account?.name, quoteResult.market || form.market, form.start_date, form.end_date)} />
+                          defaultName={singleMarketOpportunityName(savedBrand(brand), account?.name, form.start_date)} />
                       </div>
                     </div>
                   )}

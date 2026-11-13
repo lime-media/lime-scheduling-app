@@ -319,7 +319,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
           leadSource: CLIENT_PORTAL_LEAD_SOURCE,
           // No seller to pick one: the account's latest LED opportunity's, else New Client.
           opportunityType: p.opportunityType,
-          name: opportunityName(brand, company, `Multi-market (${plural(markets.length, 'market')}) - ${starts[0]} to ${ends[ends.length - 1]}`),
+          name: opportunityName(brand, company, starts[0]),
           brand: brand || undefined,
           stageName: DEFAULT_STAGE,
           closeDate: starts[0],

@@ -4,9 +4,10 @@
  * opportunities to a standard form at Closed Won; letting them set the name
  * when the opportunity is made keeps their pipeline readable before then.
  *
- * The defaults are the names the app has always generated (lib/brand.ts
- * opportunityName), shared here so the page shows the same name the server
- * would create. Pure: safe on the client.
+ * The defaults follow the Closed Won form, "Brand / Account / date"
+ * (lib/brand.ts opportunityName), dated by the flight's first day, and are
+ * shared here so the page shows the same name the server would create.
+ * Pure: safe on the client.
  */
 
 import { opportunityName } from '@/lib/brand'
@@ -14,28 +15,22 @@ import { opportunityName } from '@/lib/brand'
 /** Salesforce's limit on Opportunity.Name. */
 export const OPPORTUNITY_NAME_MAX = 120
 
-/** Quote Builder and the staff chat: "Brand / Account - Market - start to end". */
-export function singleMarketOpportunityName(brand: string, account: string | null | undefined, market: string, start: string, end: string): string {
-  return opportunityName(brand, account || 'Client', `${market} - ${start} to ${end}`)
-}
-
-/** Multi-market Plan: "Brand / Account - Multi-market (N markets) - start to end". */
-export function multiMarketOpportunityName(brand: string, account: string, markets: number, start: string, end: string): string {
-  return opportunityName(brand, account, `Multi-market (${markets} markets) - ${start} to ${end}`)
+/** Quote Builder and the staff chat: "Brand / Account / start". */
+export function singleMarketOpportunityName(brand: string, account: string | null | undefined, start: string): string {
+  return opportunityName(brand, account || 'Client', start)
 }
 
 /** A booked line's dates, as the Multi-market Plan names them (delivery days when routed). */
 export type NamedLine = { startDate: string; endDate: string; delivery?: { firstDay: string | null; lastDay: string | null } | null }
 
 /**
- * The Multi-market Plan's default name for the lines being booked: one market
- * per line, from the first delivery day to the last. The server names the
+ * The Multi-market Plan's default name for the lines being booked, dated by
+ * the first delivery day. The server names the
  * opportunity from the re-priced selection the same way. Pure.
  */
 export function planOpportunityName(brand: string, account: string, lines: NamedLine[]): string {
   const starts = lines.map(l => l.delivery?.firstDay ?? l.startDate).sort()
-  const ends = lines.map(l => l.delivery?.lastDay ?? l.endDate).sort()
-  return multiMarketOpportunityName(brand, account, lines.length, starts[0] ?? '', ends[ends.length - 1] ?? '')
+  return opportunityName(brand, account, starts[0] ?? '')
 }
 
 /**

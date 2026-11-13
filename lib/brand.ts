@@ -66,13 +66,15 @@ export function brandChange(raw: string | null | undefined): 'none' | 'stripped'
 }
 
 /**
- * The Opportunity name: brand first, so it is what a search finds.
- * "Nike / Rolling Adz - Des Moines, IA - 2026-10-02 to 2026-10-03".
- * Without a brand the name is as before. Salesforce allows 120 characters.
+ * The Opportunity name, in the form sellers give a deal at Closed Won:
+ * "Brand / Account / date" ("Hardees / GNF Marketing / 2026-11-13"). Closed
+ * Won names carry the close date; a new opportunity carries its flight's
+ * first day until then. Without a brand: "Account / date". Salesforce allows
+ * 120 characters.
  */
-export function opportunityName(brand: string, account: string, rest: string): string {
+export function opportunityName(brand: string, account: string, date: string): string {
   const head = brand ? `${brand} / ${account}` : account
-  return `${head} - ${rest}`.slice(0, 120)
+  return (date ? `${head} / ${date}` : head).slice(0, 120)
 }
 
 /** What a rep says when the booking has no brand of its own. */

@@ -43,8 +43,8 @@ for (const raw of tricky) {
 eq('a cut that ends on a descriptor drops it', cleanBrand('A'.repeat(45) + ' Tour of the Year'), 'A'.repeat(45))
 
 section('brand: it leads the Opportunity name')
-eq('brand first', opportunityName('Nike', 'Rolling Adz', 'Des Moines, IA - 2026-10-02 to 2026-10-03'), 'Nike / Rolling Adz - Des Moines, IA - 2026-10-02 to 2026-10-03')
-eq('no brand: as before', opportunityName('', 'Rolling Adz', 'Des Moines, IA - 2026-10-02 to 2026-10-03'), 'Rolling Adz - Des Moines, IA - 2026-10-02 to 2026-10-03')
+eq('brand first, Closed Won form', opportunityName('Nike', 'Rolling Adz', '2026-10-02'), 'Nike / Rolling Adz / 2026-10-02')
+eq('no brand: account / date', opportunityName('', 'Rolling Adz', '2026-10-02'), 'Rolling Adz / 2026-10-02')
 eq('Salesforce limit of 120', opportunityName('B'.repeat(50), 'A'.repeat(60), 'x'.repeat(40)).length, 120)
 
 section('brand: the page says why the saved value differs')

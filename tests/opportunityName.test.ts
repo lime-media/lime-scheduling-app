@@ -6,23 +6,23 @@
  */
 import { eq, section } from './harness'
 import { opportunityName } from '@/lib/brand'
-import { OPPORTUNITY_NAME_MAX, multiMarketOpportunityName, planOpportunityName, readOpportunityName, singleMarketOpportunityName } from '@/lib/opportunityName'
+import { OPPORTUNITY_NAME_MAX, planOpportunityName, readOpportunityName, singleMarketOpportunityName } from '@/lib/opportunityName'
 
-section('Opportunity name: defaults')
-eq('single market: the name the app always made', singleMarketOpportunityName('Nike', 'Rolling Adz', 'Des Moines, IA', '2026-10-02', '2026-10-03'),
-  opportunityName('Nike', 'Rolling Adz', 'Des Moines, IA - 2026-10-02 to 2026-10-03'))
-eq('single market: no account reads Client', singleMarketOpportunityName('', undefined, 'Austin, TX', '2026-12-01', '2026-12-05'), 'Client - Austin, TX - 2026-12-01 to 2026-12-05')
-eq('multi-market: count and range', multiMarketOpportunityName('', 'Acme', 3, '2026-12-01', '2026-12-20'), 'Acme - Multi-market (3 markets) - 2026-12-01 to 2026-12-20')
-eq('plan: delivery days win over the requested range, earliest to latest',
+section('Opportunity name: defaults (the Closed Won form, Brand / Account / date)')
+eq('single market: brand / account / first day', singleMarketOpportunityName('Hardees', 'GNF Marketing', '2026-12-11'), 'Hardees / GNF Marketing / 2026-12-11')
+eq('single market: the shared builder', singleMarketOpportunityName('Nike', 'Rolling Adz', '2026-10-02'), opportunityName('Nike', 'Rolling Adz', '2026-10-02'))
+eq('single market: no brand, no account', singleMarketOpportunityName('', undefined, '2026-12-01'), 'Client / 2026-12-01')
+eq('plan: dated by the earliest delivery day, else the requested start',
   planOpportunityName('Nike', 'Acme', [
     { startDate: '2026-12-01', endDate: '2026-12-10', delivery: { firstDay: '2026-12-02', lastDay: '2026-12-09' } },
     { startDate: '2026-11-28', endDate: '2026-12-20', delivery: null },
   ]),
-  'Nike / Acme - Multi-market (2 markets) - 2026-11-28 to 2026-12-20')
-eq('plan: a line not yet routed uses its requested dates',
+  'Nike / Acme / 2026-11-28')
+eq('plan: a line not yet routed uses its requested start',
   planOpportunityName('', 'Acme', [{ startDate: '2026-12-01', endDate: '2026-12-10', delivery: { firstDay: null, lastDay: null } }]),
-  'Acme - Multi-market (1 markets) - 2026-12-01 to 2026-12-10')
-eq('defaults never pass Salesforce\'s limit', singleMarketOpportunityName('B'.repeat(80), 'A'.repeat(80), 'X', '2026-01-01', '2026-01-02').length, OPPORTUNITY_NAME_MAX)
+  'Acme / 2026-12-01')
+eq('no date yet: just brand / account', opportunityName('Nike', 'Acme', ''), 'Nike / Acme')
+eq('defaults never pass Salesforce\'s limit', singleMarketOpportunityName('B'.repeat(80), 'A'.repeat(80), '2026-01-01').length, OPPORTUNITY_NAME_MAX)
 
 section('Opportunity name: what the seller typed')
 eq('absent: the default', readOpportunityName(undefined), { name: null })

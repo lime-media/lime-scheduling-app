@@ -388,7 +388,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
           markupPct ? `Brand Direct pricing: +${markupPct}% folded into every line item.` : null,
           callerNotes ? `Notes: ${callerNotes}` : null,
         ].filter(Boolean).join('\n') || undefined,
-        name: oppNameRead.name ?? singleMarketOpportunityName(brand, sfdc_account_name, market, start_date, end_date),
+        name: oppNameRead.name ?? singleMarketOpportunityName(brand, sfdc_account_name, start_date),
         brand: brand || undefined,
         primaryContactId: primary_contact_id,
         // The seller's choice of open stage; never a closed one.

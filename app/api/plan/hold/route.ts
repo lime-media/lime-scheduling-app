@@ -345,6 +345,7 @@ async function handlePost(req: NextRequest) {
     const party = bookingParty({
       accountId: body.sfdcAccountId, accountName: body.sfdcAccountName,
       contactId: body.primaryContactId, contactName: body.primaryContactName, verified: contact.contact, brand,
+      leadSource, opportunityType: oppType.opportunityType,
     })
     const linkedClient = await prisma.clientUser.findFirst({ where: { sfdc_account_id: body.sfdcAccountId }, select: { id: true } })
     const serviceUser = await prisma.user.findFirst({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } })

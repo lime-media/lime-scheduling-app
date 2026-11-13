@@ -53,7 +53,7 @@ export async function GET(req: NextRequest) {
   }
 
   const { rows, features, live, quoteOnly, brandMarkupPct, clientType } = reviseRows(holds)
-  const { account, contact, brand } = reviseParty({
+  const { account, contact, brand, leadSource, opportunityType } = reviseParty({
     opp, holds, clientType,
     oppClientType: opp ? clientTypeOf(opp.Account?.Client_Type2__c ?? null) : undefined,
   })
@@ -67,6 +67,9 @@ export async function GET(req: NextRequest) {
       // was down or writes were off) reopens with its account, contact and
       // brand. Only a booking with neither asks for the account again.
       account, contact, brand,
+      // The lead source and opportunity type picked when it was booked (null on
+      // older holds): prefilled in case the revision has to make an opportunity.
+      leadSource, opportunityType,
       clientName: holds[0].client_name,
       rows, features, live, quoteOnly, brandMarkupPct,
       // The client type it was priced as (null on older holds).

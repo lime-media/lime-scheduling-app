@@ -10,6 +10,7 @@
 import type { ClientType } from '@/lib/pricing/brandMarkup'
 import { LEAD_SOURCES } from '@/lib/sfdcLeadSource'
 import { OPPORTUNITY_TYPES } from '@/lib/sfdcOpportunityType'
+import { OPPORTUNITY_NAME_MAX } from '@/lib/opportunityName'
 
 const CLIENT_TYPES: ClientType[] = ['Agency', 'Brand Direct']
 
@@ -49,4 +50,30 @@ export function LeadSourcePicker({ value, onChange }: { value: string; onChange:
 
 export function OpportunityTypePicker({ value, onChange }: { value: string; onChange: (t: string) => void }) {
   return <PicklistSelect label="Opportunity type" options={OPPORTUNITY_TYPES} value={value} onChange={onChange} />
+}
+
+/**
+ * A new opportunity's name: shows the name the app would generate until the
+ * seller types their own (`value` null = follow the default as the quote
+ * changes). Sent blank, the server uses the default (lib/opportunityName.ts).
+ */
+export function OpportunityNameInput({ value, defaultName, onChange }: { value: string | null; defaultName: string; onChange: (v: string | null) => void }) {
+  const edited = value !== null && value !== defaultName
+  const blank = value !== null && !value.trim()
+  return (
+    <label className="block text-xs">
+      <span className="flex items-center justify-between gap-2">
+        <span className="font-medium text-gray-600">Opportunity name</span>
+        {edited && (
+          <button type="button" onClick={() => onChange(null)} className="text-gray-500 hover:text-gray-800 underline">
+            Use the default
+          </button>
+        )}
+      </span>
+      <input type="text" value={value ?? defaultName} maxLength={OPPORTUNITY_NAME_MAX} aria-label="Opportunity name"
+        onChange={e => onChange(e.target.value)}
+        className="mt-1 w-full border border-gray-200 rounded-lg px-2 py-1 text-xs text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-green-500" />
+      <span className="mt-0.5 block text-[11px] text-gray-400">{blank ? 'Left blank, the opportunity gets the default name.' : edited ? 'Salesforce gets this name.' : 'The name the app generates. Type to use your own.'}</span>
+    </label>
+  )
 }

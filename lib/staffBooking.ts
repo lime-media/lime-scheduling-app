@@ -9,7 +9,8 @@
  * Returns the route's status and JSON body.
  */
 
-import { opportunityName, readBrand } from '@/lib/brand'
+import { readBrand } from '@/lib/brand'
+import { readOpportunityName, singleMarketOpportunityName } from '@/lib/opportunityName'
 import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
 import { openStage } from '@/lib/sfdcStages'
 import { prisma } from '@/lib/prisma'
@@ -90,6 +91,9 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
   // (requireOpportunityType); elsewhere the account's suggestion below.
   const oppType = readOpportunityType(opportunity_type, !!opts.requireOpportunityType && !attach_opportunity_id)
   if ('error' in oppType) return reply({ error: oppType.error }, { status: 400 })
+  // The seller's own opportunity name (Quote page); blank or absent → the generated one.
+  const oppNameRead = readOpportunityName(body.opportunity_name)
+  if ('error' in oppNameRead) return reply({ error: oppNameRead.error }, { status: 400 })
   // Every opportunity needs its primary contact, on this account. A definite
   // no refuses; Salesforce being unreachable only warns (see checkPrimaryContact).
   const contact = await checkPrimaryContact(primary_contact_id, sfdc_account_id)
@@ -384,7 +388,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
           markupPct ? `Brand Direct pricing: +${markupPct}% folded into every line item.` : null,
           callerNotes ? `Notes: ${callerNotes}` : null,
         ].filter(Boolean).join('\n') || undefined,
-        name: opportunityName(brand, sfdc_account_name || 'Client', `${market} - ${start_date} to ${end_date}`),
+        name: oppNameRead.name ?? singleMarketOpportunityName(brand, sfdc_account_name, market, start_date, end_date),
         brand: brand || undefined,
         primaryContactId: primary_contact_id,
         // The seller's choice of open stage; never a closed one.

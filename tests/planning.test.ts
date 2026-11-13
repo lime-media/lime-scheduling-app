@@ -9,6 +9,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
+import { mediaParts } from '@/lib/planning/mediaParts'
 import { maxPairing, solveLarge, type MatchEdge } from '@/lib/planning/matching'
 import { minCostAssignment } from '@/lib/planning/assignment'
 import { parseZipRows, buildAreas, type Area, type Centroids } from '@/lib/planning/areas'
@@ -302,4 +303,11 @@ section('matching: bounded work')
   eq('dense cluster: falls back and reports it', got.greedyClusters, 1)
   eq('dense cluster: still the fewest trucks (everyone paired)', got.pairs.length, 30)
   eq('dense cluster: finishes quickly', ms < 2500, true)
+}
+
+section('mediaParts: the multi-market plan lists each option in a market\'s media')
+{
+  eq('base only when no option is chosen', mediaParts({ baseMedia: 10000, shadowFencing: 0, shadowFencingFloored: false, smartDirectional: 0, deviceId: 0 }), [{ label: 'Base media', amount: 10000 }])
+  eq('every option chosen, in the single quote\'s order', mediaParts({ baseMedia: 10000, shadowFencing: 2500, shadowFencingFloored: false, smartDirectional: 1200, deviceId: 800 }).map(p => p.label), ['Base media', 'Shadow fencing', 'Smart directional', 'Device ID passback'])
+  eq('a floored shadow fence says so', mediaParts({ baseMedia: 1000, shadowFencing: 1500, shadowFencingFloored: true, smartDirectional: 0, deviceId: 0 })[1].label, 'Shadow fencing (minimum applied)')
 }

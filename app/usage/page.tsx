@@ -109,8 +109,10 @@ export default function UsagePage() {
 
             {/* Fits the page: fixed column widths, long text wraps (What and
                 Result to two lines; the full text is on hover and in the
-                expanded row). Narrow screens drop What and Time. */}
-            <div className="bg-white border border-gray-200 rounded-xl overflow-hidden mb-6">
+                expanded row). Narrow screens drop What and Time; on a phone the remaining fixed
+                columns don't fit, so below md it scrolls sideways (Result keeps a
+                readable width) rather than clipping Outcome. */}
+            <div className="bg-white border border-gray-200 rounded-xl overflow-x-auto md:overflow-hidden mb-6">
               <table className="w-full table-fixed text-sm">
                 <thead className="bg-gray-50 border-b border-gray-200 text-left text-xs uppercase tracking-wider text-gray-500">
                   <tr>
@@ -119,7 +121,7 @@ export default function UsagePage() {
                     <th className="w-24 sm:w-32 px-2 sm:px-3 py-2">Person</th>
                     <th className="w-28 sm:w-44 px-2 sm:px-3 py-2">Tool</th>
                     <th className="hidden md:table-cell px-3 py-2">What</th>
-                    <th className="px-2 sm:px-3 py-2">Result</th>
+                    <th className="w-40 md:w-auto px-2 sm:px-3 py-2">Result</th>
                     <th className="w-[5.5rem] sm:w-28 px-2 sm:px-3 py-2">Outcome</th>
                     <th className="hidden md:table-cell w-20 px-3 py-2 text-right">Time</th>
                   </tr>

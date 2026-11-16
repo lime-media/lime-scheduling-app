@@ -896,9 +896,11 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
                   <td className={td} />
                   <td className={td + ' text-xs pt-0'} colSpan={6}>
                     {/* What the market's media is made of: base and each option chosen (as the single-market quote lists it). */}
-                    <div className="text-gray-600 mb-0.5">
-                      Media: {mediaParts(l).map(p => `${p.label} ${fmtMoney(p.amount)}`).join(' · ')}
-                    </div>
+                    {mediaParts(l).length > 0 && (
+                      <div className="text-gray-600 mb-0.5">
+                        Media: {mediaParts(l).map(p => `${p.label} ${fmtMoney(p.amount)}`).join(' · ')}
+                      </div>
+                    )}
                     <div className="flex flex-wrap gap-x-4 gap-y-0.5">
                       {l.arrivals.map(a => <ArrivalLine key={a.truckNumber} a={a} />)}
                       {l.missing > 0 && <div className="text-red-700">{l.missing} not covered</div>}

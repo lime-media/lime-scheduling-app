@@ -283,7 +283,7 @@ export async function placeClientBooking(
   // Create Salesforce Opportunity if the client has an SFDC Account ID
   if (sfdcAccountId && isSfdcConfigured() && created.length > 0) {
     try {
-      const oppName = opportunityName(brand, session.companyName, `${market} - ${start_date} to ${end_date}`)
+      const oppName = opportunityName(brand, session.companyName, start_date)
       const firstHold = await prisma.hold.findFirst({
         where: { campaign_group_id: campaignGroupId },
         select: { expires_at: true },

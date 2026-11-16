@@ -14,7 +14,9 @@ import { Navbar } from '@/components/Navbar'
 import { PlannerTab } from '@/components/PlannerTab'
 import { MARKET_SIZE_TIERS, NON_DMA_MARKET_TIER } from '@/lib/pricing/config'
 import { STUDY_LONG_WARNING, STUDY_WINDOW_DAYS, studiesCost } from '@/lib/pricing/studies'
-import { ClientTypePicker, LeadSourcePicker, OpportunityTypePicker } from '@/components/OpportunityFields'
+import { ClientTypePicker, LeadSourcePicker, OpportunityNameInput, OpportunityTypePicker } from '@/components/OpportunityFields'
+import { singleMarketOpportunityName } from '@/lib/opportunityName'
+import { savedBrand } from '@/lib/brand'
 import { AccountSearch, type SfdcAccount } from '@/components/AccountSearch'
 import { ContactSearch, type SfdcContact } from '@/components/ContactSearch'
 import { HoldLength, DEFAULT_HOLD_DAYS } from '@/components/HoldLength'
@@ -122,6 +124,8 @@ export default function InternalQuotePage() {
   // starting from the account's (components/OpportunityFields.tsx).
   const [clientType, setClientType] = useState<ClientType>('Agency')
   const [leadSource, setLeadSource] = useState('')
+  // The seller's own opportunity name; null = the generated one (lib/opportunityName.ts).
+  const [oppName, setOppName] = useState<string | null>(null)
   const [opportunityType, setOpportunityType] = useState('')
   const isBrandDirect = clientType === 'Brand Direct'
   const markupPct = isBrandDirect ? clampBrandMarkup(brandMarkupPct) : 0
@@ -297,6 +301,7 @@ export default function InternalQuotePage() {
           // Adding to an existing opportunity keeps its own lead source.
           lead_source: attachTo ? undefined : leadSource,
           opportunity_type: attachTo ? undefined : opportunityType,
+          opportunity_name: attachTo || !oppName?.trim() ? undefined : oppName,
           stage,
           quote_only: quoteOnly,
           days_per_week: form.days_per_week,
@@ -313,13 +318,15 @@ export default function InternalQuotePage() {
         return
       }
       setHoldResult({ ok: res.ok, message: (res.ok && data.confirmation) || data.message || data.error || 'Unknown error', sfdcFailure: res.ok ? data.sfdcFailure ?? null : null })
+      // A typed name was for this opportunity: the next booking starts from its own default.
+      if (res.ok) setOppName(null)
       setSfdcFailureOpen(Boolean(res.ok && data.sfdcFailure))
     } catch {
       setHoldResult({ ok: false, message: 'Network error.' })
     } finally {
       setHoldLoading(false)
     }
-  }, [holdLoading, quoteResult, account, contact, holdDays, attachTo, form, toggles, clientType, isBrandDirect, markupPct, leadSource, opportunityType, stage, quoteOnly, brand]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [holdLoading, quoteResult, account, contact, holdDays, attachTo, form, toggles, clientType, isBrandDirect, markupPct, leadSource, opportunityType, stage, quoteOnly, brand, oppName]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (status === 'loading' || !session) return null
 
@@ -360,7 +367,7 @@ export default function InternalQuotePage() {
         {/* Step 1: Client selection */}
         <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 mb-4">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">1. Select Client (Salesforce Account)</h2>
-          <AccountSearch suggestType selected={account} onSelect={(a) => { setAccount(a); setClientType(a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setOpportunityType(a?.opportunityType ?? ''); setContact(null); setAttachTo(null); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
+          <AccountSearch suggestType selected={account} onSelect={(a) => { setAccount(a); setClientType(a?.clientType ?? 'Agency'); setLeadSource(a?.leadSource ?? ''); setOpportunityType(a?.opportunityType ?? ''); setOppName(null); setContact(null); setAttachTo(null); setBrandMarkupPct(DEFAULT_BRAND_MARKUP_PCT); setQuoteResult(null); setHoldResult(null) }} />
           {account && (
             <div className="mt-3">
               {/* Sets Brand Direct pricing, so a change needs a fresh price. */}
@@ -707,11 +714,15 @@ export default function InternalQuotePage() {
                     <div className="flex justify-between font-bold text-gray-900 pt-2 border-t border-gray-200 text-base"><span>Total</span><span>{fmtMoney(total)}</span></div>
                   </div>
 
-                  {/* A new opportunity's lead source: the seller picks one (Salesforce's picklist). */}
+                  {/* A new opportunity's lead source and type (Salesforce's picklists), and its name. */}
                   {!holdResult?.ok && !attachTo && (
                     <div className="mt-4">
                       <LeadSourcePicker value={leadSource} onChange={setLeadSource} />
                       <div className="mt-2"><OpportunityTypePicker value={opportunityType} onChange={setOpportunityType} /></div>
+                      <div className="mt-2">
+                        <OpportunityNameInput value={oppName} onChange={setOppName}
+                          defaultName={singleMarketOpportunityName(savedBrand(brand), account?.name, form.start_date)} />
+                      </div>
                     </div>
                   )}
                   {/* Opportunity stage — open stages only */}

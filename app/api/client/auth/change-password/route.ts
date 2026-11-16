@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { getClientSession } from '@/lib/clientAuth'
 
 export async function POST(req: NextRequest) {
-  const session = getClientSession(req)
+  const session = await getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   try {

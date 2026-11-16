@@ -10,7 +10,7 @@ import { sendAssistanceRequestEmail } from '@/lib/email'
  * the request (e.g. insufficient truck availability).
  */
 export async function POST(req: NextRequest) {
-  const session = getClientSession(req)
+  const session = await getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const { market, state, start_date, end_date, details } = await req.json()

@@ -162,8 +162,8 @@ export async function staffActor(req: NextRequest): Promise<Actor | null> {
   if (!t?.id) return null
   return { type: 'app_user', id: String(t.id), name: String(t.name ?? t.email ?? '') }
 }
-export function clientActor(req: NextRequest): Actor | null {
-  const s = getClientSession(req)
+export async function clientActor(req: NextRequest): Promise<Actor | null> {
+  const s = await getClientSession(req)
   return s ? { type: 'client_user', id: s.id, name: `${s.companyName} (${s.username})` } : null
 }
 
@@ -236,7 +236,7 @@ export function withUsageLog(
 ): (req: NextRequest) => Promise<Response> {
   return async (req: NextRequest) => {
     const started = Date.now()
-    const [actor, inputs] = await Promise.all([who === 'staff' ? staffActor(req) : Promise.resolve(clientActor(req)), readInputs(req)])
+    const [actor, inputs] = await Promise.all([who === 'staff' ? staffActor(req) : clientActor(req), readInputs(req)])
     let res: Response
     try {
       res = await handler(req)

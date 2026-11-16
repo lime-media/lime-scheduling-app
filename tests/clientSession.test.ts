@@ -9,6 +9,7 @@
  */
 import { defer, eq, section } from './harness'
 import { readSession, signSession } from '@/lib/clientSessionToken'
+import { liveClientSession } from '@/lib/clientAuth'
 import { clientEmailRefusal, maskEmail } from '@/lib/clientEmail'
 import { checkOtp, MAX_ATTEMPTS, OtpError } from '@/lib/otp'
 import bcrypt from 'bcryptjs'
@@ -160,4 +161,15 @@ section('login codes: guesses are claimed before the slow compare, not counted a
       eq('none of them get in', results.every(r => r === 'out'), true)
       eq(`only ${MAX_ATTEMPTS} guesses are ever spent, however many arrive together`, attempts, MAX_ATTEMPTS)
     }))
+}
+
+section('liveClientSession: staff changes reach a signed-in client without a new login')
+{
+  const signed = { id: 'c1', username: 'testclient', companyName: 'Lime Media', sfdcAccountId: '001UAT0000TEST0123' }
+  const now = { username: 'testclient', company_name: 'Acme Agency', partner_id: 'p-7', sfdc_account_id: '001A000000REAL01' }
+  eq('the record\'s account, name and agreement, not the ones signed at login', liveClientSession(signed, now),
+    { id: 'c1', username: 'testclient', companyName: 'Acme Agency', partnerId: 'p-7', sfdcAccountId: '001A000000REAL01' })
+  eq('an account unlinked by staff is unlinked now', liveClientSession(signed, { ...now, sfdc_account_id: null })?.sfdcAccountId, undefined)
+  eq('a deleted client is signed out', liveClientSession(signed, null), null)
+  eq('the record unreadable: the signed session stands (no lockout)', liveClientSession(signed, 'unreadable'), signed)
 }

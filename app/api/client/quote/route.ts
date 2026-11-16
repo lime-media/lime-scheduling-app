@@ -9,7 +9,7 @@ import { getClientSession } from '@/lib/clientAuth'
 import { clientQuote, type ClientQuoteInput } from '@/lib/clientQuote'
 
 async function handlePost(req: NextRequest) {
-  const session = getClientSession(req)
+  const session = await getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   let body: ClientQuoteInput

@@ -119,7 +119,8 @@ export function bookingCreator(holds: Pick<RequestHold, 'sfdc_opportunity_id' | 
  * Closed Won (Andrew, 2026-11-12). The bot doesn't follow the app's process,
  * so nothing is designed around its deals: they block availability in the
  * app for the life of their opportunity, but reach LED only if they close won,
- * like any other deal. Pure.
+ * like any other deal. The send (lib/coreSend.ts) and the LED Readiness
+ * list both ask this, so the rule lives only here. Pure.
  */
 export const leftOutOfLed = (b: Pick<BookingRequest, 'creator' | 'won'>): boolean => b.creator === 'bot' && !b.won
 

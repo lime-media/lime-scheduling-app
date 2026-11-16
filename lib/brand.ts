@@ -43,17 +43,33 @@ function stripBrand(raw: string | null | undefined): string {
 }
 
 /**
+ * A brand limited to BRAND_MAX characters, cut at the last word boundary that
+ * fits ("Acme Outdoor Holiday Spectacular …" never ends mid-word), with
+ * separators left dangling at the end (" -", "/", ",", "&") dropped. Only a
+ * single word longer than the limit is cut hard. Shorter text comes back as
+ * is. Every place the brand is limited uses this, so the page, the saved
+ * brand, the quote ref and Salesforce agree. Pure.
+ */
+export function cutBrand(s: string): string {
+  if (s.length <= BRAND_MAX) return s
+  // A space right after the limit means the first BRAND_MAX characters end on a whole word.
+  const at = s.slice(0, BRAND_MAX + 1).search(/\s\S*$/)
+  const words = at > 0 ? s.slice(0, at).replace(/[\s,/&+.:;|–—-]+$/, '') : ''
+  return words || s.slice(0, BRAND_MAX).trim()
+}
+
+/**
  * The brand as saved: trimmed, trailing descriptors dropped, at most 50
- * characters. The cut can leave a new trailing descriptor ("… Tour" once the
- * rest is cut off), so strip and cut repeat until nothing changes: cleaning a
+ * characters, cut on a word boundary (cutBrand). The cut can leave a new
+ * trailing descriptor ("… Tour" once the rest is cut off), so strip and cut repeat until nothing changes: cleaning a
  * saved brand again gives the same brand (it is cleaned on every save and
  * every read of a quote ref). Each round only shortens it, so it stops.
  */
 export function cleanBrand(raw: string | null | undefined): string {
-  let s = stripBrand(raw).slice(0, BRAND_MAX).trim()
+  let s = cutBrand(stripBrand(raw)).trim()
   for (let prev = ''; prev !== s; ) {
     prev = s
-    s = stripBrand(s).slice(0, BRAND_MAX).trim()
+    s = cutBrand(stripBrand(s)).trim()
   }
   return s
 }

@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { brandChange, cleanBrand, isNoBrand, opportunityName, readBrand, savedBrand } from '@/lib/brand'
+import { brandChange, cleanBrand, cutBrand, isNoBrand, opportunityName, readBrand, savedBrand } from '@/lib/brand'
 
 section('brand: only the brand is saved')
 eq('a plain brand', cleanBrand('  Nike  '), 'Nike')
@@ -65,3 +65,18 @@ eq('"no  brand" and "no-brand" are answers too (spacing, hyphen)', [readBrand('n
 eq('isNoBrand: only the no-brand answers', [isNoBrand('None'), isNoBrand(' n/a '), isNoBrand('Nike'), isNoBrand(''), isNoBrand(undefined)], [true, true, false, false, false])
 eq('a brand called NA is kept', savedBrand('NA'), 'NA')
 eq('a no-brand answer with a trailing descriptor is still no brand', [savedBrand('N/A LED'), savedBrand('None 2026')], ['', ''])
+
+section('Brand: the 50-character cut falls on a word boundary')
+const long = 'Acme Outdoor Holiday Spectacular Northeast Regional Rollout'
+eq('short text is unchanged', cutBrand('Acme Outdoor'), 'Acme Outdoor')
+eq('exactly 50 is unchanged', cutBrand('x'.repeat(50)), 'x'.repeat(50))
+eq('cut at the last whole word', cutBrand(long), 'Acme Outdoor Holiday Spectacular Northeast')
+eq('never mid-word', cutBrand(long).length <= 50 && long.startsWith(cutBrand(long) + ' '), true)
+eq('a word ending exactly at 50 is kept', cutBrand('a'.repeat(45) + ' bcde fghij'), 'a'.repeat(45) + ' bcde')
+eq('a dangling separator is dropped', cutBrand('Acme Outdoor Holiday Spectacular Northeast - Rollout Phase'), 'Acme Outdoor Holiday Spectacular Northeast')
+eq('a dangling slash is dropped', cutBrand('Acme Outdoor Holiday Spectacular Northeast / Regional'), 'Acme Outdoor Holiday Spectacular Northeast')
+eq('one word over 50 is cut hard', cutBrand('y'.repeat(60)), 'y'.repeat(50))
+eq('cleanBrand uses the word cut', cleanBrand(long), 'Acme Outdoor Holiday Spectacular Northeast')
+eq('cleanBrand twice = once (word cut)', cleanBrand(cleanBrand(long)), cleanBrand(long))
+eq('cleanBrand twice = once (descriptor left by the cut)', cleanBrand(cleanBrand('Acme Outdoor Holiday Spectacular Northeast Tour Extra Words')), cleanBrand('Acme Outdoor Holiday Spectacular Northeast Tour Extra Words'))
+eq('a cut that leaves a descriptor drops it', cleanBrand('Acme Outdoor Holiday Spectacular Northeast Tour Extra Words'), 'Acme Outdoor Holiday Spectacular Northeast')

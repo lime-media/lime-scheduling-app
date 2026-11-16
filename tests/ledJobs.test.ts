@@ -170,3 +170,4 @@ eq('only zero-day holds: stays listed', bookingInLed([{ status: 'COMMITTED', led
 eq('a zero-day stint beside a scheduled one: in LED', bookingInLed([{ status: 'COMMITTED', led_scheduled: true, led_days_sold: 0 }, { status: 'COMMITTED', led_scheduled: true, led_days_sold: 6 }]), true)
 eq('a row with no state on a day another state shares: judged on job and dates', isOwnLedProgram({ ...wonHold, state: 'AZ' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', state: '', states: ['', 'NM'] }), true)
 eq('the other state\'s row that day stays', isOwnLedProgram({ ...wonHold, state: 'AZ' }, { start: '2026-10-05', end: '2026-10-05', job_number: '26-0500-300', state: 'NM', states: ['', 'NM'] }), false)
+

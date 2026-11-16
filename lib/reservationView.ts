@@ -33,6 +33,9 @@ export type ViewRow = BookingRow & {
   sfdc_account_id: string | null
   led_client: unknown | null
   led_trucks_unsynced_since: string | null
+  /** The LED mirror's state for a won market (lib/ledTruckFollow.ts); absent where the API doesn't send it. */
+  led_flag?: string | null
+  led_clash?: string | null
 }
 
 /**
@@ -49,7 +52,7 @@ export function groupBookings<R extends BookingRow & { id: string }>(rows: R[]):
   return [...out].map(([key, rs]) => ({ key, rows: rs }))
 }
 
-export type Attention = 'extension_request' | 'no_quote' | 'no_opportunity' | 'led_client_unlinked' | 'led_trucks_unsynced'
+export type Attention = 'extension_request' | 'no_quote' | 'no_opportunity' | 'led_client_unlinked' | 'led_trucks_unsynced' | 'led_not_followed'
 
 /** What each flag says, on the tile and the booking's row. */
 export const ATTENTION_LABEL: Record<Attention, string> = {
@@ -58,6 +61,7 @@ export const ATTENTION_LABEL: Record<Attention, string> = {
   no_opportunity: 'No Salesforce opportunity',
   led_client_unlinked: 'Account not linked to an LED client',
   led_trucks_unsynced: 'LED Trucks not updated in Salesforce',
+  led_not_followed: 'Not following LED\'s trucks and dates: check the booking',
 }
 
 const isQuoteOnly = (rows: { origination: string }[]) => rows.length > 0 && rows.every(r => r.origination === QUOTE_ONLY_ORIGINATION)
@@ -97,6 +101,11 @@ export function attentionOf(rows: ViewRow[], today: string): Attention[] {
   if (!rows.some(r => r.sfdc_opportunity_id)) out.push('no_opportunity')
   if (status === 'COMMITTED' && rows.some(r => r.sfdc_account_id) && !rows.some(r => r.led_client)) out.push('led_client_unlinked')
   if (rows.some(r => r.led_trucks_unsynced_since)) out.push('led_trucks_unsynced')
+  // The LED mirror can't follow a won market (blocked by another booking, a
+  // job number on two bookings, or a schedule that doesn't fit), so the
+  // reservation's trucks and dates don't match LED's: availability is off
+  // until someone resolves it. The detail panel says which and why.
+  if (status === 'COMMITTED' && live.some(r => (r.led_clash ?? null) !== null || r.led_flag === 'reused_job' || r.led_flag === 'unfit')) out.push('led_not_followed')
   return out
 }
 

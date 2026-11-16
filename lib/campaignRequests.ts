@@ -83,7 +83,8 @@ export type IssueKind =
   | 'no_led_client' | 'market_label' | 'no_standard_market' | 'no_job_number'
   | 'no_trucks' | 'days_not_confirmed' | 'hours_not_confirmed' | 'hours_off_shift' | 'hours_rounded' | 'shared_truck'
 
-export type Issue = { kind: IssueKind; blocking: boolean; message: string; markets?: string[]; trucks?: string[] }
+/** `accountId`: on `no_led_client`, the Salesforce account to link (none when the booking has no account). */
+export type Issue = { kind: IssueKind; blocking: boolean; message: string; markets?: string[]; trucks?: string[]; accountId?: string }
 
 /**
  * `bookingKey`: the booking's key now. `won`: any hold is Closed Won. `marketNames`: each market as the holds name
@@ -222,7 +223,9 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
 
   const accountId = live.map(h => h.sfdc_account_id).find(Boolean) ?? null
   const clientUid = accountId ? clientUidOf(accountId) : null
-  if (!clientUid) issues.push({ kind: 'no_led_client', blocking: true, message: accountId ? 'Its Salesforce account is not linked to an LED client: link it on Reservations.' : 'It has no Salesforce account to link to an LED client.' })
+  if (!clientUid) issues.push(accountId
+    ? { kind: 'no_led_client', blocking: true, message: 'Its Salesforce account is not linked to an LED client.', accountId }
+    : { kind: 'no_led_client', blocking: true, message: 'It has no Salesforce account to link to an LED client.' })
 
   const labelled = markets.filter(m => m.otherMarketName && isMarketLabel(m.otherMarketName))
   const empty = markets.filter(m => m.trucks.length === 0)

@@ -5,7 +5,10 @@
  * lib/campaignRequests.ts). Blocked ones can't go to LED until the issue is
  * fixed; Check ones go with something assumed that ops should check in LED
  * afterwards; Ready ones go as they are. "Send to LED" sends one booking
- * (/api/ops/led-requests/send). Any signed-in staff user.
+ * (/api/ops/led-requests/send).
+ * Bookings the Salesforce bot user made are listed apart, collapsed, until
+ * they're Closed Won: then they're handled like any other booking. Any
+ * signed-in staff user.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -13,12 +16,12 @@ import { Navbar } from '@/components/Navbar'
 import { LedClientLink } from '@/components/LedClientLink'
 import type { Issue } from '@/lib/campaignRequests'
 
-type Booking = {
-  key: string; client: string; won: boolean; start: string; end: string
-  markets: { name: string; trucks: string[] }[]; issues: Issue[]
+type Summary = { key: string; client: string; won: boolean; start: string; end: string; markets: { name: string; trucks: string[] }[] }
+type Booking = Summary & {
+  issues: Issue[]
   ready: boolean; sent: { coreUid: string; requestId: string | null } | null; lastError: string | null
 }
-type Data = { total: number; blocked: number; bookings: Booking[]; send: { enabled: boolean; reason?: string } }
+type Data = { total: number; blocked: number; bookings: Booking[]; excluded: Summary[]; send: { enabled: boolean; reason?: string } }
 
 const day = (s: string) => new Date(s + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
 
@@ -159,6 +162,27 @@ export default function LedRequestsPage() {
               </tbody>
             </table>
           </section>
+        )}
+
+        {data && data.excluded.length > 0 && (
+          <details className="mt-4 bg-white border border-gray-200 rounded-xl">
+            <summary className="px-4 py-3 text-sm font-medium text-gray-700 cursor-pointer">
+              Made by the Salesforce bot, not won (not sent to LED): {data.excluded.length}
+            </summary>
+            <p className="px-4 pb-2 text-xs text-gray-500">
+              Their Salesforce opportunity was made by the bot user, which is to be switched off. They hold their trucks on Reservations like any open deal. If one closes won, it moves up into the list above and goes to LED like any other booking.
+            </p>
+            <ul className="divide-y divide-gray-100 text-sm">
+              {data.excluded.map(b => (
+                <li key={b.key} className="px-4 py-2 flex flex-wrap gap-x-4 text-gray-700">
+                  <span className="font-medium text-gray-900">{b.client}</span>
+                  {b.won && <span className="text-xs text-green-700">Closed Won</span>}
+                  <span className="whitespace-nowrap">{day(b.start)} – {day(b.end)}</span>
+                  <span>{b.markets.map(m => `${m.name} · ${m.trucks.join(', ')}`).join('; ')}</span>
+                </li>
+              ))}
+            </ul>
+          </details>
         )}
       </main>
     </>

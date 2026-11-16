@@ -9,7 +9,7 @@ import { defer, eq, section } from './harness'
 import { buildRequest, type BookingRequest, type RequestHold } from '@/lib/campaignRequests'
 import { clearCoreTokens, coreClient, coreConfig, coreDecrypt, coreEncrypt, coreLoginBody, corePayload, CoreError, type CoreConfig, type CorePayload } from '@/lib/coreClient'
 import { sendBookingToCore, type SendDeps } from '@/lib/coreSend'
-import { creatorsByBooking, type Creator, type SentRow } from '@/lib/ledReadiness'
+import type { SentRow } from '@/lib/ledReadiness'
 
 const DALLAS = '11111111-1111-1111-1111-111111111111'
 const CLIENT = '33333333-3333-3333-3333-333333333333'
@@ -154,7 +154,7 @@ defer((async () => {
 })())
 
 section('sendBookingToCore: refusals and idempotency')
-function deps(over: Partial<SendDeps> & { bookings?: BookingRequest[]; rows?: Map<string, SentRow>; creators?: Map<string, Creator> } = {}) {
+function deps(over: Partial<SendDeps> & { bookings?: BookingRequest[]; rows?: Map<string, SentRow> } = {}) {
   const rows = over.rows ?? new Map<string, SentRow>()
   const posted: CorePayload[] = []
   const saved: (string | null)[] = []
@@ -162,8 +162,7 @@ function deps(over: Partial<SendDeps> & { bookings?: BookingRequest[]; rows?: Ma
   const d: SendDeps = {
     env: ON,
     load: async () => {
-      const bookings = over.bookings ?? [two]
-      return { bookings, sent: rows, creators: over.creators ?? new Map(bookings.map(b => [b.bookingKey, 'person' as Creator])) }
+      return { bookings: over.bookings ?? [two], sent: rows }
     },
     ensureRow: async (key, ref) => {
       const have = rows.get(key)
@@ -218,22 +217,22 @@ defer((async () => {
   eq('first send stores the fingerprint', typeof ok.saved[0], 'string')
   eq('a send after an earlier attempt leaves the fingerprint unknown', re.saved[0], null)
 
-  const botOpen = deps({ creators: new Map([[two.bookingKey, 'bot' as Creator]]) })
+  // Who made the opportunity rides on the booking (BookingRequest.creator, from sfdc_created_by_id).
+  const by = (b: BookingRequest, creator: BookingRequest['creator']): BookingRequest => ({ ...b, creator })
+  eq('the fixture is a person\'s booking, so the cases above are not refused for its creator', two.creator, 'person')
+  const botOpen = deps({ bookings: [by(two, 'bot')] })
   const rb = await sendBookingToCore(two.bookingKey, botOpen.d)
   eq("the bot's booking, not won: refused with the reason, nothing posted, no row",
     [rb.status, /Salesforce bot/.test(String(rb.body.error)), botOpen.posted.length, botOpen.rows.size], [409, true, 0, 0])
 
-  const wonBot = build([hold({ status: 'COMMITTED', sfdc_job_number: '26-0001' })])
-  const botWon = deps({ bookings: [wonBot], creators: new Map([[wonBot.bookingKey, 'bot' as Creator]]) })
+  const wonBot = by(build([hold({ status: 'COMMITTED', sfdc_job_number: '26-0001' })]), 'bot')
+  const botWon = deps({ bookings: [wonBot] })
   const rw = await sendBookingToCore(wonBot.bookingKey, botWon.d)
   eq("the bot's booking once Closed Won: sent like any other", [wonBot.won, rw.status, botWon.posted.length], [true, 200, 1])
 
-  const unread = deps({ creators: new Map([[two.bookingKey, 'unknown' as Creator]]) })
+  const unread = deps({ bookings: [by(two, 'unknown')] })
   const ru = await sendBookingToCore(two.bookingKey, unread.d)
   eq('creator not read yet: waits, nothing posted', [ru.status, /isn't read yet/.test(String(ru.body.error)), unread.posted.length], [409, true, 0])
-
-  const absent = deps({ creators: new Map() })
-  eq('creator missing from the map: treated as not read, nothing posted', [(await sendBookingToCore(two.bookingKey, absent.d)).status, absent.posted.length], [409, 0])
 
   const failing = deps({ create: async () => { throw new CoreError('LED refused it: no timezone', 400) } })
   const r4 = await sendBookingToCore(two.bookingKey, failing.d)
@@ -241,14 +240,3 @@ defer((async () => {
     [502, 'LED refused it: no timezone', 'LED refused it: no timezone'])
 })())
 
-section('creatorsByBooking: who made each booking\'s opportunity')
-{
-  const row = (id: string, group: string | null, opp: string | null, by: string | null) => ({ id, campaign_group_id: group, sfdc_opportunity_id: opp, sfdc_created_by_id: by })
-  const m = creatorsByBooking([
-    row('a1', 'cg_a', '006A', PERSON), row('a2', 'cg_a', '006A', PERSON),
-    row('b1', 'cg_b', '006B', PERSON), row('b2', 'cg_b', '006B', BOT),
-    row('c1', 'cg_c', '006C', null),
-    row('d1', null, null, null),
-  ])
-  eq('person / any bot hold makes it bot / not read / no opportunity', [m.get('cg_a'), m.get('cg_b'), m.get('cg_c'), m.get('d1')], ['person', 'bot', 'unknown', 'person'])
-}

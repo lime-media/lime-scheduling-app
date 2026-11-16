@@ -7,7 +7,7 @@
 import fs from 'fs'
 import { eq, section } from './harness'
 import { parseMcpStaffPricing } from '@/lib/mcpActing'
-import { clientVisibleFeatures } from '@/lib/quoteFeatures'
+import { clientVisibleFeatures, parseQuoteFeatures } from '@/lib/quoteFeatures'
 import { CLIENT_PORTAL_LEAD_SOURCE, LEAD_SOURCES, MCP_LEAD_SOURCE, NEED_LEAD_SOURCE, leadSourceOf, readLeadSource } from '@/lib/sfdcLeadSource'
 import { brandMarkupFor, chosenClientType } from '@/lib/pricing/brandMarkup'
 
@@ -45,6 +45,8 @@ section('a client never sees internal pricing')
 const stored = JSON.stringify({ dailyRate: 1500, brandMarkupPct: 10, clientType: 'Brand Direct', truckDays: 4 })
 eq('Brand Direct markup and client type are removed', clientVisibleFeatures(stored), JSON.stringify({ dailyRate: 1500, truckDays: 4 }))
 eq('nor the deadhead cost or Salesforce bookkeeping', clientVisibleFeatures(JSON.stringify({ dailyRate: 1500, successorImpact: [{ deltaCost: 900 }], appHoldExp: '2026-11-10' })), JSON.stringify({ dailyRate: 1500 }))
+eq('nor the studies the seller ticked', clientVisibleFeatures(JSON.stringify({ dailyRate: 1500, studiesRequested: ['web_lift'] })), JSON.stringify({ dailyRate: 1500 }))
+eq('ticked studies alone are not a quote', parseQuoteFeatures(JSON.stringify({ studiesRequested: ['web_lift'] })), null)
 eq('nor the Salesforce account and contact it was booked for', clientVisibleFeatures(JSON.stringify({ dailyRate: 1500, party: { accountId: '001000000000001AAA', contact: { id: '003000000000001AAA', name: 'Pat Lee' } } })), JSON.stringify({ dailyRate: 1500 }))
 eq('nothing internal: unchanged', clientVisibleFeatures('{"dailyRate":1500}'), '{"dailyRate":1500}')
 eq('none', clientVisibleFeatures(null), null)

@@ -14,7 +14,7 @@ import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { centralDate } from '@/lib/dateOnly'
 import { chosenClientType, type ClientType } from '@/lib/pricing/brandMarkup'
 import { VALID_STUDIES, type StudyType } from '@/lib/pricing/config'
-import { ASKED_DATES_MOVED_KEY, askedDates } from '@/lib/quoteFeatures'
+import { ASKED_DATES_MOVED_KEY, STUDIES_REQUESTED_KEY, askedDates } from '@/lib/quoteFeatures'
 
 export type BookingRow = {
   campaign_group_id: string | null
@@ -430,14 +430,20 @@ export function reviseRows(holds: RevisableHold[]): {
 }
 
 /**
- * The lift studies a booking was sold, from its holds' features. Only what was
+ * The lift studies a revision ticks again, from the booking's holds' features.
+ * Bookings that record what the seller ticked (STUDIES_REQUESTED_KEY) get
+ * exactly that, sold or not: a study under the reach minimum isn't priced, and
+ * the planner's reach note says why. Older bookings fall back to what was
  * sold: a hold whose studies were priced (studiesTotal > 0), or a sales lift
- * asked for (salesLiftRequested). Bookings made before studies were stored as
- * sold recorded the studies requested even when reach was short and nothing
- * was charged; those are not restored. Pure.
+ * asked for (salesLiftRequested); their `studies` with nothing charged is
+ * ambiguous (stored before studies were stored as sold), so it isn't restored. Pure.
  */
 export function bookedStudies(holds: { features: string | null }[]): StudyType[] {
   const valid = (v: unknown): StudyType[] => (Array.isArray(v) ? [...new Set(v.filter((x): x is StudyType => (VALID_STUDIES as readonly unknown[]).includes(x)))] : [])
+  for (const h of holds) {
+    const f = parseFeatures(h.features)
+    if (Array.isArray(f[STUDIES_REQUESTED_KEY])) return valid(f[STUDIES_REQUESTED_KEY])
+  }
   for (const h of holds) {
     const f = parseFeatures(h.features)
     if (Number(f.studiesTotal) > 0) return valid(f.studies)

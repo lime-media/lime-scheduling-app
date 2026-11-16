@@ -258,6 +258,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
     [PARTY_KEY]: bookingParty({
       accountId: sfdc_account_id, accountName: sfdc_account_name,
       contactId: primary_contact_id, contactName: body.primary_contact_name, verified: contact.contact, brand,
+      leadSource, opportunityType: oppType.opportunityType,
     }),
   })
 

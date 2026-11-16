@@ -11,6 +11,8 @@
  */
 
 import { PARTY_KEY } from '@/lib/quoteFeatures'
+import { leadSourceOf } from '@/lib/sfdcLeadSource'
+import { opportunityTypeOf } from '@/lib/sfdcOpportunityType'
 
 export { PARTY_KEY }
 
@@ -22,6 +24,13 @@ export type BookingParty = {
   accountName: string | null
   contact: PartyContact | null
   brand: string
+  /**
+   * The lead source and opportunity type the seller picked for a new
+   * opportunity, so a revision that has to make one (the booking has none)
+   * doesn't ask again. Absent on older holds and when none was picked.
+   */
+  leadSource?: string
+  opportunityType?: string
 }
 
 /** A hold's features JSON as an object (empty when absent or unreadable). */
@@ -49,9 +58,13 @@ export function bookingParty(input: {
   contactName?: unknown
   verified?: { name: string; email?: string | null; title?: string | null } | null
   brand: string
+  leadSource?: string | null
+  opportunityType?: string | null
 }): BookingParty {
   const contactId = str(input.contactId)
   const name = input.verified?.name ?? str(input.contactName)
+  const leadSource = str(input.leadSource)
+  const opportunityType = str(input.opportunityType)
   return {
     accountId: input.accountId,
     accountName: str(input.accountName),
@@ -59,6 +72,8 @@ export function bookingParty(input: {
       ? { id: contactId, name: name ?? contactId, email: input.verified?.email ?? null, title: input.verified?.title ?? null }
       : null,
     brand: input.brand,
+    ...(leadSource ? { leadSource } : {}),
+    ...(opportunityType ? { opportunityType } : {}),
   }
 }
 
@@ -76,6 +91,9 @@ export function partyOf(features: string | null): BookingParty | null {
     accountName: str(r.accountName),
     contact: contactId ? { id: contactId, name: str(c!.name) ?? contactId, email: str(c!.email), title: str(c!.title) } : null,
     brand: typeof r.brand === 'string' ? r.brand : '',
+    // Only a value still on Salesforce's picklist: a stale one would be refused on save.
+    ...(leadSourceOf(r.leadSource) ? { leadSource: leadSourceOf(r.leadSource)! } : {}),
+    ...(opportunityTypeOf(r.opportunityType) ? { opportunityType: opportunityTypeOf(r.opportunityType)! } : {}),
   }
 }
 
@@ -105,6 +123,9 @@ export function reviseParty(input: {
   account: { id: string; name: string; clientType?: 'Agency' | 'Brand Direct' } | null
   contact: PartyContact | null
   brand: string
+  /** As the booking recorded them (null when it didn't): only used when a new opportunity is made. */
+  leadSource: string | null
+  opportunityType: string | null
 } {
   const { opp, holds } = input
   const stored = holds.map(h => partyOf(h.features)).find(p => p) ?? null
@@ -125,5 +146,5 @@ export function reviseParty(input: {
     : stored?.contact && (!account || account.id === stored.accountId) ? stored.contact : null
 
   const brand = opp?.Brand_Job_Name__c?.trim() || stored?.brand || ''
-  return { account, contact, brand }
+  return { account, contact, brand, leadSource: stored?.leadSource ?? null, opportunityType: stored?.opportunityType ?? null }
 }

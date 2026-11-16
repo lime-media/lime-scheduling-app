@@ -16,7 +16,7 @@ import { chosenClientType, type ClientType } from '@/lib/pricing/brandMarkup'
 import { VALID_STUDIES, type StudyType } from '@/lib/pricing/config'
 import { ASKED_DATES_MOVED_KEY, askedDates } from '@/lib/quoteFeatures'
 
-type BookingRow = {
+export type BookingRow = {
   campaign_group_id: string | null
   sfdc_opportunity_id: string | null
 }

@@ -10,9 +10,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { isQuoteOnlyRun, runLabel } from '@/lib/usageFormat'
+import { isQuoteOnlyRun, parseToolFilter, runLabel } from '@/lib/usageFormat'
 
 const MAX_ROWS = 1000
+/** How many pages of MAX_ROWS a quote-only / hold-only filter reads at most. */
+const MAX_SCAN_PAGES = 10
 const parse = (v: string | null) => { if (!v) return null; try { return JSON.parse(v) } catch { return v } }
 const isDate = (v: string | null): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v)
 
@@ -30,17 +32,34 @@ export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams
   const to = isDate(sp.get('to')) ? new Date(sp.get('to') + 'T23:59:59.999Z') : new Date()
   const from = isDate(sp.get('from')) ? new Date(sp.get('from') + 'T00:00:00Z') : new Date(to.getTime() - 7 * 86_400_000)
-  const tool = sp.get('tool') || null
+  // A hold tool's filter can ask for its quote-only runs, or its real holds only (lib/usageFormat.ts).
+  const { tool, quoteOnly: onlyQuoteOnly } = parseToolFilter(sp.get('tool') || null)
   const actor = sp.get('actor') || null
   // 'mcp' = every MCP tool; anything else is one tool's exact name.
   const toolWhere = !tool ? {} : tool === 'mcp' ? { tool: { startsWith: 'mcp_' } } : { tool }
 
   try {
-    const [logRows, users, clients, tokens] = await Promise.all([
-      prisma.usageLog.findMany({
-        where: { created_at: { gte: from, lte: to }, ...toolWhere, ...(actor ? { actor_id: actor } : {}) },
-        orderBy: { created_at: 'desc' }, take: MAX_ROWS,
-      }),
+    const where = { created_at: { gte: from, lte: to }, ...toolWhere, ...(actor ? { actor_id: actor } : {}) }
+    // A quote-only / hold-only filter is judged on each row's logged JSON, so it
+    // can't go in the query: read the tool's runs a page at a time until
+    // MAX_ROWS of them match or the range runs out (at most MAX_SCAN_PAGES pages).
+    const readLog = async () => {
+      if (onlyQuoteOnly === null) {
+        const page = await prisma.usageLog.findMany({ where, orderBy: { created_at: 'desc' }, take: MAX_ROWS })
+        return { logRows: page, truncated: page.length === MAX_ROWS }
+      }
+      const pageAt = (i: number) => prisma.usageLog.findMany({ where, orderBy: [{ created_at: 'desc' }, { id: 'desc' }], take: MAX_ROWS, skip: i * MAX_ROWS })
+      const kept: Awaited<ReturnType<typeof pageAt>> = []
+      for (let i = 0; ; i++) {
+        const page = await pageAt(i)
+        kept.push(...page.filter(r => isQuoteOnlyRun(r.tool, parse(r.result) as Record<string, unknown> | null, parse(r.inputs) as Record<string, unknown> | null) === onlyQuoteOnly))
+        if (kept.length >= MAX_ROWS) return { logRows: kept.slice(0, MAX_ROWS), truncated: true }
+        if (page.length < MAX_ROWS) return { logRows: kept, truncated: false }
+        if (i + 1 >= MAX_SCAN_PAGES) return { logRows: kept, truncated: true }
+      }
+    }
+    const [{ logRows, truncated }, users, clients, tokens] = await Promise.all([
+      readLog(),
       prisma.user.findMany({ select: { id: true, name: true } }),
       prisma.clientUser.findMany({ select: { id: true, company_name: true, username: true } }),
       prisma.mcpToken.findMany({ select: { id: true, label: true, user_id: true, user_type: true, created_at: true, revoked_at: true, last_used_at: true }, orderBy: { created_at: 'asc' } }),
@@ -50,7 +69,7 @@ export async function GET(req: NextRequest) {
       ...clients.map(c => [c.id, `${c.company_name} (${c.username})`] as [string, string]),
     ])
 
-    const rows: UsageRow[] = logRows.map(r => {
+    const allRows: UsageRow[] = logRows.map(r => {
       const inputs = parse(r.inputs)
       const parsed = parse(r.result)
       // A quote-only run reserved nothing. Rows logged before summarizeResult
@@ -66,6 +85,8 @@ export async function GET(req: NextRequest) {
       }
     })
 
+    const rows = allRows
+
     const count = (key: (r: UsageRow) => string) => {
       const m = new Map<string, number>()
       for (const r of rows) m.set(key(r), (m.get(key(r)) ?? 0) + 1)
@@ -73,7 +94,7 @@ export async function GET(req: NextRequest) {
     }
 
     return NextResponse.json({
-      from: from.toISOString(), to: to.toISOString(), truncated: logRows.length === MAX_ROWS,
+      from: from.toISOString(), to: to.toISOString(), truncated,
       rows,
       byTool: count(r => r.toolLabel),
       byPerson: count(r => r.actorName),

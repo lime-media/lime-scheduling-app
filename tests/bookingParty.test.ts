@@ -45,8 +45,8 @@ section('reviseParty: no opportunity, the booking recorded them')
 }
 
 section('reviseParty: older holds with neither')
-eq("the account the reconcile copied onto the holds", reviseParty({ opp: null, holds: [hold({ dailyRate: 1 }, { sfdc_account_id: ACCOUNT, client_name: 'Acme Corp' })], clientType: null }), { account: { id: ACCOUNT, name: 'Acme Corp' }, contact: null, brand: '' })
-eq('nothing recorded: asks for the account again', reviseParty({ opp: null, holds: [hold(null)], clientType: null }), { account: null, contact: null, brand: '' })
+eq("the account the reconcile copied onto the holds", reviseParty({ opp: null, holds: [hold({ dailyRate: 1 }, { sfdc_account_id: ACCOUNT, client_name: 'Acme Corp' })], clientType: null }), { account: { id: ACCOUNT, name: 'Acme Corp' }, contact: null, brand: '', leadSource: null, opportunityType: null })
+eq('nothing recorded: asks for the account again', reviseParty({ opp: null, holds: [hold(null)], clientType: null }), { account: null, contact: null, brand: '', leadSource: null, opportunityType: null })
 
 section('reviseParty: the opportunity wins where it has a value')
 {
@@ -66,4 +66,21 @@ section('reviseParty: the opportunity wins where it has a value')
 {
   const opp = { AccountId: '001000000000009AAA', Primary_Contact__c: null, Primary_Contact__r: null, Brand_Job_Name__c: null }
   eq("the recorded contact is never paired with a different account", reviseParty({ opp, holds: [hold({ [PARTY_KEY]: party })], clientType: null }).contact, null)
+}
+
+section('lead source and opportunity type: a revision is not asked again')
+{
+  const picked = bookingParty({ accountId: ACCOUNT, brand: '', leadSource: 'External Referral', opportunityType: 'New Client' })
+  const saved = JSON.stringify({ dailyRate: 1, [PARTY_KEY]: picked })
+  eq('recorded with the party', [picked.leadSource, picked.opportunityType], ['External Referral', 'New Client'])
+  eq('round-trips through the features JSON', partyOf(saved), picked)
+  const back = reviseParty({ opp: null, holds: [hold(JSON.parse(saved))], clientType: null })
+  eq('a booking with no opportunity reopens with them', [back.leadSource, back.opportunityType], ['External Referral', 'New Client'])
+  const withOpp = reviseParty({ opp: { AccountId: ACCOUNT }, holds: [hold(JSON.parse(saved))], clientType: null })
+  eq('with an opportunity too (sent back on save, so they carry forward)', [withOpp.leadSource, withOpp.opportunityType], ['External Referral', 'New Client'])
+  eq('none picked: none recorded', 'leadSource' in bookingParty({ accountId: ACCOUNT, brand: '', leadSource: null, opportunityType: '  ' }), false)
+  const older = reviseParty({ opp: null, holds: [hold({ [PARTY_KEY]: party })], clientType: null })
+  eq('older holds: blank, asked as before', [older.leadSource, older.opportunityType], [null, null])
+  const stale = partyOf(JSON.stringify({ [PARTY_KEY]: { accountId: ACCOUNT, brand: '', leadSource: 'Carrier Pigeon', opportunityType: 'Renewal' } }))
+  eq('a value no longer on the picklist is not brought back (it would be refused on save)', [stale?.leadSource, stale?.opportunityType], [undefined, undefined])
 }

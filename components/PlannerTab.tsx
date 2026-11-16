@@ -217,9 +217,11 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
           setClientType(booked ?? b.account.clientType ?? 'Agency')
         }
         // A lead source is asked for only if a new opportunity is made; never
-        // carry over one picked for an earlier quote's account.
-        setLeadSource('')
-        setOpportunityType('')
+        // carry over one picked for an earlier quote's account. What this
+        // booking was made with comes back (lib/bookingParty.ts), so a booking
+        // with no opportunity isn't asked again; older bookings start blank.
+        setLeadSource(typeof b.leadSource === 'string' ? b.leadSource : '')
+        setOpportunityType(typeof b.opportunityType === 'string' ? b.opportunityType : '')
         setContact(b.contact)
         setBrand(b.brand ?? '')
         setRows(b.rows.map((r: { market: string; startDate: string; endDate: string; trucks: number; daysPerWeek: number; hours: number }) =>
@@ -388,7 +390,7 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: keepsOpportunity ? undefined : leadSource, opportunityType: keepsOpportunity ? undefined : opportunityType, quoteOnly, brand, primaryContactId: contact.id, primaryContactName: contact.name, holdDays, holdUntil: revision && holdUntil && !quoteOnly ? holdUntil : undefined, holdUntilFrom: revision && holdUntil && !quoteOnly ? revision.heldUntil ?? undefined : undefined, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: revision ? leadSource || undefined : keepsOpportunity ? undefined : leadSource, opportunityType: revision ? opportunityType || undefined : keepsOpportunity ? undefined : opportunityType, quoteOnly, brand, primaryContactId: contact.id, primaryContactName: contact.name, holdDays, holdUntil: revision && holdUntil && !quoteOnly ? holdUntil : undefined, holdUntilFrom: revision && holdUntil && !quoteOnly ? revision.heldUntil ?? undefined : undefined, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
       })
       const data = await readJson(res)
       // The opportunity went Closed Lost after the booking was opened: ask now.

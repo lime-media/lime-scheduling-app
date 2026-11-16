@@ -23,12 +23,15 @@ export function FeatureToggle({
   cost,
   checked,
   onChange,
+  disabled = false,
 }: {
   label: string
   description: string
   cost: number
   checked: boolean
   onChange: (v: boolean) => void
+  /** Locked, e.g. while a booking is being sent. */
+  disabled?: boolean
 }) {
   return (
     <div className="flex items-center justify-between gap-4">
@@ -42,8 +45,9 @@ export function FeatureToggle({
           type="button"
           role="switch"
           aria-checked={checked}
+          disabled={disabled}
           onClick={() => onChange(!checked)}
-          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 ${
             checked ? 'bg-green-600' : 'bg-gray-200'
           }`}
         >

@@ -131,6 +131,8 @@ export function ClientMultiMarketQuote() {
   // An option or study changed on a quote: priced again at once, as the
   // one-market quote shows its total change (the server prices every market).
   const setFeature = (p: Partial<Features>) => {
+    // Locked while a quote or booking is in flight: what's shown is what was priced and booked.
+    if (busy) return
     const next = { ...features, ...p }
     setFeatures(next)
     if (quote) getQuote(quote.rows, next)
@@ -291,7 +293,7 @@ export function ClientMultiMarketQuote() {
                 </div>
               )}
 
-              {quote.fits && <Customize view={quote.fits} features={features} onChange={setFeature} />}
+              {quote.fits && <Customize view={quote.fits} features={features} onChange={setFeature} disabled={busy} />}
               {quote.fits ? (
                 <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
                   <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
@@ -353,18 +355,18 @@ const sum = (lines: Line[], f: (l: Line) => number) => lines.reduce((n, l) => n 
  * (app/client/ai/page.tsx). Each option's price is what it adds across every
  * market; a study covers the whole order. A change prices the order again.
  */
-function Customize({ view, features, onChange }: { view: View; features: Features; onChange: (p: Partial<Features>) => void }) {
+function Customize({ view, features, onChange, disabled }: { view: View; features: Features; onChange: (p: Partial<Features>) => void; disabled: boolean }) {
   const lines = view.lines
   const st = view.studies
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
       <h3 className="text-sm font-semibold text-gray-900">Customize features</h3>
       <FeatureToggle label="Shadow Fencing" description="Geo-targeted digital ads in every market"
-        cost={sum(lines, l => l.optionPrices.shadowFencing)} checked={features.shadowFencing} onChange={v => onChange({ shadowFencing: v })} />
+        cost={sum(lines, l => l.optionPrices.shadowFencing)} checked={features.shadowFencing} onChange={v => onChange({ shadowFencing: v })} disabled={disabled} />
       <FeatureToggle label="Smart Directional" description="GPS-triggered directional messaging"
-        cost={sum(lines, l => l.optionPrices.smartDirectional)} checked={features.smartDirectional} onChange={v => onChange({ smartDirectional: v })} />
+        cost={sum(lines, l => l.optionPrices.smartDirectional)} checked={features.smartDirectional} onChange={v => onChange({ smartDirectional: v })} disabled={disabled} />
       <FeatureToggle label="Device ID Passback" description="Audience device data for retargeting"
-        cost={sum(lines, l => l.optionPrices.deviceId)} checked={features.deviceId} onChange={v => onChange({ deviceId: v })} />
+        cost={sum(lines, l => l.optionPrices.deviceId)} checked={features.deviceId} onChange={v => onChange({ deviceId: v })} disabled={disabled} />
       <div className="pt-2 border-t border-gray-100">
         <div className="flex items-center justify-between mb-2">
           <div>
@@ -378,13 +380,15 @@ function Customize({ view, features, onChange }: { view: View; features: Feature
         <div className="grid grid-cols-2 gap-2">
           {STUDY_CHOICES.map(study => {
             const on = features.studies.includes(study)
+            const unpriced = on && !st.selected.includes(study)
             return (
-              <button key={study} type="button" disabled={!st.reachOk}
+              // A ticked study can always be unticked, even when the order falls short of the reach minimum.
+              <button key={study} type="button" disabled={disabled || (!st.reachOk && !on)}
                 onClick={() => onChange({ studies: on ? features.studies.filter(s => s !== study) : [...features.studies, study] })}
                 className={`text-left text-xs rounded-lg border px-3 py-2 transition-all ${on ? 'border-purple-300 bg-purple-50 text-purple-800 font-medium' : st.reachOk ? 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50' : 'border-gray-100 bg-gray-50 text-gray-400 cursor-not-allowed'}`}>
                 <span className="mr-1.5">{on ? '\u2713' : '\u25CB'}</span>
                 {STUDY_LABELS[study]}
-                <span className="block text-[10px] text-gray-500 font-normal">{study === 'sales_lift' ? 'Our team will quote it' : money(st.prices[study] ?? 0)}</span>
+                <span className="block text-[10px] text-gray-500 font-normal">{unpriced ? 'Not included: reach is under the minimum' : study === 'sales_lift' ? 'Our team will quote it' : money(st.prices[study] ?? 0)}</span>
               </button>
             )
           })}

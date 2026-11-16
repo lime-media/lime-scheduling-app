@@ -212,8 +212,9 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
     const createdBy = await clientHoldCreator()
     const f = p.req.features
     const tier = planTier(f, quote.studies.studies)
-    // The studies asked for, so a revision restores them (lib/bookings.ts bookedStudies).
-    const requested = f.studies?.length ? { [STUDIES_REQUESTED_KEY]: f.studies } : {}
+    // The studies booked, so a revision restores them (lib/bookings.ts bookedStudies).
+    // Only what was priced: a study asked for on an order short of the reach minimum isn't sold, so it isn't restored either.
+    const requested = quote.studies.studies.length ? { [STUDIES_REQUESTED_KEY]: quote.studies.studies } : {}
     const groupOf = new Map(quote.lines.map((l, i) => [l.id, `${groupPrefix}${i + 1}`]))
     const company = session.companyName
     const rows: Prisma.HoldCreateManyInput[] = stretches.map(({ truckNumber, stint, partner }) => {

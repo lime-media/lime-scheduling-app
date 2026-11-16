@@ -299,6 +299,13 @@ async function priceLines(
       rateOverrides: overrides,
       markupPct,
     })
+    // Every option's price, chosen or not, for a form to show beside its
+    // switch: the engine prices an option it isn't asked for at 0, so it's
+    // asked again with every option on (pure arithmetic, no lookups).
+    const all = features.smartDirectional && features.deviceId ? q : computeQuote({
+      truckCount: 1, days: truckDays, operatingHours: line.hours, marketSizeTierId: tiers.get(line.market) ?? 3,
+      includeSmartDirectional: true, includeDeviceId: true, rateOverrides: overrides, markupPct,
+    })
     const sf = features.shadowFencing ? q.better.shadowFencing : 0
     const sd = features.smartDirectional ? q.better.smartDirectional : 0
     const did = features.deviceId ? q.better.deviceId : 0
@@ -352,7 +359,7 @@ async function priceLines(
       estimatedImpressions: q.best.estimatedImpressions,
       marketSizeTier: q.input.marketSizeTier,
       studiesTotal: 0,
-      optionPrices: { shadowFencing: Math.round(q.better.shadowFencing), smartDirectional: Math.round(q.better.smartDirectional), deviceId: Math.round(q.better.deviceId) },
+      optionPrices: { shadowFencing: Math.round(all.better.shadowFencing), smartDirectional: Math.round(all.better.smartDirectional), deviceId: Math.round(all.better.deviceId) },
       studyMarket: line.standardMarket ?? line.market,
     }
   })

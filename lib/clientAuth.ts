@@ -50,8 +50,23 @@ export function liveClientSession(claims: ClientSession, now: ClientUserNow | nu
   }
 }
 
-/** The signed-in client, as their record stands now (liveClientSession), or null. */
-export async function getClientSession(req: NextRequest): Promise<ClientSession | null> {
+// One read per request: the usage log and the handler both ask.
+const perRequest = new WeakMap<NextRequest, Promise<ClientSession | null>>()
+
+/**
+ * The signed-in client, as their record stands now (liveClientSession), or
+ * null. Read once per request and shared by every caller of that request, so
+ * the usage log and the handler agree and the row is read once.
+ */
+export function getClientSession(req: NextRequest): Promise<ClientSession | null> {
+  const have = perRequest.get(req)
+  if (have) return have
+  const p = readClientSession(req)
+  perRequest.set(req, p)
+  return p
+}
+
+async function readClientSession(req: NextRequest): Promise<ClientSession | null> {
   const token = req.cookies.get(TOKEN_NAME)?.value
   const claims = token ? verify(token) : null
   if (!claims) return null

@@ -26,7 +26,6 @@ import {
   type StudyType,
 } from '@/lib/pricing'
 import { resolveRateOverrides } from '@/lib/pricing/resolvers'
-import { liveClientLinks } from '@/lib/clientLinks'
 import { reply, type CoreResult } from '@/lib/coreResult'
 
 export type ClientQuoteInput = {
@@ -85,7 +84,8 @@ export async function clientQuote(session: ClientSession, body: ClientQuoteInput
   // Brand Direct accounts are priced with the markup folded into every price,
   // at the default rate (clients cannot change it and never see it).
   // Read from the client's row, not the session's 30-day-old copy.
-  const { sfdcAccountId } = await liveClientLinks(session)
+  // Live: the session is the client's record as of this request (lib/clientAuth.ts).
+  const { sfdcAccountId } = session
   const accountInfo = sfdcAccountId && isSfdcConfigured()
     ? await getSfdcAccountInfo(sfdcAccountId).catch(() => null)
     : null

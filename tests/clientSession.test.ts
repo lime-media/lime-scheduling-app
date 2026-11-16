@@ -9,7 +9,7 @@
  */
 import { defer, eq, section } from './harness'
 import { readSession, signSession } from '@/lib/clientSessionToken'
-import { liveClientSession } from '@/lib/clientAuth'
+import { getClientSession, liveClientSession } from '@/lib/clientAuth'
 import { clientEmailRefusal, maskEmail } from '@/lib/clientEmail'
 import { checkOtp, MAX_ATTEMPTS, OtpError } from '@/lib/otp'
 import bcrypt from 'bcryptjs'
@@ -173,3 +173,12 @@ section('liveClientSession: staff changes reach a signed-in client without a new
   eq('a deleted client is signed out', liveClientSession(signed, null), null)
   eq('the record unreadable: the signed session stands (no lockout)', liveClientSession(signed, 'unreadable'), signed)
 }
+
+section('getClientSession: one read per request')
+defer((async () => {
+  // No cookie: null, and the same promise for every caller of the request.
+  const req = { cookies: { get: () => undefined } } as unknown as Parameters<typeof getClientSession>[0]
+  const a = getClientSession(req), b = getClientSession(req)
+  eq('the usage log and the handler share one read', a === b, true)
+  eq('no cookie: not signed in', await a, null)
+})())

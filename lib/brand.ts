@@ -44,18 +44,25 @@ function stripBrand(raw: string | null | undefined): string {
 
 /**
  * A brand limited to BRAND_MAX characters, cut at the last word boundary that
- * fits ("Acme Outdoor Holiday Spectacular …" never ends mid-word), with
- * separators left dangling at the end (" -", "/", ",", "&") dropped. Only a
- * single word longer than the limit is cut hard. Shorter text comes back as
+ * fits (a space, "-" or "/"), so "Acme Outdoor Holiday Spectacular …" never
+ * ends mid-word. Separators left standing alone at the end (" -", " /", " &",
+ * a trailing ",") are dropped; a "+" or "." that belongs to the last word
+ * ("Disney+", "Co.") is kept. When the word cut would keep less than half the
+ * limit (one long hyphenated or unbroken run after an early space), the first
+ * BRAND_MAX characters are kept instead, as before. Shorter text comes back as
  * is. Every place the brand is limited uses this, so the page, the saved
  * brand, the quote ref and Salesforce agree. Pure.
  */
 export function cutBrand(s: string): string {
   if (s.length <= BRAND_MAX) return s
-  // A space right after the limit means the first BRAND_MAX characters end on a whole word.
-  const at = s.slice(0, BRAND_MAX + 1).search(/\s\S*$/)
-  const words = at > 0 ? s.slice(0, at).replace(/[\s,/&+.:;|–—-]+$/, '') : ''
-  return words || s.slice(0, BRAND_MAX).trim()
+  // A boundary right after the limit means the first BRAND_MAX characters end on a whole word.
+  const head = s.slice(0, BRAND_MAX + 1)
+  let at = -1
+  for (let i = head.length - 1; i > 0; i--) if (/[\s/-]/.test(head[i])) { at = i; break }
+  const words = at > 0
+    ? s.slice(0, at).replace(/(?:\s+[,/&+:;|–—-]+)+\s*$/, '').replace(/[\s,;:/|–—-]+$/, '')
+    : ''
+  return words.length >= BRAND_MAX / 2 ? words : s.slice(0, BRAND_MAX).trim()
 }
 
 /**

@@ -152,6 +152,8 @@ export type LineQuote = {
   marketSizeTier: { id: number; label: string; dailyA18: number }
   /** The order's lift studies are carried on its first market (one booking total); 0 elsewhere. */
   studiesTotal: number
+  /** What each option would cost on this market, chosen or not (so a form can show its price before it's picked). */
+  optionPrices: { shadowFencing: number; smartDirectional: number; deviceId: number }
   /** The market a study counts it as: its standard market (lib/pricing/studies.ts uniqueMarketCount). */
   studyMarket: string
 }
@@ -350,6 +352,7 @@ async function priceLines(
       estimatedImpressions: q.best.estimatedImpressions,
       marketSizeTier: q.input.marketSizeTier,
       studiesTotal: 0,
+      optionPrices: { shadowFencing: Math.round(q.better.shadowFencing), smartDirectional: Math.round(q.better.smartDirectional), deviceId: Math.round(q.better.deviceId) },
       studyMarket: line.standardMarket ?? line.market,
     }
   })

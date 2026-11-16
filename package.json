@@ -3,10 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node scripts/keeper-env.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/keeper-env.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "keeper:env": "node scripts/keeper-env.mjs",
+    "keeper:init": "node scripts/keeper-init.mjs",
     "postinstall": "prisma generate",
     "db:generate": "prisma generate",
     "db:seed": "ts-node --compiler-options '{\"module\":\"CommonJS\"}' prisma/seed.ts",
@@ -16,6 +20,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.137.0",
     "@auth/prisma-adapter": "^2.11.1",
+    "@keeper-security/secrets-manager-core": "^17.6.0",
     "@prisma/client": "^5.22.0",
     "@vercel/functions": "^3.9.11",
     "bcryptjs": "^3.0.3",

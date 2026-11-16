@@ -316,7 +316,7 @@ async function createOpportunityOnce(input: CreateOpportunityInput): Promise<Sfd
   if (input.clientType) body.Client_Type__c = input.clientType
   if (input.leadSource) body.LeadSource = input.leadSource
   if (input.opportunityType) body.Type = input.opportunityType
-  if (input.brand) body.Brand_Job_Name__c = input.brand.slice(0, 50)
+  if (input.brand) body.Brand_Job_Name__c = cutBrand(input.brand)
   if (input.primaryContactId) body.Primary_Contact__c = input.primaryContactId
   if (input.holdStart) body.LED_Hold_Start__c = input.holdStart
   if (input.holdStop) body.LED_Hold_Stop__c = input.holdStop
@@ -547,6 +547,7 @@ export function isSfdcConfigured(): boolean {
 
 export { soqlString, SAFE_EMAIL } from './soql'
 import { soqlString } from './soql'
+import { cutBrand } from './brand'
 import { SAFE_EMAIL } from './soql'
 
 const ownerCache = new Map<string, { id: string | null; at: number }>()

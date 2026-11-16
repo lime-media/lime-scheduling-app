@@ -8,7 +8,7 @@ import { prisma } from '@/lib/prisma'
 import { getMarketCoords, resolveMarketInput, type MarketMatch } from '@/lib/marketCoordinates'
 import { marketSizeTierFromDmaCode, NON_DMA_MARKET_TIER, type RateOverrides } from './config'
 import { loadStandardMarketCoords, normalizeMarketKey, titleCaseMarket } from '@/lib/marketBounds'
-import { findPlaces, placeByCity, placeCoords, withStateComma } from '@/lib/geo/places'
+import { findPlaces, placeCoords, withStateComma } from '@/lib/geo/places'
 import { dmaForPoint } from '@/lib/pricing/dmaArea'
 import { TOP_DMAS } from '@/lib/pricing/topDmas'
 import type { ClientSession } from '@/lib/clientAuth'
@@ -294,12 +294,10 @@ export async function resolveCampaignCoords(market: string): Promise<CampaignCoo
   // A state written in full or followed by a ZIP ("Canton, Texas",
   // "Dallas, PA 18612") is looked up by its city and state code.
   // A state written another way ("Dallas, Tex", "Kansas City, MO-KS") is
-  // looked up by its code; a city with no state, or a region after the comma
-  // ("Ames", "Allentown, Lehigh Valley"), only where the city's name is unique.
+  // looked up by its code too.
   const named = marketCityState(normalizeMarketKey(withStateComma(market)))
   const place = placeCoords(market) ??
-    (named.city && named.state && stateCode(named.state) ? placeCoords(named.city, named.state) : null) ??
-    (named.city && !named.state ? placeByCity(named.city) : null)
+    (named.city && named.state && stateCode(named.state) ? placeCoords(named.city, named.state) : null)
   if (place) return { lat: place.lat, lng: place.lng, source: 'us_place' }
 
   // Last, a top-50 DMA's own name ("Dallas-Fort Worth, TX"), matched strictly:

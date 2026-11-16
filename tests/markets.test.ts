@@ -11,7 +11,7 @@
 import { defer, eq, section } from './harness'
 import { matchMarketKey, titleCaseMarket, normalizeMarketKey } from '@/lib/marketBounds'
 import { matchTopDma, resolveMarketSizeTierId, standardMarketCoords, marketCityState } from '@/lib/pricing/resolvers'
-import { placeByCity, placeCoords } from '@/lib/geo/places'
+import { placeCoords } from '@/lib/geo/places'
 import { TOP_DMAS } from '@/lib/pricing/topDmas'
 import { validateEmailList } from '@/lib/appSettings'
 import { marketSizeTierFromDmaCode, NON_DMA_MARKET_TIER, MARKET_SIZE_TIERS } from '@/lib/pricing/config'
@@ -125,10 +125,6 @@ eq('a region finds the city\'s one entry', standardMarketCoords('Allentown, Lehi
 eq('a region never guesses between two states\' entries', standardMarketCoords('Springfield, Metro Area', new Map([['springfield, il', 'IL'], ['springfield, mo', 'MO']])), null)
 eq('a city alone still takes the first of two entries, as before', standardMarketCoords('Springfield', new Map([['springfield, il', 'IL'], ['springfield, mo', 'MO']])), 'IL')
 eq('a ZIP alone after the comma is still no state, not a region', marketCityState('allentown, 18101'), { city: 'allentown', state: undefined })
-// Places with no state: only a city name that's unique in the US.
-eq('a unique city is placed', placeByCity('Kalamazoo')?.name, 'Kalamazoo, MI')
-eq('a city in several states is not placed', placeByCity('Springfield'), null)
-eq('an unknown city is not placed', placeByCity('Nowheresville'), null)
 
 section('top-50 DMA matching (market size tier)')
 eq('exact city + state', matchTopDma('Chicago, IL', TOP_DMAS)?.dma_code, 'DMA-602')

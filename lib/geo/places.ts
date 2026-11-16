@@ -118,13 +118,3 @@ export function placeCoords(market: string, state?: string | null): Place | null
   const hit = PLACES[withState] ?? PLACES[m]
   return hit ? toPlace(hit) : placeForZip(market)
 }
-
-/**
- * The one place with this city name ("Ames" → Ames, IA), or null when no
- * place or several share it ("Springfield"): never a guess between states.
- * For text that names no state. Pure.
- */
-export function placeByCity(city: string): Place | null {
-  const keys = cityIndex().get(key(city)) ?? []
-  return keys.length === 1 ? toPlace(PLACES[keys[0]]) : null
-}

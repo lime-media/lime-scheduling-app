@@ -3,7 +3,8 @@
  *
  * LED opportunities created in Salesforce in the range (default: the last 8
  * Central weeks), split into made in the app and made directly in Salesforce,
- * week by week and by who made the direct ones (lib/opportunityOrigins.ts).
+ * week by week and by who made the direct ones, both with and without the
+ * Salesforce bots' opportunities (lib/opportunityOrigins.ts originViews).
  * Any signed-in staff user.
  */
 

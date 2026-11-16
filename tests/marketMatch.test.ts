@@ -2,8 +2,8 @@
  * The one market matcher (lib/marketMatch.ts): obvious matches default,
  * less obvious ones are picked from candidates, and nothing is added to the list.
  */
-import { eq, section } from './harness'
-import { matchMarket, readMarketText, unattendedChoice, NEAREST_OFFERED } from '@/lib/marketMatch'
+import { defer, eq, section } from './harness'
+import { matchMarket, marketListWith, readMarketText, unattendedChoice, NEAREST_OFFERED, LIST_REFRESH_MS } from '@/lib/marketMatch'
 import { readMatchQuery } from '@/lib/marketMatchQuery'
 import type { StandardMarket } from '@/lib/standardMarkets'
 
@@ -24,6 +24,7 @@ const PLACES: Record<string, { lat: number; lng: number }> = {
   'plano, tx': { lat: 32.9, lng: -96.7 },          // inside Dallas's area
   'dallas, pa': { lat: 41.33, lng: -75.96 },        // no market area; nearest offered
   'overland park, ks': { lat: 39.1, lng: -94.6 },   // inside both Kansas City areas
+  'frisco, tx': { lat: 33.15, lng: -96.82 },        // inside Dallas's area
 }
 const locate = (text: string, state?: string) => {
   const k = text.toLowerCase().replace(/\s*,\s*/g, ', ').trim()
@@ -72,6 +73,41 @@ eq('a whole lowercase code after the comma is a state', readMarketText('dallas, 
 eq('a country after the state', readMarketText('Dallas, TX, USA').state, 'tx')
 eq('a ZIP alone names no state', readMarketText('Allentown, 18101'), { city: 'allentown' })
 eq('dots dropped', readMarketText('St. Louis, Mo.').state, 'mo')
+
+section('marketMatch: county, region and place names (review of #202)')
+eq('a county named after a state is not that state', readMarketText('Hagerstown, Washington County'), { city: 'hagerstown', qualifier: 'region' })
+eq('a state after the county is read', readMarketText('Media, Delaware County PA').state, 'pa')
+eq('"Indiana County PA" is Pennsylvania', readMarketText('Indiana, Indiana County PA').state, 'pa')
+eq('"Del Mar" is not Delaware: picked, never narrowed to DE', [readMarketText('San Diego, Del Mar').state, got('San Diego, Del Mar')[0]], [undefined, false])
+eq('"Mont Belvieu" is not Montana', readMarketText('Houston, Mont Belvieu').state, undefined)
+eq('an abbreviation then an area word is a state', readMarketText('Dallas, Tex area').state, 'tx')
+eq('county text with the form\'s state: the town is still placed and offered', got('Frisco, Collin County', 'TX'), [false, null, ['DAL'], 'area'])
+eq('county text with no state and no list entry: nothing to place it by', got('Frisco, Collin County'), [false, null, [], 'none'])
+
+section('marketMatch: the shared list')
+defer((async () => {
+  const box1 = [m('DAL', 'Dallas, TX', box(32.78, -96.8))]
+  const noBoxes = [m('DAL', 'Dallas, TX', null)]
+  const s = { cached: null, loading: null } as Parameters<typeof marketListWith>[1]
+  let calls = 0
+  const first = await marketListWith(async () => { calls++; return box1 }, s, 0)
+  eq('the first read is waited on', [first[0].uid, calls], ['DAL', 1])
+  await marketListWith(async () => { calls++; return box1 }, s, Date.now())
+  eq('within the window: no read', calls, 1)
+  let release!: (l: typeof box1) => void
+  const slow = new Promise<typeof box1>(r => { release = r })
+  const stale = await marketListWith(() => { calls++; return slow }, s, Date.now() + LIST_REFRESH_MS + 1)
+  eq('stale: the cached list at once, not held up by the read', [stale === box1, calls], [true, 2])
+  release(noBoxes)
+  await slow; await new Promise(r => setTimeout(r, 0))
+  eq('a read with no areas keeps the last list that had them', s.cached!.list === box1, true)
+  const failing = await marketListWith(async () => { throw new Error('db down') }, s, Date.now() + 2 * LIST_REFRESH_MS)
+  await new Promise(r => setTimeout(r, 0))
+  eq('a failed read keeps the last list', [failing === box1, s.cached!.list === box1], [true, true])
+  const empty = { cached: null, loading: null } as Parameters<typeof marketListWith>[1]
+  const err = await marketListWith(async () => { throw new Error('db down') }, empty, 0).catch(e => e.message)
+  eq('no list yet and the read fails: it throws', err, 'db down')
+})())
 
 section('marketMatch: the match routes\' query')
 eq('market text and a state', readMatchQuery(new URLSearchParams('q=Dallas&state=tx')), { text: 'Dallas', state: 'tx' })

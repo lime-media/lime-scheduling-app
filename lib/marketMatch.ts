@@ -64,20 +64,43 @@ export function readMarketText(raw: string): MarketText {
   // The whole text after the comma is a state, any case ("tex", "co", "MO-KS").
   const whole = stateFromText(head)
   if (whole) return lower(whole)
-  // A state name among the words, longest first ("north texas", "lehigh valley pa").
+  // County text: the words up to the county word name the county, never a
+  // state ("Delaware County" isn't Delaware); a state may follow it
+  // ("Media, Delaware County PA").
+  const ci = words.findIndex(w => COUNTY.test(w))
+  if (ci >= 0) {
+    const s = statedIn(words.slice(ci + 1))
+    return s ? lower(s) : { city, qualifier: 'region' }
+  }
+  const s = statedIn(words)
+  if (s) return lower(s)
+  // An abbreviation first, then only an area word ("Tex area"); never the
+  // start of a place name ("Del Mar", "Mont Belvieu"). A two-letter one only
+  // in capitals ("La Jolla" isn't Louisiana).
+  if (words.slice(1).every(w => AREA.test(w)) && (words[0].length > 2 || /^[A-Z]{2}$/.test(words[0])) && stateFromText(words[0])) {
+    return lower(stateFromText(words[0]))
+  }
+  return { city, qualifier: mayBeState(words[0]) ? 'unknown_state' : 'region' }
+}
+
+const AREA = /^(area|metro|metropolitan|region|market)$/i
+
+/**
+ * A state the words name: a trailing two-letter code in capitals ("Lehigh
+ * Valley PA"; not "Co"), else a full state name among them, longest first
+ * ("North Texas", "New York"). Abbreviations don't count here. '' when none.
+ */
+function statedIn(words: string[]): string {
+  const last = words[words.length - 1]
+  if (last && /^[A-Z]{2}$/.test(last) && !COUNTY.test(last) && stateCode(last)) return stateCode(last)
   for (let n = 3; n >= 1; n--) {
     for (let i = 0; i + n <= words.length; i++) {
       const part = words.slice(i, i + n).join(' ')
       const code = n > 1 || part.length > 2 ? stateCode(part) : ''
-      if (code) return lower(code)
+      if (code) return code
     }
   }
-  const last = words[words.length - 1]
-  if (words.length > 1 && /^[A-Z]{2}$/.test(last) && !COUNTY.test(last) && stateCode(last)) return lower(stateCode(last))
-  if (words.some(w => COUNTY.test(w))) return { city, qualifier: 'region' }
-  // Its first word, when it's a state ("Tex area"); a two-letter one only in capitals ("La Jolla" isn't Louisiana).
-  if ((words[0].length > 2 || /^[A-Z]{2}$/.test(words[0])) && stateFromText(words[0])) return lower(stateFromText(words[0]))
-  return { city, qualifier: mayBeState(words[0]) ? 'unknown_state' : 'region' }
+  return ''
 }
 
 type Entry = { m: StandardMarket; city: string; state?: string; choice: MarketChoice }
@@ -135,11 +158,16 @@ export function matchMarket(
   if (exact.length === 1) return pick(exact, 'name')
 
   const parsed = readMarketText(text)
-  const st = parsed.state ?? (parsed.qualifier ? undefined : given)
+  // A region keeps the form's state (it narrows what's offered and places the
+  // town); text that may be a misspelled state doesn't trust it.
+  const st = parsed.state ?? (parsed.qualifier === 'unknown_state' ? undefined : given)
   const sameCity = all.filter(e => e.city === parsed.city).sort(byName)
   if (parsed.qualifier) {
-    // Region or unreadable state: never obvious. Its city's entries to pick from.
-    if (sameCity.length) return offer(sameCity, 'city')
+    // Region or unreadable state: never obvious. Its city's entries to pick
+    // from, in the form's state when it has any there.
+    const inState = st ? sameCity.filter(e => e.state === st) : []
+    const offered = inState.length ? inState : sameCity
+    if (offered.length) return offer(offered, 'city')
   } else if (st) {
     // A stated state narrows; it never broadens to another state's city.
     const inState = sameCity.filter(e => e.state === st)
@@ -177,30 +205,54 @@ export function unattendedChoice(m: MarketMatch): MarketChoice | null {
 /** How long the list is reused before it's read again, so an entry LED adds is used within minutes. */
 export const LIST_REFRESH_MS = 10 * 60 * 1000
 
-let cached: { at: number; list: StandardMarket[] } | null = null
-let loading: Promise<StandardMarket[]> | null = null
+/** How soon a list read with no market areas is read again (the bounds check may have failed). */
+export const NO_AREAS_RETRY_MS = 60 * 1000
+
+type ListState = { cached: { at: number; list: StandardMarket[] } | null; loading: Promise<StandardMarket[]> | null }
+const state: ListState = { cached: null, loading: null }
+
+const hasAreas = (list: readonly StandardMarket[]) => list.some(m => m.box)
 
 /**
- * The market list, read at most every LIST_REFRESH_MS. A failed read keeps
- * the last good list (and throws only when there has never been one), so a
- * database blip never empties matching.
+ * The market list, read at most every LIST_REFRESH_MS. Once there is a list,
+ * a stale one is returned at once and re-read in the background, so a slow or
+ * unreachable database never holds up matching. A failed read, or one that
+ * comes back with no market areas when the last one had them, keeps the last
+ * good list. A list with no areas is read again within a minute. Only the
+ * first read is waited on (and throws if it fails).
  */
-export async function marketList(now = Date.now()): Promise<StandardMarket[]> {
-  if (cached && now - cached.at < LIST_REFRESH_MS) return cached.list
-  if (!loading) {
-    loading = loadStandardMarkets()
-      .then(list => { cached = { at: Date.now(), list }; return list })
-      .catch(err => {
-        if (cached) {
-          console.error('[marketMatch] market list read failed; using the last one:', err)
-          cached = { at: Date.now(), list: cached.list }
-          return cached.list
+export function marketListWith(load: () => Promise<StandardMarket[]>, s: ListState, now = Date.now()): Promise<StandardMarket[]> {
+  const fresh = s.cached && now - s.cached.at < (hasAreas(s.cached.list) ? LIST_REFRESH_MS : NO_AREAS_RETRY_MS)
+  if (s.cached && fresh) return Promise.resolve(s.cached.list)
+  if (!s.loading) {
+    s.loading = load()
+      .then(list => {
+        if (s.cached && hasAreas(s.cached.list) && !hasAreas(list)) {
+          console.error('[marketMatch] the market list came back with no areas; keeping the last one')
+          s.cached = { at: Date.now(), list: s.cached.list }
+        } else {
+          s.cached = { at: Date.now(), list }
         }
-        throw err
+        return s.cached.list
       })
-      .finally(() => { loading = null })
+      .catch(err => {
+        if (!s.cached) throw err
+        console.error('[marketMatch] market list read failed; using the last one:', err)
+        s.cached = { at: Date.now(), list: s.cached.list }
+        return s.cached.list
+      })
+      .finally(() => { s.loading = null })
   }
-  return loading
+  if (s.cached) {
+    s.loading.catch(() => { /* reported above; the cached list stands */ })
+    return Promise.resolve(s.cached.list)
+  }
+  return s.loading
+}
+
+/** The shared market list (marketListWith over the database). */
+export function marketList(): Promise<StandardMarket[]> {
+  return marketListWith(loadStandardMarkets, state)
 }
 
 /** Market text against the current list. Throws only when the list has never been read. */

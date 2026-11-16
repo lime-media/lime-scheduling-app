@@ -15,12 +15,24 @@ const API_VERSION        = 'v61.0'
 // ---------------------------------------------------------------------------
 
 let cachedToken: { accessToken: string; instanceUrl: string; expiresAt: number } | null = null
+// One sign-in at a time: concurrent callers share it.
+let signingIn: Promise<{ accessToken: string; instanceUrl: string }> | null = null
+const SIGN_IN_TIMEOUT_MS = 10_000
+// After a failed sign-in, record links (salesforceInstanceUrl) skip Salesforce
+// for a while, so an outage or bad credentials cost a page load one attempt per
+// window. Bookings and syncs still try every time.
+const LINK_FAILURE_COOLDOWN_MS = 60_000
+let linksFailedUntil = 0
 
 async function getAccessToken(): Promise<{ accessToken: string; instanceUrl: string }> {
   if (cachedToken && cachedToken.expiresAt > Date.now()) {
     return { accessToken: cachedToken.accessToken, instanceUrl: cachedToken.instanceUrl }
   }
+  if (!signingIn) signingIn = signIn().finally(() => { signingIn = null })
+  return signingIn
+}
 
+async function signIn(): Promise<{ accessToken: string; instanceUrl: string }> {
   if (!SFDC_CLIENT_ID || !SFDC_CLIENT_SECRET) {
     throw new Error('SFDC_CLIENT_ID and SFDC_CLIENT_SECRET must be set')
   }
@@ -36,6 +48,7 @@ async function getAccessToken(): Promise<{ accessToken: string; instanceUrl: str
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: params.toString(),
     cache: 'no-store',
+    signal: AbortSignal.timeout(SIGN_IN_TIMEOUT_MS),
   })
 
   const data = await res.json()
@@ -51,6 +64,21 @@ async function getAccessToken(): Promise<{ accessToken: string; instanceUrl: str
   }
 
   return { accessToken: cachedToken.accessToken, instanceUrl: cachedToken.instanceUrl }
+}
+
+/**
+ * The org's instance URL (e.g. for record links on staff pages), from the
+ * cached connection; null when Salesforce isn't configured or can't be reached.
+ * Never the token.
+ */
+export async function salesforceInstanceUrl(): Promise<string | null> {
+  if (linksFailedUntil > Date.now()) return null
+  try {
+    return (await getAccessToken()).instanceUrl || null
+  } catch {
+    linksFailedUntil = Date.now() + LINK_FAILURE_COOLDOWN_MS
+    return null
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -543,20 +571,22 @@ export async function findSfdcUserIdByEmail(email: string | null | undefined): P
 }
 
 /** An account's owner and client type, for opportunity ownership and Brand Direct pricing. */
-/**
- * Whether `contactId` is a Contact on `accountId` — the server's check of the
- * primary contact a page sends, so an opportunity never points at someone
- * else's contact. False when it is not; throws when Salesforce cannot be read.
- */
 /** A Salesforce Contact id (prefix 003, 15 or 18 characters). Pure. */
 export const isContactId = (id: unknown): id is string => typeof id === 'string' && /^003[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/.test(id)
 
-export async function isContactOfAccount(contactId: string, accountId: string): Promise<boolean> {
-  if (!isContactId(contactId)) return false
-  const rows = await sfdcQuery<{ Id: string }>(
-    `SELECT Id FROM Contact WHERE Id = '${soqlString(contactId)}' AND AccountId = '${soqlString(accountId)}' LIMIT 1`,
+/**
+ * `contactId` as a Contact on `accountId` (its name, email and title) — the
+ * server's check of the primary contact a page sends, so an opportunity never
+ * points at someone else's contact. Null when it is not; throws when
+ * Salesforce cannot be read.
+ */
+export async function contactOfAccount(contactId: string, accountId: string): Promise<{ name: string; email: string | null; title: string | null } | null> {
+  if (!isContactId(contactId)) return null
+  const rows = await sfdcQuery<{ Id: string; Name: string | null; Email: string | null; Title: string | null }>(
+    `SELECT Id, Name, Email, Title FROM Contact WHERE Id = '${soqlString(contactId)}' AND AccountId = '${soqlString(accountId)}' LIMIT 1`,
   )
-  return rows.length === 1
+  const c = rows[0]
+  return c ? { name: c.Name ?? c.Id, email: c.Email ?? null, title: c.Title ?? null } : null
 }
 
 /**
@@ -569,12 +599,14 @@ export async function isContactOfAccount(contactId: string, accountId: string): 
  *   is what keeps the truck from being sold twice, and the rep is told.
  * Salesforce not configured (local dev): neither.
  */
-export async function checkPrimaryContact(contactId: unknown, accountId: string): Promise<{ refusal: string | null; warning: string | null }> {
+export async function checkPrimaryContact(contactId: unknown, accountId: string): Promise<{ refusal: string | null; warning: string | null; contact?: { name: string; email: string | null; title: string | null } }> {
   if (!isContactId(contactId)) return { refusal: 'Choose the primary contact for this opportunity.', warning: null }
   if (!isSfdcConfigured()) return { refusal: null, warning: null }
   try {
-    return (await isContactOfAccount(contactId, accountId))
-      ? { refusal: null, warning: null }
+    // `contact`: its name as Salesforce has it, recorded on the booking (lib/bookingParty.ts).
+    const contact = await contactOfAccount(contactId, accountId)
+    return contact
+      ? { refusal: null, warning: null, contact }
       : { refusal: 'That contact is not on the selected Salesforce account. Choose the primary contact again.', warning: null }
   } catch (err) {
     console.error('[sfdc] primary contact check failed:', err)

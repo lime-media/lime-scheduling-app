@@ -13,14 +13,15 @@ import type { StaffQuoteInput } from '@/lib/staffQuote'
 import { DEFAULT_HOLD_DAYS } from '@/lib/holdExpiry'
 import { openStage } from '@/lib/sfdcStages'
 import { leadSourceOf } from '@/lib/sfdcLeadSource'
+import { opportunityTypeOf } from '@/lib/sfdcOpportunityType'
 
 /**
  * What a booking writes beyond the price: the hold's client and the
- * opportunity's contact, brand, stage and lead source, and how long the
+ * opportunity's contact, brand, stage, lead source and type, and how long the
  * trucks are held.
  * The rep confirms these with the quote, so the ref covers them too.
  */
-export type BookingTerms = { sfdc_account_name?: string; primary_contact_id?: string; brand?: string; hold_days?: number; stage?: string; lead_source?: string }
+export type BookingTerms = { sfdc_account_name?: string; primary_contact_id?: string; brand?: string; hold_days?: number; stage?: string; lead_source?: string; opportunity_type?: string }
 
 export function quoteRef(q: StaffQuoteInput, total: number, terms: BookingTerms = {}, secret = process.env.NEXTAUTH_SECRET ?? 'quote-ref'): string {
   const studies = (q.studies ?? []).map(s => s.trim().toLowerCase()).filter(s => (VALID_STUDIES as readonly string[]).includes(s)).sort()
@@ -31,6 +32,8 @@ export function quoteRef(q: StaffQuoteInput, total: number, terms: BookingTerms 
     Math.round(total * 100),
     terms.sfdc_account_name?.trim() || null, terms.primary_contact_id?.trim() || null, terms.brand?.trim() || null,
     terms.hold_days ?? DEFAULT_HOLD_DAYS, openStage(terms.stage), leadSourceOf(terms.lead_source),
+    // Left out (the booking then uses the account's suggestion), it adds nothing.
+    ...(opportunityTypeOf(terms.opportunity_type) ? [opportunityTypeOf(terms.opportunity_type)] : []),
   ])
   return `Q-${createHmac('sha256', secret).update(payload).digest('hex').slice(0, 8).toUpperCase()}`
 }

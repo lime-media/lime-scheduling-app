@@ -11,7 +11,8 @@
  */
 
 import { useEffect } from 'react'
-import { DEFAULT_HOLD_DAYS, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, availableHoldDays, bookingHoldExpiry } from '@/lib/holdExpiry'
+import { DEFAULT_HOLD_DAYS, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START, availableHoldDays, bookingHoldExpiry, lastExpiryDate, reviseHoldExpiry } from '@/lib/holdExpiry'
+import { centralDate } from '@/lib/dateOnly'
 
 export { DEFAULT_HOLD_DAYS }
 
@@ -53,10 +54,58 @@ export function HoldLength({ days, onChange, startDates }: {
             <span className="text-amber-700"> · cut short: a booking is held until {STAFF_MIN_DAYS_BEFORE_START} days before its first market starts</span>
           )}
           {lapse.atMinimum && (
-            <span className="text-amber-700"> · the 24-hour minimum: the first market starts too soon for a longer hold</span>
+            <span className="text-amber-700"> · the 24-hour minimum: a hold always runs at least a day</span>
           )}
         </span>
       )}
+    </div>
+  )
+}
+
+/**
+ * A revision's expiry: the date the booking is held until, opened on its
+ * current expiry. Left alone, the revision keeps that expiry; changed, it
+ * holds to the end of the new date. Shows the result from the server's rule
+ * (lib/holdExpiry.ts reviseHoldExpiry), including a refusal or the cap when
+ * the revised dates start sooner.
+ */
+export function HoldUntil({ date, onChange, heldUntil, startDates, result }: {
+  /** YYYY-MM-DD, Central. */
+  date: string
+  onChange: (date: string) => void
+  /** The booking's current expiry (ISO). */
+  heldUntil: string
+  /** The booking's start dates, YYYY-MM-DD. A booking has one expiry, capped by the earliest of them. */
+  startDates: string[]
+  /** reviseHoldExpiry for these dates (the caller also gates the button on it), or null with no start dates. */
+  result: ReturnType<typeof reviseHoldExpiry> | null
+}) {
+  const starts = startDates.filter(Boolean)
+  const now = new Date()
+  const held = new Date(heldUntil)
+  const unchanged = date === centralDate(held)
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-gray-700">
+      <label htmlFor="hold-until" className="font-medium">Hold the trucks until</label>
+      <input id="hold-until" type="date" value={date} onChange={e => e.target.value && onChange(e.target.value)}
+        min={centralDate(now)} max={starts.length ? lastExpiryDate([...starts].sort()[0], now, STAFF_MIN_DAYS_BEFORE_START) : undefined}
+        className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500" />
+      {!unchanged && (
+        <button type="button" onClick={() => onChange(centralDate(held))} className="text-xs text-blue-700 underline">keep the current expiry</button>
+      )}
+      {result && ('error' in result
+        ? <span className="text-xs text-red-700">{result.error}</span>
+        : (
+          <span className="text-xs text-gray-500">
+            lapses {fmt.format(result.expiresAt)}{unchanged && !result.cappedByStart && !result.atMinimum ? ' (its current expiry)' : ''}
+            {result.cappedByStart && (
+              <span className="text-amber-700"> · cut short: a booking is held until {STAFF_MIN_DAYS_BEFORE_START} days before its first market starts</span>
+            )}
+            {result.atMinimum && (
+              <span className="text-amber-700"> · the 24-hour minimum: a hold always runs at least a day</span>
+            )}
+          </span>
+        ))}
     </div>
   )
 }

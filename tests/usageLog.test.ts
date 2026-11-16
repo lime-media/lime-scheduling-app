@@ -31,6 +31,13 @@ eq('not enough trucks is not feasible', outcomeFor(200, { insufficient: true }),
 eq('4xx is refused', outcomeFor(409, { error: 'x' }), 'refused')
 eq('review: ok:false on a 200 is not read as "not feasible"', outcomeFor(200, { ok: false }), 'success')
 eq('5xx is an error', outcomeFor(502, null), 'error')
+eq('a quote-only log whose Salesforce write failed is an error', outcomeFor(200, { ok: true, quoteOnly: true, sfdcFailure: 'Salesforce rejected the opportunity. Create the opportunity by hand.' }), 'error')
+eq('a quote-only log on UAT (Salesforce not asked: no sfdcFailure) is a success', outcomeFor(200, { ok: true, quoteOnly: true, sfdcFailure: null }), 'success')
+eq('a quote-only log that made its opportunity is a success', outcomeFor(200, { ok: true, quoteOnly: true, sfdcOpportunityId: '006A' }), 'success')
+eq('real holds whose Salesforce write failed stay a success (the holds were placed)', outcomeFor(200, { ok: true, created: 2, sfdcFailure: 'Salesforce could not be reached; the holds are placed.' }), 'success')
+eq('a blank sfdcFailure is not a failure', outcomeFor(200, { ok: true, quoteOnly: true, sfdcFailure: '  ' }), 'success')
+eq('the reason is kept on a quote-only run', summarizeResult({ quoteOnly: true, sfdcFailure: 'Salesforce rejected the opportunity.' }).sfdc_failure, 'Salesforce rejected the opportunity.')
+eq('a real hold does not carry sfdc_failure in the summary', summarizeResult({ created: 1, sfdcFailure: 'x' }).sfdc_failure, undefined)
 
 section('usage page: one-line descriptions')
 eq('a single-market quote', describeInputs({ market: 'Ames, IA', start_date: '2026-10-07', end_date: '2026-10-11', truck_count: 2, sfdc_account_name: 'Acme', brand: 'Nike' }), 'Ames, IA · Oct 7–11 · 2 trucks · Acme · Nike')

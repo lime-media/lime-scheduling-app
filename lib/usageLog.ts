@@ -109,6 +109,8 @@ export function summarizeResult(json: unknown, replyChars = 300): Record<string,
     insufficient: j.insufficient === true ? true : undefined,
     // Logged a quote and reserved nothing: Usage labels it as a quote, not a hold (lib/usageFormat.ts runLabel).
     quote_only: j.quoteOnly === true ? true : undefined,
+    // Why a quote-only log's opportunity wasn't made (the run's whole purpose): see outcomeFor.
+    sfdc_failure: j.quoteOnly === true ? str(j.sfdcFailure) : undefined,
     error: str(j.error) ?? str(j.message),
   }
   return Object.fromEntries(Object.entries(out).filter(([, v]) => v !== undefined))
@@ -120,6 +122,11 @@ export function outcomeFor(status: number, json: unknown): Outcome {
   if (status >= 400) return 'refused'
   const j = (json ?? {}) as Record<string, unknown>
   if (j.insufficient === true) return 'not_feasible'
+  // A quote-only log reserves nothing: the Salesforce opportunity is all it
+  // makes, so when that write failed (sfdcFailure) the run failed. Real holds
+  // stay a success (the holds were placed). On UAT, where Salesforce is
+  // deliberately not asked, sfdcFailure is null and the run is a success.
+  if (j.quoteOnly === true && typeof j.sfdcFailure === 'string' && j.sfdcFailure.trim()) return 'error'
   return 'success'
 }
 

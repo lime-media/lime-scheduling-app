@@ -58,6 +58,7 @@ import './ledTruckFollow.test'
 import './standardMarkets.test'
 import './clientPlan.test'
 import './coreSend.test'
+import './marketMatch.test'
 import './clientPlanForm.test'
 import { report, settle } from './harness'
 

@@ -36,6 +36,14 @@ eq('another account name, another ref', withTerms({ sfdc_account_name: 'Acme' })
 eq('another lead source, another ref', withTerms({ lead_source: 'Phone Call' }) === withTerms({ lead_source: 'Trade Show' }), false)
 eq('a lead source as Salesforce spells it or not: the same ref', withTerms({ lead_source: 'phone call' }), withTerms({ lead_source: 'Phone Call' }))
 eq('another client type, another ref (Brand Direct pricing)', ref({ client_type: 'Agency' }) === ref({ client_type: 'Brand Direct' }), false)
+eq('another opportunity type, another ref', withTerms({ opportunity_type: 'New Client' }) === withTerms({ opportunity_type: 'Existing Client' }), false)
+eq('an opportunity type as Salesforce spells it or not: the same ref', withTerms({ opportunity_type: 'existing  client' }), withTerms({ opportunity_type: 'Existing Client' }))
+eq('no opportunity type: the ref is as before (the booking uses the suggestion)', withTerms({}), withTerms({ opportunity_type: '' }))
+eq('bookingTerms carries the opportunity type as Salesforce spells it', (bookingTerms({ opportunity_type: 'new client' }) as { opportunity_type?: string }).opportunity_type, 'New Client')
+eq('bookingTerms refuses one off the picklist', typeof bookingTerms({ opportunity_type: 'Renewal' }), 'string')
+eq('bookingTerms refuses an opportunity type that is not text', bookingTerms({ opportunity_type: ['Existing Client'] }), 'opportunity_type is text')
+eq('bookingTerms refuses an empty-array opportunity type', bookingTerms({ opportunity_type: [] }), 'opportunity_type is text')
+eq('bookingTerms refuses a lead source that is not text', bookingTerms({ lead_source: ['Phone Call'] }), 'lead_source is text')
 
 section('Staff chat: one engine')
 {
@@ -48,6 +56,13 @@ section('Staff chat: one engine')
   eq('quotes through the Quote page code', tools.includes('await staffQuote(q)'), true)
   eq('bookings through the Quote page code, which requires a lead source and a brand answer', tools.includes('await placeStaffBooking(body, ctx.actor, { requireLeadSource: true, requireBrand: true })'), true)
   eq('availability through the engine', tools.includes('await checkAvailability('), true)
+  eq('inferred client type, lead source and opportunity type are stated once, not asked',
+    !route.includes('The rep confirms client type and lead source on every booking')
+      && route.includes("use the account's clientType, leadSource and opportunityType from find_account and don't ask about them")
+      && route.includes('Never ask a separate question to confirm an inferred value'), true)
+  eq('the brand is still asked for once', route.includes("Ask for the brand once, plainly") && route.includes("don't ask again once the rep has answered"), true)
+  eq('no tool text tells the chat to confirm an inferred value', /confirm (it|Agency or Brand Direct) with the rep/.test(tools), false)
+  eq('the booking passes the opportunity type the quote ref covered', tools.includes('opportunity_type: terms.opportunity_type,'), true)
   eq('a booking checks the ref against inputs and total, then that the rep saw it',
     tools.indexOf('quoteRef(q, i.expected_total, terms) !== i.quote_ref.trim()') > -1
       && tools.indexOf('quoteRef(q, i.expected_total, terms)') < tools.indexOf('ctx.shownText.includes(i.quote_ref.trim())')

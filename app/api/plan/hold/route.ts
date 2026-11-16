@@ -36,15 +36,16 @@
 
 import { withUsageLog } from '@/lib/usageLog'
 import { opportunityName, savedBrand } from '@/lib/brand'
+import { PARTY_KEY, bookingParty } from '@/lib/bookingParty'
 import { readOpportunityType, suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
-import { QUOTE_ONLY_GROUP_PREFIX, QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
+import { QUOTE_ONLY_GROUP_PREFIX, QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS, bookingEvent } from '@/lib/quoteOnly'
 import { openStage } from '@/lib/sfdcStages'
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { activeHoldWhere, holdReservesNow } from '@/lib/holdFilters'
-import { bookingHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
+import { bookingHoldExpiry, holdUntilRefusal, parseHoldUntilFrom, reviseHoldExpiry, parseHoldDays, MAX_HOLD_DAYS, STAFF_MIN_DAYS_BEFORE_START } from '@/lib/holdExpiry'
 import { getSfdcAccountInfo, isSfdcConfigured, checkPrimaryContact, resolveOpportunityOwner, readOnlyPreview, salesforceWritesOff, WRITES_OFF_MESSAGE, WRITES_STOPPED_ERROR } from '@/lib/salesforceClient'
 import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { chosenClientType } from '@/lib/pricing/brandMarkup'
@@ -56,7 +57,7 @@ import { SFDC_SERVICE_USER_EMAIL, attachedToOpportunity, reactivationDecision, r
 import { bookWhatFits, buildMultiMarketQuote, holdPlaces, resolveRows, validateQuoteRequest, type QuoteRequest } from '@/lib/planning/quote'
 import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches, planTier, studiesDescription } from '@/lib/planning/booking'
 import { VALID_STUDIES, type StudyType } from '@/lib/pricing/config'
-import { holdExpDate } from '@/lib/dateOnly'
+import { centralDate, holdExpDate } from '@/lib/dateOnly'
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { legsFromArrivals } from '@/lib/transportMetrics'
@@ -85,8 +86,19 @@ type HoldBody = QuoteRequest & {
   quoteOnly?: boolean
   /** The opportunity's primary contact: a Contact on the account. Required. */
   primaryContactId?: string
+  /** Its name as the page shows it; recorded when Salesforce can't confirm it (lib/bookingParty.ts). */
+  primaryContactName?: string
   /** How long to hold the trucks, in days (default 3, at most MAX_HOLD_DAYS). */
   holdDays?: number
+  /**
+   * A revision of a live booking only: its expiry date (YYYY-MM-DD, Central)
+   * as the revise form shows it, opened on the booking's current expiry.
+   * Unchanged keeps that expiry; changed sets this date (lib/holdExpiry.ts
+   * reviseHoldExpiry). Used instead of holdDays.
+   */
+  holdUntil?: string
+  /** With holdUntil: the booking's expiry (ISO) the revise form opened on, so an unchanged date keeps the expiry the booking has now. */
+  holdUntilFrom?: string
   /**
    * Add this booking to an existing open opportunity of the account instead
    * of creating one. (Revising a booking — QuoteRequest.revise — always goes
@@ -115,6 +127,18 @@ async function handlePost(req: NextRequest) {
   if (!body.requestId || !/^[A-Za-z0-9_-]{8,64}$/.test(body.requestId)) return NextResponse.json({ error: 'Missing booking request id.' }, { status: 400 })
   const holdDays = parseHoldDays(body.holdDays)
   if (holdDays === null) return NextResponse.json({ error: `Hold for 1 to ${MAX_HOLD_DAYS} days.` }, { status: 400 })
+  if (body.holdUntil !== undefined && (typeof body.holdUntil !== 'string' || !body.revise?.bookingKey)) {
+    return NextResponse.json({ error: 'A hold expiry date is only set when revising a booking.' }, { status: 400 })
+  }
+  // A real date, today or later, before any Salesforce read or routing; the
+  // limit needs the routed starts, so reviseHoldExpiry checks it below.
+  const holdUntilBad = body.holdUntil !== undefined && body.quoteOnly !== true ? holdUntilRefusal(body.holdUntil) : null
+  if (holdUntilBad) return NextResponse.json({ error: holdUntilBad }, { status: 400 })
+  // The expiry the form opened on comes with every holdUntil: without it an
+  // unchanged date can't be told from a deliberate one (see parseHoldUntilFrom).
+  const opened = body.holdUntil !== undefined && body.quoteOnly !== true ? parseHoldUntilFrom(body.holdUntilFrom) : null
+  if (opened && 'error' in opened) return NextResponse.json({ error: opened.error }, { status: 400 })
+  const holdUntilFrom = opened ? opened.from : null
   // A new opportunity's lead source: the seller picks one off Salesforce's
   // picklist. A revision or an attach keeps the opportunity's own (a
   // revision with no opportunity left makes one: checked once that's known).
@@ -277,8 +301,15 @@ async function handlePost(req: NextRequest) {
     // A multi-market booking is one quote with ONE expiry on every hold: the
     // seller's length, capped by the earliest start, or the later expiry the
     // revised booking already had, never past that cap (lib/holdExpiry.ts).
+    // A revision that shows the expiry date keeps it unless the rep changed it.
     const heldStarts = stints.map(x => x.stint.start)
-    const bookingExpiry = heldStarts.length ? bookingHoldExpiry(heldStarts, holdDays, holdClock, keepUntil, STAFF_MIN_DAYS_BEFORE_START) : null
+    // A quote-only revision holds nothing, so it has no expiry to check.
+    // holdUntilFrom is always set with holdUntil here (refused above otherwise).
+    const revisedExpiry = heldStarts.length > 0 && reviseKey && body.holdUntil !== undefined && holdUntilFrom
+      ? reviseHoldExpiry(heldStarts, body.holdUntil, keepUntil, holdClock, STAFF_MIN_DAYS_BEFORE_START, centralDate(holdUntilFrom))
+      : null
+    if (revisedExpiry && 'error' in revisedExpiry) return NextResponse.json({ error: revisedExpiry.error, lastDate: revisedExpiry.lastDate }, { status: 400 })
+    const bookingExpiry = revisedExpiry ?? (heldStarts.length ? bookingHoldExpiry(heldStarts, holdDays, holdClock, keepUntil, STAFF_MIN_DAYS_BEFORE_START) : null)
     const stretches = stints.map(x => ({ ...x, expiresAt: bookingExpiry?.expiresAt ?? holdClock }))
 
     // All or nothing: any stretch that now clashes stops the whole booking.
@@ -310,6 +341,11 @@ async function handlePost(req: NextRequest) {
 
     const accountName = body.sfdcAccountName || 'Client'
     const brand = savedBrand(body.brand) // "none" means no brand, as everywhere
+    // Who it's for, on every hold, so a revision reopens with them even without an opportunity (lib/bookingParty.ts).
+    const party = bookingParty({
+      accountId: body.sfdcAccountId, accountName: body.sfdcAccountName,
+      contactId: body.primaryContactId, contactName: body.primaryContactName, verified: contact.contact, brand,
+    })
     const linkedClient = await prisma.clientUser.findFirst({ where: { sfdc_account_id: body.sfdcAccountId }, select: { id: true } })
     const serviceUser = await prisma.user.findFirst({ where: { email: SFDC_SERVICE_USER_EMAIL }, select: { id: true } })
     const createdBy = (token.id as string) || serviceUser?.id || 'system'
@@ -343,7 +379,7 @@ async function handlePost(req: NextRequest) {
         pricing_tier: tier,
         quoted_total: lq.total,
         daily_rate: lq.effectiveDailyRate,
-        features: JSON.stringify(withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies))),
+        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies)), [PARTY_KEY]: party }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(lq.id)!,
         expires_at: new Date(),
@@ -375,7 +411,7 @@ async function handlePost(req: NextRequest) {
         daily_rate: lq.effectiveDailyRate,
         // The line's quote, plus what this hold itself sells: a rotating truck's
         // weekly stint works only some of the line's days (lib/ledJobs.ts daysSold).
-        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies)), heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
+        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies)), [PARTY_KEY]: party, heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(stint.lineId)!,
         expires_at: expiresAt,
@@ -595,7 +631,9 @@ async function handlePost(req: NextRequest) {
     }
 
     // Transport and deal-value metrics (best-effort; never fails the booking).
-    if (!quoteOnly) await recordBooking({ event: reviseKey ? 'REVISED' : 'BOOKED', groups: quote.lines.map(l => ({ groupId: groupOf.get(l.id)!, legs: legsFromArrivals(l.arrivals) })), appQuotedTotal: quote.summary.grandTotal, createdBy, ...(reviseKey ? { revised: { holdIds: reviseIds, bookingKey: reviseKey } } : {}) })
+    // Reserving a quote-only log is the first real booking (bookingEvent).
+    const revisesBooking = bookingEvent(reviseKey, reviseHolds) === 'REVISED'
+    if (!quoteOnly) await recordBooking({ event: revisesBooking ? 'REVISED' : 'BOOKED', groups: quote.lines.map(l => ({ groupId: groupOf.get(l.id)!, legs: legsFromArrivals(l.arrivals) })), appQuotedTotal: quote.summary.grandTotal, createdBy, ...(revisesBooking ? { revised: { holdIds: reviseIds, bookingKey: reviseKey! } } : {}) })
 
     const leftOut = notSelected.length + unavailable.length
     // Which opportunity, and what happened to it.

@@ -1,7 +1,7 @@
 'use client'
 
 import { ATT_RELEASE_WARNING, ATT_RELEASE_MAX_DAYS, validateReleaseRange } from '@/lib/attSoftRules'
-import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
+import { QUOTE_ONLY_ORIGINATION, listedQuotes } from '@/lib/quoteOnly'
 import { SERVICE_AREA_RADIUS_MILES } from '@/lib/pricing/config'
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
@@ -21,6 +21,7 @@ import { CLOSED_WON_READ_ONLY, WON_ENDED_LISTED_DAYS, bookingCapStarts, bookingE
 import { STAFF_MIN_DAYS_BEFORE_START, lastExpiryDate } from '@/lib/holdExpiry'
 import { ownedBy, ownerOptions, runsBetween, wholeBookings, type OwnerFilter } from '@/lib/reservationFilters'
 import { useSession } from 'next-auth/react'
+import { accountUrl, opportunityUrl } from '@/lib/sfdcLinks'
 
 type HoldRequest = {
   id: string
@@ -45,6 +46,8 @@ type HoldRequest = {
   truck_count: number | null
   campaign_group_id: string | null
   sfdc_opportunity_id: string | null
+  /** Quote-only rows: when the newest hold of the opportunity was made (lib/quoteOnly.ts listedQuotes). */
+  opp_latest_at?: string | null
   /** The opportunity's job number, and how LED stands on it for this truck: days run of days sold (lib/ledJobs.ts). */
   job_number: string | null
   /** The opportunity's account and its LED client, once staff have linked it (lib/ledClients.ts). */
@@ -75,6 +78,12 @@ const LED_SCHEDULED = 'LED_SCHEDULED'
  * end (lib/bookings.ts stillListed).
  */
 const WON_ENDED = 'WON_ENDED'
+/**
+ * The filter for quote-only logs: priced in Salesforce, nothing reserved. One
+ * per opportunity until it's reserved or its start date passes
+ * (lib/quoteOnly.ts listedQuotes); every other filter but All leaves them out.
+ */
+const QUOTES = 'QUOTES'
 
 const STATUS_BADGE: Record<string, string> = {
   HOLD:                 'bg-yellow-100 text-yellow-800 border border-yellow-200',
@@ -92,6 +101,7 @@ const STATUS_LABEL: Record<string, string> = {
   EXTENSION_REQUESTED: 'Extension Requested',
   [LED_SCHEDULED]: 'Scheduled in LED',
   [WON_ENDED]: 'Won, ended',
+  [QUOTES]: 'Quotes',
 }
 
 /** Tab names where they differ from the status name. */
@@ -164,8 +174,27 @@ function ReviseLink({ rows, booking }: { rows: HoldRequest[]; booking?: HoldRequ
   if ((booking ?? rows).some(r => r.status === 'EXTENSION_REQUESTED')) {
     return <span title="An extension request on this booking is waiting: approve or decline it first" className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 text-gray-400 cursor-not-allowed">Revise</span>
   }
+  const href = `/quote?revise=${encodeURIComponent(key)}`
+  // A quote-only log: open it as quoted, or open it to reserve its trucks
+  // (the planner's own booking path re-checks them and refuses what's taken).
+  if (rows.every(r => r.origination === QUOTE_ONLY_ORIGINATION)) {
+    return (
+      <>
+        <a href={href}
+          title="Open the quote as logged, to change or re-log it"
+          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-200 text-blue-700 hover:bg-blue-50 transition-colors">
+          Open quote
+        </a>
+        <a href={`${href}&reserve=1`}
+          title="Open the quote to reserve its trucks, if they're still free"
+          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-green-600 hover:bg-green-700 text-white transition-colors">
+          Reserve
+        </a>
+      </>
+    )
+  }
   return (
-    <a href={`/quote?revise=${encodeURIComponent(key)}`}
+    <a href={href}
       title="Add, drop or change markets and dates on the same opportunity"
       className="px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-200 text-blue-700 hover:bg-blue-50 transition-colors">
       Revise
@@ -224,7 +253,9 @@ function LedFollowBadge({ rows }: { rows: HoldRequest[] }) {
   )
 }
 
-function ExpirationBadge({ expiresAt, status, cancelled }: { expiresAt: string | null; status: string; cancelled?: { reason: string | null } | null }) {
+function ExpirationBadge({ expiresAt, status, cancelled, quoteOnly = false }: { expiresAt: string | null; status: string; cancelled?: { reason: string | null } | null; quoteOnly?: boolean }) {
+  // A quote-only log reserved nothing, so it has no expiry to show (it's stored EXPIRED).
+  if (quoteOnly) return null
   if (status === 'EXPIRED' && cancelled) {
     return <span className="text-xs text-red-700" title={cancelled.reason ?? undefined}>Cancelled{cancelled.reason ? `: ${cancelled.reason}` : ''}</span>
   }
@@ -338,6 +369,8 @@ export default function HoldRequestsPage() {
   const [expiredWindowDays, setExpiredWindowDays] = useState<number | null>(null)
   // The LED schedule couldn't be read: won bookings' LED badges say so.
   const [ledUnavailable, setLedUnavailable] = useState(false)
+  // The org's address for the Salesforce links on each card; null when it couldn't be read.
+  const [sfdcBase, setSfdcBase] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   // A change to the AT&T truck list being drafted (components/AttRosterPanel.tsx).
@@ -388,6 +421,7 @@ export default function HoldRequestsPage() {
       setRequests(data.holdRequests || [])
       setExpiredWindowDays(typeof data.expired_window_days === 'number' ? data.expired_window_days : null)
       setLedUnavailable(data.led_unavailable === true)
+      setSfdcBase(typeof data.sfdc_base_url === 'string' ? data.sfdc_base_url : null)
     } catch (err) {
       toast.error('Failed to load hold requests')
       console.error(err)
@@ -629,6 +663,14 @@ export default function HoldRequestsPage() {
     return bookingInLed(rows) && !rows.some(x => x.led_followed || x.led_trucks_unsynced_since)
   }, [rowsByBooking])
 
+  // The quote-only logs listed under Quotes (one per opportunity, until it's
+  // reserved or starts). Read over every row, not the search, so a search
+  // never brings back a superseded quote.
+  const quoteKeys = useMemo(
+    () => listedQuotes(requests, r => bookingKey(r) ?? r.id, centralDate(new Date())),
+    [requests],
+  )
+
   // A won booking whose dates have all passed: listed only under its own filter.
   // Today (Central) is read once per fetch, not once per row.
   const endedOf = useMemo(() => {
@@ -669,6 +711,9 @@ export default function HoldRequestsPage() {
   // A filter picks whole bookings by the booking's status, never part of one.
   const filtered = useMemo(
     () => narrowed.filter((r: HoldRequest) => {
+      // Quote-only logs: under Quotes and All only, while listed.
+      if (r.origination === QUOTE_ONLY_ORIGINATION) return (filterStatus === QUOTES || !filterStatus) && quoteKeys.has(bookingKey(r) ?? r.id)
+      if (filterStatus === QUOTES) return false
       if (filterStatus === LED_SCHEDULED) return inLedOf(r) && !endedOf(r)
       if (filterStatus === WON_ENDED) return endedOf(r)
       // All is everything listed, scheduled-in-LED and ended included.
@@ -681,7 +726,7 @@ export default function HoldRequestsPage() {
         ? status === 'HOLD' || status === 'COMMITTED' || status === 'EXTENSION_REQUESTED'
         : status === filterStatus
     }),
-    [narrowed, filterStatus, statusOf, inLedOf, endedOf]
+    [narrowed, filterStatus, statusOf, inLedOf, endedOf, quoteKeys]
   )
 
   // The last date the card being edited can be held to: a booking has one
@@ -756,9 +801,8 @@ export default function HoldRequestsPage() {
     }
     if (status === 'EXPIRED') {
       // A quote-only log is not a lapsed reservation: nothing to reinstate.
-      if (quoteOnly) {
-        return <span className="text-xs text-gray-400" title="Re-quote to reserve trucks">Quote only</span>
-      }
+      // Its Open quote and Reserve links come with ReviseLink.
+      if (quoteOnly) return null
       return (
         <button
           disabled={busy}
@@ -821,6 +865,11 @@ export default function HoldRequestsPage() {
                 Showing expired reservations from the last {expiredWindowDays} days. Older ones are kept but not listed here.
               </p>
             )}
+            {filterStatus === QUOTES && (
+              <p className="text-xs text-gray-400 mt-1">
+                Quotes logged to Salesforce with no trucks reserved: the latest for each opportunity, until it&apos;s reserved or its start date passes.
+              </p>
+            )}
             {(filterStatus === WON_ENDED || filterStatus === '') && (
               <p className="text-xs text-gray-400 mt-1">
                 Won bookings are listed for {WON_ENDED_LISTED_DAYS.inLed} days after they end once LED has fully scheduled them, and {WON_ENDED_LISTED_DAYS.notInLed} days if it hasn&apos;t.
@@ -829,7 +878,7 @@ export default function HoldRequestsPage() {
           </div>
           <div className="flex gap-2 flex-shrink-0 flex-wrap">
             {/* Opens on Reservations; All (everything listed) is last. */}
-            {(['HOLD', 'ATT_SOFT', 'EXPIRED', LED_SCHEDULED, WON_ENDED, ''] as const).map((s) => (
+            {(['HOLD', QUOTES, 'ATT_SOFT', 'EXPIRED', LED_SCHEDULED, WON_ENDED, ''] as const).map((s) => (
               <button
                 key={s}
                 onClick={() => setFilterStatus(s)}
@@ -937,6 +986,7 @@ export default function HoldRequestsPage() {
                       {first.created_by_name && (
                         <span className="text-xs text-gray-400">by {first.created_by_name}</span>
                       )}
+                      <SalesforceLinks base={sfdcBase} rows={groupItems} />
                     </div>
                     <div className="flex items-center gap-3">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${SOURCE_BADGE[first.source] ?? SOURCE_BADGE.INTERNAL}`}>
@@ -949,7 +999,7 @@ export default function HoldRequestsPage() {
                         </span>
                       )}
                       {/* The earliest expiry in the booking is the one to act on. */}
-                      <ExpirationBadge expiresAt={expiry} status={status} cancelled={cancelledOf(groupItems)} />
+                      <ExpirationBadge expiresAt={expiry} status={status} cancelled={cancelledOf(groupItems)} quoteOnly={groupItems.every(g => g.origination === QUOTE_ONLY_ORIGINATION)} />
                       <LedBadge progress={ledProgress(groupItems)} inLed={bookingInLed(groupItems)} unavailable={ledUnavailable} />
                       {status === 'COMMITTED' && first.sfdc_account_id && (
                         <LedClientLink accountId={first.sfdc_account_id} linked={first.led_client} onSaved={fetchRequests} />
@@ -1073,7 +1123,10 @@ export default function HoldRequestsPage() {
                                   {SOURCE_LABEL[r.source] ?? r.source}
                                 </span>
                               </td>
-                              <td className="px-4 py-3 text-gray-500 text-xs">{r.created_by_name || '—'}</td>
+                              <td className="px-4 py-3 text-gray-500 text-xs">
+                                <div>{r.created_by_name || '—'}</div>
+                                <SalesforceLinks base={sfdcBase} rows={[r]} />
+                              </td>
                               <td className="px-4 py-3">
                                 <PricingBadge tier={r.pricing_tier} total={r.quoted_total} />
                               </td>
@@ -1083,7 +1136,7 @@ export default function HoldRequestsPage() {
                                 </span>
                               </td>
                               <td className="px-4 py-3">
-                                <ExpirationBadge expiresAt={r.expires_at} status={r.status} cancelled={cancelledOf([r])} />
+                                <ExpirationBadge expiresAt={r.expires_at} status={r.status} cancelled={cancelledOf([r])} quoteOnly={r.origination === QUOTE_ONLY_ORIGINATION} />
                               </td>
                               <td className="px-4 py-3">
                                 <div className="flex items-center gap-2 flex-wrap">
@@ -1434,5 +1487,28 @@ export default function HoldRequestsPage() {
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * The booking's Salesforce opportunity (one per booking; a legacy booking with
+ * several lists each) and its account, opening in a new tab. Staff only: this
+ * page is behind the staff sign-in.
+ */
+function SalesforceLinks({ base, rows }: { base: string | null; rows: { sfdc_opportunity_id: string | null; sfdc_account_id: string | null }[] }) {
+  const opps = [...new Set(rows.map(r => r.sfdc_opportunity_id).filter((id): id is string => !!id))]
+    .flatMap(id => { const url = opportunityUrl(base, id); return url ? [url] : [] })
+  const account = accountUrl(base, rows.find(r => r.sfdc_account_id)?.sfdc_account_id)
+  if (!opps.length && !account) return null
+  const link = 'text-xs text-blue-700 hover:underline'
+  return (
+    <span className="flex items-center gap-2">
+      {opps.map((url, i) => (
+        <a key={url} href={url} target="_blank" rel="noopener noreferrer" className={link}>
+          {opps.length === 1 ? 'Opportunity' : `Opportunity ${i + 1}`} ↗
+        </a>
+      ))}
+      {account && <a href={account} target="_blank" rel="noopener noreferrer" className={link}>Account ↗</a>}
+    </span>
   )
 }

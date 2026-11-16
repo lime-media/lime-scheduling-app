@@ -65,8 +65,17 @@ export function parseHoldDays(value: unknown): number | null {
 export function holdExpiry(
   startDate: string, holdDays: number = DEFAULT_HOLD_DAYS, now: Date = new Date(), minDaysBeforeStart: number = MIN_PROCESSING_DAYS_BEFORE_START,
 ): { expiresAt: Date; cappedByStart: boolean; atMinimum: boolean } {
-  const requested = addHours(now, holdDays * 24)
+  return clampHold(addHours(now, holdDays * 24), startDate, now, minDaysBeforeStart)
+}
 
+/**
+ * `requested`, capped by the latest moment `startDate` allows and never sooner
+ * than MIN_HOLD_WINDOW_HOURS from now (the floor wins), with the reason, as
+ * holdExpiry documents. Pure.
+ */
+function clampHold(
+  requested: Date, startDate: string, now: Date, minDaysBeforeStart: number,
+): { expiresAt: Date; cappedByStart: boolean; atMinimum: boolean } {
   const latestByStart = latestHoldMoment(startDate, minDaysBeforeStart)
 
   const startDecides = latestByStart < requested
@@ -97,6 +106,69 @@ export function bookingHoldExpiry(
     if (kept > base.expiresAt) return { expiresAt: kept, cappedByStart: kept.getTime() === cap.getTime(), atMinimum: false, startDate }
   }
   return { ...base, startDate }
+}
+
+/**
+ * Why a revise expiry date (YYYY-MM-DD, Central) can't be used whatever the
+ * booking's dates are: not a real calendar date, or before today. Null when
+ * it may be. The limit, which needs the revised starts, is reviseHoldExpiry's.
+ * Pure (pass `now`).
+ */
+export function holdUntilRefusal(holdUntil: string, now: Date = new Date()): string | null {
+  // Round-tripped: Date rolls 2026-02-31 over to March 3.
+  const parsed = new Date(`${holdUntil}T00:00:00Z`)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(holdUntil) || isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== holdUntil) {
+    return 'Choose a valid hold expiry date.'
+  }
+  const today = centralDate(now)
+  return holdUntil < today ? `The hold expiry can't be in the past (today is ${today}).` : null
+}
+
+/**
+ * The expiry the revise form opened on (`holdUntilFrom`), which must come
+ * with any `holdUntil`: a full ISO timestamp (a bare date would parse as UTC
+ * midnight, the day before in Central). Without a usable one the route can't
+ * tell "left as it opened" from "changed back to an older date", so it
+ * refuses rather than guess: guessing the current expiry would cut a hold
+ * extended elsewhere since the form opened back to the form's stale date.
+ */
+export function parseHoldUntilFrom(holdUntilFrom: unknown): { from: Date } | { error: string } {
+  const from = typeof holdUntilFrom === 'string' && holdUntilFrom.includes('T') ? new Date(holdUntilFrom) : null
+  return from && !isNaN(from.getTime())
+    ? { from }
+    : { error: "A hold expiry date needs the expiry the form opened on. Reload the booking and try again." }
+}
+
+/**
+ * A revision's one expiry, when the rep sees the booking's expiry date in the
+ * revise form (`holdUntil`, YYYY-MM-DD Central, opened on `heldUntil`'s date).
+ * Left as it opened, the revision keeps `heldUntil` exactly, capped (with the
+ * 24-hour floor) by the revised booking's earliest start as bookingHoldExpiry
+ * caps it. Changed, it is that date's end, as Reservations → Edit stores one
+ * (never under the 24-hour floor), and a date in the past or past the limit
+ * (lastExpiryDate) is refused, never quietly cut back. Pure (pass `now`).
+ */
+export function reviseHoldExpiry(
+  startDates: string[], holdUntil: string, heldUntil: Date | null, now: Date = new Date(),
+  minDaysBeforeStart: number = MIN_PROCESSING_DAYS_BEFORE_START,
+  /** The date the form opened on (YYYY-MM-DD). Defaults to `heldUntil`'s; the server passes the form's own, so an expiry changed elsewhere since it opened is kept, not cut back. */
+  openedOn: string | null = heldUntil ? centralDate(heldUntil) : null,
+): { expiresAt: Date; cappedByStart: boolean; atMinimum: boolean; startDate: string } | { error: string; lastDate: string } {
+  const startDate = startDates.filter(Boolean).sort()[0]
+  const lastDate = lastExpiryDate(startDate, now, minDaysBeforeStart)
+  // Unchanged: the current expiry, capped by the start with the 24-hour floor, as for every new hold (holdExpiry).
+  if (heldUntil && openedOn === holdUntil) return { ...clampHold(heldUntil, startDate, now, minDaysBeforeStart), startDate }
+  const refused = holdUntilRefusal(holdUntil, now)
+  if (refused) return { error: refused, lastDate }
+  if (holdUntil > lastDate) {
+    return { error: `The latest this booking can be held is ${lastDate}: ${minDaysBeforeStart} days before its first market starts.`, lastDate }
+  }
+  // Today late in the day would end within hours: the 24-hour floor still wins, as for every new hold.
+  const floor = addHours(now, MIN_HOLD_WINDOW_HOURS)
+  const chosen = endOfDayCentral(holdUntil)
+  return chosen < floor
+    ? { expiresAt: floor, cappedByStart: false, atMinimum: true, startDate }
+    : { expiresAt: chosen, cappedByStart: false, atMinimum: false, startDate }
 }
 
 /**

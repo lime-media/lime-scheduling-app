@@ -78,13 +78,22 @@ export const ASKED_DATES_MOVED_KEY = 'askedDatesMoved'
 export const PARTY_KEY = 'party'
 
 /**
+ * The key in a hold's features JSON recording the lift studies the seller
+ * ticked, sold or not. A study under the reach minimum isn't sold (nothing in
+ * `studies` / `studiesTotal`), but a revision still re-ticks it so the seller
+ * isn't asked again (lib/bookings.ts bookedStudies). Bookkeeping only: never
+ * priced, never printed.
+ */
+export const STUDIES_REQUESTED_KEY = 'studiesRequested'
+
+/**
  * The app's bookkeeping keys in `features`, never part of a quote breakdown:
- * the LED Hold Exp it last wrote, the dates-moved marker, and the booking
- * party. One list, read by both INTERNAL_KEYS and parseQuoteFeatures, so a
+ * the LED Hold Exp it last wrote, the dates-moved marker, the booking party
+ * and the studies the seller ticked. One list, read by both INTERNAL_KEYS and parseQuoteFeatures, so a
  * key added here is kept out of client view AND out of the "is this a quote"
  * test.
  */
-const BOOKKEEPING_KEYS: readonly string[] = [APP_HOLD_EXP_KEY, ASKED_DATES_MOVED_KEY, PARTY_KEY]
+const BOOKKEEPING_KEYS: readonly string[] = [APP_HOLD_EXP_KEY, ASKED_DATES_MOVED_KEY, PARTY_KEY, STUDIES_REQUESTED_KEY]
 
 /**
  * Keys in `features` that are internal, never sent to a client: Brand Direct

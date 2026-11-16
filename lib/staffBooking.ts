@@ -22,7 +22,7 @@ import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, CLIENT_TYPE_LEFT_NOTE, applyBooking
 import { brandMarkupFor, chosenClientType } from '@/lib/pricing/brandMarkup'
 import { readOpportunityType, suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
 import { readLeadSource } from '@/lib/sfdcLeadSource'
-import { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
+import { parseQuoteFeatures, buildActivationNotes, STUDIES_REQUESTED_KEY } from '@/lib/quoteFeatures'
 import { SFDC_SERVICE_USER_EMAIL } from '@/lib/sfdcIntegration'
 import {
   computeQuote,
@@ -247,6 +247,8 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
     studies: quote.best.studies, studyCost: quote.best.studyCost,
     studiesTotal: quote.best.studiesTotal,
     ...(quote.best.salesLiftRequested ? { salesLiftRequested: true } : {}),
+    // What the seller ticked, sold or not, so a revision ticks it again.
+    ...(studies.length ? { [STUDIES_REQUESTED_KEY]: [...new Set(studies)] } : {}),
     transportCharge,
     successorImpact,
     // How it was priced, so a revision reopens the same way (lib/bookings.ts reviseRows).

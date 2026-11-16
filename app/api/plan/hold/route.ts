@@ -37,6 +37,7 @@
 import { withUsageLog } from '@/lib/usageLog'
 import { opportunityName, savedBrand } from '@/lib/brand'
 import { PARTY_KEY, bookingParty } from '@/lib/bookingParty'
+import { STUDIES_REQUESTED_KEY } from '@/lib/quoteFeatures'
 import { readOpportunityType, suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
 import { QUOTE_ONLY_GROUP_PREFIX, QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS, bookingEvent } from '@/lib/quoteOnly'
 import { openStage } from '@/lib/sfdcStages'
@@ -184,6 +185,8 @@ async function handlePost(req: NextRequest) {
   body.features.studies = Array.isArray(body.features.studies)
     ? [...new Set(body.features.studies.filter((x): x is StudyType => (VALID_STUDIES as readonly unknown[]).includes(x)))]
     : []
+  // What the seller ticked, sold or not, on every hold, so a revision ticks it again (lib/bookings.ts bookedStudies).
+  const requested = body.features.studies.length ? { [STUDIES_REQUESTED_KEY]: body.features.studies } : {}
   // Holds never displace AT&T: soft-hold trucks are always reserved here.
   body.reserveSoftHolds = true
   const invalid = validateQuoteRequest(body)
@@ -379,7 +382,7 @@ async function handlePost(req: NextRequest) {
         pricing_tier: tier,
         quoted_total: lq.total,
         daily_rate: lq.effectiveDailyRate,
-        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies)), [PARTY_KEY]: party }),
+        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies)), [PARTY_KEY]: party, ...requested }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(lq.id)!,
         expires_at: new Date(),
@@ -411,7 +414,7 @@ async function handlePost(req: NextRequest) {
         daily_rate: lq.effectiveDailyRate,
         // The line's quote, plus what this hold itself sells: a rotating truck's
         // weekly stint works only some of the line's days (lib/ledJobs.ts daysSold).
-        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies)), [PARTY_KEY]: party, heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
+        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies)), [PARTY_KEY]: party, ...requested, heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(stint.lineId)!,
         expires_at: expiresAt,

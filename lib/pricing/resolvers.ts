@@ -8,12 +8,12 @@ import { prisma } from '@/lib/prisma'
 import { getMarketCoords, resolveMarketInput, type MarketMatch } from '@/lib/marketCoordinates'
 import { marketSizeTierFromDmaCode, NON_DMA_MARKET_TIER, type RateOverrides } from './config'
 import { loadStandardMarketCoords, normalizeMarketKey, titleCaseMarket } from '@/lib/marketBounds'
-import { findPlaces, placeCoords, withStateComma } from '@/lib/geo/places'
+import { findPlaces, placeByCity, placeCoords, withStateComma } from '@/lib/geo/places'
 import { dmaForPoint } from '@/lib/pricing/dmaArea'
 import { TOP_DMAS } from '@/lib/pricing/topDmas'
 import type { ClientSession } from '@/lib/clientAuth'
 import { liveClientLinks } from '@/lib/clientLinks'
-import { stateCode } from '@/lib/usStates'
+import { mayBeState, stateCode, stateFromText } from '@/lib/usStates'
 
 // ---------------------------------------------------------------------------
 // Market size tier
@@ -210,33 +210,58 @@ export function standardMarketCoords<T>(market: string, standardMarkets: Readonl
   const key = normalizeMarketKey(withStateComma(market))
   const exact = standardMarkets.get(normalizeMarketKey(market)) ?? standardMarkets.get(key)
   if (exact) return exact
-  const { city, state } = marketCityState(key)
+  const { city, state, region } = marketCityState(key)
   if (!city) return null
   // A stated state matches only entries in that state, never one naming none.
-  // No state ("Allentown"): any entry with the city's name.
-  const hit = [...standardMarkets.entries()]
+  // No state ("Allentown"): any entry with the city's name. A region
+  // ("Allentown, Lehigh Valley"): only the city's one entry, never a guess
+  // between two states'.
+  const hits = [...standardMarkets.entries()]
     .map(([name, value]) => ({ name, value, ...marketCityState(name) }))
     .filter(h => h.city === city && (!state || h.state === state))
-    .sort((a, b) => a.name.localeCompare(b.name))[0]
-  return hit ? hit.value : null
+    .sort((a, b) => a.name.localeCompare(b.name))
+  if (region && hits.length !== 1) return null
+  return hits[0] ? hits[0].value : null
 }
 
 /**
  * A normalized market name's city and state, read the same way for market
  * text and list entries. Dots dropped, so "St. Louis" is "St Louis" and
- * "Washington, D.C." is in DC. The state is the text after the comma as a code
- * or a full name ("Texas", "New York"); a ZIP or ", USA" may follow it, and a
- * ZIP or a country alone ("Allentown, 18101", "Dallas, USA") names no state.
- * Other text there ("Dallas, Tex") is kept as the state, so it never takes
- * another state's entry. Pure.
+ * "Washington, D.C." is in DC. The state is the text after the comma written
+ * any common way (lib/usStates.ts stateFromText): a code, a full name
+ * ("Texas", "New York"), an abbreviation ("Tex"), or a metro's first state
+ * ("Kansas City, MO-KS" is in MO). A ZIP or ", USA" may follow it, and a ZIP or
+ * a country alone ("Allentown, 18101", "Dallas, USA") names no state. A state
+ * named later in the text counts too ("Allentown, Lehigh Valley PA").
+ *
+ * Other text there is a `region` ("Allentown, Lehigh Valley"): no state, so
+ * the city is found only where its name is unique. Text that could be a
+ * misspelled state ("Dallas, Pensylvania") is kept as the state instead, so it
+ * never takes another state's entry. Pure.
  */
-export function marketCityState(name: string): { city: string; state: string | undefined } {
+export function marketCityState(name: string): { city: string; state: string | undefined; region?: true } {
   const [city, rest = ''] = name.replace(/\./g, '').split(',').map(p => p.trim())
   const head = rest.replace(/\s*\d[\d-]*$/, '').trim()
-  const first = rest.split(' ')[0]
+  const words = head.split(' ').filter(Boolean)
+  const first = words[0] ?? ''
   const isCountry = /^(usa?|united states( of america)?|america)$/i.test(head)
-  const s = stateCode(head) || stateCode(first) || (first && !/^\d/.test(first) && !isCountry ? first : '')
-  return { city, state: s ? s.toLowerCase() : undefined }
+  if (!head || isCountry) return { city, state: undefined }
+  const s = stateFromText(head) || stateFromText(first) || stateNamedIn(words)
+  if (s) return { city, state: s.toLowerCase() }
+  if (mayBeState(first)) return { city, state: first.toLowerCase() }
+  return { city, state: undefined, region: true }
+}
+
+/** A full state name or a trailing code among the words ("lehigh valley pa", "north texas"). */
+function stateNamedIn(words: string[]): string {
+  for (let n = 3; n >= 1; n--) {
+    for (let i = 0; i + n <= words.length; i++) {
+      const code = stateCode(words.slice(i, i + n).join(' '))
+      // A two-letter word counts only last ("lehigh valley pa"), not inside a name ("la jolla").
+      if (code && (n > 1 || words[i].length > 2 || i === words.length - 1)) return code
+    }
+  }
+  return ''
 }
 
 /**
@@ -268,9 +293,13 @@ export async function resolveCampaignCoords(market: string): Promise<CampaignCoo
   // Any US city, town or ZIP the lists do not know (lib/geo/places.ts).
   // A state written in full or followed by a ZIP ("Canton, Texas",
   // "Dallas, PA 18612") is looked up by its city and state code.
+  // A state written another way ("Dallas, Tex", "Kansas City, MO-KS") is
+  // looked up by its code; a city with no state, or a region after the comma
+  // ("Ames", "Allentown, Lehigh Valley"), only where the city's name is unique.
   const named = marketCityState(normalizeMarketKey(withStateComma(market)))
   const place = placeCoords(market) ??
-    (named.city && named.state && stateCode(named.state) ? placeCoords(named.city, named.state) : null)
+    (named.city && named.state && stateCode(named.state) ? placeCoords(named.city, named.state) : null) ??
+    (named.city && !named.state ? placeByCity(named.city) : null)
   if (place) return { lat: place.lat, lng: place.lng, source: 'us_place' }
 
   // Last, a top-50 DMA's own name ("Dallas-Fort Worth, TX"), matched strictly:

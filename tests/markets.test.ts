@@ -11,7 +11,7 @@
 import { defer, eq, section } from './harness'
 import { matchMarketKey, titleCaseMarket, normalizeMarketKey } from '@/lib/marketBounds'
 import { matchTopDma, resolveMarketSizeTierId, standardMarketCoords, marketCityState } from '@/lib/pricing/resolvers'
-import { placeCoords } from '@/lib/geo/places'
+import { placeByCity, placeCoords } from '@/lib/geo/places'
 import { TOP_DMAS } from '@/lib/pricing/topDmas'
 import { validateEmailList } from '@/lib/appSettings'
 import { marketSizeTierFromDmaCode, NON_DMA_MARKET_TIER, MARKET_SIZE_TIERS } from '@/lib/pricing/config'
@@ -97,7 +97,8 @@ eq('a dotted entry state still matches', standardMarketCoords('Washington, DC 20
 eq('a dotted city matches an undotted entry', standardMarketCoords('St. Louis, MO', new Map([['st louis, mo', 'STL']])), 'STL')
 eq('a ZIP alone after the comma names no state', standardMarketCoords('Allentown, 18101', STANDARD), 'Allentown PA')
 eq('a country alone after the comma names no state', standardMarketCoords('Allentown, USA', STANDARD), 'Allentown PA')
-eq('other text after the comma is still kept as a state', standardMarketCoords('Dallas, Tex', STANDARD), null)
+eq('text that could be a misspelled state is kept as that state', standardMarketCoords('Dallas, Pensylvania', STANDARD), null)
+eq('an unknown short code is kept as a state', standardMarketCoords('Dallas, ZZ', STANDARD), null)
 // What they fall through to: the US place list, in the right state. NaN when
 // the place is missing, so a missing place fails rather than passing.
 eq('Dallas, PA is located in Pennsylvania', (placeCoords('Dallas, PA')?.lng ?? NaN) > -80, true)
@@ -107,6 +108,27 @@ eq('Greenville, TX is located in Texas', (placeCoords('Greenville, TX')?.lng ?? 
 eq('a full state name is read as its code', marketCityState('canton, texas'), { city: 'canton', state: 'tx' })
 eq('a state then a ZIP is read as its code', marketCityState('dallas, pa 18612'), { city: 'dallas', state: 'pa' })
 eq('Canton, Texas is located in Texas', (placeCoords('canton', 'tx')?.lng ?? NaN) < -94, true)
+
+section('market text: states written other ways, metros, regions')
+// Each was unlocated before: no transport distance or impressions tier on the quote.
+eq('an abbreviated state finds its entry', standardMarketCoords('Dallas, Tex', STANDARD), 'Dallas TX')
+eq('an abbreviated state with a dot finds its entry', standardMarketCoords('Dallas, Tex.', STANDARD), 'Dallas TX')
+eq('an abbreviation is read as its code', marketCityState('seattle, wash'), { city: 'seattle', state: 'wa' })
+eq('a two-state metro is read as its first state', marketCityState('kansas city, mo-ks'), { city: 'kansas city', state: 'mo' })
+eq('a three-state metro is read as its first state', marketCityState('new york, ny-nj-pa'), { city: 'new york', state: 'ny' })
+eq('a metro split by a slash is read as its first state', marketCityState('chicago, il / in'), { city: 'chicago', state: 'il' })
+eq('a two-state metro finds the first state\'s entry', standardMarketCoords('Kansas City, MO-KS', new Map([['kansas city, mo', 'KCMO'], ['kansas city, ks', 'KCKS']])), 'KCMO')
+eq('a state named in a region is read', marketCityState('allentown, lehigh valley pa'), { city: 'allentown', state: 'pa' })
+eq('a full state name in a region is read', marketCityState('dallas, north texas'), { city: 'dallas', state: 'tx' })
+eq('a region alone names no state', marketCityState('allentown, lehigh valley'), { city: 'allentown', state: undefined, region: true })
+eq('a region finds the city\'s one entry', standardMarketCoords('Allentown, Lehigh Valley', STANDARD), 'Allentown PA')
+eq('a region never guesses between two states\' entries', standardMarketCoords('Springfield, Metro Area', new Map([['springfield, il', 'IL'], ['springfield, mo', 'MO']])), null)
+eq('a city alone still takes the first of two entries, as before', standardMarketCoords('Springfield', new Map([['springfield, il', 'IL'], ['springfield, mo', 'MO']])), 'IL')
+eq('a ZIP alone after the comma is still no state, not a region', marketCityState('allentown, 18101'), { city: 'allentown', state: undefined })
+// Places with no state: only a city name that's unique in the US.
+eq('a unique city is placed', placeByCity('Kalamazoo')?.name, 'Kalamazoo, MI')
+eq('a city in several states is not placed', placeByCity('Springfield'), null)
+eq('an unknown city is not placed', placeByCity('Nowheresville'), null)
 
 section('top-50 DMA matching (market size tier)')
 eq('exact city + state', matchTopDma('Chicago, IL', TOP_DMAS)?.dma_code, 'DMA-602')

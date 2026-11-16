@@ -180,6 +180,7 @@ export async function GET() {
     created_by_name:   h.user?.name ?? null,
     owner_id:          owners.get(h.id)!.owner_id,
     owner_name:        owners.get(h.id)!.owner_name,
+    owner_unassigned:  owners.get(h.id)!.owner_unassigned,
     pricing_tier:      h.pricing_tier ?? null,
     quoted_total:      h.quoted_total ?? null,
     daily_rate:        h.daily_rate ?? null,

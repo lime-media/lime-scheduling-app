@@ -96,13 +96,14 @@ export type IssueKind =
 export type Issue = { kind: IssueKind; blocking: boolean; message: string; markets?: string[]; trucks?: string[]; accountId?: string }
 
 /**
- * `bookingKey`: the booking's key now. `won`: any hold is Closed Won. `marketNames`: each market as the holds name
+ * `bookingKey`: the booking's key now. `won`: any hold is Closed Won;
+ * `wholeWon`: every live hold is (a booking from before #118 can be part won). `marketNames`: each market as the holds name
  * it, in `request.markets` order. `holdsEnd`: the last day any live hold
  * reserves a truck (travel included), which can be after `request.endDate`.
  * `creator`: who made its Salesforce opportunity (bookingCreator); a 'bot'
  * booking isn't sent to LED unless it's Closed Won (leftOutOfLed).
  */
-export type BookingRequest = { bookingKey: string; request: CampaignRequest; issues: Issue[]; won: boolean; marketNames: string[]; holdsEnd: string; creator: 'bot' | 'person' | 'unknown' }
+export type BookingRequest = { bookingKey: string; request: CampaignRequest; issues: Issue[]; won: boolean; wholeWon: boolean; marketNames: string[]; holdsEnd: string; creator: 'bot' | 'person' | 'unknown' }
 
 /**
  * Who made a booking's Salesforce opportunity: 'bot' when any of its holds'
@@ -316,6 +317,7 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
     },
     issues,
     won,
+    wholeWon: live.every(h => h.status === 'COMMITTED'),
     marketNames: markets.map(m => names.get(m.key)!),
     holdsEnd: live.map(h => h.end_date).sort().reverse()[0],
     creator,

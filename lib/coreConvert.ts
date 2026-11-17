@@ -94,6 +94,10 @@ export function handBuiltJobs(bookings: BookingRequest[], sent: Map<string, Sent
   return new Set([...running].filter(j => !appJobs.has(j)))
 }
 
+/** Never sent, and LED already runs its job (built by hand, `handBuilt` from handBuiltJobs): left alone. Pure. */
+export const builtByHand = (b: BookingRequest, sent: Map<string, SentRow>, handBuilt: Set<string>) =>
+  !sent.get(b.bookingKey)?.core_uid && handBuilt.has(jobKey(b.request.jobNumber) ?? '')
+
 /** The won bookings to convert now, oldest start first. Pure. */
 export function toConvert(bookings: BookingRequest[], sent: Map<string, SentRow>): BookingRequest[] {
   return bookings
@@ -143,7 +147,7 @@ async function convertOne(b: BookingRequest, row: SentRow | undefined, inLed: Se
       const state = await deps.get(row.core_uid)
       if (state.status === 'APPROVED' || state.status === 'DECLINED') {
         // Declined beside a hand-built program: nothing for ops to build.
-        const note = state.status === 'DECLINED' ? `Declined in LED, which already runs job ${jobNumber} (built by hand).` : undefined
+        const note = state.status === 'DECLINED' ? `Declined in LED. LED already runs job ${jobNumber}: check that program before building anything.` : undefined
         return await decided({ decided: state.status, programUid: state.programUid }, true, note)
       }
       // Shown on LED Readiness, so the request doesn't read as "converting" forever.
@@ -206,10 +210,9 @@ export async function convertWonBookings(deps: ConvertDeps): Promise<ConvertSumm
   // hand and never sent stay candidates every sweep, and would otherwise fill
   // the batch ahead of newly won ones.
   const inLed = handBuiltJobs(bookings, sent, await deps.ledJobs(candidates.map(b => b.request.jobNumber ?? '')))
-  const byHand = (b: BookingRequest) => !sent.get(b.bookingKey)?.core_uid && inLed.has(jobKey(b.request.jobNumber) ?? '')
-  const outcomes: ConvertOutcome[] = []
+  const byHand = (b: BookingRequest) => builtByHand(b, sent, inLed)
   // Nothing is stored for these: LED Readiness reads LED's jobs itself and says why (byHandMessage).
-  for (const b of candidates.filter(byHand)) outcomes.push({ key: b.bookingKey, result: 'in_led' })
+  const outcomes: ConvertOutcome[] = candidates.filter(byHand).map(b => ({ key: b.bookingKey, result: 'in_led' as const }))
   // Sent ones whose job LED already runs need a read every sweep until Core
   // says they're decided; they take only the slots newly won bookings leave.
   const ledRuns = (b: BookingRequest) => inLed.has(jobKey(b.request.jobNumber) ?? '')

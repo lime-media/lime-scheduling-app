@@ -16,7 +16,7 @@ import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { coreConfig } from '@/lib/coreClient'
-import { byHandMessage, convertOff, handBuiltJobs, isDecided, toConvert } from '@/lib/coreConvert'
+import { builtByHand, byHandMessage, convertOff, handBuiltJobs, isDecided, toConvert } from '@/lib/coreConvert'
 import { ledProgramJobs } from '@/lib/ledJobs'
 import { jobKey } from '@/lib/jobNumber'
 import { isReady, loadLedBookings } from '@/lib/ledReadiness'
@@ -44,9 +44,10 @@ export async function GET() {
     const off = convertOff(process.env)
     // The bookings the sweep would convert, and which of their jobs LED already
     // runs by hand (read here, as the sweep reads it, so the page is never stale).
-    const candidates = new Set(toConvert(all, sent).map(b => b.bookingKey))
+    const toSweep = toConvert(all, sent)
+    const candidates = new Set(toSweep.map(b => b.bookingKey))
     const running = candidates.size === 0 || off !== null ? new Set<string>()
-      : await ledProgramJobs(all.filter(b => candidates.has(b.bookingKey)).map(b => b.request.jobNumber ?? '')).catch(err => {
+      : await ledProgramJobs(toSweep.map(b => b.request.jobNumber ?? '')).catch(err => {
         console.error('[led-requests] LED jobs unread:', err instanceof Error ? err.message : err)
         return null
       })
@@ -69,7 +70,7 @@ export async function GET() {
           // The sweep will convert it (lib/coreConvert.ts): a candidate whose job LED doesn't already run by hand.
           converting: off === null && candidates.has(b.bookingKey) && byHand !== null && !byHand.has(jobKey(b.request.jobNumber) ?? ''),
           // A candidate LED already runs by hand, and was never sent: why it won't convert.
-          handBuilt: candidates.has(b.bookingKey) && !row?.core_uid && byHand?.has(jobKey(b.request.jobNumber) ?? '') ? byHandMessage(b.request.jobNumber) : null,
+          handBuilt: candidates.has(b.bookingKey) && byHand && builtByHand(b, sent, byHand) ? byHandMessage(b.request.jobNumber) : null,
           // A send's refusal, or (won, sent) the conversion's, until it's decided.
           lastError: isDecided(row) || (row?.core_uid && !b.wholeWon) ? null : row?.last_error ?? null,
         }

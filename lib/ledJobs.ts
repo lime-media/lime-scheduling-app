@@ -202,3 +202,22 @@ export async function ledJobShifts(jobs: { job: string; start: string; end: stri
   if (!byJob.size) return []
   return query<LedJobShift[]>(JOB_SHIFTS_QUERY, { jobs: JSON.stringify([...byJob].map(([job, s]) => ({ job, ...s }))) })
 }
+
+/**
+ * The job numbers (as jobKey) among `jobs` that a live LED program already
+ * carries: a won booking ops already built in LED by hand, which auto-convert
+ * must not build again (lib/coreConvert.ts). Reads the LED database; throws
+ * if it can't.
+ */
+export async function ledProgramJobs(jobs: string[]): Promise<Set<string>> {
+  const keys = [...new Set(jobs.map(jobKey).filter((j): j is string => j !== null))]
+  if (keys.length === 0) return new Set()
+  const rows = await query<{ job_number: string }[]>(`
+SELECT UPPER(LTRIM(RTRIM(cp.job_number))) AS job_number
+FROM OPENJSON(@jobs) WITH (job NVARCHAR(4000) '$') AS j
+JOIN dbo.client_programs cp ON LTRIM(RTRIM(cp.job_number)) = j.job  -- the LED column's collation is case-insensitive
+  AND COALESCE(cp.is_deleted, 0) = 0  -- a live program; no shifts are read here
+GROUP BY UPPER(LTRIM(RTRIM(cp.job_number)))
+`, { jobs: JSON.stringify(keys) })
+  return new Set(rows.map(r => r.job_number))
+}

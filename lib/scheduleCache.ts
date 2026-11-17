@@ -23,6 +23,7 @@ import { ledJobShifts } from '@/lib/ledJobs'
 import { bookingKey } from '@/lib/bookings'
 import { centralDate } from '@/lib/dateOnly'
 import { assignStandardMarkets } from '@/lib/standardMarkets'
+import { convertWonBookings, liveConvertDeps } from '@/lib/coreConvert'
 import { waitUntil } from '@vercel/functions'
 import { recordAmountChanges, recordExecuted, recordPrestart, recordSwap, sharedOriginMeasurer } from '@/lib/transportMetricsRecord'
 
@@ -54,6 +55,10 @@ export interface RefreshSummary {
   led_trucks_followed:        number
   /** Opportunities whose followed trucks haven't reached Salesforce yet; retried every sweep. */
   led_follow_sync_pending:    number
+  /** Won bookings converted in LED this sweep, and those LED refused (lib/coreConvert.ts); off says why none were tried. */
+  core_converted:             number
+  core_convert_failed:        number
+  core_convert_off:           string | null
   /** Holds whose LED standard market was set or changed (lib/standardMarkets.ts). */
   standard_markets_set:       number
   /** Holds whose standard market write failed; retried next sweep. */
@@ -244,6 +249,16 @@ export async function refreshCache(): Promise<RefreshSummary> {
       .map((m) => recordSwap(m.holdId, m.by, measurer)),
   ])
   const standardMarkets = await standardMarketsRun
+  // Last, so a market just located and trucks just mirrored from LED are what
+  // a won booking is sent and converted with. Never fails the sweep.
+  const converted = await liveConvertDeps().then(convertWonBookings).catch((err) => {
+    console.error('[scheduleCache] LED conversion failed:', err instanceof Error ? err.message : err)
+    return { off: 'conversion step threw', outcomes: [], waiting: 0 }
+  })
+  const convertFailures = converted.outcomes.filter(o => o.result === 'failed')
+  if (converted.outcomes.length) {
+    console.log(`[scheduleCache] LED conversion: ${converted.outcomes.filter(o => o.result === 'converted').length} converted, ${converted.outcomes.filter(o => o.result === 'declined').length} already declined, ${convertFailures.length} refused, ${converted.waiting} waiting`)
+  }
   if (metricsPrestart || metricsExecuted || metricsAmounts) {
     console.log(`[scheduleCache] metrics: ${metricsPrestart} pre-start snapshot(s), ${metricsExecuted} executed leg(s), ${metricsAmounts} amount change(s)`)
   }
@@ -275,6 +290,9 @@ export async function refreshCache(): Promise<RefreshSummary> {
     conflicts_auto_resolved:   reconciled.resolved,
     led_trucks_followed:       ledFollow.changed,
     led_follow_sync_pending:   ledFollowPending.length,
+    core_converted:             converted.outcomes.filter(o => o.result === 'converted').length,
+    core_convert_failed:        convertFailures.length,
+    core_convert_off:           converted.off ?? null,
     standard_markets_set:       standardMarkets.updated,
     standard_markets_failed:    standardMarkets.failed,
     standard_markets_unlocated: standardMarkets.unlocated,

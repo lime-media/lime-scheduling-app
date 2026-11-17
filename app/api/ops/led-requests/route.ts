@@ -4,8 +4,9 @@
  * The live bookings as LED campaign requests (lib/ledReadiness.ts), and
  * whether each can be sent: blocking issues stop it; warnings send with
  * something assumed that ops should check in LED; Ready ones can be sent
- * (lib/coreSend.ts), and a sent one shows LED's request. `send` says whether
- * sending is on here, and why not. Any signed-in staff user.
+ * (lib/coreSend.ts), and a sent one shows LED's request. A won one is
+ * converted by the sweep (lib/coreConvert.ts) and shows LED's decision or
+ * refusal. `send` and `convert` say whether each is on here, and why not. Any signed-in staff user.
  * Bookings the Salesforce bot user made aren't sent to LED unless they're
  * Closed Won (lib/campaignRequests.ts leftOutOfLed): until then they come
  * back apart, as `excluded`, not as issues to fix.
@@ -15,6 +16,7 @@ import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { coreConfig } from '@/lib/coreClient'
+import { convertOff, isDecided } from '@/lib/coreConvert'
 import { isReady, loadLedBookings } from '@/lib/ledReadiness'
 import { leftOutOfLed } from '@/lib/campaignRequests'
 
@@ -45,7 +47,11 @@ export async function GET() {
           issues: b.issues,
           ready: isReady(b),
           sent: row?.core_uid ? { coreUid: row.core_uid, requestId: row.request_id, at: row.last_sent_at } : null,
-          lastError: row?.core_uid ? null : row?.last_error ?? null,
+          // LED's decision once a won booking is converted (or declined) there.
+          converted: row?.core_status === 'APPROVED' ? { programUid: row.program_uid ?? null } : null,
+          declined: row?.core_status === 'DECLINED',
+          // A send's refusal, or (won, sent) the conversion's, until it's decided.
+          lastError: isDecided(row) || (row?.core_uid && !b.won) ? null : row?.last_error ?? null,
         }
       })
       .sort((a, b) => rank(!a.ready, a.issues.length) - rank(!b.ready, b.issues.length) || a.start.localeCompare(b.start))
@@ -56,6 +62,7 @@ export async function GET() {
       bookings,
       excluded,
       send: config.ok ? { enabled: true } : { enabled: false, reason: config.reason },
+      convert: (off => off ? { enabled: false, reason: off } : { enabled: true })(convertOff(process.env)),
     })
   } catch (err) {
     console.error('[led-requests] read failed:', err)

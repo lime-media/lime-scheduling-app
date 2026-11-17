@@ -20,8 +20,10 @@ type Summary = { key: string; client: string; won: boolean; start: string; end: 
 type Booking = Summary & {
   issues: Issue[]
   ready: boolean; sent: { coreUid: string; requestId: string | null } | null; lastError: string | null
+  /** LED's decision on a won booking (lib/coreConvert.ts). */
+  converted: { programUid: string | null } | null; declined: boolean
 }
-type Data = { total: number; blocked: number; bookings: Booking[]; excluded: Summary[]; send: { enabled: boolean; reason?: string } }
+type Data = { total: number; blocked: number; bookings: Booking[]; excluded: Summary[]; send: { enabled: boolean; reason?: string }; convert: { enabled: boolean; reason?: string } }
 
 const day = (s: string) => new Date(s + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
 
@@ -134,9 +136,14 @@ export default function LedRequestsPage() {
                       </td>
                       <td className="px-3 py-2 whitespace-nowrap">
                         {b.sent ? (
-                          <div className="text-green-800 text-xs">
-                            <div className="font-semibold">Sent</div>
+                          <div className={`text-xs max-w-xs whitespace-normal ${b.declined ? 'text-red-800' : 'text-green-800'}`}>
+                            <div className="font-semibold">
+                              {b.converted ? 'Converted' : b.declined ? 'Declined in LED' : b.won && data.convert.enabled ? 'Sent · converting' : 'Sent'}
+                            </div>
                             <div className="text-gray-600">{b.sent.requestId ?? b.sent.coreUid}</div>
+                            {b.declined && b.won && <div className="mt-1">Won, but LED declined this request: ops convert it by hand in LED.</div>}
+                            {/* The sweep converts won bookings; a refusal shows until it clears. */}
+                            {failed && !b.converted && !b.declined && <div className="mt-1 text-red-800">{failed}</div>}
                           </div>
                         ) : b.ready ? (
                           <div className="max-w-xs whitespace-normal">

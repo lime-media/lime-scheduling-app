@@ -16,7 +16,11 @@ import { QUOTE_ONLY_ORIGINATION } from '@/lib/quoteOnly'
 import { buildRequests, type BookingRequest, type RequestHold } from '@/lib/campaignRequests'
 
 /** What the app knows of a booking's request in Core (app_campaign_requests). */
-export type SentRow = { booking_key: string; external_ref: string; core_uid: string | null; request_id: string | null; last_sent_at: Date | null; last_error: string | null }
+export type SentRow = {
+  booking_key: string; external_ref: string; core_uid: string | null; request_id: string | null; last_sent_at: Date | null; last_error: string | null
+  /** Core's status as last seen (SUBMITTED; APPROVED or DECLINED once decided), its program once converted, and a fingerprint of what Core holds (null: unknown). */
+  core_status?: string | null; program_uid?: string | null; last_sent_hash?: string | null
+}
 
 const day = (d: Date) => d.toISOString().slice(0, 10)
 
@@ -38,7 +42,7 @@ export async function loadLedBookings(): Promise<{ bookings: BookingRequest[]; s
       },
     }),
     prisma.ledClientLink.findMany({ select: { sfdc_account_id: true, client_uid: true } }),
-    prisma.campaignRequestSync.findMany({ select: { booking_key: true, external_ref: true, core_uid: true, request_id: true, last_sent_at: true, last_error: true } }),
+    prisma.campaignRequestSync.findMany({ select: { booking_key: true, external_ref: true, core_uid: true, request_id: true, last_sent_at: true, last_error: true, core_status: true, program_uid: true, last_sent_hash: true } }),
   ])
   const clientOf = new Map(links.map(l => [l.sfdc_account_id, l.client_uid]))
   const rows: RequestHold[] = holds.map(h => ({ ...h, start_date: day(h.start_date), end_date: day(h.end_date) }))

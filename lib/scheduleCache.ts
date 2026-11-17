@@ -23,7 +23,7 @@ import { ledJobShifts } from '@/lib/ledJobs'
 import { bookingKey } from '@/lib/bookings'
 import { centralDate } from '@/lib/dateOnly'
 import { assignStandardMarkets } from '@/lib/standardMarkets'
-import { convertWonBookings, liveConvertDeps } from '@/lib/coreConvert'
+import { convertOff, convertWonBookings, liveConvertDeps } from '@/lib/coreConvert'
 import { waitUntil } from '@vercel/functions'
 import { recordAmountChanges, recordExecuted, recordPrestart, recordSwap, sharedOriginMeasurer } from '@/lib/transportMetricsRecord'
 
@@ -251,7 +251,9 @@ export async function refreshCache(): Promise<RefreshSummary> {
   const standardMarkets = await standardMarketsRun
   // Last, so a market just located and trucks just mirrored from LED are what
   // a won booking is sent and converted with. Never fails the sweep.
-  const converted = await liveConvertDeps().then(convertWonBookings).catch((err) => {
+  // Off: say why without reading the service user.
+  const convertOffReason = convertOff(process.env)
+  const converted = await (convertOffReason ? Promise.resolve({ off: convertOffReason, outcomes: [], waiting: 0 }) : liveConvertDeps().then(convertWonBookings)).catch((err) => {
     console.error('[scheduleCache] LED conversion failed:', err instanceof Error ? err.message : err)
     return { off: 'conversion step threw', outcomes: [], waiting: 0 }
   })

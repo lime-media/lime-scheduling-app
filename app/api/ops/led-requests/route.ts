@@ -46,12 +46,14 @@ export async function GET() {
           ...summary(b),
           issues: b.issues,
           ready: isReady(b),
+          // Only a booking won in every market converts (lib/coreConvert.ts toConvert).
+          wholeWon: b.wholeWon,
           sent: row?.core_uid ? { coreUid: row.core_uid, requestId: row.request_id, at: row.last_sent_at } : null,
           // LED's decision once a won booking is converted (or declined) there.
           converted: row?.core_status === 'APPROVED' ? { programUid: row.program_uid ?? null } : null,
           declined: row?.core_status === 'DECLINED',
           // A send's refusal, or (won, sent) the conversion's, until it's decided.
-          lastError: isDecided(row) || (row?.core_uid && !b.won) ? null : row?.last_error ?? null,
+          lastError: isDecided(row) || (row?.core_uid && !b.wholeWon) ? null : row?.last_error ?? null,
         }
       })
       .sort((a, b) => rank(!a.ready, a.issues.length) - rank(!b.ready, b.issues.length) || a.start.localeCompare(b.start))

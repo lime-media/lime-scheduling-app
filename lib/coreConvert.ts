@@ -141,8 +141,12 @@ async function convertOne(b: BookingRequest, row: SentRow | undefined, inLed: Se
   if (!coreUid) {
     const sent = await deps.send(key)
     const uid = sent.status === 200 && typeof sent.body.coreUid === 'string' ? sent.body.coreUid : null
-    // The send records its own refusal on the booking's row.
-    if (!uid) return { key, result: 'failed', error: typeof sent.body.error === 'string' ? sent.body.error : 'Not sent to LED.' }
+    // A failed create is recorded on the row by the send; its other refusals
+    // (not ready, reference taken) are shown by LED Readiness from the booking itself.
+    if (!uid) {
+      const error = typeof sent.body.error === 'string' ? sent.body.error : 'Not sent to LED.'
+      return sent.body.unreachable === true ? { key, result: 'failed', error, unreachable: true } : { key, result: 'failed', error }
+    }
     coreUid = uid
     held = !row && sent.body.already === false ? fingerprint : null
   }
@@ -184,13 +188,22 @@ export async function convertWonBookings(deps: ConvertDeps): Promise<ConvertSumm
   const inLed = await deps.ledJobs(candidates.map(b => b.request.jobNumber ?? ''))
   const byHand = (b: BookingRequest) => !sent.get(b.bookingKey)?.core_uid && inLed.has(jobKey(b.request.jobNumber) ?? '')
   const outcomes: ConvertOutcome[] = candidates.filter(byHand).map(b => ({ key: b.bookingKey, result: 'in_led' as const }))
-  const all = candidates.filter(b => !byHand(b))
+  // Sent ones whose job LED already runs need a read every sweep until Core
+  // says they're decided; they take only the slots newly won bookings leave.
+  const ledRuns = (b: BookingRequest) => inLed.has(jobKey(b.request.jobNumber) ?? '')
+  const all = candidates.filter(b => !byHand(b)).sort((a, b) => Number(ledRuns(a)) - Number(ledRuns(b)))
   const batch = all.slice(0, CONVERT_PER_SWEEP)
   const now = deps.now ?? Date.now
   const started = now()
   const tried = outcomes.length
+  // A job number goes to Core once per sweep: LED was read before any of
+  // them, so a second booking on the same job would build a second program.
+  const jobsStarted = new Set<string>()
   for (const b of batch) {
     if (now() - started > CONVERT_BUDGET_MS) break
+    const job = jobKey(b.request.jobNumber)
+    if (job && jobsStarted.has(job)) continue
+    if (job) jobsStarted.add(job)
     const o = await convertOne(b, sent.get(b.bookingKey), inLed, deps)
     outcomes.push(o)
     if (o.result === 'failed' && o.unreachable) break

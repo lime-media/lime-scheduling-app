@@ -209,6 +209,14 @@ defer((async () => {
   const r12 = await convertWonBookings(newlyWon.d)
   eq('hand-built won bookings never fill the batch: the newly won one still converts', [r12.outcomes.filter(o => o.result === 'in_led').length, newlyWon.rows.get(won2.bookingKey)?.core_status, r12.waiting], [CONVERT_PER_SWEEP + 1, 'APPROVED', 0])
 
+  const deadCreate = deps({ bookings: [won, won2], send: async () => ({ status: 502, body: { error: "LED couldn't be reached. Sending again is safe.", unreachable: true } }) })
+  const r14 = await convertWonBookings(deadCreate.d)
+  eq('create cannot reach Core: stops there too', [r14.outcomes.length, r14.waiting], [1, 1])
+  const sameJob = build([hold({ sfdc_opportunity_id: '006Hs00000000008', start_date: '2026-12-21', end_date: '2026-12-27' })])
+  const twice = deps({ bookings: [won, sameJob] })
+  const r15 = await convertWonBookings(twice.d)
+  eq('two bookings on one job number: only the first goes this sweep', [twice.log.filter(l => l.startsWith('approve')).length, r15.waiting], [1, 1])
+
   const notSent = deps({ send: async () => ({ status: 409, body: { error: 'Not sent: no LED client.' } }) })
   const r6 = await convertWonBookings(notSent.d)
   eq('create refused: stops there, with the send\'s reason', r6.outcomes[0], { key: won.bookingKey, result: 'failed', error: 'Not sent: no LED client.' })

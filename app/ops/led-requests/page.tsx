@@ -19,7 +19,7 @@ import type { Issue } from '@/lib/campaignRequests'
 type Summary = { key: string; client: string; won: boolean; start: string; end: string; markets: { name: string; trucks: string[] }[] }
 type Booking = Summary & {
   issues: Issue[]
-  ready: boolean; sent: { coreUid: string; requestId: string | null } | null; lastError: string | null
+  ready: boolean; wholeWon: boolean; sent: { coreUid: string; requestId: string | null } | null; lastError: string | null
   /** LED's decision on a won booking (lib/coreConvert.ts). */
   converted: { programUid: string | null } | null; declined: boolean
 }
@@ -138,7 +138,7 @@ export default function LedRequestsPage() {
                         {b.sent ? (
                           <div className={`text-xs max-w-xs whitespace-normal ${b.declined ? 'text-red-800' : 'text-green-800'}`}>
                             <div className="font-semibold">
-                              {b.converted ? 'Converted' : b.declined ? 'Declined in LED' : b.won && data.convert.enabled ? 'Sent · converting' : 'Sent'}
+                              {b.converted ? 'Converted' : b.declined ? 'Declined in LED' : b.wholeWon && data.convert.enabled ? 'Sent · converting' : 'Sent'}
                             </div>
                             <div className="text-gray-600">{b.sent.requestId ?? b.sent.coreUid}</div>
                             {b.declined && b.won && <div className="mt-1">Won, but LED declined this request: ops convert it by hand in LED.</div>}

@@ -86,7 +86,8 @@ export function convertOff(env: Record<string, string | undefined>): string | nu
 /** The won bookings to convert now, oldest start first. Pure. */
 export function toConvert(bookings: BookingRequest[], sent: Map<string, SentRow>): BookingRequest[] {
   return bookings
-    .filter(b => b.won && !leftOutOfLed(b) && isReady(b) && !isDecided(sent.get(b.bookingKey)))
+    // Every market won: a part-won booking (before #118) would convert its tentative markets too.
+    .filter(b => b.wholeWon && !leftOutOfLed(b) && isReady(b) && !isDecided(sent.get(b.bookingKey)))
     .sort((a, b) => a.request.startDate.localeCompare(b.request.startDate) || a.bookingKey.localeCompare(b.bookingKey))
 }
 
@@ -174,21 +175,27 @@ export async function convertWonBookings(deps: ConvertDeps): Promise<ConvertSumm
   const off = convertOff(deps.env)
   if (off) return { off, outcomes: [], waiting: 0 }
   const { bookings, sent } = await deps.load()
-  const all = toConvert(bookings, sent)
-  const batch = all.slice(0, CONVERT_PER_SWEEP)
-  if (batch.length === 0) return { outcomes: [], waiting: 0 }
+  const candidates = toConvert(bookings, sent)
+  if (candidates.length === 0) return { outcomes: [], waiting: 0 }
   // Unread, LED might already run any of them: nothing converts this sweep.
-  const inLed = await deps.ledJobs(batch.map(b => b.request.jobNumber ?? ''))
+  // Read for every candidate, not just one batch: won bookings built in LED by
+  // hand and never sent stay candidates every sweep, and would otherwise fill
+  // the batch ahead of newly won ones.
+  const inLed = await deps.ledJobs(candidates.map(b => b.request.jobNumber ?? ''))
+  const byHand = (b: BookingRequest) => !sent.get(b.bookingKey)?.core_uid && inLed.has(jobKey(b.request.jobNumber) ?? '')
+  const outcomes: ConvertOutcome[] = candidates.filter(byHand).map(b => ({ key: b.bookingKey, result: 'in_led' as const }))
+  const all = candidates.filter(b => !byHand(b))
+  const batch = all.slice(0, CONVERT_PER_SWEEP)
   const now = deps.now ?? Date.now
   const started = now()
-  const outcomes: ConvertOutcome[] = []
+  const tried = outcomes.length
   for (const b of batch) {
     if (now() - started > CONVERT_BUDGET_MS) break
     const o = await convertOne(b, sent.get(b.bookingKey), inLed, deps)
     outcomes.push(o)
     if (o.result === 'failed' && o.unreachable) break
   }
-  return { outcomes, waiting: all.length - outcomes.length }
+  return { outcomes, waiting: all.length - (outcomes.length - tried) }
 }
 
 /** The real dependencies: this deployment's settings, the database and Core, acting as the Salesforce service user. */
@@ -201,10 +208,17 @@ export async function liveConvertDeps(): Promise<ConvertDeps> {
     if (!config.ok) throw new CoreError(config.reason, null)
     return coreClient(config.config)
   }
-  const sendDeps = liveSendDeps(by ?? '')
+  // One read of the bookings per sweep: each create would otherwise reload
+  // every live booking. A send only uses it to find the booking and its row
+  // as the sweep began, which is what convertOne decided on.
+  let loaded: ReturnType<typeof loadLedBookings> | null = null
+  const load = () => (loaded ??= loadLedBookings())
+  const base = liveSendDeps(by ?? '')
+  // Without the service user there's no one to audit as (an empty user_id fails).
+  const sendDeps = { ...base, load, audit: by ? base.audit : async () => {} }
   return {
     env,
-    load: loadLedBookings,
+    load,
     ledJobs: ledProgramJobs,
     send: key => sendBookingToCore(key, sendDeps),
     get: uid => client().getCampaign(uid),

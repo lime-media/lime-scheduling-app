@@ -10,7 +10,7 @@
 import { defer, eq, section } from './harness'
 import { buildRequest, requestFingerprint, type BookingRequest, type RequestHold } from '@/lib/campaignRequests'
 import { coreClient, coreConfig, coreDecision, CoreError, type CoreConfig, type CoreDecided, type CorePayload } from '@/lib/coreClient'
-import { convertOff, convertWonBookings, toConvert, type ConvertDeps } from '@/lib/coreConvert'
+import { CONVERT_PER_SWEEP, convertOff, convertWonBookings, toConvert, type ConvertDeps } from '@/lib/coreConvert'
 import type { SentRow } from '@/lib/ledReadiness'
 
 const DALLAS = '11111111-1111-1111-1111-111111111111'
@@ -53,6 +53,8 @@ const later = build([hold({ start_date: '2027-01-04', end_date: '2027-01-10', sf
 const row = (key: string, over: Partial<SentRow> = {}): SentRow => ({ booking_key: key, external_ref: key, core_uid: null, request_id: null, last_sent_at: null, last_error: null, ...over })
 eq('not won, no job number: left; a won bot deal goes; oldest start first',
   toConvert([later, held, noJob, botWon, won], new Map()).map(b => b.bookingKey), [...[botWon.bookingKey, won.bookingKey].sort(), later.bookingKey])
+const partWon = build([hold({ sfdc_opportunity_id: '006Hs00000000007' }), hold({ sfdc_opportunity_id: '006Hs00000000007', status: 'HOLD', truck_number: '0102' })])
+eq('part won (one hold still HOLD): not converted', [partWon.won, partWon.wholeWon, toConvert([partWon], new Map()).length], [true, false, 0])
 eq('no job number is a blocking issue, so it waits', noJob.issues.some(i => i.kind === 'no_job_number' && i.blocking), true)
 eq('decided (approved or declined): left',
   toConvert([won, later], new Map([[won.bookingKey, row(won.bookingKey, { core_status: 'APPROVED' })], [later.bookingKey, row(later.bookingKey, { core_status: 'DECLINED' })]])).length, 0)
@@ -199,6 +201,13 @@ defer((async () => {
   const slow = deps({ bookings: [won, won2], now: () => (clock += 40_000) })
   const r11 = await convertWonBookings(slow.d)
   eq('over the time budget: no new booking is started', [r11.outcomes.length, r11.waiting], [1, 1])
+
+  // More hand-built won bookings than one batch, all starting before a newly won one.
+  const handBuilt = Array.from({ length: CONVERT_PER_SWEEP + 1 }, (_, i) =>
+    build([hold({ sfdc_opportunity_id: `006Hs0000001${String(i).padStart(4, '0')}`, sfdc_job_number: `26-${5000 + i}`, start_date: '2026-11-20' })]))
+  const newlyWon = deps({ bookings: [...handBuilt, won2], ledJobs: async () => new Set(handBuilt.map(b => b.request.jobNumber!)) })
+  const r12 = await convertWonBookings(newlyWon.d)
+  eq('hand-built won bookings never fill the batch: the newly won one still converts', [r12.outcomes.filter(o => o.result === 'in_led').length, newlyWon.rows.get(won2.bookingKey)?.core_status, r12.waiting], [CONVERT_PER_SWEEP + 1, 'APPROVED', 0])
 
   const notSent = deps({ send: async () => ({ status: 409, body: { error: 'Not sent: no LED client.' } }) })
   const r6 = await convertWonBookings(notSent.d)

@@ -256,8 +256,9 @@ export async function refreshCache(): Promise<RefreshSummary> {
     return { off: 'conversion step threw', outcomes: [], waiting: 0 }
   })
   const convertFailures = converted.outcomes.filter(o => o.result === 'failed')
+  const convertedCount = converted.outcomes.filter(o => o.result === 'converted').length
   if (converted.outcomes.length) {
-    console.log(`[scheduleCache] LED conversion: ${converted.outcomes.filter(o => o.result === 'converted').length} converted, ${converted.outcomes.filter(o => o.result === 'declined').length} already declined, ${convertFailures.length} refused, ${converted.waiting} waiting`)
+    console.log(`[scheduleCache] LED conversion: ${convertedCount} converted, ${converted.outcomes.filter(o => o.result === 'declined').length} already declined, ${convertFailures.length} refused, ${converted.waiting} waiting`)
   }
   if (metricsPrestart || metricsExecuted || metricsAmounts) {
     console.log(`[scheduleCache] metrics: ${metricsPrestart} pre-start snapshot(s), ${metricsExecuted} executed leg(s), ${metricsAmounts} amount change(s)`)
@@ -290,7 +291,7 @@ export async function refreshCache(): Promise<RefreshSummary> {
     conflicts_auto_resolved:   reconciled.resolved,
     led_trucks_followed:       ledFollow.changed,
     led_follow_sync_pending:   ledFollowPending.length,
-    core_converted:             converted.outcomes.filter(o => o.result === 'converted').length,
+    core_converted:             convertedCount,
     core_convert_failed:        convertFailures.length,
     core_convert_off:           converted.off ?? null,
     standard_markets_set:       standardMarkets.updated,

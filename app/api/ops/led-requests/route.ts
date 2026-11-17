@@ -16,7 +16,7 @@ import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { coreConfig } from '@/lib/coreClient'
-import { convertOff, isDecided } from '@/lib/coreConvert'
+import { convertOff, isDecided, toConvert } from '@/lib/coreConvert'
 import { isReady, loadLedBookings } from '@/lib/ledReadiness'
 import { leftOutOfLed } from '@/lib/campaignRequests'
 
@@ -39,6 +39,7 @@ export async function GET() {
     })
     const excluded = current.filter(leftOutOfLed).map(summary).sort((a, b) => a.start.localeCompare(b.start))
     const rank = (blocked: boolean, issues: number) => (blocked ? 0 : issues > 0 ? 1 : 2)
+    const converting = convertOff(process.env) === null
     const bookings = all
       .map(b => {
         const row = sent.get(b.bookingKey)
@@ -52,6 +53,10 @@ export async function GET() {
           // LED's decision once a won booking is converted (or declined) there.
           converted: row?.core_status === 'APPROVED' ? { programUid: row.program_uid ?? null } : null,
           declined: row?.core_status === 'DECLINED',
+          // What LED decided beside, e.g. a decline because LED already runs the job by hand.
+          decisionNote: isDecided(row) ? row?.last_error ?? null : null,
+          // The sweep will try it: the same rule it uses (lib/coreConvert.ts toConvert).
+          converting: converting && toConvert([b], sent).length > 0,
           // A send's refusal, or (won, sent) the conversion's, until it's decided.
           lastError: isDecided(row) || (row?.core_uid && !b.wholeWon) ? null : row?.last_error ?? null,
         }

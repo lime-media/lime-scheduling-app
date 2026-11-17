@@ -55,7 +55,10 @@ export type ConvertDeps = {
   approve: (coreUid: string, jobNumber: string) => Promise<CoreDecided>
   /** Core now holds the booking as `fingerprint`. */
   saveUpdated: (bookingKey: string, fingerprint: string) => Promise<void>
-  saveDecided: (bookingKey: string, decided: CoreDecided) => Promise<void>
+  /** `note`: shown with the decision on LED Readiness (e.g. a decline because LED already runs the job). */
+  saveDecided: (bookingKey: string, decided: CoreDecided, note?: string) => Promise<void>
+  /** A note on a booking never sent (no row yet): its row is made with its reference to hold it. */
+  note: (bookingKey: string, externalRef: string, message: string) => Promise<void>
   saveError: (bookingKey: string, message: string) => Promise<void>
   audit: (b: BookingRequest, action: string, details: Record<string, unknown>) => Promise<void>
   /** The time in ms (tests). */
@@ -107,8 +110,8 @@ async function convertOne(b: BookingRequest, row: SentRow | undefined, inLed: Se
   // A CoreError with no status: Core couldn't be reached or didn't answer in time.
   const failWith = (err: unknown, fallback: string) =>
     fail(err instanceof CoreError ? err.message : fallback, err instanceof CoreError && err.status === null)
-  const decided = async (d: CoreDecided, already: boolean): Promise<ConvertOutcome> => {
-    await deps.saveDecided(key, d)
+  const decided = async (d: CoreDecided, already: boolean, note?: string): Promise<ConvertOutcome> => {
+    await deps.saveDecided(key, d, note)
     await deps.audit(b, d.decided === 'APPROVED' ? 'CONVERT_IN_LED' : 'DECLINED_IN_LED', { booking: key, core_uid: coreUid, program_uid: d.programUid, already })
       .catch(e => console.error('[core-convert] audit not recorded:', e instanceof Error ? e.message : e))
     return d.decided === 'APPROVED' ? { key, result: 'converted', programUid: d.programUid, already } : { key, result: 'declined' }
@@ -127,7 +130,9 @@ async function convertOne(b: BookingRequest, row: SentRow | undefined, inLed: Se
     try {
       const state = await deps.get(row.core_uid)
       if (state.status === 'APPROVED' || state.status === 'DECLINED') {
-        return await decided({ decided: state.status, programUid: state.programUid }, true)
+        // Declined beside a hand-built program: nothing for ops to build.
+        const note = state.status === 'DECLINED' ? `Declined in LED, which already runs job ${jobNumber} (built by hand).` : undefined
+        return await decided({ decided: state.status, programUid: state.programUid }, true, note)
       }
       // Shown on LED Readiness, so the request doesn't read as "converting" forever.
       await deps.saveError(key, `Not converted: LED already runs job ${jobNumber} (built by hand), so the app won't build a second program. Approve or decline this request in LED.`)
@@ -188,9 +193,21 @@ export async function convertWonBookings(deps: ConvertDeps): Promise<ConvertSumm
   // Read for every candidate, not just one batch: won bookings built in LED by
   // hand and never sent stay candidates every sweep, and would otherwise fill
   // the batch ahead of newly won ones.
-  const inLed = await deps.ledJobs(candidates.map(b => b.request.jobNumber ?? ''))
+  const running = await deps.ledJobs(candidates.map(b => b.request.jobNumber ?? ''))
+  // A job the app itself converted (another booking on the same opportunity)
+  // isn't built by hand: a sibling is approved with it too, and Core merges it.
+  const appJobs = new Set(bookings.filter(b => sent.get(b.bookingKey)?.core_status === 'APPROVED').map(b => jobKey(b.request.jobNumber)).filter((j): j is string => j !== null))
+  const inLed = new Set([...running].filter(j => !appJobs.has(j)))
   const byHand = (b: BookingRequest) => !sent.get(b.bookingKey)?.core_uid && inLed.has(jobKey(b.request.jobNumber) ?? '')
-  const outcomes: ConvertOutcome[] = candidates.filter(byHand).map(b => ({ key: b.bookingKey, result: 'in_led' as const }))
+  const outcomes: ConvertOutcome[] = []
+  for (const b of candidates.filter(byHand)) {
+    // Shown on LED Readiness, so a won booking that never converts says why.
+    const message = `Not converted: LED already runs job ${b.request.jobNumber} (built by hand), so the app won't build a second program.`
+    if (sent.get(b.bookingKey)?.last_error !== message) {
+      await deps.note(b.bookingKey, b.request.externalRef, message).catch(e => console.error('[core-convert] note not recorded:', e instanceof Error ? e.message : e))
+    }
+    outcomes.push({ key: b.bookingKey, result: 'in_led' })
+  }
   // Sent ones whose job LED already runs need a read every sweep until Core
   // says they're decided; they take only the slots newly won bookings leave.
   const ledRuns = (b: BookingRequest) => inLed.has(jobKey(b.request.jobNumber) ?? '')
@@ -246,8 +263,16 @@ export async function liveConvertDeps(): Promise<ConvertDeps> {
     saveUpdated: async (key, fingerprint) => {
       await prisma.campaignRequestSync.update({ where: { booking_key: key }, data: { last_sent_hash: fingerprint, last_sent_at: new Date(), last_error: null, last_error_at: null } })
     },
-    saveDecided: async (key, d) => {
-      await prisma.campaignRequestSync.update({ where: { booking_key: key }, data: { core_status: d.decided, program_uid: GUID.test(d.programUid ?? '') ? d.programUid : null, last_error: null, last_error_at: null } })
+    saveDecided: async (key, d, note) => {
+      await prisma.campaignRequestSync.update({ where: { booking_key: key }, data: { core_status: d.decided, program_uid: GUID.test(d.programUid ?? '') ? d.programUid : null, last_error: note ?? null, last_error_at: note ? new Date() : null } })
+    },
+    note: async (key, externalRef, message) => {
+      // The reference is the booking's own; if another booking's row holds it, the note is skipped.
+      await prisma.campaignRequestSync.upsert({
+        where: { booking_key: key },
+        create: { booking_key: key, external_ref: externalRef, last_error: message, last_error_at: new Date() },
+        update: { last_error: message, last_error_at: new Date() },
+      })
     },
     // A booking refused before its first send has no row yet: nothing to record on.
     saveError: async (key, message) => {

@@ -117,7 +117,8 @@ function deps(over: Partial<ConvertDeps> & { bookings?: BookingRequest[]; rows?:
     update: async (uid, b) => { log.push(`put ${uid} ${b.externalRef}`); return null },
     approve: async (uid, job) => { log.push(`approve ${uid} ${job}`); return over.approveAnswer ? over.approveAnswer() : { decided: 'APPROVED', programUid: PROGRAM } },
     saveUpdated: async (key, fp) => { log.push('saveUpdated'); rows.set(key, { ...rows.get(key)!, last_sent_hash: fp }) },
-    saveDecided: async (key, dd) => { rows.set(key, { ...(rows.get(key) ?? row(key)), core_status: dd.decided, program_uid: dd.programUid }) },
+    saveDecided: async (key, dd, note) => { rows.set(key, { ...(rows.get(key) ?? row(key)), core_status: dd.decided, program_uid: dd.programUid, last_error: note ?? null }) },
+    note: async (key, ref, message) => { log.push('note'); rows.set(key, { ...(rows.get(key) ?? row(key, { external_ref: ref })), last_error: message }) },
     saveError: async (key, message) => { rows.set(key, { ...(rows.get(key) ?? row(key)), last_error: message }) },
     audit: async (_b, action, details) => { audits.push([action, details]) },
     ...over,
@@ -182,7 +183,7 @@ defer((async () => {
   const byHand = deps({ ledJobs: async jobs => { log0.push(jobs.join()); return new Set(['26-1234']) } })
   const log0: string[] = []
   const r7 = await convertWonBookings(byHand.d)
-  eq('never sent, and LED already runs its job (built by hand): nothing sent or approved', [log0, byHand.log, r7.outcomes[0]], [['26-1234'], [], { key: won.bookingKey, result: 'in_led' }])
+  eq('never sent, and LED already runs its job (built by hand): nothing sent or approved', [log0, byHand.log, r7.outcomes[0]], [['26-1234'], ['note'], { key: won.bookingKey, result: 'in_led' }])
   const byHandSent = deps({ ledJobs: async () => new Set(['26-1234']), rows: new Map([[won.bookingKey, row(won.bookingKey, { core_uid: 'UID-1', last_sent_hash: fp })]]) })
   const r8 = await convertWonBookings(byHandSent.d)
   eq('sent, LED runs the job, Core says not approved: left alone, never approved', [byHandSent.log, r8.outcomes[0].result], [['get UID-1'], 'in_led'])
@@ -216,6 +217,21 @@ defer((async () => {
   const twice = deps({ bookings: [won, sameJob] })
   const r15 = await convertWonBookings(twice.d)
   eq('two bookings on one job number: only the first goes this sweep', [twice.log.filter(l => l.startsWith('approve')).length, r15.waiting], [1, 1])
+
+  const sibling = build([hold({ sfdc_opportunity_id: '006Hs00000000001', campaign_group_id: 'mm_REQ2', start_date: '2027-01-04', end_date: '2027-01-10' })])
+  const sib = deps({ bookings: [won, sibling], ledJobs: async () => new Set(['26-1234']), rows: new Map([[won.bookingKey, row(won.bookingKey, { core_uid: 'UID-1', core_status: 'APPROVED' })]]) })
+  await convertWonBookings(sib.d)
+  eq('a second booking on a job the app converted is not "built by hand": it is sent and approved (Core merges it)',
+    [sibling.bookingKey !== won.bookingKey, sib.log, sib.rows.get(sibling.bookingKey)?.core_status], [true, ['send', 'approve UID-9 26-1234'], 'APPROVED'])
+
+  const noted = deps({ ledJobs: async () => new Set(['26-1234']) })
+  await convertWonBookings(noted.d)
+  await convertWonBookings(noted.d)
+  eq('never sent and built by hand: a note says why, written once', [noted.log, /already runs job 26-1234/.test(noted.rows.get(won.bookingKey)?.last_error ?? '')], [['note'], true])
+
+  const declinedBeside = deps({ ledJobs: async () => new Set(['26-1234']), state: { status: 'DECLINED', opsEditedAt: null }, rows: new Map([[won.bookingKey, row(won.bookingKey, { core_uid: 'UID-1', last_sent_hash: fp })]]) })
+  await convertWonBookings(declinedBeside.d)
+  eq('declined beside a hand-built program: recorded with a note, so ops are not told to build it', [declinedBeside.rows.get(won.bookingKey)?.core_status, /already runs job/.test(declinedBeside.rows.get(won.bookingKey)?.last_error ?? '')], ['DECLINED', true])
 
   const notSent = deps({ send: async () => ({ status: 409, body: { error: 'Not sent: no LED client.' } }) })
   const r6 = await convertWonBookings(notSent.d)

@@ -259,8 +259,10 @@ export async function refreshCache(): Promise<RefreshSummary> {
   })
   const convertFailures = converted.outcomes.filter(o => o.result === 'failed')
   const convertedCount = converted.outcomes.filter(o => o.result === 'converted').length
-  if (converted.outcomes.length) {
-    console.log(`[scheduleCache] LED conversion: ${convertedCount} converted, ${converted.outcomes.filter(o => o.result === 'declined').length} already declined, ${convertFailures.length} refused, ${converted.waiting} waiting`)
+  // Hand-built won bookings come back as in_led every sweep: log only when something else happened.
+  const convertInLed = converted.outcomes.filter(o => o.result === 'in_led').length
+  if (converted.outcomes.length > convertInLed || converted.waiting) {
+    console.log(`[scheduleCache] LED conversion: ${convertedCount} converted, ${converted.outcomes.filter(o => o.result === 'declined').length} already declined, ${convertFailures.length} refused, ${convertInLed} already in LED, ${converted.waiting} waiting`)
   }
   if (metricsPrestart || metricsExecuted || metricsAmounts) {
     console.log(`[scheduleCache] metrics: ${metricsPrestart} pre-start snapshot(s), ${metricsExecuted} executed leg(s), ${metricsAmounts} amount change(s)`)

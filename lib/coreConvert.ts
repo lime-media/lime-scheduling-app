@@ -129,6 +129,9 @@ async function convertOne(b: BookingRequest, row: SentRow | undefined, inLed: Se
       if (state.status === 'APPROVED' || state.status === 'DECLINED') {
         return await decided({ decided: state.status, programUid: state.programUid }, true)
       }
+      // Shown on LED Readiness, so the request doesn't read as "converting" forever.
+      await deps.saveError(key, `Not converted: LED already runs job ${jobNumber} (built by hand), so the app won't build a second program. Approve or decline this request in LED.`)
+        .catch(e => console.error('[core-convert] note not recorded:', e instanceof Error ? e.message : e))
       return { key, result: 'in_led' }
     } catch (err) {
       return failWith(err, 'Reading the request in LED failed unexpectedly.')
@@ -211,6 +214,9 @@ export async function convertWonBookings(deps: ConvertDeps): Promise<ConvertSumm
   return { outcomes, waiting: all.length - (outcomes.length - tried) }
 }
 
+/** program_uid is a uniqueidentifier: anything else Core sends is kept only in the audit row, so the decision still saves. */
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /** The real dependencies: this deployment's settings, the database and Core, acting as the Salesforce service user. */
 export async function liveConvertDeps(): Promise<ConvertDeps> {
   const env = process.env
@@ -241,13 +247,15 @@ export async function liveConvertDeps(): Promise<ConvertDeps> {
       await prisma.campaignRequestSync.update({ where: { booking_key: key }, data: { last_sent_hash: fingerprint, last_sent_at: new Date(), last_error: null, last_error_at: null } })
     },
     saveDecided: async (key, d) => {
-      await prisma.campaignRequestSync.update({ where: { booking_key: key }, data: { core_status: d.decided, program_uid: d.programUid, last_error: null, last_error_at: null } })
+      await prisma.campaignRequestSync.update({ where: { booking_key: key }, data: { core_status: d.decided, program_uid: GUID.test(d.programUid ?? '') ? d.programUid : null, last_error: null, last_error_at: null } })
     },
+    // A booking refused before its first send has no row yet: nothing to record on.
     saveError: async (key, message) => {
-      await prisma.campaignRequestSync.update({ where: { booking_key: key }, data: { last_error: message, last_error_at: new Date() } })
+      await prisma.campaignRequestSync.updateMany({ where: { booking_key: key }, data: { last_error: message, last_error_at: new Date() } })
     },
     audit: async (b, action, details) => {
-      if (!by) return
+      // No one to audit as: keep the record in the logs (LED_EDITS_REPLACED is how ops edits get put back).
+      if (!by) { console.warn(`[core-convert] ${action} not audited (no ${SFDC_SERVICE_USER_EMAIL} user):`, JSON.stringify(details)); return }
       await prisma.auditLog.create({
         data: { action, truck_number: b.request.markets.flatMap(m => m.trucks).join(', ').slice(0, 100), user_id: by, details: JSON.stringify(details) },
       })

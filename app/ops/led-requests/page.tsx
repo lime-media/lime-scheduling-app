@@ -21,7 +21,7 @@ type Booking = Summary & {
   issues: Issue[]
   ready: boolean; wholeWon: boolean; sent: { coreUid: string; requestId: string | null } | null; lastError: string | null
   /** LED's decision on a won booking (lib/coreConvert.ts). */
-  converted: { programUid: string | null } | null; declined: boolean; decisionNote: string | null; converting: boolean
+  converted: { programUid: string | null } | null; declined: boolean; decisionNote: string | null; converting: boolean; handBuilt: string | null
 }
 type Data = { total: number; blocked: number; bookings: Booking[]; excluded: Summary[]; send: { enabled: boolean; reason?: string }; convert: { enabled: boolean; reason?: string } }
 
@@ -157,6 +157,7 @@ export default function LedRequestsPage() {
                             >
                               {sending === b.key ? 'Sending…' : 'Send to LED'}
                             </button>
+                            {b.handBuilt && <div className="mt-1 text-xs text-gray-600">{b.handBuilt}</div>}
                             {failed && <div className="mt-1 text-xs text-red-800">{failed}</div>}
                             {note && !sendErrors[b.key] && <div className="mt-1 text-xs text-amber-800">{note}</div>}
                           </div>

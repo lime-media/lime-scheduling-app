@@ -57,8 +57,6 @@ export type ConvertDeps = {
   saveUpdated: (bookingKey: string, fingerprint: string) => Promise<void>
   /** `note`: shown with the decision on LED Readiness (e.g. a decline because LED already runs the job). */
   saveDecided: (bookingKey: string, decided: CoreDecided, note?: string) => Promise<void>
-  /** A note on a booking never sent (no row yet): its row is made with its reference to hold it. */
-  note: (bookingKey: string, externalRef: string, message: string) => Promise<void>
   saveError: (bookingKey: string, message: string) => Promise<void>
   audit: (b: BookingRequest, action: string, details: Record<string, unknown>) => Promise<void>
   /** The time in ms (tests). */
@@ -86,6 +84,16 @@ export function convertOff(env: Record<string, string | undefined>): string | nu
   return null
 }
 
+/**
+ * The job numbers LED runs (`running`, jobKey) that were built by hand: less
+ * any job the app itself converted for a live booking (another booking on the
+ * same opportunity), which a sibling is approved with too, and Core merges. Pure.
+ */
+export function handBuiltJobs(bookings: BookingRequest[], sent: Map<string, SentRow>, running: Set<string>): Set<string> {
+  const appJobs = new Set(bookings.filter(b => sent.get(b.bookingKey)?.core_status === 'APPROVED').map(b => jobKey(b.request.jobNumber)).filter((j): j is string => j !== null))
+  return new Set([...running].filter(j => !appJobs.has(j)))
+}
+
 /** The won bookings to convert now, oldest start first. Pure. */
 export function toConvert(bookings: BookingRequest[], sent: Map<string, SentRow>): BookingRequest[] {
   return bookings
@@ -93,6 +101,10 @@ export function toConvert(bookings: BookingRequest[], sent: Map<string, SentRow>
     .filter(b => b.wholeWon && !leftOutOfLed(b) && isReady(b) && !isDecided(sent.get(b.bookingKey)))
     .sort((a, b) => a.request.startDate.localeCompare(b.request.startDate) || a.bookingKey.localeCompare(b.bookingKey))
 }
+
+/** Why a won booking whose job LED already runs (built by hand) isn't converted. Shown on LED Readiness. */
+export const byHandMessage = (jobNumber: string | null) =>
+  `Not converted: LED already runs job ${jobNumber} (built by hand), so the app won't build a second program.`
 
 const later = (edited: string | null, sentAt: Date | null | undefined) => {
   if (!edited) return false
@@ -135,7 +147,7 @@ async function convertOne(b: BookingRequest, row: SentRow | undefined, inLed: Se
         return await decided({ decided: state.status, programUid: state.programUid }, true, note)
       }
       // Shown on LED Readiness, so the request doesn't read as "converting" forever.
-      await deps.saveError(key, `Not converted: LED already runs job ${jobNumber} (built by hand), so the app won't build a second program. Approve or decline this request in LED.`)
+      await deps.saveError(key, `${byHandMessage(jobNumber)} Approve or decline this request in LED.`)
         .catch(e => console.error('[core-convert] note not recorded:', e instanceof Error ? e.message : e))
       return { key, result: 'in_led' }
     } catch (err) {
@@ -193,21 +205,11 @@ export async function convertWonBookings(deps: ConvertDeps): Promise<ConvertSumm
   // Read for every candidate, not just one batch: won bookings built in LED by
   // hand and never sent stay candidates every sweep, and would otherwise fill
   // the batch ahead of newly won ones.
-  const running = await deps.ledJobs(candidates.map(b => b.request.jobNumber ?? ''))
-  // A job the app itself converted (another booking on the same opportunity)
-  // isn't built by hand: a sibling is approved with it too, and Core merges it.
-  const appJobs = new Set(bookings.filter(b => sent.get(b.bookingKey)?.core_status === 'APPROVED').map(b => jobKey(b.request.jobNumber)).filter((j): j is string => j !== null))
-  const inLed = new Set([...running].filter(j => !appJobs.has(j)))
+  const inLed = handBuiltJobs(bookings, sent, await deps.ledJobs(candidates.map(b => b.request.jobNumber ?? '')))
   const byHand = (b: BookingRequest) => !sent.get(b.bookingKey)?.core_uid && inLed.has(jobKey(b.request.jobNumber) ?? '')
   const outcomes: ConvertOutcome[] = []
-  for (const b of candidates.filter(byHand)) {
-    // Shown on LED Readiness, so a won booking that never converts says why.
-    const message = `Not converted: LED already runs job ${b.request.jobNumber} (built by hand), so the app won't build a second program.`
-    if (sent.get(b.bookingKey)?.last_error !== message) {
-      await deps.note(b.bookingKey, b.request.externalRef, message).catch(e => console.error('[core-convert] note not recorded:', e instanceof Error ? e.message : e))
-    }
-    outcomes.push({ key: b.bookingKey, result: 'in_led' })
-  }
+  // Nothing is stored for these: LED Readiness reads LED's jobs itself and says why (byHandMessage).
+  for (const b of candidates.filter(byHand)) outcomes.push({ key: b.bookingKey, result: 'in_led' })
   // Sent ones whose job LED already runs need a read every sweep until Core
   // says they're decided; they take only the slots newly won bookings leave.
   const ledRuns = (b: BookingRequest) => inLed.has(jobKey(b.request.jobNumber) ?? '')
@@ -265,14 +267,6 @@ export async function liveConvertDeps(): Promise<ConvertDeps> {
     },
     saveDecided: async (key, d, note) => {
       await prisma.campaignRequestSync.update({ where: { booking_key: key }, data: { core_status: d.decided, program_uid: GUID.test(d.programUid ?? '') ? d.programUid : null, last_error: note ?? null, last_error_at: note ? new Date() : null } })
-    },
-    note: async (key, externalRef, message) => {
-      // The reference is the booking's own; if another booking's row holds it, the note is skipped.
-      await prisma.campaignRequestSync.upsert({
-        where: { booking_key: key },
-        create: { booking_key: key, external_ref: externalRef, last_error: message, last_error_at: new Date() },
-        update: { last_error: message, last_error_at: new Date() },
-      })
     },
     // A booking refused before its first send has no row yet: nothing to record on.
     saveError: async (key, message) => {

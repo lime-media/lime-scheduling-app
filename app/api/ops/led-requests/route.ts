@@ -16,7 +16,9 @@ import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { coreConfig } from '@/lib/coreClient'
-import { convertOff, isDecided, toConvert } from '@/lib/coreConvert'
+import { byHandMessage, convertOff, handBuiltJobs, isDecided, toConvert } from '@/lib/coreConvert'
+import { ledProgramJobs } from '@/lib/ledJobs'
+import { jobKey } from '@/lib/jobNumber'
 import { isReady, loadLedBookings } from '@/lib/ledReadiness'
 import { leftOutOfLed } from '@/lib/campaignRequests'
 
@@ -39,7 +41,16 @@ export async function GET() {
     })
     const excluded = current.filter(leftOutOfLed).map(summary).sort((a, b) => a.start.localeCompare(b.start))
     const rank = (blocked: boolean, issues: number) => (blocked ? 0 : issues > 0 ? 1 : 2)
-    const converting = convertOff(process.env) === null
+    const off = convertOff(process.env)
+    // The bookings the sweep would convert, and which of their jobs LED already
+    // runs by hand (read here, as the sweep reads it, so the page is never stale).
+    const candidates = new Set(toConvert(all, sent).map(b => b.bookingKey))
+    const running = candidates.size === 0 || off !== null ? new Set<string>()
+      : await ledProgramJobs(all.filter(b => candidates.has(b.bookingKey)).map(b => b.request.jobNumber ?? '')).catch(err => {
+        console.error('[led-requests] LED jobs unread:', err instanceof Error ? err.message : err)
+        return null
+      })
+    const byHand = running ? handBuiltJobs(current, sent, running) : null
     const bookings = all
       .map(b => {
         const row = sent.get(b.bookingKey)
@@ -55,8 +66,10 @@ export async function GET() {
           declined: row?.core_status === 'DECLINED',
           // What LED decided beside, e.g. a decline because LED already runs the job by hand.
           decisionNote: isDecided(row) ? row?.last_error ?? null : null,
-          // The sweep will try it: the same rule it uses (lib/coreConvert.ts toConvert).
-          converting: converting && toConvert([b], sent).length > 0,
+          // The sweep will convert it (lib/coreConvert.ts): a candidate whose job LED doesn't already run by hand.
+          converting: off === null && candidates.has(b.bookingKey) && byHand !== null && !byHand.has(jobKey(b.request.jobNumber) ?? ''),
+          // A candidate LED already runs by hand, and was never sent: why it won't convert.
+          handBuilt: candidates.has(b.bookingKey) && !row?.core_uid && byHand?.has(jobKey(b.request.jobNumber) ?? '') ? byHandMessage(b.request.jobNumber) : null,
           // A send's refusal, or (won, sent) the conversion's, until it's decided.
           lastError: isDecided(row) || (row?.core_uid && !b.wholeWon) ? null : row?.last_error ?? null,
         }
@@ -69,7 +82,7 @@ export async function GET() {
       bookings,
       excluded,
       send: config.ok ? { enabled: true } : { enabled: false, reason: config.reason },
-      convert: (off => off ? { enabled: false, reason: off } : { enabled: true })(convertOff(process.env)),
+      convert: off ? { enabled: false, reason: off } : { enabled: true },
     })
   } catch (err) {
     console.error('[led-requests] read failed:', err)

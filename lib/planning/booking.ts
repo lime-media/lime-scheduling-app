@@ -5,6 +5,7 @@
  */
 
 import type { QuoteFeatures } from '@/lib/quoteFeatures'
+import { optionItems } from './options'
 import { rotationStints, type OrderPlan, type Stint } from './order'
 import type { LineQuote, OrderStudies, QuoteRequest } from './quote'
 
@@ -25,6 +26,10 @@ export function lineFeatures(l: LineQuote, f: QuoteRequest['features'], brandMar
     daysPerWeek: l.daysPerWeek,
     operatingHours: l.hours,
     baseMedia: l.baseMedia,
+    // The order's options are priced once and carried on one market
+    // (lib/planning/options.ts applyOptions): their amounts are on its holds
+    // only, so every hold records which were chosen (a revision restores them).
+    shadowFencingIncluded: f.shadowFencing === true,
     shadowFencing: f.shadowFencing ? l.shadowFencing : 0,
     shadowFencingFloored: l.shadowFencingFloored,
     smartDirectionalIncluded: f.smartDirectional,
@@ -98,6 +103,12 @@ export function planStretches(plan: OrderPlan): { truckNumber: string; stint: St
 }
 
 const STUDY_NAMES: Record<string, string> = { web_lift: 'web lift', foot_traffic: 'foot traffic', brand_lift: 'brand lift', sales_lift: 'sales lift' }
+
+/** The order's options for the opportunity's Description: one line, priced once for the whole order (lib/planning/options.ts). */
+export function optionsDescription(o: Parameters<typeof optionItems>[0]): string[] {
+  const items = optionItems(o)
+  return items.length ? [`Options for the whole order: ${items.map(x => `${x.label} ${money(x.amount)}`).join('; ')}.`] : []
+}
 
 /** The Salesforce Description lines for an order's lift studies (none when it sold none). Pure. */
 export function studiesDescription(st: Pick<OrderStudies, 'studies' | 'prices' | 'total' | 'uniqueMarkets' | 'salesLiftRequested' | 'warning'>): string[] {

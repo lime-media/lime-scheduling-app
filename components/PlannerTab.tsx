@@ -33,7 +33,7 @@ import { useReopenConfirm } from '@/components/ReopenOpportunityDialog'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { ReviewFinding } from '@/lib/planning/claude'
 import type { Arrival, LineQuote, MultiMarketQuote, QuoteRow, RowError } from '@/lib/planning/quote'
-import { mediaParts } from '@/lib/planning/mediaParts'
+import { optionItems } from '@/lib/planning/options'
 import { selectionTotal } from '@/lib/planning/studies'
 import { STUDY_MIN_IMPRESSIONS, STUDY_PRICE, VALID_STUDIES, type StudyType } from '@/lib/pricing/config'
 import { BRAND_LIFT_PRICE, STUDY_EXTRA_MARKET_PRICE, STUDY_INCLUDED_MARKETS } from '@/lib/pricing/studies'
@@ -391,7 +391,7 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
 
   const placeHolds = async (allowPartial = false, expectedTotal?: number, reopenAgreed = revision?.reopenOpportunity === true): Promise<void> => {
     if (!account || !contact || !quote) return
-    const shown = expectedTotal ?? selectionTotal(quote.lines, selected, quote.studies, quote.brandMarkupPct).total
+    const shown = expectedTotal ?? selectionTotal(quote.lines, selected, quote.studies, quote.options, quote.brandMarkupPct).total
     setHolding(true); setHoldResult(null)
     try {
       const res = await fetch('/api/plan/hold', {
@@ -836,9 +836,10 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
   const [openTruck, setOpenTruck] = useState<string | null>(null)
   const short = quote.lines.filter(l => l.missing > 0)
   const chosen = quote.lines.filter(l => selected.has(l.id))
-  // The order's studies priced again for just the selected markets, as the
-  // server books them: the panel below and the button both describe that.
-  const selection = selectionTotal(quote.lines, selected, quote.studies, quote.brandMarkupPct)
+  // The order's options and studies priced again for just the selected
+  // markets, as the server books them: the panel below and the button both
+  // describe that.
+  const selection = selectionTotal(quote.lines, selected, quote.studies, quote.options, quote.brandMarkupPct)
   const chosenTotal = selection.total
   const st = selection.studies
   const chosenLines = quote.lines.filter(l => selected.has(l.id))
@@ -897,25 +898,19 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
                   <td className={tdTop}>{l.market}</td>
                   <td className={tdTop + ' whitespace-nowrap'}><DeliveryDates l={l} /></td>
                   <td className={tdTop}><DeliveryDays l={l} /></td>
-                  <td className={tdTopNum}>{fmtMoney(l.media - l.studiesTotal)}</td>
+                  {/* Base media only: the order's options and studies are their own rows below (priced once for the order). */}
+                  <td className={tdTopNum}>{fmtMoney(l.media - l.studiesTotal - l.optionsTotal)}</td>
                   <td className={tdTopNum}>
                     {l.transport.billed > 0 ? fmtMoney(l.transport.billed) : <span className="text-gray-400">{l.transport.outcome === 'ABSORBED' ? 'included' : '—'}</span>}
                   </td>
                   <td className={tdTopNum + ' font-medium'}>
-                    {/* The order's studies are their own row below (priced once for the order). */}
-                    {fmtMoney(l.total - l.studiesTotal)}
+                    {fmtMoney(l.total - l.studiesTotal - l.optionsTotal)}
                     {l.priceKept && <span className="block text-[11px] font-normal text-blue-700" title="Unchanged in this revision: keeps the price already booked">booked price kept</span>}
                   </td>
                 </tr>
                 <tr className={selected.has(l.id) ? '' : unselectedRow}>
                   <td className={td} />
                   <td className={td + ' text-xs pt-0'} colSpan={6}>
-                    {/* What the market's media is made of: base and each option chosen (as the single-market quote lists it). */}
-                    {mediaParts(l).length > 0 && (
-                      <div className="text-gray-600 mb-0.5">
-                        Media: {mediaParts(l).map(p => `${p.label} ${fmtMoney(p.amount)}`).join(' · ')}
-                      </div>
-                    )}
                     <div className="flex flex-wrap gap-x-4 gap-y-0.5">
                       {l.arrivals.map(a => <ArrivalLine key={a.truckNumber} a={a} />)}
                       {l.missing > 0 && <div className="text-red-700">{l.missing} not covered</div>}
@@ -923,6 +918,14 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
                   </td>
                 </tr>
                 </Fragment>
+              ))}
+              {/* The order's options, one line each, priced once for the whole order (lib/planning/options.ts). */}
+              {optionItems(quote.options).map(o => (
+                <tr key={o.label}>
+                  <td className={td}></td>
+                  <td className={td} colSpan={5}>{o.label}, for the whole order</td>
+                  <td className={tdNum}>{fmtMoney(o.amount)}</td>
+                </tr>
               ))}
               {quote.studies.total > 0 && (
                 <tr>
@@ -933,7 +936,8 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
               )}
               <tr className="font-medium">
                 <td className={td} colSpan={4}>Totals</td>
-                <td className={tdNum}>{fmtMoney(summary.media)}</td>
+                {/* Base media; the options and studies rows above are in the Total column. */}
+                <td className={tdNum}>{fmtMoney(summary.media - quote.options.total - quote.studies.total)}</td>
                 <td className={tdNum}>{summary.transportBilled > 0 ? fmtMoney(summary.transportBilled) : '—'}</td>
                 <td className={tdNum + ' font-bold'}>{fmtMoney(summary.grandTotal)}</td>
               </tr>
@@ -941,8 +945,11 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
           </table>
         </div>
 
-        {/* Reach and lift studies for the markets selected to book (lib/planning/studies.ts selectionTotal). */}
+        {/* Options, reach and lift studies for the markets selected to book (lib/planning/studies.ts selectionTotal). */}
         <div className="mt-3 text-xs text-gray-600 space-y-1">
+          {chosenLines.length > 0 && chosenLines.length < quote.lines.length && selection.options.total > 0 && (
+            <p>Options for the {chosenLines.length} selected market{chosenLines.length === 1 ? '' : 's'}: {optionItems(selection.options).map(o => `${o.label} ${fmtMoney(o.amount)}`).join(' · ')}.</p>
+          )}
           <p>
             Estimated reach: {fmtNum(st.estimatedImpressions)} impressions across the {chosenLines.length === quote.lines.length ? 'order' : `${chosenLines.length} selected market${chosenLines.length === 1 ? '' : 's'}`}
             {chosenLines.length > 0 && <>{' '}({chosenLines.map(l => `${l.market} ${fmtNum(l.estimatedImpressions)}`).join(' · ')})</>}: truck-days × each market tier&apos;s daily A18+ impressions per truck.

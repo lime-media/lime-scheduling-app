@@ -413,12 +413,15 @@ export function reviseRows(holds: RevisableHold[]): {
     }
   }).sort((a, b) => a.startDate.localeCompare(b.startDate) || a.market.localeCompare(b.market))
   const f = parseFeatures(holds.find(h => h.features)?.features ?? null)
+  // A multi-market order's options are priced once and carried on one market's
+  // holds (lib/planning/options.ts), so each is chosen when any hold says so.
+  const all = holds.map(h => parseFeatures(h.features))
   return {
     rows,
     features: {
-      shadowFencing: Number(f.shadowFencing) > 0,
-      smartDirectional: f.smartDirectionalIncluded === true,
-      deviceId: f.deviceIdIncluded === true,
+      shadowFencing: all.some(x => x.shadowFencingIncluded === true || Number(x.shadowFencing) > 0),
+      smartDirectional: all.some(x => x.smartDirectionalIncluded === true),
+      deviceId: all.some(x => x.deviceIdIncluded === true),
       // The order's studies: every hold of a booking records the same ones.
       studies: bookedStudies(holds),
     },

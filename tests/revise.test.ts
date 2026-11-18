@@ -166,16 +166,20 @@ section('revise: unchanged markets keep their booked price')
     assigned: [{ truckNumber: '0382', sharedWith: null, hopRoadMiles: 0 }, { truckNumber: '0912', sharedWith: null, hopRoadMiles: 0 }], ...o }) as never
   const kept = new Map([['r1', { total: 42000, features: JSON.stringify({ transportCharge: 0, baseMedia: 36000, shadowFencing: 6000 }), trucks: ['0382', '0912'], truckCount: 2, markupPct: 0 as number | null }]])
   const [l] = keepBookedPrices([line({})], kept) as unknown as { total: number; media: number; priceKept: boolean; transport: { billed: number } }[]
-  eq('the booked price and its breakdown replace today\'s', [l.total, l.media, l.transport.billed, l.priceKept], [42000, 42000, 0, true])
+  // The booked $42,000 carried $6,000 of shadow fencing: the market keeps its base media; the order's options are priced again for the whole order (applyOptions).
+  eq('the booked base media and transport replace today\'s', [l.total, l.media, l.transport.billed, l.priceKept], [36000, 36000, 0, true])
+  eq('its options come off, to be priced for the order', [(l as unknown as { shadowFencing: number; optionsTotal: number }).shadowFencing, (l as unknown as { optionsTotal: number }).optionsTotal], [0, 0])
   const [swapped] = keepBookedPrices([line({ assigned: [{ truckNumber: '7777', sharedWith: null, hopRoadMiles: 0 }] })], kept) as unknown as { total: number; priceKept?: boolean }[]
   eq('a market that lost its trucks is priced today', [swapped.total, swapped.priceKept ?? false], [50000, false])
   const [partial] = keepBookedPrices([line({ trucks: 1, assigned: [{ truckNumber: '0382', sharedWith: null, hopRoadMiles: 0 }] })], kept) as unknown as { total: number; priceKept?: boolean }[]
   const [sameMarkup] = keepBookedPrices([line({})], kept, 0) as unknown as { total: number }[]
-  eq('the same Brand Direct markup keeps the price', sameMarkup.total, 42000)
+  eq('the same Brand Direct markup keeps the price', sameMarkup.total, 36000)
   const [newMarkup] = keepBookedPrices([line({})], kept, 10) as unknown as { total: number; priceKept?: boolean }[]
   eq('a changed markup reprices the market', [newMarkup.total, newMarkup.priceKept ?? false], [50000, false])
   const unknown = new Map([['r1', { ...kept.get('r1')!, markupPct: null }]])
-  eq('holds booked before the markup was recorded: kept as before', (keepBookedPrices([line({})], unknown, 10) as unknown as { total: number }[])[0].total, 42000)
+  eq('holds booked before the markup was recorded: kept as before', (keepBookedPrices([line({})], unknown, 10) as unknown as { total: number }[])[0].total, 36000)
+  const short = new Map([['r1', { ...kept.get('r1')!, total: 4000 }]])
+  eq('stored options above the booked total (figures that don\'t add up): priced today', (keepBookedPrices([line({})], short) as unknown as { total: number; priceKept?: boolean }[]).map(x => [x.total, x.priceKept ?? false]), [[50000, false]])
   eq('a partial booking that dropped a truck is priced today, not at the 2-truck price', [partial.total, partial.priceKept ?? false], [50000, false])
 
   // Dallas booked twice: March ($30,000) and June ($45,000).

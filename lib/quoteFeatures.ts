@@ -21,6 +21,8 @@ export type QuoteFeatures = {
   daysPerWeek?: number
   operatingHours?: number
   baseMedia?: number
+  /** Multi-market: shadow fencing was chosen for the order (its amount is on one market's holds only). */
+  shadowFencingIncluded?: boolean
   shadowFencing?: number
   shadowFencingFloored?: boolean
   smartDirectionalIncluded?: boolean

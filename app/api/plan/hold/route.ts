@@ -57,7 +57,7 @@ import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, CLIENT_TYPE_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, reopenClosedLostOpportunity, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { SFDC_SERVICE_USER_EMAIL, attachedToOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { bookWhatFits, buildMultiMarketQuote, holdPlaces, resolveRows, validateQuoteRequest, type QuoteRequest } from '@/lib/planning/quote'
-import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches, planTier, studiesDescription } from '@/lib/planning/booking'
+import { describeBooked, describeQuoted, fitNames, lineFeatures, money, optionsDescription, planStretches, planTier, studiesDescription } from '@/lib/planning/booking'
 import { VALID_STUDIES, type StudyType } from '@/lib/pricing/config'
 import { centralDate, holdExpDate } from '@/lib/dateOnly'
 import { recordBooking } from '@/lib/transportMetricsRecord'
@@ -559,9 +559,11 @@ async function handlePost(req: NextRequest) {
           // Internal record only: every price below already includes it.
           ...(quote.brandMarkupPct ? [`Brand Direct pricing: +${quote.brandMarkupPct}% folded into every line item.`, ''] : []),
           quoteOnly ? 'Quoted (no reservation):' : 'Booked:',
-          ...quote.lines.map(l => `${describeBooked(l)}, ${money(l.total)}`),
-          // Without the order's studies: they're priced once, on what's booked (studiesDescription).
-          ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(l.total - l.studiesTotal)}`)] : []),
+          // Each market without the order's options: they're priced once for the whole order (optionsDescription).
+          ...quote.lines.map(l => `${describeBooked(l)}, ${money(l.total - l.optionsTotal)}`),
+          ...optionsDescription(quote.options),
+          // Without the order's options and studies: they're priced once, on what's booked.
+          ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(l.total - l.studiesTotal - l.optionsTotal)}`)] : []),
           ...(unavailable.length ? ['', 'Quoted but no truck available:', ...unavailable] : []),
           ...studiesDescription(quote.studies),
         ].join('\n')

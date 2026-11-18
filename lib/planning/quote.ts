@@ -652,7 +652,7 @@ async function applyRevision(req: QuoteRequest, lines: OrderLine[]): Promise<{ l
   if (!req.revise?.bookingKey) return { lines }
   const held = await loadBookingHolds(req.revise.bookingKey)
   if (held.length === 0) return { lines }
-  const kept = keptPrices(held, req.rows, req.features)
+  const kept = keptPrices(held, req.rows)
   const norm = (m: string) => m.trim().toLowerCase().replace(/\s+/g, ' ')
   // Each row keeps the trucks of the booked market it continues: the one with
   // its dates when the same market was booked twice, else the first of that

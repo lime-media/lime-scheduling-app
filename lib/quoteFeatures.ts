@@ -232,7 +232,8 @@ export function buildActivationNotes(features: QuoteFeatures, tier?: string | nu
   if (features.truckDays) parts.push(`${features.truckDays} truck-days`)
 
   const featureList: string[] = []
-  if (features.shadowFencing) featureList.push('Shadow Fencing')
+  // Multi-market: chosen for the order, priced on one market's holds only (shadowFencingIncluded).
+  if (features.shadowFencing || features.shadowFencingIncluded) featureList.push('Shadow Fencing')
   if (features.smartDirectionalIncluded) featureList.push('Smart Directional')
   if (features.deviceIdIncluded) featureList.push('Device ID Passback')
   const priced = (features.studies ?? []).filter(s => s !== 'sales_lift')

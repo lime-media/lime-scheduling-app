@@ -145,21 +145,21 @@ section('revise: unchanged markets keep their booked price')
     { ...hold({ id: 'a2', truck_number: '0912' }), quoted_total: 42000 },
     { ...hold({ id: 'b1', campaign_group_id: 'mm_abc_2', market: 'Buffalo, NY', truck_number: '4840', truck_count: 1 }), quoted_total: 21000 },
   ]
-  const opts = { shadowFencing: true, smartDirectional: false, deviceId: true }
   const asBooked = [
     { id: 'r1', market: 'Albany, NY', startDate: '2026-11-09', endDate: '2026-12-04', trucks: 2, daysPerWeek: 5, hours: 10 },
     { id: 'r2', market: 'Buffalo, NY', startDate: '2026-11-09', endDate: '2026-12-04', trucks: 1, daysPerWeek: 5, hours: 10 },
   ]
-  eq('unchanged markets keep their price', [...keptPrices(booked, asBooked, opts)].map(([id, k]) => [id, k.total]), [['r1', 42000], ['r2', 21000]])
+  eq('unchanged markets keep their price', [...keptPrices(booked, asBooked)].map(([id, k]) => [id, k.total]), [['r1', 42000], ['r2', 21000]])
   const moved = [{ ...asBooked[0], endDate: '2026-12-11' }, asBooked[1]]
-  eq('a market whose dates moved is priced today', [...keptPrices(booked, moved, opts).keys()], ['r2'])
-  eq('a new market is priced today', [...keptPrices(booked, [...asBooked, { ...asBooked[1], id: 'r3', market: 'Boston, MA' }], opts).keys()], ['r1', 'r2'])
-  eq('changing the options reprices every market', keptPrices(booked, asBooked, { ...opts, deviceId: false }).size, 0)
+  eq('a market whose dates moved is priced today', [...keptPrices(booked, moved).keys()], ['r2'])
+  eq('a new market is priced today', [...keptPrices(booked, [...asBooked, { ...asBooked[1], id: 'r3', market: 'Boston, MA' }]).keys()], ['r1', 'r2'])
+  // The order's options are priced again for the whole order, so changing them leaves each market's own price kept.
+  eq('changing the options keeps every unchanged market', keptPrices(booked, asBooked).size, 2)
   const redatedBooked = booked.map(h => h.id === 'a2' ? { ...h, features: withAskedDates(h.features, { startDays: 0, endDays: 0 }) ?? h.features } : h)
-  eq('nothing moved: still kept', [...keptPrices(redatedBooked, asBooked, opts).keys()], ['r1', 'r2'])
+  eq('nothing moved: still kept', [...keptPrices(redatedBooked, asBooked).keys()], ['r1', 'r2'])
   const extendedBooked = booked.map(h => h.id === 'a2' ? { ...h, features: JSON.stringify({ ...JSON.parse(h.features!), askedDatesMoved: true }) } : h)
-  eq('a market re-dated by staff since it was priced is repriced', [...keptPrices(extendedBooked, asBooked, opts).keys()], ['r2'])
-  eq('an expired booking keeps no prices', keptPrices(booked.map(h => ({ ...h, live: false })), asBooked, opts).size, 0)
+  eq('a market re-dated by staff since it was priced is repriced', [...keptPrices(extendedBooked, asBooked).keys()], ['r2'])
+  eq('an expired booking keeps no prices', keptPrices(booked.map(h => ({ ...h, live: false })), asBooked).size, 0)
 
   const line = (o: Record<string, unknown>) => ({ id: 'r1', trucks: 2, total: 50000, media: 47000, missing: 0, transport: { outcome: 'BILLED', billed: 3000, absorbedCost: 0 },
     dailyRate: 1300, hourSurcharge: 0, baseMedia: 40000, shadowFencing: 7000, smartDirectional: 0, deviceId: 0,
@@ -191,7 +191,7 @@ section('revise: unchanged markets keep their booked price')
     { id: 'june', market: 'Dallas, TX', startDate: '2026-06-01', endDate: '2026-06-26', trucks: 1, daysPerWeek: 5, hours: 10 },
     { id: 'march', market: 'Dallas, TX', startDate: '2026-03-02', endDate: '2026-03-27', trucks: 1, daysPerWeek: 5, hours: 10 },
   ]
-  eq('the same market twice: each flight keeps its own price', [...keptPrices(twice, flights, opts)].map(([id, k]) => [id, k.total, k.trucks]),
+  eq('the same market twice: each flight keeps its own price', [...keptPrices(twice, flights)].map(([id, k]) => [id, k.total, k.trucks]),
     [['june', 45000, ['0200']], ['march', 30000, ['0100']]])
 }
 

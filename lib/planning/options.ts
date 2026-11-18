@@ -7,11 +7,9 @@
  * can price the markets a rep selects exactly as the server will.
  */
 
-import { SHADOW_FENCING_RATE, SHADOW_FENCING_FLOOR, SMART_DIRECTIONAL_PER_TRUCK_DAY, DEVICE_ID_PASSBACK_FLAT, type RateOverrides } from '@/lib/pricing/config'
-import { withMarkup } from '@/lib/pricing/brandMarkup'
+import { optionRates, type OptionRates } from '@/lib/pricing/engine'
 
-/** The options' rates for this order, Brand Direct markup folded in (as computeQuote does). */
-export type OptionRates = { shadowFencingPct: number; shadowFencingFloor: number; smartDirectionalDaily: number; deviceIdFlat: number }
+export { optionRates, type OptionRates }
 
 export type OptionChoice = { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean }
 
@@ -46,15 +44,6 @@ export type OrderOptions = {
   carriedBy: string | null
 }
 
-export function optionRates(overrides: RateOverrides | null | undefined, markupPct = 0): OptionRates {
-  const up = (n: number) => withMarkup(n, markupPct)
-  return {
-    shadowFencingPct: overrides?.shadow_fencing_pct ?? SHADOW_FENCING_RATE,
-    shadowFencingFloor: up(overrides?.shadow_fencing_floor ?? SHADOW_FENCING_FLOOR),
-    smartDirectionalDaily: up(overrides?.smart_directional_daily ?? SMART_DIRECTIONAL_PER_TRUCK_DAY),
-    deviceIdFlat: up(overrides?.device_id_flat ?? DEVICE_ID_PASSBACK_FLAT),
-  }
-}
 
 /**
  * The order's options, priced once on every market it routes: shadow fencing

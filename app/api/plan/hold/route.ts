@@ -559,8 +559,8 @@ async function handlePost(req: NextRequest) {
           // Internal record only: every price below already includes it.
           ...(quote.brandMarkupPct ? [`Brand Direct pricing: +${quote.brandMarkupPct}% folded into every line item.`, ''] : []),
           quoteOnly ? 'Quoted (no reservation):' : 'Booked:',
-          // Each market without the order's options: they're priced once for the whole order (optionsDescription).
-          ...quote.lines.map(l => `${describeBooked(l)}, ${money(l.total - l.optionsTotal)}`),
+          // Each market without the order's options and studies: they're priced once for the whole order (optionsDescription, studiesDescription).
+          ...quote.lines.map(l => `${describeBooked(l)}, ${money(l.total - l.studiesTotal - l.optionsTotal)}`),
           ...optionsDescription(quote.options),
           // Without the order's options and studies: they're priced once, on what's booked.
           ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(l.total - l.studiesTotal - l.optionsTotal)}`)] : []),

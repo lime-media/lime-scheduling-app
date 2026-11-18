@@ -32,17 +32,21 @@ export function QuoteBreakdown({ features }: { features: QuoteFeatures }) {
       : ''
     lines.push({ label: `Base media${rateLabel}`, amount: features.baseMedia })
   }
+  // A multi-market booking's options are priced once for the whole order and
+  // carried on one market's holds (lib/planning/options.ts): said so, since
+  // they aren't this market's own.
+  const order = features.shadowFencingIncluded !== undefined ? ', whole order' : ''
   if (features.shadowFencing) {
     lines.push({
-      label: `Shadow fencing${features.shadowFencingFloored ? ' (minimum applied)' : ' (25% of base media)'}`,
+      label: `Shadow fencing${features.shadowFencingFloored ? ` (minimum applied${order})` : order ? ' (25% of the order\'s base media)' : ' (25% of base media)'}`,
       amount: features.shadowFencing,
     })
   }
   if (features.smartDirectionalIncluded && features.smartDirectional) {
-    lines.push({ label: 'Smart Directional', amount: features.smartDirectional })
+    lines.push({ label: `Smart Directional${order ? ' (whole order)' : ''}`, amount: features.smartDirectional })
   }
   if (features.deviceIdIncluded && features.deviceId) {
-    lines.push({ label: 'Device ID Passback', amount: features.deviceId })
+    lines.push({ label: `Device ID Passback${order ? ' (whole order)' : ''}`, amount: features.deviceId })
   }
   if (features.studies && features.studies.length > 0 && features.studiesTotal) {
     lines.push({

@@ -44,6 +44,10 @@ export type OrderOptions = {
   carriedBy: string | null
 }
 
+/** The market that carries an order-wide price (options, lift studies): the first by start, then by name. Pure. */
+export function orderCarrier<L extends { startDate: string; market: string }>(lines: L[]): L | undefined {
+  return [...lines].sort((a, b) => a.startDate.localeCompare(b.startDate) || a.market.localeCompare(b.market))[0]
+}
 
 /**
  * The order's options, priced once on every market it routes: shadow fencing
@@ -72,7 +76,7 @@ export function applyOptions<L extends OptionLine>(lines: L[], chosen: OptionCho
   const did = chosen.deviceId ? prices.deviceId : 0
   const total = sf + sd + did
   const floored = chosen.shadowFencing && clean.length > 0 && sfRaw < rates.shadowFencingFloor
-  const carrier = total > 0 ? [...clean].sort((a, b) => a.startDate.localeCompare(b.startDate) || a.market.localeCompare(b.market))[0] : undefined
+  const carrier = total > 0 ? orderCarrier(clean) : undefined
   return {
     lines: clean.map(l => (l === carrier
       ? { ...l, shadowFencing: sf, shadowFencingFloored: floored, smartDirectional: sd, deviceId: did, optionsTotal: total, media: l.media + total, total: l.total + total }

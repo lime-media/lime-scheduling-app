@@ -7,7 +7,7 @@
 import { STUDY_MIN_IMPRESSIONS, type StudyType } from '@/lib/pricing/config'
 import { priceStudies, uniqueMarketCount, type StudiesQuote } from '@/lib/pricing/studies'
 import { countCalendarDays } from '@/lib/pricing/schedule'
-import { applyOptions, type OptionLine, type OrderOptions } from './options'
+import { applyOptions, orderCarrier, type OptionLine, type OrderOptions } from './options'
 
 /** What applyStudies needs of a priced market (lib/planning/quote.ts LineQuote). */
 export type StudyLine = {
@@ -58,7 +58,7 @@ export function applyStudies<L extends StudyLine>(
   const spanDays = start && end ? countCalendarDays(start, end) : 0
   const st = priceStudies({ studies: studies ?? [], uniqueMarkets: uniqueMarketCount(clean.map(l => l.studyMarket), shared), estimatedImpressions, spanDays, base, markupPct })
   const total = Math.round(st.total)
-  const carrier = total > 0 ? [...clean].sort((a, b) => a.startDate.localeCompare(b.startDate) || a.market.localeCompare(b.market))[0] : undefined
+  const carrier = total > 0 ? orderCarrier(clean) : undefined
   return {
     lines: clean.map(l => (l === carrier ? { ...l, studiesTotal: total, media: l.media + total, total: l.total + total } : l)),
     studies: { ...st, total, estimatedImpressions, reachMinimum: STUDY_MIN_IMPRESSIONS, spanDays, base: base ?? null, requested: [...new Set(studies ?? [])], carriedBy: carrier?.market ?? null },

@@ -132,9 +132,9 @@ export type LineQuote = {
   dailyRate: number
   hourSurcharge: number
   effectiveDailyRate: number
-  /** The order's options are priced once for the whole order and carried on one market (applyOptions); 0 elsewhere. */
   shadowFencingFloored: boolean
   baseMedia: number
+  /** The order's options are priced once for the whole order and carried on one market (applyOptions); 0 elsewhere. */
   shadowFencing: number
   smartDirectional: number
   deviceId: number

@@ -109,6 +109,15 @@ eq('a multi-market booking: found on the market that carried them', bookedStudie
 eq('a sales lift ask alone comes back', bookedStudies([f({ studies: ['sales_lift'], studiesTotal: 0, salesLiftRequested: true })]), ['sales_lift'])
 eq('nothing recorded: none', bookedStudies([f({}), { features: null }]), [])
 
+section('studies: a revision re-ticks what the seller ticked')
+eq('reach short: ticked but not sold still comes back', bookedStudies([f({ studiesRequested: ['foot_traffic'] })]), ['foot_traffic'])
+eq('reach ok: what was ticked (and sold) comes back', bookedStudies([f({ studies: ['web_lift', 'brand_lift'], studiesTotal: 20000, studiesRequested: ['web_lift', 'brand_lift'] })]), ['web_lift', 'brand_lift'])
+eq('ticked wins over an older sold-only reading', bookedStudies([f({ studies: ['web_lift'], studiesTotal: 7500, studiesRequested: ['web_lift', 'sales_lift'] })]), ['web_lift', 'sales_lift'])
+eq('read from any hold of the booking', bookedStudies([f({}), f({ studiesRequested: ['brand_lift'] })]), ['brand_lift'])
+eq('unknown and repeated studies dropped', bookedStudies([f({ studiesRequested: ['web_lift', 'web_lift', 'mind_reading'] })]), ['web_lift'])
+eq('an empty tick list: none', bookedStudies([f({ studiesRequested: [], studies: ['web_lift'], studiesTotal: 7500 })]), [])
+eq('not a list: falls back to what was sold', bookedStudies([f({ studiesRequested: 'web_lift', studies: ['web_lift'], studiesTotal: 7500 })]), ['web_lift'])
+
 section('studies: alternatives say what they do to the studies')
 const was = { total: 20000, studies: ['foot_traffic', 'brand_lift'] as never[] }
 eq('reach falls under the minimum', studiesChange(was, { total: 0, studies: [] }), ' The lift studies drop out ($20,000): the order\'s reach falls under the minimum.')

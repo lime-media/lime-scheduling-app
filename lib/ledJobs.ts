@@ -158,3 +158,66 @@ export async function ledShiftsForHolds(holds: JobHold[]): Promise<JobShift[]> {
   if (!rows.length) return []
   return query<JobShift[]>(HOLD_SHIFTS_QUERY, { holds: JSON.stringify(rows) })
 }
+
+/** One LED day of a won job on a truck, in a market (any truck: what the mirror follows). */
+export type LedJobShift = { truck_number: string; job_number: string; shift_start: string; market: string; state: string; standard_market_name: string }
+
+// Each won job's LED days on any truck, live programs and trucks, within the
+// window around its holds the caller gives (lib/ledTruckFollow.ts
+// MIRROR_WINDOW_DAYS). One JSON parameter, so nothing reaches the SQL text.
+const JOB_SHIFTS_QUERY = `
+SELECT DISTINCT
+    t.truck_number,
+    LTRIM(RTRIM(cp.job_number)) AS job_number,
+    CONVERT(varchar(10), ${shiftDay('ps.start_time')}, 120) AS shift_start,
+    COALESCE(cpm.market, '') AS market,
+    COALESCE(cpm.state, '') AS state,
+    COALESCE(cpm.standard_market_name, '') AS standard_market_name
+FROM OPENJSON(@jobs) WITH (
+    job NVARCHAR(4000) '$.job',
+    s   DATE         '$.start',
+    e   DATE         '$.end'
+) j
+JOIN dbo.client_programs cp ON LTRIM(RTRIM(cp.job_number)) = j.job  -- the LED column's collation is case-insensitive
+JOIN dbo.program_schedule ps ON ps.client_program_uid = cp.client_program_uid
+JOIN dbo.trucks t ON t.truck_uid = ps.truck_uid
+LEFT JOIN dbo.client_program_markets cpm ON cpm.client_program_market_uid = ps.client_program_market_uid
+WHERE COALESCE(cp.is_deleted, 0) = 0  -- an archived program is never what LED runs
+  AND COALESCE(t.is_deleted, 0) = 0
+  AND ${shiftDayIn({ from: 'j.s', to: 'j.e' })}
+`
+
+/**
+ * LED's days of each job on any truck, between `start` and `end` (YYYY-MM-DD,
+ * inclusive; one entry per job). Reads the LED database; throws if it can't.
+ */
+export async function ledJobShifts(jobs: { job: string; start: string; end: string }[]): Promise<LedJobShift[]> {
+  const byJob = new Map<string, { start: string; end: string }>()
+  for (const j of jobs) {
+    const job = jobKey(j.job)
+    if (!job) continue
+    const s = byJob.get(job)
+    byJob.set(job, s ? { start: j.start < s.start ? j.start : s.start, end: j.end > s.end ? j.end : s.end } : { start: j.start, end: j.end })
+  }
+  if (!byJob.size) return []
+  return query<LedJobShift[]>(JOB_SHIFTS_QUERY, { jobs: JSON.stringify([...byJob].map(([job, s]) => ({ job, ...s }))) })
+}
+
+/**
+ * The job numbers (as jobKey) among `jobs` that a live LED program already
+ * carries: a won booking ops already built in LED by hand, which auto-convert
+ * must not build again (lib/coreConvert.ts). Reads the LED database; throws
+ * if it can't.
+ */
+export async function ledProgramJobs(jobs: string[]): Promise<Set<string>> {
+  const keys = [...new Set(jobs.map(jobKey).filter((j): j is string => j !== null))]
+  if (keys.length === 0) return new Set()
+  const rows = await query<{ job_number: string }[]>(`
+SELECT UPPER(LTRIM(RTRIM(cp.job_number))) AS job_number
+FROM OPENJSON(@jobs) WITH (job NVARCHAR(4000) '$') AS j
+JOIN dbo.client_programs cp ON LTRIM(RTRIM(cp.job_number)) = j.job  -- the LED column's collation is case-insensitive
+  AND COALESCE(cp.is_deleted, 0) = 0  -- a live program; no shifts are read here
+GROUP BY UPPER(LTRIM(RTRIM(cp.job_number)))
+`, { jobs: JSON.stringify(keys) })
+  return new Set(rows.map(r => r.job_number))
+}

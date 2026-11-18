@@ -43,17 +43,40 @@ function stripBrand(raw: string | null | undefined): string {
 }
 
 /**
+ * A brand limited to BRAND_MAX characters, cut at the last word boundary that
+ * fits (a space, "-" or "/"), so "Acme Outdoor Holiday Spectacular …" never
+ * ends mid-word. Separators left standing alone at the end (" -", " /", " &",
+ * a trailing ",") are dropped; a "+" or "." that belongs to the last word
+ * ("Disney+", "Co.") is kept. When the word cut would keep less than half the
+ * limit (one long hyphenated or unbroken run after an early space), the first
+ * BRAND_MAX characters are kept instead, as before. Shorter text comes back as
+ * is. Every place the brand is limited uses this, so the page, the saved
+ * brand, the quote ref and Salesforce agree. Pure.
+ */
+export function cutBrand(s: string): string {
+  if (s.length <= BRAND_MAX) return s
+  // A boundary right after the limit means the first BRAND_MAX characters end on a whole word.
+  const head = s.slice(0, BRAND_MAX + 1)
+  let at = -1
+  for (let i = head.length - 1; i > 0; i--) if (/[\s/-]/.test(head[i])) { at = i; break }
+  const words = at > 0
+    ? s.slice(0, at).replace(/(?:\s+[,/&+:;|–—-]+)+\s*$/, '').replace(/[\s,;:/|–—-]+$/, '')
+    : ''
+  return words.length >= BRAND_MAX / 2 ? words : s.slice(0, BRAND_MAX).trim()
+}
+
+/**
  * The brand as saved: trimmed, trailing descriptors dropped, at most 50
- * characters. The cut can leave a new trailing descriptor ("… Tour" once the
- * rest is cut off), so strip and cut repeat until nothing changes: cleaning a
+ * characters, cut on a word boundary (cutBrand). The cut can leave a new
+ * trailing descriptor ("… Tour" once the rest is cut off), so strip and cut repeat until nothing changes: cleaning a
  * saved brand again gives the same brand (it is cleaned on every save and
  * every read of a quote ref). Each round only shortens it, so it stops.
  */
 export function cleanBrand(raw: string | null | undefined): string {
-  let s = stripBrand(raw).slice(0, BRAND_MAX).trim()
+  let s = cutBrand(stripBrand(raw)).trim()
   for (let prev = ''; prev !== s; ) {
     prev = s
-    s = stripBrand(s).slice(0, BRAND_MAX).trim()
+    s = cutBrand(stripBrand(s)).trim()
   }
   return s
 }
@@ -66,13 +89,15 @@ export function brandChange(raw: string | null | undefined): 'none' | 'stripped'
 }
 
 /**
- * The Opportunity name: brand first, so it is what a search finds.
- * "Nike / Rolling Adz - Des Moines, IA - 2026-10-02 to 2026-10-03".
- * Without a brand the name is as before. Salesforce allows 120 characters.
+ * The Opportunity name, in the form sellers give a deal at Closed Won:
+ * "Brand / Account / date" ("Nike / Rolling Adz / 2026-11-13"). Closed
+ * Won names carry the close date; a new opportunity carries its flight's
+ * first day until then. Without a brand: "Account / date". Salesforce allows
+ * 120 characters.
  */
-export function opportunityName(brand: string, account: string, rest: string): string {
+export function opportunityName(brand: string, account: string, date: string): string {
   const head = brand ? `${brand} / ${account}` : account
-  return `${head} - ${rest}`.slice(0, 120)
+  return (date ? `${head} / ${date}` : head).slice(0, 120)
 }
 
 /** What a rep says when the booking has no brand of its own. */

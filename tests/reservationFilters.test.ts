@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { ownedBy, ownerOptions, runsBetween, wholeBookings } from '@/lib/reservationFilters'
+import { UNASSIGNED_OWNER_LABEL, defaultOwner, ownedBy, ownerOptions, runsBetween, wholeBookings } from '@/lib/reservationFilters'
 
 const r = (owner_id: string, owner_name: string, start_date = '2026-11-09', end_date = '2026-11-20') => ({ owner_id, owner_name, start_date, end_date })
 // u3 owns an opportunity but has no app login: kept under their Salesforce id and name.
@@ -41,3 +41,19 @@ section('Reservations: a filter keeps whole bookings')
   eq('a reservation on its own matches alone', ids(r => r.market === 'Reno, NV'), ['c1'])
   eq('nothing matches: nothing', ids(() => false), [])
 }
+
+section('reservations: the owner the page opens on')
+eq('someone with reservations opens on Me', defaultOwner(rows, 'u1'), 'me')
+eq('someone with none opens on Everyone', defaultOwner(rows, 'u9'), 'all')
+eq('no session opens on Everyone', defaultOwner(rows, null), 'all')
+
+section('reservation filters: requests no person owns (#194 review)')
+const clientReq = { owner_id: 'svc', owner_name: 'SFDC Integration', owner_unassigned: true, start_date: '2026-12-01', end_date: '2026-12-05' }
+const mine = { owner_id: 'u1', owner_name: 'Seller One', start_date: '2026-12-01', end_date: '2026-12-05' }
+const theirs = { owner_id: 'u2', owner_name: 'Seller Two', start_date: '2026-12-01', end_date: '2026-12-05' }
+eq('Me lists my bookings and client requests no one owns', [mine, theirs, clientReq].filter(x => ownedBy(x, 'me', 'u1')).length, 2)
+eq('another seller is not listed under Me', ownedBy(theirs, 'me', 'u1'), false)
+eq('Me with no session still lists nothing', ownedBy(clientReq, 'me', null), false)
+eq('a client request reads as no owner in the choices', ownerOptions([mine, clientReq], 'u1').map(o => o.label), ['Everyone', 'Me', UNASSIGNED_OWNER_LABEL])
+eq('picking it lists just those', ownedBy(clientReq, 'svc', 'u1'), true)
+eq('client requests alone don\'t make Me the default', defaultOwner([clientReq], 'u1'), 'all')

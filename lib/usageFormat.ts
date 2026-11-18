@@ -12,15 +12,16 @@ export type UsageTool =
 export const TOOL_LABELS: Record<UsageTool, string> = {
   // The Quote Builder's /api/quote and /api/quote/hold; the key predates the
   // Classic Quote Tool's removal and stays so older rows keep their label.
-  quote_classic: 'Quote (Quote Builder)',
-  quote_multi: 'Quote (Multi-market)',
-  quote_client: 'Quote (client portal)',
-  quote_chat: 'Quote (AI chat)',
+  // Pricing runs save nothing (no opportunity, no hold): a price check.
+  quote_classic: 'Quote price check (Quote Builder)',
+  quote_multi: 'Quote price check (Multi-market)',
+  quote_client: 'Quote price check (client portal)',
+  quote_chat: 'Quote price check (AI chat)',
   hold_classic: 'Hold placed (Quote Builder)',
   hold_multi: 'Hold placed (Multi-market)',
   hold_client: 'Hold placed (client portal)',
   hold_chat: 'Hold placed (AI chat)',
-  quote_client_multi: 'Quote (client portal, multi-market)',
+  quote_client_multi: 'Quote price check (client portal, multi-market)',
   hold_client_multi: 'Hold placed (client portal, multi-market)',
   ai_chat_staff: 'AI chat (staff)',
   ai_chat_client: 'AI chat (client portal)',
@@ -71,6 +72,41 @@ export const BACKFILL_QUOTE_ONLY_NOTE = 'quote only, nothing reserved'
 const QUOTE_ONLY_RUNS: Record<string, { flag: string; label: string }> = {
   hold_classic: { flag: 'quote_only', label: 'Quote only, no reservation (Quote Builder)' },
   hold_multi: { flag: 'quoteOnly', label: 'Quote only, no reservation (Multi-market)' },
+}
+
+/**
+ * The Usage page's Tool filter. A quote-only submit is logged under the same
+ * tool as a real hold, so filtering by tool alone listed quotes under "Hold
+ * placed". Each hold tool that can log a quote only gets a second option, and
+ * the "Hold placed" option leaves quote-only runs out.
+ */
+export const QUOTE_ONLY_FILTERS: Record<string, string> = {
+  quote_only_classic: 'hold_classic',
+  quote_only_multi: 'hold_multi',
+}
+
+/** The Tool filter's options, in the order the page lists them (browser-safe). */
+export function toolFilterOptions(): { v: string; l: string }[] {
+  return [
+    ...Object.entries(TOOL_LABELS).flatMap(([v, l]) => {
+      const qo = Object.entries(QUOTE_ONLY_FILTERS).find(([, tool]) => tool === v)
+      return qo ? [{ v, l }, { v: qo[0], l: QUOTE_ONLY_RUNS[v].label }] : [{ v, l }]
+    }),
+    { v: 'mcp', l: 'MCP: all tools' },
+    ...Object.entries(MCP_TOOL_LABELS).map(([k, l]) => ({ v: `mcp_${k}`, l })),
+  ]
+}
+
+/**
+ * What a Tool filter value selects: the logged tool ('mcp' for every MCP
+ * tool), and whether only quote-only runs (true), only real holds (false), or
+ * every run (null) of it. Pure.
+ */
+export function parseToolFilter(value: string | null): { tool: string | null; quoteOnly: boolean | null } {
+  if (!value) return { tool: null, quoteOnly: null }
+  if (Object.hasOwn(QUOTE_ONLY_FILTERS, value)) return { tool: QUOTE_ONLY_FILTERS[value], quoteOnly: true }
+  if (Object.hasOwn(QUOTE_ONLY_RUNS, value)) return { tool: value, quoteOnly: false }
+  return { tool: value, quoteOnly: null }
 }
 
 type Bag = Record<string, unknown>

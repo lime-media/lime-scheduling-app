@@ -3,7 +3,7 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { brandChange, cleanBrand, isNoBrand, opportunityName, readBrand, savedBrand } from '@/lib/brand'
+import { brandChange, cleanBrand, cutBrand, isNoBrand, opportunityName, readBrand, savedBrand } from '@/lib/brand'
 
 section('brand: only the brand is saved')
 eq('a plain brand', cleanBrand('  Nike  '), 'Nike')
@@ -43,8 +43,8 @@ for (const raw of tricky) {
 eq('a cut that ends on a descriptor drops it', cleanBrand('A'.repeat(45) + ' Tour of the Year'), 'A'.repeat(45))
 
 section('brand: it leads the Opportunity name')
-eq('brand first', opportunityName('Nike', 'Rolling Adz', 'Des Moines, IA - 2026-10-02 to 2026-10-03'), 'Nike / Rolling Adz - Des Moines, IA - 2026-10-02 to 2026-10-03')
-eq('no brand: as before', opportunityName('', 'Rolling Adz', 'Des Moines, IA - 2026-10-02 to 2026-10-03'), 'Rolling Adz - Des Moines, IA - 2026-10-02 to 2026-10-03')
+eq('brand first, Closed Won form', opportunityName('Nike', 'Rolling Adz', '2026-10-02'), 'Nike / Rolling Adz / 2026-10-02')
+eq('no brand: account / date', opportunityName('', 'Rolling Adz', '2026-10-02'), 'Rolling Adz / 2026-10-02')
 eq('Salesforce limit of 120', opportunityName('B'.repeat(50), 'A'.repeat(60), 'x'.repeat(40)).length, 120)
 
 section('brand: the page says why the saved value differs')
@@ -65,3 +65,24 @@ eq('"no  brand" and "no-brand" are answers too (spacing, hyphen)', [readBrand('n
 eq('isNoBrand: only the no-brand answers', [isNoBrand('None'), isNoBrand(' n/a '), isNoBrand('Nike'), isNoBrand(''), isNoBrand(undefined)], [true, true, false, false, false])
 eq('a brand called NA is kept', savedBrand('NA'), 'NA')
 eq('a no-brand answer with a trailing descriptor is still no brand', [savedBrand('N/A LED'), savedBrand('None 2026')], ['', ''])
+
+section('Brand: the 50-character cut falls on a word boundary')
+const long = 'Acme Outdoor Holiday Spectacular Northeast Regional Rollout'
+eq('short text is unchanged', cutBrand('Acme Outdoor'), 'Acme Outdoor')
+eq('exactly 50 is unchanged', cutBrand('x'.repeat(50)), 'x'.repeat(50))
+eq('cut at the last whole word', cutBrand(long), 'Acme Outdoor Holiday Spectacular Northeast')
+eq('never mid-word', cutBrand(long).length <= 50 && long.startsWith(cutBrand(long) + ' '), true)
+eq('a word ending exactly at 50 is kept', cutBrand('a'.repeat(45) + ' bcde fghij'), 'a'.repeat(45) + ' bcde')
+eq('a dangling separator is dropped', cutBrand('Acme Outdoor Holiday Spectacular Northeast - Rollout Phase'), 'Acme Outdoor Holiday Spectacular Northeast')
+eq('a dangling slash is dropped', cutBrand('Acme Outdoor Holiday Spectacular Northeast / Regional'), 'Acme Outdoor Holiday Spectacular Northeast')
+eq('one word over 50 is cut hard', cutBrand('y'.repeat(60)), 'y'.repeat(50))
+eq('cleanBrand uses the word cut', cleanBrand(long), 'Acme Outdoor Holiday Spectacular Northeast')
+eq('cleanBrand twice = once (word cut)', cleanBrand(cleanBrand(long)), cleanBrand(long))
+eq('cleanBrand twice = once (descriptor left by the cut)', cleanBrand(cleanBrand('Acme Outdoor Holiday Spectacular Northeast Tour Extra Words')), cleanBrand('Acme Outdoor Holiday Spectacular Northeast Tour Extra Words'))
+eq('a cut that leaves a descriptor drops it', cleanBrand('Acme Outdoor Holiday Spectacular Northeast Tour Extra Words'), 'Acme Outdoor Holiday Spectacular Northeast')
+eq('a long hyphenated run keeps its whole words, not just the first', cutBrand('Acme Outdoor-Holiday-Spectacular-Northeast-Regional-Rollout'), 'Acme Outdoor-Holiday-Spectacular-Northeast')
+eq('one unbroken run after an early space: the first 50 characters', cutBrand('Acme ' + 'z'.repeat(60)), 'Acme ' + 'z'.repeat(45))
+eq('a plus that belongs to the word is kept', cutBrand('Acme Outdoor Holiday Spectacular Show Disney+ Rollout'), 'Acme Outdoor Holiday Spectacular Show Disney+')
+eq('a period that belongs to the word is kept', cutBrand('Acme Outdoor Holiday Spectacular Northeast Co. Regional'), 'Acme Outdoor Holiday Spectacular Northeast Co.')
+eq('a trailing comma is dropped', cutBrand('Acme Outdoor Holiday Spectacular Northeast, Regional'), 'Acme Outdoor Holiday Spectacular Northeast')
+eq('cleanBrand twice = once (hyphenated cut)', cleanBrand(cleanBrand('Acme Outdoor-Holiday-Spectacular-Northeast-Regional-Rollout')), cleanBrand('Acme Outdoor-Holiday-Spectacular-Northeast-Regional-Rollout'))

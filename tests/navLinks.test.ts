@@ -9,8 +9,8 @@ section('navLinks: the bar keeps the daily pages')
 eq('seven on the bar', BAR_LINKS.map(l => l.label), ['Schedule', 'Planner', 'Map', 'AI Assistant', 'Reservations', 'Conflicts', 'LED Quote'])
 
 section('navLinks: the rest sit under Settings')
-eq('sales', settingsLinks('SALES').map(l => l.label), ['Saturation', 'Rate Cards', 'Transport', 'Opp Origins', 'LED Readiness', 'Users', 'Settings'])
-eq('operations also get Usage', settingsLinks('OPERATIONS').map(l => l.label), ['Saturation', 'Rate Cards', 'Transport', 'Opp Origins', 'LED Readiness', 'Users', 'Usage', 'Settings'])
+eq('sales', settingsLinks('SALES').map(l => l.label), ['Saturation', 'Rate Cards', 'Transport', 'Opp Origins', 'LED Readiness', 'Users', 'Notifications'])
+eq('operations also get Usage', settingsLinks('OPERATIONS').map(l => l.label), ['Saturation', 'Rate Cards', 'Transport', 'Opp Origins', 'LED Readiness', 'Users', 'Usage', 'Notifications'])
 eq('no session: no Usage', settingsLinks(undefined).some(l => l.href === '/usage'), false)
 eq('every page appears once', new Set([...BAR_LINKS, ...settingsLinks('OPERATIONS')].map(l => l.href)).size, BAR_LINKS.length + settingsLinks('OPERATIONS').length)
 

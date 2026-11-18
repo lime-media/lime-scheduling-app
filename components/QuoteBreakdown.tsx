@@ -38,7 +38,8 @@ export function QuoteBreakdown({ features }: { features: QuoteFeatures }) {
   const order = features.shadowFencingIncluded !== undefined ? ', whole order' : ''
   if (features.shadowFencing) {
     lines.push({
-      label: `Shadow fencing${features.shadowFencingFloored ? ` (minimum applied${order})` : order ? ' (25% of the order\'s base media)' : ' (25% of base media)'}`,
+      // A rate agreement can change the share: the order's line doesn't restate it.
+      label: `Shadow fencing${features.shadowFencingFloored ? ` (minimum applied${order})` : order ? ' (whole order)' : ' (25% of base media)'}`,
       amount: features.shadowFencing,
     })
   }

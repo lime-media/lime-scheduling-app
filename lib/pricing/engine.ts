@@ -122,6 +122,12 @@ export function optionRates(overrides: RateOverrides | null | undefined, markupP
   }
 }
 
+/** Shadow fencing on a base media: its share, never under its floor. One rule for both quote tools. */
+export function shadowFencingPrice(baseMedia: number, rates: OptionRates): { price: number; floored: boolean } {
+  const raw = baseMedia * rates.shadowFencingPct
+  return { price: Math.max(raw, rates.shadowFencingFloor), floored: raw < rates.shadowFencingFloor }
+}
+
 /**
  * Find the daily rate for a given duration.
  *
@@ -214,11 +220,7 @@ export function computeQuote(input: QuoteInput): QuoteResult {
 
   // Tier 2 — Better
   const opt = optionRates(rateOverrides, markupPct)
-  const sfRate = opt.shadowFencingPct
-  const sfFloor = opt.shadowFencingFloor
-  const sfRaw = baseMedia * sfRate
-  const shadowFencing = Math.max(sfRaw, sfFloor)
-  const shadowFencingFloored = sfRaw < sfFloor
+  const { price: shadowFencing, floored: shadowFencingFloored } = shadowFencingPrice(baseMedia, opt)
 
   // Impressions follow the media buy, not the Brand Direct price: take the
   // markup back out before dividing by the CPM.

@@ -265,6 +265,7 @@ function buildFeaturesResponse(
   rateOverrides: Awaited<ReturnType<typeof resolveRateOverrides>>,
   markupPct: number,
 ) {
+  const rates = optionRates(rateOverrides, markupPct)
   return {
     shadowFencing: {
       included: includeShadowFencing,
@@ -276,13 +277,13 @@ function buildFeaturesResponse(
       included: includeSmartDirectional,
       cost: quote.better.smartDirectionalIncluded
         ? quote.better.smartDirectional
-        : quote.input.truckDays * optionRates(rateOverrides, markupPct).smartDirectionalDaily,
+        : quote.input.truckDays * rates.smartDirectionalDaily,
     },
     deviceId: {
       included: includeDeviceId,
       cost: quote.better.deviceIdIncluded
         ? quote.better.deviceId
-        : optionRates(rateOverrides, markupPct).deviceIdFlat,
+        : rates.deviceIdFlat,
     },
     studies: {
       available: quote.best.reachOk,

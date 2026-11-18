@@ -7,7 +7,7 @@
  * can price the markets a rep selects exactly as the server will.
  */
 
-import { optionRates, type OptionRates } from '@/lib/pricing/engine'
+import { optionRates, shadowFencingPrice, type OptionRates } from '@/lib/pricing/engine'
 
 export { optionRates, type OptionRates }
 
@@ -65,9 +65,9 @@ export function applyOptions<L extends OptionLine>(lines: L[], chosen: OptionCho
     : l))
   const baseMedia = clean.reduce((s, l) => s + l.baseMedia, 0)
   const truckDays = clean.reduce((s, l) => s + l.truckDays, 0)
-  const sfRaw = baseMedia * rates.shadowFencingPct
+  const sfPrice = shadowFencingPrice(baseMedia, rates)
   const prices = {
-    shadowFencing: clean.length ? Math.round(Math.max(sfRaw, rates.shadowFencingFloor)) : 0,
+    shadowFencing: clean.length ? Math.round(sfPrice.price) : 0,
     smartDirectional: Math.round(truckDays * rates.smartDirectionalDaily),
     deviceId: clean.length ? Math.round(rates.deviceIdFlat) : 0,
   }
@@ -75,7 +75,7 @@ export function applyOptions<L extends OptionLine>(lines: L[], chosen: OptionCho
   const sd = chosen.smartDirectional ? prices.smartDirectional : 0
   const did = chosen.deviceId ? prices.deviceId : 0
   const total = sf + sd + did
-  const floored = chosen.shadowFencing && clean.length > 0 && sfRaw < rates.shadowFencingFloor
+  const floored = chosen.shadowFencing && clean.length > 0 && sfPrice.floored
   const carrier = total > 0 ? orderCarrier(clean) : undefined
   return {
     lines: clean.map(l => (l === carrier

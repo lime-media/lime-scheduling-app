@@ -198,6 +198,8 @@ export async function staffQuote(body: StaffQuoteInput): Promise<CoreResult> {
   mediaTotal += quote.best.studiesTotal
 
   const grandTotal = mediaTotal + totalTransportCharge
+  // Unticked options are still priced, for the switch beside them.
+  const rates = optionRates(rateOverrides, markupPct)
 
   let activeTier: string = 'Custom'
   if (!includeShadowFencing && !includeSmartDirectional && !includeDeviceId && studies.length === 0) activeTier = 'Good'
@@ -251,8 +253,8 @@ export async function staffQuote(body: StaffQuoteInput): Promise<CoreResult> {
     },
     features: {
       shadowFencing: { included: includeShadowFencing, cost: quote.better.shadowFencing, floored: quote.better.shadowFencingFloored, digitalImpressions: quote.better.digitalImpressions },
-      smartDirectional: { included: includeSmartDirectional, cost: includeSmartDirectional ? quote.better.smartDirectional : quote.input.truckDays * optionRates(rateOverrides, markupPct).smartDirectionalDaily },
-      deviceId: { included: includeDeviceId, cost: includeDeviceId ? quote.better.deviceId : optionRates(rateOverrides, markupPct).deviceIdFlat },
+      smartDirectional: { included: includeSmartDirectional, cost: includeSmartDirectional ? quote.better.smartDirectional : quote.input.truckDays * rates.smartDirectionalDaily },
+      deviceId: { included: includeDeviceId, cost: includeDeviceId ? quote.better.deviceId : rates.deviceIdFlat },
       studies: { available: quote.best.reachOk, selected: studies, costPerStudy: quote.best.studyCost, prices: quote.best.studyPrices, salesLiftRequested: quote.best.salesLiftRequested, warning: quote.best.studyWarning, estimatedImpressions: quote.best.estimatedImpressions, reachMinimum: STUDY_MIN_IMPRESSIONS },
     },
     transport: {

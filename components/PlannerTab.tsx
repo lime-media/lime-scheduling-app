@@ -899,7 +899,7 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
                   <td className={tdTop + ' whitespace-nowrap'}><DeliveryDates l={l} /></td>
                   <td className={tdTop}><DeliveryDays l={l} /></td>
                   {/* Base media only: the order's options and studies are their own rows below (priced once for the order). */}
-                  <td className={tdTopNum}>{fmtMoney(l.media - l.studiesTotal - l.optionsTotal)}</td>
+                  <td className={tdTopNum}>{fmtMoney(l.baseMedia)}</td>
                   <td className={tdTopNum}>
                     {l.transport.billed > 0 ? fmtMoney(l.transport.billed) : <span className="text-gray-400">{l.transport.outcome === 'ABSORBED' ? 'included' : '—'}</span>}
                   </td>

@@ -9,7 +9,6 @@
  * Run with: npm test
  */
 import { eq, section } from './harness'
-import { mediaParts } from '@/lib/planning/mediaParts'
 import { maxPairing, solveLarge, type MatchEdge } from '@/lib/planning/matching'
 import { minCostAssignment } from '@/lib/planning/assignment'
 import { parseZipRows, buildAreas, type Area, type Centroids } from '@/lib/planning/areas'
@@ -305,21 +304,3 @@ section('matching: bounded work')
   eq('dense cluster: finishes quickly', ms < 2500, true)
 }
 
-section('mediaParts: the multi-market plan lists each option in a market\'s media')
-{
-  const parts = (l: Parameters<typeof mediaParts>[0]) => mediaParts(l).map(p => [p.label, p.amount])
-  eq('base only when no option is chosen', parts({ studiesTotal: 0, media: 10000, shadowFencing: 0, shadowFencingFloored: false, smartDirectional: 0, deviceId: 0 }), [['Base media', 10000]])
-  eq('every option chosen, in the single quote\'s order', mediaParts({ studiesTotal: 0, media: 14500, shadowFencing: 2500, shadowFencingFloored: false, smartDirectional: 1200, deviceId: 800 }).map(p => p.label), ['Base media', 'Shadow fencing', 'Smart directional', 'Device ID passback'])
-  eq('a floored shadow fence says so', mediaParts({ studiesTotal: 0, media: 2500, shadowFencing: 1500, shadowFencingFloored: true, smartDirectional: 0, deviceId: 0 })[1].label, 'Shadow fencing (minimum applied)')
-  // Separately rounded parts (10000.4 + 2500.4 + 1200.4 + 800.4 = 14501.6 -> 14502, parts 10000+2500+1200+800 = 14500).
-  const rounded = { studiesTotal: 0, media: 14502, shadowFencing: 2500, shadowFencingFloored: false, smartDirectional: 1200, deviceId: 800 }
-  eq('base is the remainder, so the parts add up to the media shown', mediaParts(rounded).reduce((s, p) => s + p.amount, 0), 14502)
-  eq('the rounding gap lands in base media', mediaParts(rounded)[0].amount, 10002)
-  // A kept booked price: booked media with an option price that fell back to today's.
-  eq('kept price: parts still add up to the booked media', mediaParts({ studiesTotal: 0, media: 12000, shadowFencing: 3000, shadowFencingFloored: false, smartDirectional: 0, deviceId: 0 }).reduce((s, p) => s + p.amount, 0), 12000)
-  eq('options above the media: split unknown, nothing listed', mediaParts({ studiesTotal: 0, media: 2000, shadowFencing: 3000, shadowFencingFloored: false, smartDirectional: 0, deviceId: 0 }), [])
-  // The market carrying the order's lift studies: applyStudies adds them to its media; the Media column shows media − studies.
-  const carrier = { media: 14500 + 9500, studiesTotal: 9500, shadowFencing: 2500, shadowFencingFloored: false, smartDirectional: 0, deviceId: 0 }
-  eq('study carrier: parts add up to the Media column (media − studies)', mediaParts(carrier).reduce((s, p) => s + p.amount, 0), 14500)
-  eq('study carrier: base media leaves the studies out', mediaParts(carrier)[0].amount, 12000)
-}

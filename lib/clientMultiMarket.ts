@@ -46,8 +46,9 @@ import { sendHoldRequestEmail } from '@/lib/email'
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { legsFromArrivals } from '@/lib/transportMetrics'
 import { bookWhatFits, buildMultiMarketQuote, holdPlaces, resolveRows, type PreparedQuote, type QuoteRequest } from '@/lib/planning/quote'
-import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches, planTier } from '@/lib/planning/booking'
+import { describeBooked, describeQuoted, fitNames, lineFeatures, money, optionsDescription, planStretches, planTier } from '@/lib/planning/booking'
 import { clientLine, parseClientPlan, sameTrucks } from '@/lib/clientPlan'
+import { optionItems } from '@/lib/planning/options'
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
@@ -102,7 +103,9 @@ async function route(p: Extract<Prepared, { refused: null }>): Promise<CoreResul
   return { asked, fits }
 }
 
-const view = (q: PreparedQuote) => ({ lines: q.quote.lines.map(clientLine), total: q.quote.summary.grandTotal })
+// Each market at its own price; the order's options, priced once for the
+// whole order, as their own line items (lib/planning/options.ts).
+const view = (q: PreparedQuote) => ({ lines: q.quote.lines.map(clientLine), options: optionItems(q.quote.options), total: q.quote.summary.grandTotal })
 
 /** POST /api/client/plan/quote */
 export async function clientMultiMarketQuote(session: ClientSession, input: unknown): Promise<CoreResult> {
@@ -309,7 +312,9 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
         const description = [
           ...(quote.brandMarkupPct ? [`Brand Direct pricing: +${quote.brandMarkupPct}% folded into every line item.`, ''] : []),
           'Booked by the client in the portal:',
-          ...quote.lines.map(l => `${describeBooked(l)}, ${money(l.total)}`),
+          // Each market without the order's options: they're priced once for the whole order (optionsDescription).
+          ...quote.lines.map(l => `${describeBooked(l)}, ${money(l.total - l.optionsTotal)}`),
+          ...optionsDescription(quote.options),
           ...(notBooked.length ? ['', 'Asked for but no truck available:', ...notBooked] : []),
         ].join('\n')
         const result = await createAppOpportunity({

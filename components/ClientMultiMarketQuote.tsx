@@ -34,7 +34,8 @@ type Line = {
   total: number
   missing: number
 }
-type View = { lines: Line[]; total: number }
+/** The order's options are their own line items, priced once for the whole order. */
+type View = { lines: Line[]; options: { label: string; amount: number }[]; total: number }
 /** A quote and the order it priced: Book posts these rows and features, never the live form. */
 type Quote = { asked: View; short: boolean; fits: View | null; requestId: string; rows: Row[]; features: Features }
 type Features = { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean }
@@ -299,6 +300,12 @@ export function ClientMultiMarketQuote() {
                           )}
                         </div>
                         <span className="font-semibold text-gray-900 whitespace-nowrap">{money(l.total)}</span>
+                      </div>
+                    ))}
+                    {quote.fits.options.map(o => (
+                      <div key={o.label} className="px-4 py-3 text-sm flex items-start justify-between gap-3">
+                        <p className="text-gray-700">{o.label}, for the whole order</p>
+                        <span className="font-semibold text-gray-900 whitespace-nowrap">{money(o.amount)}</span>
                       </div>
                     ))}
                   </div>

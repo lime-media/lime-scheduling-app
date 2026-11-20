@@ -97,12 +97,11 @@ export function clientLine(l: LineQuote) {
     lastDay: l.delivery.lastDay,
     dailyRate: l.effectiveDailyRate,
     baseMedia: l.baseMedia,
-    shadowFencing: l.shadowFencing,
-    smartDirectional: l.smartDirectional,
-    deviceId: l.deviceId,
-    media: l.media,
+    // The market's own price: the order's options are priced once for the
+    // whole order and listed on their own (lib/clientMultiMarket.ts view).
+    media: l.media - l.optionsTotal,
     transport: l.transport.billed,
-    total: l.total,
+    total: l.total - l.optionsTotal,
     missing: l.missing,
   }
 }

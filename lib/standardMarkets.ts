@@ -20,6 +20,8 @@ import { placeCoords } from '@/lib/geo/places'
 export type StandardMarket = {
   uid: string
   key: string
+  /** The list's own spelling ("Dallas, TX"); absent in older callers' fixtures. */
+  name?: string
   /** Bounding box; null where this database's lookup has none. */
   box: { ne_lat: number; ne_lng: number; sw_lat: number; sw_lng: number } | null
 }
@@ -86,7 +88,7 @@ export async function loadStandardMarkets(): Promise<StandardMarket[]> {
     const box = bounds && raw.every(v => v != null) && nums.every(Number.isFinite)
       ? { ne_lat: nums[0], ne_lng: nums[1], sw_lat: nums[2], sw_lng: nums[3] }
       : null
-    const market: StandardMarket = { uid: r.uid.toUpperCase(), key, box }
+    const market: StandardMarket = { uid: r.uid.toUpperCase(), key, name: r.name.trim(), box }
     if (box && !boxIsWhereItsCityIs(market)) {
       warnOnce(`box:${key}`, `"${r.name.trim()}": its area isn't where the town is; matched by name only`)
       market.box = null

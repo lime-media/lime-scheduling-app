@@ -59,6 +59,7 @@ import './standardMarkets.test'
 import './clientPlan.test'
 import './coreSend.test'
 import './marketMatch.test'
+import './coreConvert.test'
 import './clientPlanForm.test'
 import { report, settle } from './harness'
 

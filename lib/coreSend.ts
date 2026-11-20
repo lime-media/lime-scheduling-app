@@ -66,7 +66,8 @@ export async function sendBookingToCore(bookingKey: string, deps: SendDeps): Pro
     const message = err instanceof CoreError ? err.message : 'Sending to LED failed unexpectedly.'
     if (!(err instanceof CoreError)) console.error('[core-send] send failed:', err instanceof Error ? err.message : err)
     await deps.saveError(bookingKey, message).catch(e => console.error('[core-send] error not recorded:', e instanceof Error ? e.message : e))
-    return { status: 502, body: { error: message } }
+    // A CoreError with no status: Core couldn't be reached or didn't answer in time.
+    return { status: 502, body: { error: message, ...(err instanceof CoreError && err.status === null ? { unreachable: true } : {}) } }
   }
 
   // A row from an earlier attempt means LED may already hold a request made

@@ -11,7 +11,7 @@ import { holdExpDate } from '@/lib/dateOnly'
 import { clientVisibleFeatures } from '@/lib/quoteFeatures'
 
 export async function GET(req: NextRequest) {
-  const session = getClientSession(req)
+  const session = await getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const holds = await prisma.hold.findMany({
@@ -61,7 +61,7 @@ export async function GET(req: NextRequest) {
 }
 
 async function handlePost(req: NextRequest) {
-  const session = getClientSession(req)
+  const session = await getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   try {

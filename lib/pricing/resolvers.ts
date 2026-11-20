@@ -12,7 +12,6 @@ import { findPlaces, placeCoords, withStateComma } from '@/lib/geo/places'
 import { dmaForPoint } from '@/lib/pricing/dmaArea'
 import { TOP_DMAS } from '@/lib/pricing/topDmas'
 import type { ClientSession } from '@/lib/clientAuth'
-import { liveClientLinks } from '@/lib/clientLinks'
 import { stateCode } from '@/lib/usStates'
 
 // ---------------------------------------------------------------------------
@@ -85,7 +84,8 @@ export function matchTopDma<T extends { dma_code: string; dma_name: string }>(
  */
 export async function resolveRateOverrides(session: ClientSession): Promise<RateOverrides | null> {
   // Try sfdc_account_id first (canonical), fall back to partner_id (legacy)
-  const { sfdcAccountId, partnerId } = await liveClientLinks(session)
+  // Live: the session is the client's record as of this request (lib/clientAuth.ts).
+  const { sfdcAccountId, partnerId } = session
   if (!sfdcAccountId && !partnerId) return null
   try {
     const now = new Date()

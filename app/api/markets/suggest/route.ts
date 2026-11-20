@@ -17,7 +17,7 @@ const LIMIT = 8
 
 export async function GET(req: NextRequest) {
   const staff = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
-  if (!staff && !getClientSession(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (!staff && !await getClientSession(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const q = (req.nextUrl.searchParams.get('q') ?? '').trim().slice(0, 80)
   if (q.length < 3) return NextResponse.json({ suggestions: [] })

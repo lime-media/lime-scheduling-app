@@ -11,7 +11,7 @@ import { clientMultiMarketQuote } from '@/lib/clientMultiMarket'
 export const maxDuration = 300
 
 async function handlePost(req: NextRequest) {
-  const session = getClientSession(req)
+  const session = await getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   let body: unknown
   try {

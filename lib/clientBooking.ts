@@ -34,7 +34,6 @@ import {
   type StudyType,
 } from '@/lib/pricing'
 import { resolveMarketSizeTierId, clientRateCard } from '@/lib/pricing/resolvers'
-import { liveClientLinks } from '@/lib/clientLinks'
 import { holdExpDate } from '@/lib/dateOnly'
 import { reply, type CoreResult } from '@/lib/coreResult'
 import { CLIENT_MAX_TRUCKS } from '@/lib/clientAvailability'
@@ -140,7 +139,8 @@ export async function placeClientBooking(
   // at the default rate (clients cannot change it and never see it).
   // Read from the client's row, not the session's 30-day-old copy, so an ops
   // relink reaches the next booking rather than the next login.
-  const { sfdcAccountId } = await liveClientLinks(session)
+  // Live: the session is the client's record as of this request (lib/clientAuth.ts).
+  const { sfdcAccountId } = session
   // The opportunity's Type is read alongside the account, not in series
   // before the create (clientOpportunityType never throws).
   const [accountInfo, opportunityType] = sfdcAccountId && isSfdcConfigured()

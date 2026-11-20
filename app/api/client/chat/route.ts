@@ -171,7 +171,7 @@ async function scrubOtherClientNames(reply: string, ownClientId: string): Promis
 async function handlePost(req: NextRequest) {
   // The deadline counts from the request, setup included.
   const startedAt = Date.now()
-  const session = getClientSession(req)
+  const session = await getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   if (session.username !== 'testclient') return NextResponse.json({ error: 'Not available yet' }, { status: 403 })
 

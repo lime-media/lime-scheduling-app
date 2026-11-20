@@ -27,7 +27,7 @@ const HIDDEN_TRUCKS = new Set(['0001', '0002', '1257', '00001257', '1991'])
 
 export async function GET(req: NextRequest) {
   try {
-    const session = getClientSession(req)
+    const session = await getClientSession(req)
 
     // Released holds — status EXPIRED, or expires_at already passed — shouldn't occupy the grid
     const holdsPromise = prisma.hold.findMany({

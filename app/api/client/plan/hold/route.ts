@@ -12,7 +12,7 @@ import { placeClientMultiMarketBooking, type ClientPlanHoldInput } from '@/lib/c
 export const maxDuration = 300
 
 async function handlePost(req: NextRequest) {
-  const session = getClientSession(req)
+  const session = await getClientSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   let body: ClientPlanHoldInput
   try {

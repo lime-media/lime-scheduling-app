@@ -12,7 +12,7 @@ import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
 import type { ClientSession } from '@/lib/clientAuth'
-import { ClientHoldRefusal, createClientHolds } from '@/lib/holdRequestService'
+import { BOOKING_UNAVAILABLE, ClientHoldRefusal, createClientHolds, ServiceUserMissingError } from '@/lib/holdRequestService'
 import { HoldClashError, HoldLockTimeoutError } from '@/lib/holdWriteLock'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
@@ -265,7 +265,8 @@ export async function placeClientBooking(
       return reply({ error: `${err.message} Nothing was booked. Get a fresh quote and try again.` }, { status: 409 })
     }
     console.error('[client/hold-requests] failed to create holds:', err)
-    return reply({ error: 'Failed to create holds' }, { status: 500 })
+    if (err instanceof ServiceUserMissingError) return reply({ error: BOOKING_UNAVAILABLE }, { status: 503 })
+    return reply({ error: 'The booking couldn\'t be saved, so nothing was booked. Please try again; if it keeps failing, ask a question below.' }, { status: 500 })
   }
 
   // ONE email for the booking, naming every truck it holds.

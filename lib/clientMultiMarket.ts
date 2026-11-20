@@ -41,13 +41,14 @@ import { clientOpportunityType } from '@/lib/clientOpportunityType'
 import type { OpportunityType } from '@/lib/sfdcOpportunityType'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
-import { afterClientHolds, clientHoldCreator } from '@/lib/holdRequestService'
+import { afterClientHolds, BOOKING_UNAVAILABLE, clientHoldCreator, ServiceUserMissingError } from '@/lib/holdRequestService'
 import { sendHoldRequestEmail } from '@/lib/email'
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { legsFromArrivals } from '@/lib/transportMetrics'
 import { bookWhatFits, buildMultiMarketQuote, holdPlaces, resolveRows, type PreparedQuote, type QuoteRequest } from '@/lib/planning/quote'
-import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches, planTier } from '@/lib/planning/booking'
-import { clientLine, parseClientPlan, sameTrucks } from '@/lib/clientPlan'
+import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches, planTier, studiesDescription } from '@/lib/planning/booking'
+import { STUDIES_REQUESTED_KEY } from '@/lib/quoteFeatures'
+import { clientLine, clientStudies, parseClientPlan, sameTrucks } from '@/lib/clientPlan'
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
@@ -102,7 +103,7 @@ async function route(p: Extract<Prepared, { refused: null }>): Promise<CoreResul
   return { asked, fits }
 }
 
-const view = (q: PreparedQuote) => ({ lines: q.quote.lines.map(clientLine), total: q.quote.summary.grandTotal })
+const view = (q: PreparedQuote) => ({ lines: q.quote.lines.map(clientLine), studies: clientStudies(q.quote.studies), total: q.quote.summary.grandTotal })
 
 /** POST /api/client/plan/quote */
 export async function clientMultiMarketQuote(session: ClientSession, input: unknown): Promise<CoreResult> {
@@ -210,7 +211,10 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
     // Hold.created_by is a user; clients aren't users.
     const createdBy = await clientHoldCreator()
     const f = p.req.features
-    const tier = planTier(f)
+    const tier = planTier(f, quote.studies.studies)
+    // The studies booked, so a revision restores them (lib/bookings.ts bookedStudies).
+    // Only what was priced: a study asked for on an order short of the reach minimum isn't sold, so it isn't restored either.
+    const requested = quote.studies.studies.length ? { [STUDIES_REQUESTED_KEY]: quote.studies.studies } : {}
     const groupOf = new Map(quote.lines.map((l, i) => [l.id, `${groupPrefix}${i + 1}`]))
     const company = session.companyName
     const rows: Prisma.HoldCreateManyInput[] = stretches.map(({ truckNumber, stint, partner }) => {
@@ -236,7 +240,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
         quoted_total: lq.total,
         daily_rate: lq.effectiveDailyRate,
         // The line's quote, plus what this hold itself sells (lib/ledJobs.ts daysSold).
-        features: JSON.stringify({ ...lineFeatures(lq, f, quote.brandMarkupPct, quote.clientType), heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
+        features: JSON.stringify({ ...lineFeatures(lq, f, quote.brandMarkupPct, quote.clientType, quote.studies), ...requested, heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(stint.lineId)!,
         expires_at: expiry.expiresAt,
@@ -298,7 +302,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
       market: `${plural(markets.length, 'market')}: ${markets.join('; ')}`,
       startDate: starts[0],
       endDate: ends[ends.length - 1],
-      notes: [brand ? `Brand: ${brand}` : null, notes || null, `Multi-market at ${money(total)}`, notBooked.length ? `Not booked (no truck): ${notBooked.join('; ')}` : null].filter(Boolean).join(' | '),
+      notes: [brand ? `Brand: ${brand}` : null, notes || null, `Multi-market at ${money(total)}`, ...studiesDescription(quote.studies).filter(Boolean), notBooked.length ? `Not booked (no truck): ${notBooked.join('; ')}` : null].filter(Boolean).join(' | '),
     }).catch(e => console.error('[client/plan/hold] email failed:', e))
 
     // One opportunity for the booking, owned by the account's owner (a
@@ -311,6 +315,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
           'Booked by the client in the portal:',
           ...quote.lines.map(l => `${describeBooked(l)}, ${money(l.total)}`),
           ...(notBooked.length ? ['', 'Asked for but no truck available:', ...notBooked] : []),
+          ...studiesDescription(quote.studies),
         ].join('\n')
         const result = await createAppOpportunity({
           accountId: p.sfdcAccountId,
@@ -360,6 +365,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
     })
   } catch (err) {
     console.error('[client/plan/hold] failed:', err)
+    if (err instanceof ServiceUserMissingError) return reply({ error: BOOKING_UNAVAILABLE }, { status: 503 })
     return reply({ error: `Booking stopped before it finished. The holds are written in one transaction, so none were placed unless a retry reports them. Retrying is safe.` }, { status: 500 })
   }
 }

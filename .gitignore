@@ -41,3 +41,6 @@ next-env.d.ts
 # Claude Code: local-only state (the shared settings, skills and hooks are committed)
 .claude/worktrees/
 .claude/settings.local.json
+
+# Keeper Secrets Manager device configs (scripts/keeper-init.mjs)
+/.keeper/

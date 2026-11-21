@@ -7,6 +7,9 @@ const globalForPrisma = globalThis as unknown as {
 export const prisma =
   globalForPrisma.prisma ??
   new PrismaClient({
+    // Passed explicitly so the build-time Keeper value is used (next.config.mjs);
+    // Prisma's own env("DATABASE_URL") lookup happens at runtime.
+    datasourceUrl: process.env.DATABASE_URL,
     log: process.env.NODE_ENV === 'development' ? ['query'] : [],
   })
 

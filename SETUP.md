@@ -7,7 +7,50 @@
 
 ## 1. Configure Environment Variables
 
-`.env.local` should already be filled in. If starting fresh, set:
+### Secrets come from Keeper
+
+Secrets are kept in Keeper Secrets Manager, one Keeper application per
+environment (`uat`, `prod`). Only two values are set by hand, in Vercel (UAT and
+Production each get their own) and in the local general `.env`:
+
+```
+KEEPER_ENV="uat"            # or "prod"
+KEEPER_KEY="<base64 Keeper device config>"
+```
+
+`npm run build` and `npm run dev` first run `scripts/keeper-env.mjs`, which
+copies `KEEPER_ENV`/`KEEPER_KEY` from the environment into `.env`, fetches every
+record shared with that Keeper application, and writes `.env.<KEEPER_ENV>`
+(e.g. `.env.uat`). Each record's `lime-scheduling-app` custom field names the
+app variable it fills and its password field holds the value. `DATABASE_URL` is
+built from the `MSSQL_*` values. `next.config.mjs` compiles those values into
+the server and middleware bundles (never the browser bundle), so a secret
+change in Keeper takes effect on the next deploy. Run `npm run keeper:env` to
+refresh by hand.
+
+Keeper supplies: `SFDC_CLIENT_ID`, `SFDC_CLIENT_SECRET`, `SFDC_WEBHOOK_SECRET`,
+`GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY`, `NEXTAUTH_SECRET`,
+`ANTHROPIC_API_KEY`, `SMTP_USER`, `SMTP_PASS`, `CRON_SECRET`,
+`INTERNAL_API_KEY`, `SAMSARA_API_TOKEN`, `MSSQL_SERVER`, `MSSQL_USER`,
+`MSSQL_PASSWORD`, `MSSQL_DATABASE` (and the derived `DATABASE_URL`). A Keeper
+value overrides the same name set in Vercel. Non-secret settings
+(`NEXTAUTH_URL`, `SMTP_HOST`, `SMTP_PORT`, `SFDC_LOGIN_URL`, the notify emails,
+`SFDC_AUTOCLOSE`, …) are still plain Vercel / `.env.local` variables.
+
+To get a `KEEPER_KEY` from a new Keeper one-time access token (each token works
+once):
+
+```bash
+KEEPER_ONE_TIME_TOKEN='US:...' npm run keeper:init -- uat
+# writes .keeper/uat.json: { "KEEPER_ENV": "uat", "KEEPER_KEY": "..." }
+```
+
+`.keeper/`, `.env` and `.env.*` are gitignored.
+
+### Other variables
+
+The list below is the full set the app reads. The secret ones now come from
+Keeper as above; if starting fresh, set the rest:
 
 ```
 DATABASE_URL="sqlserver://limemediauat.database.windows.net:1433;database=limemediauat;user=limeuatadmin;password=YOUR_PASSWORD;encrypt=true;trustServerCertificate=false"

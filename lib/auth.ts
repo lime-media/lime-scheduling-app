@@ -37,6 +37,8 @@ export async function verifyInternalCredentials(email: string, password: string)
 }
 
 export const authOptions: NextAuthOptions = {
+  // Passed explicitly so the build-time Keeper value is used (next.config.mjs).
+  secret: process.env.NEXTAUTH_SECRET,
   session: {
     strategy: 'jwt',
   },

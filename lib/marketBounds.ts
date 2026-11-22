@@ -31,8 +31,9 @@ let cached: boolean | null = null
 
 /**
  * Does this database's standard_market_lookup carry bounding boxes?
- * Result is cached for the life of the process; a failed check reports false,
- * so the app degrades to name lookup rather than erroring.
+ * A definite answer is cached for the life of the process; a failed check
+ * reports false this time and is asked again next time, so the app degrades
+ * to name lookup rather than erroring, and recovers.
  */
 export async function hasMarketBounds(): Promise<boolean> {
   if (cached !== null) return cached
@@ -52,8 +53,9 @@ export async function hasMarketBounds(): Promise<boolean> {
       )
     }
   } catch (err) {
-    console.error('[marketBounds] capability check failed, assuming absent:', err)
-    cached = false
+    // Not cached: a blip must not turn areas off for the life of the process.
+    console.error('[marketBounds] capability check failed, assuming absent this time:', err)
+    return false
   }
   return cached
 }

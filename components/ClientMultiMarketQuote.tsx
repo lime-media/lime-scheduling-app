@@ -14,6 +14,7 @@ import { useCallback, useRef, useState } from 'react'
 import { MarketInput } from '@/components/MarketInput'
 import { BrandInput } from '@/components/BrandInput'
 import { APP_TIME_ZONE, centralDate } from '@/lib/dateOnly'
+import { FeatureToggle, STUDY_CHOICES, STUDY_LABELS } from '@/components/FeatureToggle'
 
 type Row = { id: string; market: string; startDate: string; endDate: string; trucks: number | undefined; daysPerWeek: 5 | 6 | 7; hours: 8 | 10 | 12 }
 
@@ -29,15 +30,23 @@ type Line = {
   requestedTruckDays: number
   firstDay: string | null
   lastDay: string | null
+  baseMedia: number
+  shadowFencing: number
+  smartDirectional: number
+  deviceId: number
+  /** What each option would cost on this market, chosen or not. */
+  optionPrices: { shadowFencing: number; smartDirectional: number; deviceId: number }
+  studiesTotal: number
   media: number
   transport: number
   total: number
   missing: number
 }
-type View = { lines: Line[]; total: number }
+type Studies = { reachOk: boolean; reachMinimum: number; requested: string[]; selected: string[]; prices: Record<string, number>; total: number; uniqueMarkets: number; salesLiftRequested: boolean; warning: string | null }
+type View = { lines: Line[]; studies: Studies; total: number }
 /** A quote and the order it priced: Book posts these rows and features, never the live form. */
 type Quote = { asked: View; short: boolean; fits: View | null; requestId: string; rows: Row[]; features: Features }
-type Features = { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean }
+type Features = { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean; studies: string[] }
 type RowError = { rowId: string; message: string; candidates?: string[] }
 
 const MAX_MARKETS = 10
@@ -59,7 +68,7 @@ const requestIdFor = () => (typeof crypto !== 'undefined' && 'randomUUID' in cry
 
 export function ClientMultiMarketQuote() {
   const [rows, setRows] = useState<Row[]>([blankRow(), blankRow()])
-  const [features, setFeatures] = useState<Features>({ shadowFencing: true, smartDirectional: false, deviceId: false })
+  const [features, setFeatures] = useState<Features>({ shadowFencing: true, smartDirectional: false, deviceId: false, studies: [] })
   const [brand, setBrand] = useState('')
   const [notes, setNotes] = useState('')
   const [loading, setLoading] = useState(false)
@@ -78,13 +87,12 @@ export function ClientMultiMarketQuote() {
   const clear = () => { quoteSeq.current++; setQuote(null); setBooked(null); setChanged(null); setError(null) }
   const updateRow = (id: string, p: Partial<Row>) => { setRows(rs => rs.map(r => (r.id === id ? { ...r, ...p } : r))); setRowErrors(es => es.filter(e => e.rowId !== id)); clear() }
   const removeRow = (id: string) => { setRows(rs => rs.filter(r => r.id !== id)); setRowErrors(es => es.filter(e => e.rowId !== id)); clear() }
-  const setFeature = (p: Partial<typeof features>) => { setFeatures(f => ({ ...f, ...p })); clear() }
 
   const complete = rows.length > 0 && rows.every(r => r.market.trim() && r.startDate && r.endDate && r.endDate >= r.startDate && r.trucks && r.trucks > 0)
 
-  const getQuote = useCallback(async (list: Row[] = rows) => {
+  const getQuote = useCallback(async (list: Row[] = rows, feats: Features = features) => {
     const seq = ++quoteSeq.current
-    const sent = { rows: list, features }
+    const sent = { rows: list, features: feats }
     setLoading(true)
     setError(null)
     setRowErrors([])
@@ -119,6 +127,17 @@ export function ClientMultiMarketQuote() {
       setLoading(false)
     }
   }, [rows, features])
+
+  // An option or study changed on a quote: priced again at once, as the
+  // one-market quote shows its total change (the server prices every market).
+  const setFeature = (p: Partial<Features>) => {
+    // Locked while a quote or booking is in flight: what's shown is what was priced and booked.
+    if (busy) return
+    const next = { ...features, ...p }
+    setFeatures(next)
+    if (quote) getQuote(quote.rows, next)
+    else clear()
+  }
 
   const pickCandidate = (rowId: string, name: string) => {
     const list = rows.map(r => (r.id === rowId ? { ...r, market: name } : r))
@@ -237,11 +256,6 @@ export function ClientMultiMarketQuote() {
             <button type="button" onClick={() => { setRows(rs => [...rs, blankRow()]); clear() }} className="mt-3 text-sm font-medium text-green-700 hover:text-green-800">+ Add a market</button>
           )}
 
-          <div className="mt-4 flex flex-wrap items-center gap-4">
-            <label className="flex items-center gap-1.5 text-xs text-gray-700"><input type="checkbox" checked={features.shadowFencing} onChange={e => setFeature({ shadowFencing: e.target.checked })} /> Shadow fencing</label>
-            <label className="flex items-center gap-1.5 text-xs text-gray-700"><input type="checkbox" checked={features.smartDirectional} onChange={e => setFeature({ smartDirectional: e.target.checked })} /> Smart directional</label>
-            <label className="flex items-center gap-1.5 text-xs text-gray-700"><input type="checkbox" checked={features.deviceId} onChange={e => setFeature({ deviceId: e.target.checked })} /> Device ID</label>
-          </div>
           <div className="mt-3 grid sm:grid-cols-2 gap-3">
             <BrandInput value={brand} onChange={setBrand} className={inputClass} label="Brand (optional)" hint="The brand this campaign is for." />
             <div>
@@ -279,6 +293,7 @@ export function ClientMultiMarketQuote() {
                 </div>
               )}
 
+              {quote.fits && <Customize view={quote.fits} features={features} onChange={setFeature} disabled={busy} />}
               {quote.fits ? (
                 <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
                   <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
@@ -293,7 +308,7 @@ export function ClientMultiMarketQuote() {
                           <p className="text-xs text-gray-500">
                             {l.trucks} truck{l.trucks === 1 ? '' : 's'} · {schedule(l.daysPerWeek)} · {l.hours} hr · {l.firstDay && l.lastDay ? `${fmt(l.firstDay)} – ${fmt(l.lastDay)}` : `${fmt(l.startDate)} – ${fmt(l.endDate)}`}
                           </p>
-                          <p className="text-xs text-gray-500">{l.truckDays} truck-days · media {money(l.media)}{l.transport > 0 ? ` · transport ${money(l.transport)}` : ''}</p>
+                          <p className="text-xs text-gray-500">{l.truckDays} truck-days · media {money(l.media - l.studiesTotal)}{l.studiesTotal > 0 ? ` · lift studies ${money(l.studiesTotal)} (whole order)` : ''}{l.transport > 0 ? ` · transport ${money(l.transport)}` : ''}</p>
                           {l.truckDays < l.requestedTruckDays && (
                             <p className="text-xs text-amber-700">{l.requestedTruckDays - l.truckDays} fewer truck-days than asked: a truck shares its week with another market. You pay for the days worked.</p>
                           )}
@@ -302,6 +317,7 @@ export function ClientMultiMarketQuote() {
                       </div>
                     ))}
                   </div>
+                  <Breakdown view={quote.fits} features={quote.features} />
                   <div className="px-4 py-3 border-t border-gray-100">
                     {changed && <p className="text-xs text-amber-800 mb-2">{changed}</p>}
                     {booked ? null : (
@@ -329,5 +345,87 @@ export function ClientMultiMarketQuote() {
         </div>
       </div>
     </>
+  )
+}
+
+const sum = (lines: Line[], f: (l: Line) => number) => lines.reduce((n, l) => n + f(l), 0)
+
+/**
+ * The options and lift studies, priced, as the one-market quote shows them
+ * (app/client/ai/page.tsx). Each option's price is what it adds across every
+ * market; a study covers the whole order. A change prices the order again.
+ */
+function Customize({ view, features, onChange, disabled }: { view: View; features: Features; onChange: (p: Partial<Features>) => void; disabled: boolean }) {
+  const lines = view.lines
+  const st = view.studies
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+      <h3 className="text-sm font-semibold text-gray-900">Customize features</h3>
+      <FeatureToggle label="Shadow Fencing" description="Geo-targeted digital ads in every market"
+        cost={sum(lines, l => l.optionPrices.shadowFencing)} checked={features.shadowFencing} onChange={v => onChange({ shadowFencing: v })} disabled={disabled} />
+      <FeatureToggle label="Smart Directional" description="GPS-triggered directional messaging"
+        cost={sum(lines, l => l.optionPrices.smartDirectional)} checked={features.smartDirectional} onChange={v => onChange({ smartDirectional: v })} disabled={disabled} />
+      <FeatureToggle label="Device ID Passback" description="Audience device data for retargeting"
+        cost={sum(lines, l => l.optionPrices.deviceId)} checked={features.deviceId} onChange={v => onChange({ deviceId: v })} disabled={disabled} />
+      <div className="pt-2 border-t border-gray-100">
+        <div className="flex items-center justify-between mb-2">
+          <div>
+            <p className="text-sm font-medium text-gray-900">Lift Studies</p>
+            <p className="text-xs text-gray-500">One study covers the whole campaign{st.uniqueMarkets > 1 ? ` (${st.uniqueMarkets} markets)` : ''}; sales lift is quoted by our team</p>
+          </div>
+          {!st.reachOk && (
+            <span className="text-[10px] text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">Requires {st.reachMinimum.toLocaleString('en-US')}+ impressions</span>
+          )}
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {STUDY_CHOICES.map(study => {
+            const on = features.studies.includes(study)
+            const unpriced = on && !st.selected.includes(study)
+            return (
+              // A ticked study can always be unticked, even when the order falls short of the reach minimum.
+              <button key={study} type="button" disabled={disabled || (!st.reachOk && !on)}
+                onClick={() => onChange({ studies: on ? features.studies.filter(s => s !== study) : [...features.studies, study] })}
+                className={`text-left text-xs rounded-lg border px-3 py-2 transition-all ${on ? 'border-purple-300 bg-purple-50 text-purple-800 font-medium' : st.reachOk ? 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50' : 'border-gray-100 bg-gray-50 text-gray-400 cursor-not-allowed'}`}>
+                <span className="mr-1.5">{on ? '\u2713' : '\u25CB'}</span>
+                {STUDY_LABELS[study]}
+                <span className="block text-[10px] text-gray-500 font-normal">{unpriced ? 'Not included: reach is under the minimum' : study === 'sales_lift' ? 'Our team will quote it' : money(st.prices[study] ?? 0)}</span>
+              </button>
+            )
+          })}
+        </div>
+        {st.warning && <p className="mt-2 text-xs text-amber-700">{st.warning}</p>}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The order's price as the one-market quote lists it: base media, each option
+ * chosen, each study, transport and the total. Base media is the media less
+ * the options and studies, so the lines add up to the total exactly.
+ */
+function Breakdown({ view, features }: { view: View; features: Features }) {
+  const lines = view.lines
+  const st = view.studies
+  const sf = features.shadowFencing ? sum(lines, l => l.shadowFencing) : 0
+  const sd = features.smartDirectional ? sum(lines, l => l.smartDirectional) : 0
+  const did = features.deviceId ? sum(lines, l => l.deviceId) : 0
+  const transport = sum(lines, l => l.transport)
+  const base = sum(lines, l => l.media) - sf - sd - did - st.total
+  const priced = st.selected.filter(s => s !== 'sales_lift')
+  const row = (label: string, amount: number, plus = true) => (
+    <div key={label} className="flex justify-between text-gray-600"><span>{label}</span><span>{plus ? '+ ' : ''}{money(amount)}</span></div>
+  )
+  return (
+    <div className="px-4 py-3 border-t border-gray-100 space-y-1.5 text-sm">
+      {row(`Base media (${sum(lines, l => l.truckDays)} truck-days)`, base, false)}
+      {sf > 0 && row('Shadow fencing', sf)}
+      {sd > 0 && row('Smart Directional', sd)}
+      {did > 0 && row('Device ID Passback', did)}
+      {priced.map(s => row(`${STUDY_LABELS[s]} study`, st.prices[s] ?? 0))}
+      {st.salesLiftRequested && <div className="flex justify-between text-gray-500 text-xs"><span>Sales lift: our team will quote it</span><span>not included</span></div>}
+      {transport > 0 && row('Transport', transport)}
+      <div className="flex justify-between font-bold text-gray-900 pt-2 border-t border-gray-200 text-base"><span>Total</span><span>{money(view.total)}</span></div>
+    </div>
   )
 }

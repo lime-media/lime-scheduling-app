@@ -1,8 +1,10 @@
 /**
  * CampaignIQ Core's campaign request intake, as the "Scheduling App" service
  * account (Core contract, 2026-11-10, corrected by Sarah 2026-11-12): log in
- * for a token, then POST /api/v1/campaigns. Create only for now; updates,
- * approve, reject and archive wait for Core's shapes.
+ * for a token, then POST /api/v1/campaigns to create a request; GET and PUT
+ * /api/v1/campaigns/{uid} to read and refresh it; POST
+ * /api/v1/admin/campaigns/{uid}/approve to convert it (Sarah, 2026-11-16/17).
+ * Reject and archive wait for Core's shapes.
  *
  * Topology: every call goes to the one Node service. The login is its own
  * route; Core's (Java) routes are reached through it with the header
@@ -156,6 +158,35 @@ export class CoreError extends Error {
 
 export type CoreCreated = { coreUid: string; requestId: string | null; status: string | null }
 
+/** A request Core has already decided: converted into a program, or declined. */
+export type CoreDecided = { decided: 'APPROVED' | 'DECLINED'; programUid: string | null }
+
+/** A request as Core's GET shows it. `opsEditedAt`: the last change by anyone but the service account. */
+export type CoreRequestState = { status: string | null; programUid: string | null; opsEditedAt: string | null; opsEditedBy: string | null }
+
+/** Already approved (its program exists, or the job it merged into). */
+export const ALREADY_APPROVED = 'CIQ-CR-050'
+/** Already declined. */
+export const ALREADY_DECLINED = 'CIQ-CR-051'
+
+const str = (v: unknown) => typeof v === 'string' && v.trim() ? v.trim() : null
+const dataOf = (json: Record<string, unknown> | null) => json?.data && typeof json.data === 'object' ? json.data as Record<string, unknown> : null
+
+/**
+ * What a refusal says Core already decided, or null when it's a refusal of
+ * another kind. CIQ-CR-050 and 051 carry it; a status in the data says it too.
+ * The program uid is the merge target's when the request merged into a job. Pure.
+ */
+export function coreDecision(json: Record<string, unknown> | null): CoreDecided | null {
+  const data = dataOf(json)
+  const code = str(json?.errorCode)
+  const status = str(data?.status)?.toUpperCase()
+  const programUid = str(data?.clientProgramUid)
+  if (code === ALREADY_APPROVED || (code && status === 'APPROVED')) return { decided: 'APPROVED', programUid }
+  if (code === ALREADY_DECLINED || (code && status === 'DECLINED')) return { decided: 'DECLINED', programUid: null }
+  return null
+}
+
 type Fetch = (url: string, init: RequestInit) => Promise<Response>
 
 const TIMEOUT_MS = 20_000
@@ -166,7 +197,9 @@ function coreReason(body: unknown): string | null {
   const text = (v: unknown) => typeof v === 'string' && v.trim() ? v.trim() : null
   const msg = text(b.message)
   const error = text(b.error)
-  const errors = Array.isArray(b.errors) ? b.errors.map(e => (typeof e === 'string' ? e : (e && typeof e === 'object' && typeof (e as { message?: unknown }).message === 'string' ? (e as { message: string }).message : null))).filter(Boolean) : []
+  // A list of reasons, or a field map ({ "markets[0].timezone": "Timezone is required." }).
+  const list = Array.isArray(b.errors) ? b.errors : b.errors && typeof b.errors === 'object' ? Object.values(b.errors) : []
+  const errors = list.map(e => (typeof e === 'string' ? e : (e && typeof e === 'object' && typeof (e as { message?: unknown }).message === 'string' ? (e as { message: string }).message : null))).filter(Boolean)
   const parts = [msg, error, ...errors].filter((p, i, all) => p && all.indexOf(p) === i)
   return parts.length > 0 ? parts.join('; ') : null
 }
@@ -259,5 +292,66 @@ export function coreClient(config: CoreConfig, doFetch: Fetch = fetch) {
     }
   }
 
-  return { createCampaign }
+  /** Core's answer as JSON, and its status (Core repeats it in the body). */
+  async function answer(res: Response): Promise<{ json: Record<string, unknown> | null; statusCode: number }> {
+    const json = await res.json().catch(() => null) as Record<string, unknown> | null
+    const statusCode = typeof json?.statusCode === 'number' ? json.statusCode : res.status
+    return { json, statusCode }
+  }
+  const failed = (res: Response, json: Record<string, unknown> | null, statusCode: number) => !res.ok || refused(json) || statusCode >= 300
+  const requestUrl = (uid: string) => `${config.apiUrl}/api/v1/campaigns/${encodeURIComponent(uid)}`
+
+  /** A request as Core holds it now. */
+  async function getCampaign(uid: string): Promise<CoreRequestState> {
+    const res = await authed(requestUrl(uid), { method: 'GET' })
+    const { json, statusCode } = await answer(res)
+    if (failed(res, json, statusCode)) throw new CoreError(coreMessage(json, statusCode), statusCode)
+    const data = dataOf(json) ?? json ?? {}
+    return {
+      status: str(data.status)?.toUpperCase() ?? null,
+      programUid: str(data.clientProgramUid),
+      opsEditedAt: str(data.opsEditedAt),
+      opsEditedBy: str(data.opsEditedBy),
+    }
+  }
+
+  /**
+   * Replace Core's copy of a request with the booking as it is now (same body
+   * as create; Core keeps the request's externalRef, requestId and status).
+   * Null when it was replaced; what Core decided when the request is already
+   * converted or declined, which a PUT can no longer change.
+   */
+  async function updateCampaign(uid: string, body: CorePayload): Promise<CoreDecided | null> {
+    const res = await authed(requestUrl(uid), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const { json, statusCode } = await answer(res)
+    if (!failed(res, json, statusCode)) return null
+    const decided = coreDecision(json)
+    if (decided) return decided
+    throw new CoreError(coreMessage(json, statusCode), statusCode)
+  }
+
+  /**
+   * Convert a request: Core creates its program, markets and shifts, with the
+   * job number, all or nothing. A request already converted or declined comes
+   * back as that decision rather than an error, so an approve whose reply was
+   * lost is safe to send again.
+   */
+  async function approveCampaign(uid: string, jobNumber: string): Promise<CoreDecided> {
+    const res = await authed(`${config.apiUrl}/api/v1/admin/campaigns/${encodeURIComponent(uid)}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobNumber }),
+    })
+    const { json, statusCode } = await answer(res)
+    if (!failed(res, json, statusCode)) return { decided: 'APPROVED', programUid: str(dataOf(json)?.clientProgramUid) }
+    const decided = coreDecision(json)
+    if (decided) return decided
+    throw new CoreError(coreMessage(json, statusCode), statusCode)
+  }
+
+  return { createCampaign, getCampaign, updateCampaign, approveCampaign }
 }

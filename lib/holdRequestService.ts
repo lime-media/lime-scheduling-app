@@ -49,15 +49,25 @@ export class ClientHoldRefusal extends Error {
   }
 }
 
+/**
+ * The Salesforce integration user (SFDC_SERVICE_USER_EMAIL) isn't in this
+ * database, so no client hold can be recorded. A setup problem, not the
+ * client's: the booking is refused with BOOKING_UNAVAILABLE.
+ */
+export class ServiceUserMissingError extends Error {
+  constructor() { super(`The Salesforce integration user (${SFDC_SERVICE_USER_EMAIL}) is missing from app_users: client holds can't be created until it's added.`) }
+}
+
+/** What a client is told when ServiceUserMissingError stops their booking. */
+export const BOOKING_UNAVAILABLE = 'Online booking is unavailable right now, so nothing was booked. Ask a question below and the Lime Media team will book it for you.'
+
 /** The service user client holds are created by (Hold.created_by is a FK to app_users; clients aren't in it). */
 export async function clientHoldCreator(): Promise<string> {
   const serviceUser = await prisma.user.findFirst({
     where: { email: SFDC_SERVICE_USER_EMAIL },
     select: { id: true },
   })
-  if (!serviceUser) {
-    throw new Error('SFDC service user not found — cannot create client hold')
-  }
+  if (!serviceUser) throw new ServiceUserMissingError()
   return serviceUser.id
 }
 

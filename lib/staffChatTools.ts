@@ -32,6 +32,7 @@ import { isSfdcConfigured } from '@/lib/salesforceClient'
 import { isAccountId, searchAccounts, searchContacts } from '@/lib/sfdcSearch'
 import { resolveQuoteMarket, staffQuote, type StaffQuoteInput } from '@/lib/staffQuote'
 import { placeStaffBooking } from '@/lib/staffBooking'
+import { OPPORTUNITY_NAME_MAX, readOpportunityName } from '@/lib/opportunityName'
 import { recordToolRun, type Actor } from '@/lib/usageLog'
 import { quoteRef, type BookingTerms } from '@/lib/quoteRef'
 import { prisma } from '@/lib/prisma'
@@ -67,6 +68,7 @@ const BOOKING_TERMS = {
   stage: { type: 'string', enum: OPEN_STAGES.map(s => s.value), description: 'Opportunity stage. Default WARM.' },
   opportunity_type: { type: 'string', enum: [...OPPORTUNITY_TYPES], description: "The opportunity's Type. Use the account's opportunityType (find_account): it's inferred, so state it with the quote rather than asking. Leave it out when find_account gave none; the booking then uses Existing Client once the account has won a deal, else New Client." },
   lead_source: { type: 'string', enum: [...LEAD_SOURCES], description: "The opportunity's Lead Source, exactly one of Salesforce's values. Use the account's leadSource (find_account) when it has one: it's inferred, so state it with the quote rather than asking. Ask the rep only when it has none. Required to book." },
+  opportunity_name: { type: 'string', maxLength: OPPORTUNITY_NAME_MAX, description: 'The new Salesforce opportunity\'s name, only when the rep gives one. Never ask for it: left out, the booking names it "Brand / Account / first day" (e.g. "Nike / Acme Agency / 2026-12-01").' },
 } as const
 
 export const CHAT_TOOLS: Anthropic.Beta.BetaTool[] = [
@@ -81,7 +83,7 @@ export const CHAT_TOOLS: Anthropic.Beta.BetaTool[] = [
   },
   {
     name: 'get_quote',
-    description: 'Price one market exactly as the internal Quote page does: trucks picked, media, features, transport, total. Returns quote_ref when the trucks are there to book it. When the rep may book, include sfdc_account_id (agreement and Brand Direct pricing) and the booking terms (account name, primary contact, brand ("none" only when the rep said there is none; place_hold needs one), hold days, stage, lead source, opportunity type) and client_type: the ref covers them, so place_hold books exactly what the rep confirmed.',
+    description: 'Price one market exactly as the internal Quote page does: trucks picked, media, features, transport, total. Returns quote_ref when the trucks are there to book it. When the rep may book, include sfdc_account_id (agreement and Brand Direct pricing) and the booking terms (account name, primary contact, brand ("none" only when the rep said there is none; place_hold needs one), hold days, stage, lead source, opportunity type, and an opportunity name only if the rep gave one) and client_type: the ref covers them, so place_hold books exactly what the rep confirmed.',
     input_schema: { type: 'object', properties: { ...QUOTE_PROPERTIES, ...BOOKING_TERMS }, required: QUOTE_REQUIRED },
   },
   {
@@ -171,13 +173,15 @@ function quoteInput(i: Bag): StaffQuoteInput | string {
 
 /** The booking terms, type-checked; a string saying what's wrong otherwise. Pure. */
 export function bookingTerms(i: Bag): BookingTerms | string {
-  for (const k of ['sfdc_account_name', 'primary_contact_id', 'brand', 'stage', 'lead_source', 'opportunity_type'] as const) {
+  for (const k of ['sfdc_account_name', 'primary_contact_id', 'brand', 'stage', 'lead_source', 'opportunity_type', 'opportunity_name'] as const) {
     if (i[k] !== undefined && typeof i[k] !== 'string') return `${k} is text`
   }
   const leadSource = readLeadSource(i.lead_source, false)
   if ('error' in leadSource) return leadSource.error
   const oppType = readOpportunityType(i.opportunity_type, false)
   if ('error' in oppType) return oppType.error
+  const oppName = readOpportunityName(i.opportunity_name)
+  if ('error' in oppName) return oppName.error
   if (i.hold_days !== undefined && (typeof i.hold_days !== 'number' || !Number.isInteger(i.hold_days) || i.hold_days < 1 || i.hold_days > MAX_HOLD_DAYS)) return `hold_days is a whole number of days from 1 to ${MAX_HOLD_DAYS}`
   return {
     sfdc_account_name: i.sfdc_account_name as string | undefined, primary_contact_id: i.primary_contact_id as string | undefined,
@@ -189,6 +193,8 @@ export function bookingTerms(i: Bag): BookingTerms | string {
     hold_days: i.hold_days as number | undefined, stage: i.stage as string | undefined,
     lead_source: leadSource.leadSource ?? undefined,
     opportunity_type: oppType.opportunityType ?? undefined,
+    // As it will be saved (spaces collapsed); blank is left out, so the booking generates one.
+    opportunity_name: oppName.name ?? undefined,
   }
 }
 
@@ -289,7 +295,7 @@ async function quote(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
   const savedAs = terms.brand === 'none' ? '' : terms.brand ?? ''
   return {
     content: json({ ...body, quote_ref: ref }),
-    quote: bookable ? { ref, summary: `${body.market}, ${q.start_date} to ${q.end_date}, ${q.truck_count} truck${q.truck_count === 1 ? '' : 's'}${trucks ? ` (${trucks})` : ''}, ${money(body.grandTotal)}${terms.sfdc_account_name ? ` for ${terms.sfdc_account_name.trim()}` : ''}, ${q.client_type}, lead source ${terms.lead_source}${terms.opportunity_type ? `, ${terms.opportunity_type}` : ''}, ${savedAs ? `brand ${savedAs}` : 'no brand'}, held ${terms.hold_days ?? DEFAULT_HOLD_DAYS} days` } : undefined,
+    quote: bookable ? { ref, summary: `${body.market}, ${q.start_date} to ${q.end_date}, ${q.truck_count} truck${q.truck_count === 1 ? '' : 's'}${trucks ? ` (${trucks})` : ''}, ${money(body.grandTotal)}${terms.sfdc_account_name ? ` for ${terms.sfdc_account_name.trim()}` : ''}, ${q.client_type}, lead source ${terms.lead_source}${terms.opportunity_type ? `, ${terms.opportunity_type}` : ''}${terms.opportunity_name ? `, opportunity named "${terms.opportunity_name}"` : ''}, ${savedAs ? `brand ${savedAs}` : 'no brand'}, held ${terms.hold_days ?? DEFAULT_HOLD_DAYS} days` } : undefined,
   }
 }
 
@@ -369,6 +375,7 @@ async function book(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
     stage: i.stage,
     lead_source: terms.lead_source,
     opportunity_type: terms.opportunity_type,
+    opportunity_name: terms.opportunity_name,
     expected_total: i.expected_total,
   }
   const started = Date.now()

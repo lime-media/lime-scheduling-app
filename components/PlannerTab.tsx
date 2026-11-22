@@ -148,7 +148,7 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
   const [account, setAccount] = useState<SfdcAccount | null>(null)
   const [revision, setRevision] = useState<Revision | null>(null)
   const [reviseError, setReviseError] = useState<string | null>(null)
-  // A Closed Lost opportunity: asked before it is moved back to S3.
+  // A Closed Lost opportunity: asked before it is reopened.
   const reopen = useReopenConfirm()
   // An existing opportunity to add this order to; null = a new one. (A
   // revision always goes onto its own booking's opportunity.)

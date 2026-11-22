@@ -168,7 +168,7 @@ export function reactivationDecision(
 
 /** What the person is asked before a Closed Lost opportunity is moved back to S3. */
 export function reopenQuestion(stageName: string): string {
-  return `This opportunity is "${stageName}" in Salesforce. Move it back to S3 and continue?`
+  return `This opportunity is "${stageName}" in Salesforce. Reopen it (S3 for a reservation, S1 for a quote only) and continue?`
 }
 
 /**

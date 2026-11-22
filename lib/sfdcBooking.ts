@@ -4,7 +4,7 @@
  * says what the fields become).
  */
 
-import { isSfdcConfigured, readOnlyPreview, salesforceWritesOff, sfdcQuery, updateOpportunity, updateOpportunityWithError, WRITES_OFF_MESSAGE, WRITES_STOPPED_ERROR } from '@/lib/salesforceClient'
+import { isSfdcConfigured, readOnlyPreview, salesforceWritesOff, sfdcQuery, updateOpportunityWithError, WRITES_OFF_MESSAGE, WRITES_STOPPED_ERROR } from '@/lib/salesforceClient'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
 import { RESERVATION_STAGE, reservationStageRaise } from '@/lib/sfdcStages'
 import { closedOpportunityBlocksReactivation, withAppHoldExp } from '@/lib/sfdcIntegration'
@@ -66,25 +66,26 @@ export function opportunityRefusal(opp: BookingOpportunity | null, accountId: st
 }
 
 /**
- * Move a Closed Lost opportunity back to S3 (a staff choice on reinstate or
+ * Move a Closed Lost opportunity back to an open stage (S3 for a reservation,
+ * S1 for a quote-only revise: lib/sfdcStages.ts) (a staff choice on reinstate or
  * revise: lib/sfdcIntegration.ts reactivationDecision), then read the stage
  * back: Salesforce automation can refuse or re-close it. Only StageName is
  * written, never CloseDate or the org's auto-close fields. On any failure the
  * caller changes nothing in the app and shows `error` (Salesforce's own words
  * where it gave them).
  */
-export async function reopenClosedLostOpportunity(opportunityId: string): Promise<{ ok: true; fromStage: string; toStage: string } | { ok: false; error: string }> {
+export async function reopenClosedLostOpportunity(opportunityId: string, stage: string = RESERVATION_STAGE): Promise<{ ok: true; fromStage: string; toStage: string } | { ok: false; error: string }> {
   const before = await getOpportunityStage(opportunityId)
   if (!before) return { ok: false, error: 'Salesforce could not be reached to read the opportunity. Nothing was changed.' }
   if (!before.isClosed) return { ok: true, fromStage: before.stageName, toStage: before.stageName }
   if (before.isWon) return { ok: false, error: 'The opportunity is Closed Won; it is not reopened from here.' }
-  const write = await updateOpportunityWithError(opportunityId, { StageName: RESERVATION_STAGE }).catch(err => ({ ok: false as const, error: err instanceof Error ? err.message : 'Salesforce could not be reached' }))
-  if (!write.ok) return { ok: false, error: `Salesforce refused to move the opportunity to S3: ${write.error}. Nothing was changed.` }
+  const write = await updateOpportunityWithError(opportunityId, { StageName: stage }).catch(err => ({ ok: false as const, error: err instanceof Error ? err.message : 'Salesforce could not be reached' }))
+  if (!write.ok) return { ok: false, error: `Salesforce refused to move the opportunity to ${stage}: ${write.error}. Nothing was changed.` }
   const after = await getOpportunityStage(opportunityId)
   // The write succeeded; a failed read-back is "couldn't confirm", not a
-  // refusal. Undoing the app's change here would leave Salesforce at S3 with no
+  // refusal. Undoing the app's change here would leave Salesforce open with no
   // booking behind it.
-  if (!after) return { ok: true, fromStage: before.stageName, toStage: RESERVATION_STAGE }
+  if (!after) return { ok: true, fromStage: before.stageName, toStage: stage }
   if (after.isClosed) return { ok: false, error: `Salesforce put the opportunity back to "${after.stageName}" (an automation or rule there). Nothing was changed here; reopen it in Salesforce.` }
   return { ok: true, fromStage: before.stageName, toStage: after.stageName }
 }
@@ -134,23 +135,26 @@ export async function applyBookingToOpportunity(opts: {
   // A validation rule, record type or lock that refuses either can't keep the
   // booking's trucks, amount and window out of Salesforce. Refused with them,
   // the update is sent again without them (a PATCH, so sending it twice can't
-  // duplicate anything) and the rep told about a Client Type left. Only a
-  // definite refusal (Salesforce's error list) is retried: a 5xx or an
-  // unreadable reply may have applied them, so the rep isn't told it was left.
-  const extras: Record<string, unknown> = {}
-  const clientTypeSent = !!opts.clientType && opts.clientType !== opts.opp.Client_Type__c
-  if (clientTypeSent) extras.Client_Type__c = opts.clientType
+  // duplicate anything) and the rep told about a Client Type left. The stage
+  // is dropped first, so a refused raise never costs the Client Type (or tells
+  // the rep it was left when it wasn't). Only a definite refusal (Salesforce's
+  // error list) is retried: a 5xx or an unreadable reply may have applied
+  // them, so the rep isn't told it was left.
+  const withClientType: Record<string, unknown> = opts.clientType && opts.clientType !== opts.opp.Client_Type__c
+    ? { ...fields, Client_Type__c: opts.clientType } : fields
   const raised = reservationStageRaise(opts.opp.StageName, !!opts.booking.holdStart)
-  if (raised) extras.StageName = raised
-  if (Object.keys(extras).length) {
-    const first = await updateOpportunityWithError(opts.opp.Id, { ...fields, ...extras })
-    if (first.ok) return { ok: true, amountLeft, windowLeft, clientTypeLeft: false }
-    if (first.error.startsWith('HTTP ')) return { ok: false, amountLeft, windowLeft, clientTypeLeft: false }
-    console.warn(`[sfdc] ${opts.opp.Id}: update refused with ${Object.keys(extras).join(', ')}; sending it without`)
-    const ok = await updateOpportunity(opts.opp.Id, fields)
-    return { ok, amountLeft, windowLeft, clientTypeLeft: ok && clientTypeSent }
+  const attempts = [
+    ...(raised ? [{ body: { ...withClientType, StageName: raised }, clientTypeLeft: false }] : []),
+    ...(withClientType !== fields ? [{ body: withClientType, clientTypeLeft: false }] : []),
+    { body: fields, clientTypeLeft: withClientType !== fields },
+  ]
+  for (let i = 0; i < attempts.length; i++) {
+    const res = await updateOpportunityWithError(opts.opp.Id, attempts[i].body)
+    if (res.ok) return { ok: true, amountLeft, windowLeft, clientTypeLeft: attempts[i].clientTypeLeft }
+    if (res.error.startsWith('HTTP ') || i === attempts.length - 1) break
+    console.warn(`[sfdc] ${opts.opp.Id}: update refused with ${i === 0 && raised ? `StageName ${raised}` : `Client Type ${opts.clientType}`}; sending it without`)
   }
-  return { ok: await updateOpportunity(opts.opp.Id, fields), amountLeft, windowLeft, clientTypeLeft: false }
+  return { ok: false, amountLeft, windowLeft, clientTypeLeft: false }
 }
 
 /** What the rep is told when an opportunity kept its own Client Type (applyBookingToOpportunity). */

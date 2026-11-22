@@ -96,3 +96,18 @@ section('client multi-market: the booking path')
   const staff = fs.readFileSync('app/api/plan/hold/route.ts', 'utf8')
   eq('staff and client book what fits the same way', staff.includes('bookWhatFits(body, chosen, booking)') && src.includes('bookWhatFits(p.req, lines, asked'), true)
 }
+
+section('parseClientPlan: lift studies for the whole order, as on the one-market quote')
+{
+  const feats = (studies: unknown) => {
+    const r = parseClientPlan({ rows: [row()], features: { studies } }, today)
+    return 'error' in r ? r.error : r.features
+  }
+  eq('studies carried, once each', (feats(['web_lift', 'brand_lift', 'web_lift']) as { studies?: string[] }).studies, ['web_lift', 'brand_lift'])
+  eq('sales lift is accepted (the team quotes it)', (feats(['sales_lift']) as { studies?: string[] }).studies, ['sales_lift'])
+  eq('none asked: no studies key', 'studies' in (feats(undefined) as object), false)
+  eq('an empty list: no studies key', 'studies' in (feats([]) as object), false)
+  eq('an unknown study is refused, not dropped', feats(['made_up']), 'Unknown lift study: made_up.')
+  eq('not a list of names: refused', feats('web_lift'), 'Studies must be a list of study names.')
+  eq('shadow fencing still on by default', (feats(['web_lift']) as { shadowFencing: boolean }).shadowFencing, true)
+}

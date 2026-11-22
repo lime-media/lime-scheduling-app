@@ -6,6 +6,7 @@ import { mcpParty, parseMcpCampaign, parseMcpStaffPricing } from '@/lib/mcpActin
 import { resolveQuoteMarket } from '@/lib/staffQuote'
 import { placeClientBooking } from '@/lib/clientBooking'
 import { placeStaffBooking } from '@/lib/staffBooking'
+import { readOpportunityName } from '@/lib/opportunityName'
 import { readLeadSource } from '@/lib/sfdcLeadSource'
 import { readBrand } from '@/lib/brand'
 
@@ -67,6 +68,9 @@ export async function POST(req: NextRequest) {
   // here too so a missing brand is refused before the lookups below.
   const brandRead = party.kind === 'staff' ? readBrand(body.brand, true) : null
   if (brandRead && 'error' in brandRead) return NextResponse.json({ error: brandRead.error }, { status: 400 })
+  // And the opportunity's name, when the person gives one (blank or absent: generated).
+  const oppName = party.kind === 'staff' ? readOpportunityName(body.opportunity_name) : null
+  if (oppName && 'error' in oppName) return NextResponse.json({ error: oppName.error }, { status: 400 })
   if (party.kind === 'staff') {
     if (!accountName) return NextResponse.json({ error: 'sfdc_account_name is required: the Salesforce Account the booking is for' }, { status: 400 })
     if (expectedTotal !== undefined && (typeof expectedTotal !== 'number' || !Number.isFinite(expectedTotal))) {
@@ -127,7 +131,7 @@ export async function POST(req: NextRequest) {
     ...staff,
     sfdc_account_name: accountName,
     primary_contact_id: str(body.primary_contact_id), brand: str(body.brand), hold_days: body.hold_days, stage: str(body.stage),
-    lead_source: lead?.leadSource ?? undefined, notes: str(body.notes), expected_total: expectedTotal,
+    lead_source: lead?.leadSource ?? undefined, opportunity_name: oppName?.name ?? undefined, notes: str(body.notes), expected_total: expectedTotal,
   }, party.actor, { origination: 'mcp', requireLeadSource: true, requireBrand: true })
   return NextResponse.json(result.body, { status: result.status })
 }

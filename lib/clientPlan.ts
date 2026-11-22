@@ -13,6 +13,9 @@
 import { CLIENT_MAX_TRUCKS, daysUntil, MIN_CLIENT_LEAD_DAYS } from '@/lib/pricing'
 import { isCalendarDate } from '@/lib/dateOnly'
 import type { LineQuote, QuoteRequest, QuoteRow } from '@/lib/planning/quote'
+import type { OrderStudies } from '@/lib/planning/studies'
+import { optionItems, type OrderOptions } from '@/lib/planning/options'
+import { VALID_STUDIES, type StudyType } from '@/lib/pricing/config'
 
 /** The most markets in one client order. */
 export const CLIENT_MAX_MARKETS = 10
@@ -68,9 +71,15 @@ export function parseClientPlan(input: unknown, today = new Date()): ClientPlanR
   for (const k of ['shadowFencing', 'smartDirectional', 'deviceId']) {
     if (f[k] !== undefined && typeof f[k] !== 'boolean') return { error: 'Features must be on or off.' }
   }
+  // Lift studies for the whole order, as on the one-market quote and the staff
+  // Multi-market Plan: a list of known studies (lib/pricing/studies.ts prices them).
+  if (f.studies !== undefined && !(Array.isArray(f.studies) && f.studies.every(x => typeof x === 'string'))) return { error: 'Studies must be a list of study names.' }
+  const unknown = ((f.studies as string[] | undefined) ?? []).filter(x => !(VALID_STUDIES as readonly string[]).includes(x))
+  if (unknown.length) return { error: `Unknown lift study: ${unknown.join(', ')}.` }
+  const studies = [...new Set((f.studies as StudyType[] | undefined) ?? [])]
   return {
     rows,
-    features: { shadowFencing: f.shadowFencing !== false, smartDirectional: f.smartDirectional === true, deviceId: f.deviceId === true },
+    features: { shadowFencing: f.shadowFencing !== false, smartDirectional: f.smartDirectional === true, deviceId: f.deviceId === true, ...(studies.length ? { studies } : {}) },
   }
 }
 
@@ -98,7 +107,9 @@ export function clientLine(l: LineQuote) {
     dailyRate: l.effectiveDailyRate,
     baseMedia: l.baseMedia,
     // The market's own price: the order's options are priced once for the
-    // whole order and listed on their own (lib/clientMultiMarket.ts view).
+    // whole order and listed on their own (clientOptions).
+    /** The order's lift studies, carried on one market's media (0 on the others). */
+    studiesTotal: l.studiesTotal,
     media: l.media - l.optionsTotal,
     transport: l.transport.billed,
     total: l.total - l.optionsTotal,
@@ -107,6 +118,30 @@ export function clientLine(l: LineQuote) {
 }
 
 export type ClientLine = ReturnType<typeof clientLine>
+
+/** The order's lift studies as the client sees them: what was asked, what's priced, and why not. */
+export function clientStudies(st: OrderStudies) {
+  return {
+    reachOk: st.reachOk,
+    reachMinimum: st.reachMinimum,
+    requested: st.requested,
+    selected: st.studies,
+    prices: st.prices,
+    total: st.total,
+    uniqueMarkets: st.uniqueMarkets,
+    salesLiftRequested: st.salesLiftRequested,
+    warning: st.warning ?? null,
+  }
+}
+
+/**
+ * The order's media options as the client sees them: each one's price for the
+ * whole order (chosen or not, for its switch) and the chosen ones as line
+ * items, priced once for the order (lib/planning/options.ts).
+ */
+export function clientOptions(o: OrderOptions) {
+  return { prices: o.prices, items: optionItems(o) }
+}
 
 /** Whether a routed order books exactly these trucks per market (row id). */
 export const sameTrucks = (lines: { id: string; trucks: number }[], expected: Record<string, number>) =>

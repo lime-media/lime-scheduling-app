@@ -152,7 +152,7 @@ export async function applyBookingToOpportunity(opts: {
     const res = await updateOpportunityWithError(opts.opp.Id, attempts[i].body)
     if (res.ok) return { ok: true, amountLeft, windowLeft, clientTypeLeft: attempts[i].clientTypeLeft }
     if (res.error.startsWith('HTTP ') || i === attempts.length - 1) break
-    console.warn(`[sfdc] ${opts.opp.Id}: update refused with ${i === 0 && raised ? `StageName ${raised}` : `Client Type ${opts.clientType}`}; sending it without`)
+    console.warn(`[sfdc] ${opts.opp.Id}: update refused (${res.error}); sending it again without ${i === 0 && raised ? `StageName ${raised}` : `Client Type ${opts.clientType}`}`)
   }
   return { ok: false, amountLeft, windowLeft, clientTypeLeft: false }
 }

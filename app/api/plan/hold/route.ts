@@ -476,7 +476,7 @@ async function handlePost(req: NextRequest) {
     // revision is undone (the new holds go, the old ones come back from `was`,
     // every column) and nothing changes.
     if (reviseKey && target && body.reopenOpportunity === true && target.IsClosed && !target.IsWon) {
-      const r = await reopenClosedLostOpportunity(target.Id, newOpportunityStage(quoteOnly))
+      const r = await reopenClosedLostOpportunity(target.Id, newOpportunityStage(quoteOnly || stretches.length === 0))
       if (!r.ok) {
         // Put the old booking back. Its holds are normally lapsed already (the
         // deal was lost), but any that still reserve are re-checked under their

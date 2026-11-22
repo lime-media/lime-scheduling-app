@@ -607,8 +607,8 @@ async function handlePost(req: NextRequest) {
           name: (createdOppName = oppNameRead.name ?? planOpportunityName(brand, accountName, quote.lines)),
           brand: brand || undefined,
           primaryContactId: body.primaryContactId,
-          // S1 for a quote-only log, S3 for a reservation (lib/sfdcStages.ts).
-          stageName: newOpportunityStage(quoteOnly),
+          // S1 for a quote-only log (or nothing reserved), S3 for a reservation (lib/sfdcStages.ts).
+          stageName: newOpportunityStage(quoteOnly || stretches.length === 0),
           closeDate: starts[0],
           amount: quote.summary.grandTotal,
           market: fitNames(oppMarkets, 255),

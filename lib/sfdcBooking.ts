@@ -126,26 +126,29 @@ export async function applyBookingToOpportunity(opts: {
   const linked = await loadOpportunityReservingHolds(opts.opp.Id)
   const { fields, windowLeft } = mergedOpportunityFields(opts.mode, opts.opp, opts.booking, { date: centralDate(new Date()), by: opts.by }, linked, opts.was)
   if (opts.primaryContactId && !opts.opp.Primary_Contact__c) fields.Primary_Contact__c = opts.primaryContactId
-  // Trucks reserved on an opportunity still below a reservation's stage (a
-  // quote-only log turned into a reservation) move it up to S3; never down.
-  const raised = reservationStageRaise(opts.opp.StageName, !!opts.booking.holdStart)
-  if (raised) fields.StageName = raised
   const amountLeft = opts.opp.HasOpportunityLineItem
   if (amountLeft) delete fields.Amount
-  // The picked Client Type is best-effort: a validation rule, record type or
-  // lock that refuses it can't keep the booking's trucks, amount and window
-  // out of Salesforce. Refused with it, the update is sent again without it
-  // (a PATCH, so sending it twice can't duplicate anything) and the rep told.
-  // Only a definite refusal (Salesforce's error list) is retried: a 5xx or an
-  // unreadable reply may have applied the Client Type, so the rep isn't told
-  // it was left.
-  if (opts.clientType && opts.clientType !== opts.opp.Client_Type__c) {
-    const first = await updateOpportunityWithError(opts.opp.Id, { ...fields, Client_Type__c: opts.clientType })
+  // Best-effort extras: the picked Client Type, and the stage raise (trucks
+  // reserved on an opportunity still below a reservation's stage, such as a
+  // quote-only log turned into a reservation, move it up to S3; never down).
+  // A validation rule, record type or lock that refuses either can't keep the
+  // booking's trucks, amount and window out of Salesforce. Refused with them,
+  // the update is sent again without them (a PATCH, so sending it twice can't
+  // duplicate anything) and the rep told about a Client Type left. Only a
+  // definite refusal (Salesforce's error list) is retried: a 5xx or an
+  // unreadable reply may have applied them, so the rep isn't told it was left.
+  const extras: Record<string, unknown> = {}
+  const clientTypeSent = !!opts.clientType && opts.clientType !== opts.opp.Client_Type__c
+  if (clientTypeSent) extras.Client_Type__c = opts.clientType
+  const raised = reservationStageRaise(opts.opp.StageName, !!opts.booking.holdStart)
+  if (raised) extras.StageName = raised
+  if (Object.keys(extras).length) {
+    const first = await updateOpportunityWithError(opts.opp.Id, { ...fields, ...extras })
     if (first.ok) return { ok: true, amountLeft, windowLeft, clientTypeLeft: false }
     if (first.error.startsWith('HTTP ')) return { ok: false, amountLeft, windowLeft, clientTypeLeft: false }
-    console.warn(`[sfdc] ${opts.opp.Id}: update refused with Client Type ${opts.clientType}; sending it without`)
+    console.warn(`[sfdc] ${opts.opp.Id}: update refused with ${Object.keys(extras).join(', ')}; sending it without`)
     const ok = await updateOpportunity(opts.opp.Id, fields)
-    return { ok, amountLeft, windowLeft, clientTypeLeft: ok }
+    return { ok, amountLeft, windowLeft, clientTypeLeft: ok && clientTypeSent }
   }
   return { ok: await updateOpportunity(opts.opp.Id, fields), amountLeft, windowLeft, clientTypeLeft: false }
 }

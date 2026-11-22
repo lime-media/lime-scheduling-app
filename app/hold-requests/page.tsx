@@ -1417,7 +1417,7 @@ export default function HoldRequestsPage() {
                           </td>
                           <td className="px-3 py-3 min-w-0">
                             <div className="font-semibold text-gray-900 break-words">{v.first.company_name}</div>
-                            {v.first.opportunity_name && <div className="text-xs text-gray-700 break-words">{v.first.opportunity_name}</div>}
+                          {v.first.opportunity_name && <div className="text-xs text-gray-700 break-words">{v.first.opportunity_name}</div>}
                             <div className="text-xs text-gray-500 break-words">{v.first.owner_unassigned ? UNASSIGNED_OWNER_LABEL : v.first.owner_name || '—'} · {SOURCE_LABEL[v.first.source] ?? v.first.source}</div>
                           </td>
                           <td className="px-3 py-3 text-gray-700 break-words">{v.marketsLabel}</td>
@@ -1450,7 +1450,7 @@ export default function HoldRequestsPage() {
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <div className="font-semibold text-gray-900 break-words">{v.first.company_name}</div>
-                            {v.first.opportunity_name && <div className="text-xs text-gray-700 break-words">{v.first.opportunity_name}</div>}
+                          {v.first.opportunity_name && <div className="text-xs text-gray-700 break-words">{v.first.opportunity_name}</div>}
                           <div className="text-xs text-gray-500 break-words">{v.first.owner_unassigned ? UNASSIGNED_OWNER_LABEL : v.first.owner_name || '—'} · {SOURCE_LABEL[v.first.source] ?? v.first.source}</div>
                         </div>
                         <StatusPill v={v} />

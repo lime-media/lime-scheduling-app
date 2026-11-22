@@ -45,16 +45,29 @@ export const OWNER_WAIT_MS = 4000
 type OwnerRow = { id: string; created_by: string; created_by_name: string | null; sfdc_opportunity_id: string | null }
 
 /** Reads the owners of these opportunities and caches them (a missing opportunity caches as null). */
+/**
+ * Renames made in the app, by opportunity (15-char id), with when: a lookup
+ * that queried Salesforce before the rename landed keeps the new name instead
+ * of caching the old one for OWNER_TTL_MS.
+ */
+const renamed = new Map<string, { name: string; at: number }>()
+
 async function fetchOwners(oppIds: string[]): Promise<void> {
   for (let i = 0; i < oppIds.length; i += BATCH) {
     const batch = oppIds.slice(i, i + BATCH)
+    const queriedAt = Date.now()
     const rows = await sfdcQuery<{ Id: string; Name: string | null; IsClosed: boolean; OwnerId: string; Owner: { Name: string; Email: string | null } | null }>(
       `SELECT Id, Name, IsClosed, OwnerId, Owner.Name, Owner.Email FROM Opportunity WHERE Id IN (${batch.map(id => `'${id}'`).join(',')})`,
     )
     const at = Date.now()
     for (const [k, v] of ownerCache) if (at - v.at >= OWNER_TTL_MS) ownerCache.delete(k)
+    for (const [k, v] of renamed) if (at - v.at >= OWNER_TTL_MS) renamed.delete(k)
     for (const id of batch) ownerCache.set(key(id), { owner: null, at })
-    for (const o of rows) ownerCache.set(key(o.Id), { owner: { ownerId: o.OwnerId, name: o.Owner?.Name ?? null, email: o.Owner?.Email?.toLowerCase() ?? null, oppName: o.Name ?? null, closed: o.IsClosed === true }, at })
+    for (const o of rows) {
+      const r = renamed.get(key(o.Id))
+      const oppName = r && r.at >= queriedAt ? r.name : o.Name ?? null
+      ownerCache.set(key(o.Id), { owner: { ownerId: o.OwnerId, name: o.Owner?.Name ?? null, email: o.Owner?.Email?.toLowerCase() ?? null, oppName, closed: o.IsClosed === true }, at })
+    }
   }
 }
 
@@ -65,6 +78,7 @@ async function fetchOwners(oppIds: string[]): Promise<void> {
  * next read.
  */
 export function rememberOpportunityName(opportunityId: string, name: string): void {
+  renamed.set(key(opportunityId), { name, at: Date.now() })
   const hit = ownerCache.get(key(opportunityId))
   if (hit?.owner) hit.owner = { ...hit.owner, oppName: name }
 }

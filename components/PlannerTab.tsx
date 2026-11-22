@@ -33,7 +33,7 @@ import { useReopenConfirm } from '@/components/ReopenOpportunityDialog'
 import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/areas'
 import type { ReviewFinding } from '@/lib/planning/claude'
 import type { Arrival, LineQuote, MultiMarketQuote, QuoteRow, RowError } from '@/lib/planning/quote'
-import { optionItems } from '@/lib/planning/options'
+import { marketOwnTotal, optionItems } from '@/lib/planning/options'
 import { OPTION_LABELS } from '@/lib/quoteFeatures'
 import { selectionTotal } from '@/lib/planning/studies'
 import { STUDY_MIN_IMPRESSIONS, STUDY_PRICE, VALID_STUDIES, type StudyType } from '@/lib/pricing/config'
@@ -905,7 +905,7 @@ function QuoteResult({ quote, account, contact, revising, needsLeadSource, needs
                     {l.transport.billed > 0 ? fmtMoney(l.transport.billed) : <span className="text-gray-400">{l.transport.outcome === 'ABSORBED' ? 'included' : '—'}</span>}
                   </td>
                   <td className={tdTopNum + ' font-medium'}>
-                    {fmtMoney(l.total - l.studiesTotal - l.optionsTotal)}
+                    {fmtMoney(marketOwnTotal(l))}
                     {l.priceKept && <span className="block text-[11px] font-normal text-blue-700" title="Unchanged in this revision: keeps the price already booked">booked price kept</span>}
                   </td>
                 </tr>

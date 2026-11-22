@@ -45,6 +45,9 @@ export type OrderOptions = {
   carriedBy: string | null
 }
 
+/** A market's own price: its total less the order's options and studies it may carry (they're listed once for the whole order). Pure. */
+export const marketOwnTotal = (l: { total: number; optionsTotal: number; studiesTotal: number }) => l.total - l.optionsTotal - l.studiesTotal
+
 /** The market that carries an order-wide price (options, lift studies): the first by start, then by name. Pure. */
 export function orderCarrier<L extends { startDate: string; market: string }>(lines: L[]): L | undefined {
   return [...lines].sort((a, b) => a.startDate.localeCompare(b.startDate) || a.market.localeCompare(b.market))[0]
@@ -89,7 +92,7 @@ export function applyOptions<L extends OptionLine>(lines: L[], chosen: OptionCho
 /** The order's chosen options as line items, in the single-market quote's order and words (OPTION_LABELS, as QuoteBreakdown). Pure. */
 export function optionItems(o: Pick<OrderOptions, 'chosen' | 'prices' | 'shadowFencingFloored' | 'rates'>): { label: string; amount: number }[] {
   const out: { label: string; amount: number }[] = []
-  if (o.chosen.shadowFencing) out.push({ label: `${OPTION_LABELS.shadowFencing}${o.shadowFencingFloored ? ' (minimum applied)' : ` (${Math.round(o.rates.shadowFencingPct * 100)}% of base media)`}`, amount: o.prices.shadowFencing })
+  if (o.chosen.shadowFencing) out.push({ label: `${OPTION_LABELS.shadowFencing}${o.shadowFencingFloored ? ' (minimum applied)' : ` (${Number((o.rates.shadowFencingPct * 100).toFixed(1))}% of base media)`}`, amount: o.prices.shadowFencing })
   if (o.chosen.smartDirectional) out.push({ label: OPTION_LABELS.smartDirectional, amount: o.prices.smartDirectional })
   if (o.chosen.deviceId) out.push({ label: OPTION_LABELS.deviceId, amount: o.prices.deviceId })
   return out

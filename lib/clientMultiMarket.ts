@@ -47,6 +47,7 @@ import { recordBooking } from '@/lib/transportMetricsRecord'
 import { legsFromArrivals } from '@/lib/transportMetrics'
 import { bookWhatFits, buildMultiMarketQuote, holdPlaces, resolveRows, type PreparedQuote, type QuoteRequest } from '@/lib/planning/quote'
 import { describeBooked, describeQuoted, fitNames, lineFeatures, money, optionsDescription, planStretches, planTier, studiesDescription } from '@/lib/planning/booking'
+import { marketOwnTotal } from '@/lib/planning/options'
 import { STUDIES_REQUESTED_KEY } from '@/lib/quoteFeatures'
 import { clientLine, clientOptions, clientStudies, parseClientPlan, sameTrucks } from '@/lib/clientPlan'
 
@@ -316,7 +317,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
           ...(quote.brandMarkupPct ? [`Brand Direct pricing: +${quote.brandMarkupPct}% folded into every line item.`, ''] : []),
           'Booked by the client in the portal:',
           // Each market without the order's options and studies: they're priced once for the whole order (their own lines).
-          ...quote.lines.map(l => `${describeBooked(l)}, ${money(l.total - l.optionsTotal - l.studiesTotal)}`),
+          ...quote.lines.map(l => `${describeBooked(l)}, ${money(marketOwnTotal(l))}`),
           ...optionsDescription(quote.options),
           ...(notBooked.length ? ['', 'Asked for but no truck available:', ...notBooked] : []),
           ...studiesDescription(quote.studies),

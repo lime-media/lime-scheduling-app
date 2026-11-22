@@ -32,6 +32,12 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if (!read.name) return NextResponse.json({ error: 'The opportunity needs a name.' }, { status: 400 })
   const name = read.name
 
+  if (!isSfdcConfigured()) return NextResponse.json({ error: "Salesforce isn't configured here, so the name wasn't changed." }, { status: 503 })
+  // A preview (UAT) reads production Salesforce but never writes it: say so before anything is attempted.
+  if (readOnlyPreview()) return NextResponse.json({ error: WRITES_OFF_MESSAGE, writesOff: true }, { status: 403 })
+  // Writes stopped on production (SFDC_WRITES=off): refuse up front too, rather than as "Salesforce refused".
+  if (salesforceWritesOff()) return NextResponse.json({ error: `${WRITES_STOPPED_ERROR}, so the name wasn't changed.` }, { status: 503 })
+
   // Only an opportunity one of the app's bookings is on, whether it's stored as the 15- or 18-character id.
   // Salesforce ids are case-sensitive but the database's LIKE isn't, so the match is re-checked here.
   const prefix = id.slice(0, 15)
@@ -41,11 +47,6 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     take: 50,
   })).find(h => h.sfdc_opportunity_id?.slice(0, 15) === prefix)
   if (!hold) return NextResponse.json({ error: 'No booking in the app is on that opportunity.' }, { status: 404 })
-  if (!isSfdcConfigured()) return NextResponse.json({ error: "Salesforce isn't configured here, so the name wasn't changed." }, { status: 503 })
-  // A preview (UAT) reads production Salesforce but never writes it: say so before anything is attempted.
-  if (readOnlyPreview()) return NextResponse.json({ error: WRITES_OFF_MESSAGE, writesOff: true }, { status: 403 })
-  // Writes stopped on production (SFDC_WRITES=off): refuse up front too, rather than as "Salesforce refused".
-  if (salesforceWritesOff()) return NextResponse.json({ error: `${WRITES_STOPPED_ERROR}, so the name wasn't changed.` }, { status: 503 })
 
   const stage = await getOpportunityStage(id)
   const refusal = renameRefusal(stage)

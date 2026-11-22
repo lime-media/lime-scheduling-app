@@ -607,20 +607,22 @@ export default function HoldRequestsPage() {
 
   // Opportunity renames made on this page, by opportunity (15-char id): the
   // list shows the new name until it reloads with it, since another server
-  // instance can serve the old name from its cache for a few minutes. Dropped
-  // once the list shows any other name (Salesforce has moved on).
-  const oppRenames = useRef(new Map<string, { from: string | null; to: string }>())
+  // instance can serve the old name from its cache for a few minutes. `stale`
+  // is every name this page renamed away from (a second rename keeps the
+  // first's old name, which a stale instance can still serve). Dropped once
+  // the list shows any other name (Salesforce has caught up or moved on).
+  const oppRenames = useRef(new Map<string, { stale: (string | null)[]; to: string }>())
   const withRenames = useCallback((rows: HoldRequest[]): HoldRequest[] => {
     const renames = oppRenames.current
     if (renames.size === 0) return rows
     for (const r of rows) {
       const k = r.sfdc_opportunity_id?.slice(0, 15)
       const o = k ? renames.get(k) : undefined
-      if (k && o && r.opportunity_name != null && r.opportunity_name !== o.from) renames.delete(k)
+      if (k && o && r.opportunity_name != null && !o.stale.includes(r.opportunity_name)) renames.delete(k)
     }
     return rows.map(r => {
       const o = r.sfdc_opportunity_id ? renames.get(r.sfdc_opportunity_id.slice(0, 15)) : undefined
-      return o && r.opportunity_name === o.from ? { ...r, opportunity_name: o.to } : r
+      return o && o.stale.includes(r.opportunity_name ?? null) ? { ...r, opportunity_name: o.to } : r
     })
   }, [])
 
@@ -1192,9 +1194,11 @@ export default function HoldRequestsPage() {
                   <OpportunityNameEdit opportunityId={first.sfdc_opportunity_id} name={first.opportunity_name ?? null} closed={first.opportunity_closed ?? null}
                     onSaved={(to) => {
                       const k = first.sfdc_opportunity_id!.slice(0, 15)
-                      oppRenames.current.set(k, { from: first.opportunity_name ?? null, to })
+                      const prior = oppRenames.current.get(k)
+                      const stale = prior ? [...prior.stale, prior.to] : [first.opportunity_name ?? null]
+                      oppRenames.current.set(k, { stale: [...new Set(stale)].filter(n => n !== to), to })
+                      // Only the name changed (in Salesforce), so the list isn't reloaded: the overlay shows it.
                       setRequests(prev => withRenames(prev))
-                      fetchRequests()
                     }} />
                 </dd>
               </>)}

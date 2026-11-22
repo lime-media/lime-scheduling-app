@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import toast from 'react-hot-toast'
-import { OPPORTUNITY_NAME_MAX } from '@/lib/opportunityName'
+import { OPPORTUNITY_NAME_MAX, readOpportunityName } from '@/lib/opportunityName'
 
 /**
  * A booking's Salesforce opportunity name on Reservations, renamed in place
@@ -24,19 +24,24 @@ export function OpportunityNameEdit({ opportunityId, name, closed, onSaved }: {
   const [saving, setSaving] = useState(false)
 
   const save = async () => {
-    if (saving || !draft.trim()) return
+    if (saving) return
+    const read = readOpportunityName(draft)
+    if ('error' in read) { toast.error(read.error); return }
+    if (!read.name) return
+    // Unchanged: nothing to write to Salesforce or audit.
+    if (read.name === name) { setEditing(false); return }
     setSaving(true)
     try {
       const res = await fetch(`/api/opportunities/${encodeURIComponent(opportunityId)}/name`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: draft }),
+        body: JSON.stringify({ name: read.name }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) { toast.error(data.error ?? "The name wasn't changed"); return }
       toast.success('Opportunity renamed in Salesforce')
       setEditing(false)
-      onSaved(typeof data.name === 'string' ? data.name : draft.replace(/\s+/g, ' ').trim())
+      onSaved(typeof data.name === 'string' ? data.name : read.name)
     } catch {
       toast.error("Network error: the name wasn't changed")
     } finally {

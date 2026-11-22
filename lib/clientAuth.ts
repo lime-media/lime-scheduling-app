@@ -35,11 +35,17 @@ export type ClientUserNow = { username: string; company_name: string; partner_id
  * Salesforce account and rate agreement. So staff relinking an account,
  * renaming a client or changing its agreement takes effect on the client's
  * next request, not their next login. A deleted client is signed out (null).
- * If the record can't be read, the signed values stand rather than locking
- * the client out. Pure.
+ * If the record can't be read, the signed values stand for who the client is,
+ * rather than locking them out, but the session is marked (linksUnverified):
+ * its account and rate agreement may be up to 30 days old, so nothing is
+ * priced on them (unverifiedPricingRefusal).
  */
 export function liveClientSession(claims: ClientSession, now: ClientUserNow | null | 'unreadable'): ClientSession | null {
-  if (now === 'unreadable') return claims
+  if (now === 'unreadable') {
+    const session = { ...claims }
+    unverified.add(session)
+    return session
+  }
   if (!now) return null
   return {
     id: claims.id,
@@ -48,6 +54,37 @@ export function liveClientSession(claims: ClientSession, now: ClientUserNow | nu
     partnerId: now.partner_id ?? undefined,
     sfdcAccountId: now.sfdc_account_id ?? undefined,
   }
+}
+
+// Sessions whose record couldn't be read this request: kept apart from the
+// claims, so the mark can never be signed into a cookie.
+const unverified = new WeakSet<ClientSession>()
+
+/** The record couldn't be read: the session's account and rate agreement are the login-time copies. */
+export function linksUnverified(session: ClientSession): boolean {
+  return unverified.has(session)
+}
+
+/**
+ * The refusal for anything that prices a client while their record can't be
+ * read (linksUnverified): a quote or booking priced off a rate agreement
+ * staff may have changed since login is worse than asking to retry. Null
+ * when the session is live.
+ */
+export function unverifiedPricingRefusal(session: ClientSession): { status: number; body: { error: string } } | null {
+  return linksUnverified(session)
+    ? { status: 503, body: { error: "We couldn't confirm your account's pricing just now. Please try again in a moment." } }
+    : null
+}
+
+/**
+ * Whether the request carries a valid signed client session, from the cookie
+ * alone: no database read. For routes that only need to know someone is
+ * signed in (the market typeahead, read per keystroke), not who they are now.
+ */
+export function hasClientCookie(req: NextRequest): boolean {
+  const token = req.cookies.get(TOKEN_NAME)?.value
+  return !!token && !!verify(token)
 }
 
 // One read per request: the usage log and the handler both ask.

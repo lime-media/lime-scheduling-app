@@ -9,7 +9,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
-import { getClientSession } from '@/lib/clientAuth'
+import { hasClientCookie } from '@/lib/clientAuth'
 import { loadStandardMarketCoords, normalizeMarketKey, titleCaseMarket } from '@/lib/marketBounds'
 import { placeForZip, suggestPlaces } from '@/lib/geo/places'
 
@@ -17,7 +17,8 @@ const LIMIT = 8
 
 export async function GET(req: NextRequest) {
   const staff = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
-  if (!staff && !await getClientSession(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // The signed cookie alone: the typeahead runs per keystroke and needs no client record.
+  if (!staff && !hasClientCookie(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const q = (req.nextUrl.searchParams.get('q') ?? '').trim().slice(0, 80)
   if (q.length < 3) return NextResponse.json({ suggestions: [] })

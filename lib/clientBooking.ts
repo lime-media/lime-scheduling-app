@@ -11,7 +11,7 @@ import { clientOpportunityType } from '@/lib/clientOpportunityType'
 import { DEFAULT_STAGE } from '@/lib/sfdcStages'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
-import type { ClientSession } from '@/lib/clientAuth'
+import { unverifiedPricingRefusal, type ClientSession } from '@/lib/clientAuth'
 import { BOOKING_UNAVAILABLE, ClientHoldRefusal, createClientHolds, ServiceUserMissingError } from '@/lib/holdRequestService'
 import { HoldClashError, HoldLockTimeoutError } from '@/lib/holdWriteLock'
 import { sendHoldRequestEmail } from '@/lib/email'
@@ -71,6 +71,10 @@ export async function placeClientBooking(
     market, state, start_date, end_date, truck_count, notes,
   } = body
   const brand = savedBrand(body.brand) // "none" means no brand, as everywhere
+
+  // Never booked or priced off login-time links: the client's record couldn't be read (lib/clientAuth.ts).
+  const stale = unverifiedPricingRefusal(session)
+  if (stale) return reply(stale.body, { status: stale.status })
 
   // A whole number, as the quote requires (lib/clientAvailability.ts): 2.5,
   // "2" or true would hold one count of trucks and bill another.

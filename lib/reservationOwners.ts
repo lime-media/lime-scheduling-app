@@ -44,7 +44,6 @@ export const OWNER_WAIT_MS = 4000
 
 type OwnerRow = { id: string; created_by: string; created_by_name: string | null; sfdc_opportunity_id: string | null }
 
-/** Reads the owners of these opportunities and caches them (a missing opportunity caches as null). */
 /**
  * Renames made in the app, by opportunity (15-char id), with when: a lookup
  * that queried Salesforce before the rename landed keeps the new name instead
@@ -52,6 +51,7 @@ type OwnerRow = { id: string; created_by: string; created_by_name: string | null
  */
 const renamed = new Map<string, { name: string; at: number }>()
 
+/** Reads the owners of these opportunities and caches them (a missing opportunity caches as null). */
 async function fetchOwners(oppIds: string[]): Promise<void> {
   for (let i = 0; i < oppIds.length; i += BATCH) {
     const batch = oppIds.slice(i, i + BATCH)

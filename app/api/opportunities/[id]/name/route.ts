@@ -33,10 +33,13 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const name = read.name
 
   // Only an opportunity one of the app's bookings is on, whether it's stored as the 15- or 18-character id.
-  const hold = await prisma.hold.findFirst({
-    where: { sfdc_opportunity_id: { startsWith: id.slice(0, 15) } },
-    select: { id: true, truck_number: true },
-  })
+  // Salesforce ids are case-sensitive but the database's LIKE isn't, so the match is re-checked here.
+  const prefix = id.slice(0, 15)
+  const hold = (await prisma.hold.findMany({
+    where: { sfdc_opportunity_id: { startsWith: prefix } },
+    select: { id: true, truck_number: true, sfdc_opportunity_id: true },
+    take: 50,
+  })).find(h => h.sfdc_opportunity_id?.slice(0, 15) === prefix)
   if (!hold) return NextResponse.json({ error: 'No booking in the app is on that opportunity.' }, { status: 404 })
   if (!isSfdcConfigured()) return NextResponse.json({ error: "Salesforce isn't configured here, so the name wasn't changed." }, { status: 503 })
   // A preview (UAT) reads production Salesforce but never writes it: say so before anything is attempted.
@@ -49,6 +52,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if (refusal) return NextResponse.json({ error: refusal }, { status: stage ? 409 : 502 })
 
   const write = await updateOpportunityWithError(id, { Name: name })
+    .catch((err): { ok: false; error: string } => ({ ok: false, error: err instanceof Error ? err.message : 'Salesforce could not be reached' }))
   if (!write.ok) return NextResponse.json({ error: `Salesforce refused the new name: ${write.error}` }, { status: 502 })
 
   rememberOpportunityName(id, name)

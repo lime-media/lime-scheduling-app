@@ -3,7 +3,7 @@
 import { ATT_RELEASE_WARNING, ATT_RELEASE_MAX_DAYS, validateReleaseRange } from '@/lib/attSoftRules'
 import { QUOTE_ONLY_ORIGINATION, listedQuotes } from '@/lib/quoteOnly'
 import { SERVICE_AREA_RADIUS_MILES } from '@/lib/pricing/config'
-import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 import toast from 'react-hot-toast'
 import { CANCEL_REASON_MAX, cancelledOf } from '@/lib/cancelReason'
@@ -605,13 +605,32 @@ export default function HoldRequestsPage() {
     }
   }
 
+  // Opportunity renames made on this page, by opportunity (15-char id): the
+  // list shows the new name until it reloads with it, since another server
+  // instance can serve the old name from its cache for a few minutes. Dropped
+  // once the list shows any other name (Salesforce has moved on).
+  const oppRenames = useRef(new Map<string, { from: string | null; to: string }>())
+  const withRenames = useCallback((rows: HoldRequest[]): HoldRequest[] => {
+    const renames = oppRenames.current
+    if (renames.size === 0) return rows
+    for (const r of rows) {
+      const k = r.sfdc_opportunity_id?.slice(0, 15)
+      const o = k ? renames.get(k) : undefined
+      if (k && o && r.opportunity_name != null && r.opportunity_name !== o.from) renames.delete(k)
+    }
+    return rows.map(r => {
+      const o = r.sfdc_opportunity_id ? renames.get(r.sfdc_opportunity_id.slice(0, 15)) : undefined
+      return o && r.opportunity_name === o.from ? { ...r, opportunity_name: o.to } : r
+    })
+  }, [])
+
   const fetchRequests = useCallback(async () => {
     setLoading(true)
     try {
       const res = await fetch('/api/hold-requests')
       if (!res.ok) throw new Error()
       const data = await res.json()
-      setRequests(data.holdRequests || [])
+      setRequests(withRenames(data.holdRequests || []))
       setExpiredWindowDays(typeof data.expired_window_days === 'number' ? data.expired_window_days : null)
       setLedUnavailable(data.led_unavailable === true)
       setSfdcBase(typeof data.sfdc_base_url === 'string' ? data.sfdc_base_url : null)
@@ -621,7 +640,7 @@ export default function HoldRequestsPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [withRenames])
 
   useEffect(() => { fetchRequests() }, [fetchRequests])
 
@@ -1170,7 +1189,13 @@ export default function HoldRequestsPage() {
               {first.sfdc_opportunity_id && (<>
                 <dt className="text-gray-500">Opportunity</dt>
                 <dd className="text-gray-900 min-w-0">
-                  <OpportunityNameEdit opportunityId={first.sfdc_opportunity_id} name={first.opportunity_name ?? null} closed={first.opportunity_closed ?? null} onSaved={fetchRequests} />
+                  <OpportunityNameEdit opportunityId={first.sfdc_opportunity_id} name={first.opportunity_name ?? null} closed={first.opportunity_closed ?? null}
+                    onSaved={(to) => {
+                      const k = first.sfdc_opportunity_id!.slice(0, 15)
+                      oppRenames.current.set(k, { from: first.opportunity_name ?? null, to })
+                      setRequests(prev => withRenames(prev))
+                      fetchRequests()
+                    }} />
                 </dd>
               </>)}
               <dt className="text-gray-500">Owner</dt><dd className="text-gray-900 break-words">{first.owner_unassigned ? UNASSIGNED_OWNER_LABEL : first.owner_name || '—'}</dd>

@@ -263,7 +263,7 @@ export function summarizeBooking(rows: (BookingRow & {
     markets: [...new Set(rows.map(r => r.market))],
     trucks: new Set(rows.map(r => r.truck_number)).size,
     // The priced markets' total; a market with no price is counted, not taken as $0.
-    total: totals.length === 0 || totals.every(t => t === null) ? null : totals.reduce<number>((n, t) => n + (t ?? 0), 0) + (rows.some(isMultiMarket) ? uncarriedOrderItems(rows) : 0),
+    total: totals.length === 0 || totals.every(t => t === null) ? null : totals.reduce<number>((n, t) => n + (t ?? 0), 0) + uncarriedOrderItems(rows),
     unpricedMarkets: totals.filter(t => t === null).length,
     splitMarkets,
     // One tier for the card only when every market has it.

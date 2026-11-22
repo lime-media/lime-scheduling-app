@@ -156,6 +156,11 @@ async function handlePost(req: NextRequest) {
   // The seller's own name for a new opportunity; never renames an existing one.
   const oppNameRead = readOpportunityName(body.opportunityName)
   if ('error' in oppNameRead) return NextResponse.json({ error: oppNameRead.error }, { status: 400 })
+  body.features = body.features ?? { shadowFencing: true, smartDirectional: false, deviceId: false }
+  // The request's shape (options on or off, never a string or number), before
+  // anything reads the options and before any Salesforce or database call.
+  const invalid = validateQuoteRequest(body)
+  if (invalid) return NextResponse.json({ error: invalid }, { status: 400 })
   // Every opportunity needs its primary contact, on this account — checked
   // after the cheap local guards. A definite no refuses; Salesforce being
   // unreachable only warns (see checkPrimaryContact).
@@ -187,10 +192,6 @@ async function handlePost(req: NextRequest) {
   let attachUnreachable = false
   const reviseIds = reviseHolds.map(h => h.id)
 
-  body.features = body.features ?? { shadowFencing: true, smartDirectional: false, deviceId: false }
-  // Checked before anything reads the options (validateQuoteRequest: on or off, never a string or number).
-  const invalid = validateQuoteRequest(body)
-  if (invalid) return NextResponse.json({ error: invalid }, { status: 400 })
   // Only known studies, from the browser (lib/pricing/studies.ts prices them).
   body.features.studies = Array.isArray(body.features.studies)
     ? [...new Set(body.features.studies.filter((x): x is StudyType => (VALID_STUDIES as readonly unknown[]).includes(x)))]

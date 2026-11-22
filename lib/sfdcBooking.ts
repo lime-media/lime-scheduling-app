@@ -6,7 +6,7 @@
 
 import { isSfdcConfigured, readOnlyPreview, salesforceWritesOff, sfdcQuery, updateOpportunity, updateOpportunityWithError, WRITES_OFF_MESSAGE, WRITES_STOPPED_ERROR } from '@/lib/salesforceClient'
 import { getOpportunityStage } from '@/lib/sfdcOpportunityReconcile'
-import { DEFAULT_STAGE } from '@/lib/sfdcStages'
+import { RESERVATION_STAGE, reservationStageRaise } from '@/lib/sfdcStages'
 import { closedOpportunityBlocksReactivation, withAppHoldExp } from '@/lib/sfdcIntegration'
 import { ledWindowFields, mergedOpportunityFields, type BookingLed, type OpportunityLed } from '@/lib/opportunityMerge'
 import { loadOpportunityReservingHolds } from '@/lib/bookingLoad'
@@ -66,7 +66,7 @@ export function opportunityRefusal(opp: BookingOpportunity | null, accountId: st
 }
 
 /**
- * Move a Closed Lost opportunity back to WARM (a staff choice on reinstate or
+ * Move a Closed Lost opportunity back to S3 (a staff choice on reinstate or
  * revise: lib/sfdcIntegration.ts reactivationDecision), then read the stage
  * back: Salesforce automation can refuse or re-close it. Only StageName is
  * written, never CloseDate or the org's auto-close fields. On any failure the
@@ -78,13 +78,13 @@ export async function reopenClosedLostOpportunity(opportunityId: string): Promis
   if (!before) return { ok: false, error: 'Salesforce could not be reached to read the opportunity. Nothing was changed.' }
   if (!before.isClosed) return { ok: true, fromStage: before.stageName, toStage: before.stageName }
   if (before.isWon) return { ok: false, error: 'The opportunity is Closed Won; it is not reopened from here.' }
-  const write = await updateOpportunityWithError(opportunityId, { StageName: DEFAULT_STAGE }).catch(err => ({ ok: false as const, error: err instanceof Error ? err.message : 'Salesforce could not be reached' }))
-  if (!write.ok) return { ok: false, error: `Salesforce refused to move the opportunity to Warm: ${write.error}. Nothing was changed.` }
+  const write = await updateOpportunityWithError(opportunityId, { StageName: RESERVATION_STAGE }).catch(err => ({ ok: false as const, error: err instanceof Error ? err.message : 'Salesforce could not be reached' }))
+  if (!write.ok) return { ok: false, error: `Salesforce refused to move the opportunity to S3: ${write.error}. Nothing was changed.` }
   const after = await getOpportunityStage(opportunityId)
   // The write succeeded; a failed read-back is "couldn't confirm", not a
-  // refusal. Undoing the app's change here would leave Salesforce Warm with no
+  // refusal. Undoing the app's change here would leave Salesforce at S3 with no
   // booking behind it.
-  if (!after) return { ok: true, fromStage: before.stageName, toStage: DEFAULT_STAGE }
+  if (!after) return { ok: true, fromStage: before.stageName, toStage: RESERVATION_STAGE }
   if (after.isClosed) return { ok: false, error: `Salesforce put the opportunity back to "${after.stageName}" (an automation or rule there). Nothing was changed here; reopen it in Salesforce.` }
   return { ok: true, fromStage: before.stageName, toStage: after.stageName }
 }
@@ -126,6 +126,10 @@ export async function applyBookingToOpportunity(opts: {
   const linked = await loadOpportunityReservingHolds(opts.opp.Id)
   const { fields, windowLeft } = mergedOpportunityFields(opts.mode, opts.opp, opts.booking, { date: centralDate(new Date()), by: opts.by }, linked, opts.was)
   if (opts.primaryContactId && !opts.opp.Primary_Contact__c) fields.Primary_Contact__c = opts.primaryContactId
+  // Trucks reserved on an opportunity still below a reservation's stage (a
+  // quote-only log turned into a reservation) move it up to S3; never down.
+  const raised = reservationStageRaise(opts.opp.StageName, !!opts.booking.holdStart)
+  if (raised) fields.StageName = raised
   const amountLeft = opts.opp.HasOpportunityLineItem
   if (amountLeft) delete fields.Amount
   // The picked Client Type is best-effort: a validation rule, record type or

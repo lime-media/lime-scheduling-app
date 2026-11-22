@@ -8,7 +8,7 @@
 
 import { opportunityName, savedBrand } from '@/lib/brand'
 import { clientOpportunityType } from '@/lib/clientOpportunityType'
-import { DEFAULT_STAGE } from '@/lib/sfdcStages'
+import { RESERVATION_STAGE } from '@/lib/sfdcStages'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
 import type { ClientSession } from '@/lib/clientAuth'
@@ -306,7 +306,7 @@ export async function placeClientBooking(
         opportunityType,
         name: oppName,
         brand: brand || undefined,
-        stageName: DEFAULT_STAGE, // a client's own request: no seller to choose
+        stageName: RESERVATION_STAGE, // a client's own booking reserves trucks
         closeDate: start_date,
         amount: serverTotal,
         market,

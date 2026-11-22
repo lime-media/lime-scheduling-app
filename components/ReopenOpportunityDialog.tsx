@@ -1,10 +1,10 @@
 'use client'
 
 /**
- * Asks before a Closed Lost opportunity is moved back to WARM in Salesforce
+ * Asks before a Closed Lost opportunity is moved back to S3 in Salesforce
  * (Reservations → Reinstate, and Revise in the planner). The server answers
  * 409 `reopenable` with the question; `ask(question)` shows it and resolves
- * true only on "Move to Warm and continue".
+ * true only on "Move to S3 and continue".
  */
 
 import { useCallback, useState, type ReactNode } from 'react'
@@ -25,7 +25,7 @@ export function useReopenConfirm(): { dialog: ReactNode; ask: (question: string)
         </div>
         <div className="px-6 py-3 border-t border-gray-100 flex justify-end gap-2">
           <button onClick={() => answer(false)} className="px-4 py-2 rounded-lg text-sm font-medium border border-gray-200 text-gray-700 hover:bg-gray-50">Cancel</button>
-          <button onClick={() => answer(true)} autoFocus className="px-4 py-2 rounded-lg text-sm font-medium bg-green-600 hover:bg-green-700 text-white">Move to Warm and continue</button>
+          <button onClick={() => answer(true)} autoFocus className="px-4 py-2 rounded-lg text-sm font-medium bg-green-600 hover:bg-green-700 text-white">Move to S3 and continue</button>
         </div>
       </div>
     </div>

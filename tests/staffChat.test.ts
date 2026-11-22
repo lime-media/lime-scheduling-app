@@ -24,7 +24,7 @@ eq('another market, another ref', ref({}) === ref({ market: 'Austin, TX' }), fal
 eq('a feature on, another ref', ref({}) === ref({ device_id: true } as never), false)
 eq('another secret, another ref', quoteRef(base, 1, {}, 'a') === quoteRef(base, 1, {}, 'b'), false)
 const withTerms = (t: Record<string, unknown>) => quoteRef(base, 1, t as never, 'test-secret')
-eq('terms left out = terms at their defaults (3 days, WARM)', withTerms({}), withTerms({ hold_days: 3, stage: 'WARM' }))
+eq('terms left out = terms at their defaults (3 days)', withTerms({}), withTerms({ hold_days: 3 }))
 eq('another contact, another ref', withTerms({ primary_contact_id: '003A' }) === withTerms({ primary_contact_id: '003B' }), false)
 eq('another hold length, another ref', withTerms({ hold_days: 3 }) === withTerms({ hold_days: 7 }), false)
 eq('another brand, another ref', withTerms({ brand: 'Nike' }) === withTerms({}), false)

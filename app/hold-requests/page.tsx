@@ -542,7 +542,7 @@ export default function HoldRequestsPage() {
   const chooseFrom = (v: string) => { setDateFrom(v); if (v && dateTo && v > dateTo) setDateTo(v) }
   const chooseTo   = (v: string) => { setDateTo(v); if (v && dateFrom && v < dateFrom) setDateFrom(v) }
   const [acting,       setActing]       = useState<string | null>(null) // group/row id currently mid-action
-  // Reinstating onto a Closed Lost opportunity: asked before it is moved back to WARM.
+  // Reinstating onto a Closed Lost opportunity: asked before it is moved back to S3.
   const reopen = useReopenConfirm()
 
   // Edit modal state — supports multi-truck reservations

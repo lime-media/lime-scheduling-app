@@ -39,7 +39,7 @@ import { createAppOpportunity } from '@/lib/opportunityOrigins'
 import { CLIENT_PORTAL_LEAD_SOURCE } from '@/lib/sfdcLeadSource'
 import { clientOpportunityType } from '@/lib/clientOpportunityType'
 import type { OpportunityType } from '@/lib/sfdcOpportunityType'
-import { DEFAULT_STAGE } from '@/lib/sfdcStages'
+import { RESERVATION_STAGE } from '@/lib/sfdcStages'
 import { HoldClashError, HoldLockTimeoutError, writeHoldsExclusive } from '@/lib/holdWriteLock'
 import { afterClientHolds, BOOKING_UNAVAILABLE, clientHoldCreator, ServiceUserMissingError } from '@/lib/holdRequestService'
 import { sendHoldRequestEmail } from '@/lib/email'
@@ -326,7 +326,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
           opportunityType: p.opportunityType,
           name: opportunityName(brand, company, starts[0]),
           brand: brand || undefined,
-          stageName: DEFAULT_STAGE,
+          stageName: RESERVATION_STAGE,
           closeDate: starts[0],
           amount: total,
           market: fitNames(markets, 255),

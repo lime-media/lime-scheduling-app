@@ -14,7 +14,6 @@
 
 import { MarketInput } from '@/components/MarketInput'
 import { SHORT_RANGE_MAX_DAYS } from '@/lib/pricing/schedule'
-import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, chosenClientType, clampBrandMarkup, type ClientType } from '@/lib/pricing/brandMarkup'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { copyDatesDown, holdStartDates } from '@/lib/planner/rows'
@@ -136,7 +135,7 @@ type Revision = {
   heldUntil: string | null; committedMarkets: string[]
   /** What it holds now: the trucks and markets a quote-only revision releases. */
   heldTrucks: number; heldMarkets: number
-  /** Its opportunity is Closed Lost and the person agreed to move it back to WARM when the revision is saved. */
+  /** Its opportunity is Closed Lost and the person agreed to move it back to S3 when the revision is saved. */
   reopenOpportunity: boolean
 }
 
@@ -149,7 +148,7 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
   const [account, setAccount] = useState<SfdcAccount | null>(null)
   const [revision, setRevision] = useState<Revision | null>(null)
   const [reviseError, setReviseError] = useState<string | null>(null)
-  // A Closed Lost opportunity: asked before it is moved back to WARM.
+  // A Closed Lost opportunity: asked before it is moved back to S3.
   const reopen = useReopenConfirm()
   // An existing opportunity to add this order to; null = a new one. (A
   // revision always goes onto its own booking's opportunity.)
@@ -181,8 +180,6 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
   // Booked onto an opportunity that already exists (a revision's own, or one
   // picked to add to), which keeps its lead source; otherwise one is made.
   const keepsOpportunity = revision ? !!revision.opportunityName : !!attachTo
-  // Opportunity stage for the order's opportunity: Cold, Warm or Hot (never closed).
-  const [stage, setStage] = useState<OpenStage>(DEFAULT_STAGE)
   // Low conviction: log a priced opportunity without reserving any truck.
   const [quoteOnly, setQuoteOnly] = useState(false)
   // Switching between "log quote only" and a real booking is a different
@@ -396,7 +393,7 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
     try {
       const res = await fetch('/api/plan/hold', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, stage, leadSource: revision ? leadSource || undefined : keepsOpportunity ? undefined : leadSource, opportunityType: revision ? opportunityType || undefined : keepsOpportunity ? undefined : opportunityType, opportunityName: keepsOpportunity || !oppName?.trim() ? undefined : oppName, quoteOnly, brand, primaryContactId: contact.id, primaryContactName: contact.name, holdDays, holdUntil: revision && holdUntil && !quoteOnly ? holdUntil : undefined, holdUntilFrom: revision && holdUntil && !quoteOnly ? revision.heldUntil ?? undefined : undefined, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
+        body: JSON.stringify({ ...requestBody(), selectedIds: [...selected], allowPartial, requestId: bookingId.current, expectedTotal: shown, leadSource: revision ? leadSource || undefined : keepsOpportunity ? undefined : leadSource, opportunityType: revision ? opportunityType || undefined : keepsOpportunity ? undefined : opportunityType, opportunityName: keepsOpportunity || !oppName?.trim() ? undefined : oppName, quoteOnly, brand, primaryContactId: contact.id, primaryContactName: contact.name, holdDays, holdUntil: revision && holdUntil && !quoteOnly ? holdUntil : undefined, holdUntilFrom: revision && holdUntil && !quoteOnly ? revision.heldUntil ?? undefined : undefined, attachOpportunityId: revision ? undefined : attachTo?.id, reopenOpportunity: revision ? reopenAgreed : undefined }),
       })
       const data = await readJson(res)
       // The opportunity went Closed Lost after the booking was opened: ask now.
@@ -639,17 +636,6 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
             </div>
           </div>
         )}
-        <div className="mt-3 flex items-center gap-2 text-xs">
-          <span className="font-medium text-gray-600">Opportunity stage</span>
-          <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5" role="radiogroup" aria-label="Opportunity stage">
-            {OPEN_STAGES.map(s => (
-              <button key={s.value} type="button" role="radio" aria-checked={stage === s.value} onClick={() => setStage(s.value)}
-                className={`px-3 py-1 rounded-md font-medium transition-colors ${stage === s.value ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
-                {s.label}
-              </button>
-            ))}
-          </div>
-        </div>
         <label className="mt-2 flex items-start gap-2 text-xs text-gray-700 cursor-pointer">
           <input type="checkbox" checked={quoteOnly} onChange={e => setQuoteOnly(e.target.checked)} className="mt-0.5 rounded" />
           <span><span className="font-medium">Log quote only, no reservation</span>: creates the priced Salesforce opportunity but reserves no trucks (for low-conviction quotes).</span>

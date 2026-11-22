@@ -5,7 +5,6 @@ import { BrandInput } from '@/components/BrandInput'
 import toast from 'react-hot-toast'
 import { ATT_RELEASE_WARNING } from '@/lib/attSoftRules'
 import type { OverrideOption } from '@/lib/availabilityEngine'
-import { DEFAULT_STAGE, OPEN_STAGES, type OpenStage } from '@/lib/sfdcStages'
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { DEFAULT_BRAND_MARKUP_PCT, MAX_BRAND_MARKUP_PCT, clampBrandMarkup, type ClientType } from '@/lib/pricing/brandMarkup'
 import { useSession } from 'next-auth/react'
@@ -114,8 +113,6 @@ export default function InternalQuotePage() {
   const [attachTo, setAttachTo] = useState<OpenOpportunity | null>(null)
   // Brand Direct accounts carry a premium on media; the seller can change it.
   const [brandMarkupPct, setBrandMarkupPct] = useState<number>(DEFAULT_BRAND_MARKUP_PCT)
-  // Opportunity stage the seller wants the reservation's opportunity to start at.
-  const [stage, setStage] = useState<OpenStage>(DEFAULT_STAGE)
   // The campaign's brand, for the Salesforce opportunity (components/BrandInput.tsx).
   const [brand, setBrand] = useState('')
   // Low conviction: log a priced opportunity without reserving any truck.
@@ -302,7 +299,6 @@ export default function InternalQuotePage() {
           lead_source: attachTo ? undefined : leadSource,
           opportunity_type: attachTo ? undefined : opportunityType,
           opportunity_name: attachTo || !oppName?.trim() ? undefined : oppName,
-          stage,
           quote_only: quoteOnly,
           days_per_week: form.days_per_week,
           operating_hours: form.operating_hours,
@@ -326,7 +322,7 @@ export default function InternalQuotePage() {
     } finally {
       setHoldLoading(false)
     }
-  }, [holdLoading, quoteResult, account, contact, holdDays, attachTo, form, toggles, clientType, isBrandDirect, markupPct, leadSource, opportunityType, stage, quoteOnly, brand, oppName]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [holdLoading, quoteResult, account, contact, holdDays, attachTo, form, toggles, clientType, isBrandDirect, markupPct, leadSource, opportunityType, quoteOnly, brand, oppName]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (status === 'loading' || !session) return null
 
@@ -722,20 +718,6 @@ export default function InternalQuotePage() {
                       <div className="mt-2">
                         <OpportunityNameInput value={oppName} onChange={setOppName}
                           defaultName={singleMarketOpportunityName(savedBrand(brand), account?.name, form.start_date)} />
-                      </div>
-                    </div>
-                  )}
-                  {/* Opportunity stage — open stages only */}
-                  {!holdResult?.ok && (
-                    <div className="mt-4 flex items-center gap-2 text-xs">
-                      <span className="font-medium text-gray-600">Opportunity stage</span>
-                      <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5" role="radiogroup" aria-label="Opportunity stage">
-                        {OPEN_STAGES.map(s => (
-                          <button key={s.value} type="button" role="radio" aria-checked={stage === s.value} onClick={() => setStage(s.value)}
-                            className={`px-3 py-1 rounded-md font-medium transition-colors ${stage === s.value ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
-                            {s.label}
-                          </button>
-                        ))}
                       </div>
                     </div>
                   )}

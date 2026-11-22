@@ -3,7 +3,7 @@
 // Line-item breakdown of how a hold's quoted_total was derived — shown on both the client's
 // My Requests page and the internal staff Hold Requests review page.
 
-import type { QuoteFeatures } from '@/lib/quoteFeatures'
+import { OPTION_LABELS, type QuoteFeatures } from '@/lib/quoteFeatures'
 export { parseQuoteFeatures, buildActivationNotes } from '@/lib/quoteFeatures'
 export type { QuoteFeatures } from '@/lib/quoteFeatures'
 
@@ -39,15 +39,15 @@ export function QuoteBreakdown({ features }: { features: QuoteFeatures }) {
   if (features.shadowFencing) {
     lines.push({
       // A rate agreement can change the share: the order's line doesn't restate it.
-      label: `Shadow fencing${features.shadowFencingFloored ? ` (minimum applied${order})` : order ? ' (whole order)' : ' (25% of base media)'}`,
+      label: `${OPTION_LABELS.shadowFencing}${features.shadowFencingFloored ? ` (minimum applied${order})` : order ? ' (whole order)' : ' (25% of base media)'}`,
       amount: features.shadowFencing,
     })
   }
   if (features.smartDirectionalIncluded && features.smartDirectional) {
-    lines.push({ label: `Smart Directional${order ? ' (whole order)' : ''}`, amount: features.smartDirectional })
+    lines.push({ label: `${OPTION_LABELS.smartDirectional}${order ? ' (whole order)' : ''}`, amount: features.smartDirectional })
   }
   if (features.deviceIdIncluded && features.deviceId) {
-    lines.push({ label: `Device ID Passback${order ? ' (whole order)' : ''}`, amount: features.deviceId })
+    lines.push({ label: `${OPTION_LABELS.deviceId}${order ? ' (whole order)' : ''}`, amount: features.deviceId })
   }
   if (features.studies && features.studies.length > 0 && features.studiesTotal) {
     lines.push({

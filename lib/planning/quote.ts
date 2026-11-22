@@ -93,6 +93,13 @@ export const HOP_LIMIT_RANGE = { min: 50, max: 450 }
 
 /** Shape and range checks for a quote request; null when it is valid. */
 export function validateQuoteRequest(body: QuoteRequest): string | null {
+  // The options are on or off: anything else (a string "true", 1) would be
+  // booked as chosen in one place and priced as not chosen in another.
+  const f = body.features as unknown
+  if (!f || typeof f !== 'object' || Array.isArray(f)) return 'Options must be on or off.'
+  for (const k of ['shadowFencing', 'smartDirectional', 'deviceId'] as const) {
+    if (typeof (f as Record<string, unknown>)[k] !== 'boolean') return 'Options must be on or off.'
+  }
   if (!Array.isArray(body.rows) || body.rows.length === 0) return 'Add at least one market.'
   if (body.rows.length > 200) return 'Up to 200 markets per quote.'
   const isDate = (s: unknown) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)

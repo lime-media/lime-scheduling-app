@@ -187,6 +187,9 @@ async function handlePost(req: NextRequest) {
   const reviseIds = reviseHolds.map(h => h.id)
 
   body.features = body.features ?? { shadowFencing: true, smartDirectional: false, deviceId: false }
+  // Checked before anything reads the options (validateQuoteRequest: on or off, never a string or number).
+  const invalid = validateQuoteRequest(body)
+  if (invalid) return NextResponse.json({ error: invalid }, { status: 400 })
   // Only known studies, from the browser (lib/pricing/studies.ts prices them).
   body.features.studies = Array.isArray(body.features.studies)
     ? [...new Set(body.features.studies.filter((x): x is StudyType => (VALID_STUDIES as readonly unknown[]).includes(x)))]
@@ -195,8 +198,6 @@ async function handlePost(req: NextRequest) {
   const requested = body.features.studies.length ? { [STUDIES_REQUESTED_KEY]: body.features.studies } : {}
   // Holds never displace AT&T: soft-hold trucks are always reserved here.
   body.reserveSoftHolds = true
-  const invalid = validateQuoteRequest(body)
-  if (invalid) return NextResponse.json({ error: invalid }, { status: 400 })
 
   const quoteOnly = body.quoteOnly === true
   // Quote-only logs and real bookings live in separate id spaces, so a real
@@ -389,7 +390,7 @@ async function handlePost(req: NextRequest) {
         pricing_tier: tier,
         quoted_total: lq.total,
         daily_rate: lq.effectiveDailyRate,
-        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies)), [PARTY_KEY]: party, ...requested }),
+        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies, { options: quote.options.total, studies: quote.studies.total })), [PARTY_KEY]: party, ...requested }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(lq.id)!,
         expires_at: new Date(),
@@ -421,7 +422,7 @@ async function handlePost(req: NextRequest) {
         daily_rate: lq.effectiveDailyRate,
         // The line's quote, plus what this hold itself sells: a rotating truck's
         // weekly stint works only some of the line's days (lib/ledJobs.ts daysSold).
-        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies)), [PARTY_KEY]: party, ...requested, heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
+        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies, { options: quote.options.total, studies: quote.studies.total })), [PARTY_KEY]: party, ...requested, heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(stint.lineId)!,
         expires_at: expiresAt,

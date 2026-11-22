@@ -207,10 +207,30 @@ export function clientExtendRefusal(holds: { status: string }[]): string | null 
 export const isMultiMarket = (r: BookingRow) => MULTI_MARKET_GROUP.test(r.campaign_group_id ?? '')
 
 /**
+ * What a multi-market booking's rows leave out of their per-market totals:
+ * the order's options and studies (priced once for the whole order and
+ * carried on one market's quoted_total, lib/planning/options.ts) when none of
+ * these rows is that market's, as when its holds were released and the other
+ * markets stay live. 0 when a row carries them, or for holds made before they
+ * were recorded (`orderItems`), which carried them in their own totals. Pure.
+ */
+export function uncarriedOrderItems(rows: { features?: string | null }[]): number {
+  let order: { options: number; studies: number } | null = null
+  for (const r of rows) {
+    const o = parseFeatures(r.features ?? null).orderItems as { options?: unknown; studies?: unknown; carried?: unknown } | undefined
+    if (!o || typeof o !== 'object') continue
+    if (o.carried === true) return 0
+    if (!order && typeof o.options === 'number' && typeof o.studies === 'number' && Number.isFinite(o.options) && Number.isFinite(o.studies)) order = { options: o.options, studies: o.studies }
+  }
+  return order ? order.options + order.studies : 0
+}
+
+/**
  * A booking's headline figures. In a multi-market booking every hold carries
  * its own market's total, so the booking total adds one per market (campaign
- * group), not one per hold. Trucks are counted once each, even a truck that
- * alternates between two markets.
+ * group), not one per hold, plus the order's options and studies once when the
+ * market that carried them is gone (uncarriedOrderItems). Trucks are counted
+ * once each, even a truck that alternates between two markets.
  */
 export function summarizeBooking(rows: (BookingRow & {
   truck_number: string
@@ -220,6 +240,7 @@ export function summarizeBooking(rows: (BookingRow & {
   quoted_total: number | null
   expires_at: string | null
   pricing_tier?: string | null
+  features?: string | null
 })[], wholeBooking?: { campaign_group_id: string | null }[]): { markets: string[]; trucks: number; total: number | null; unpricedMarkets: number; splitMarkets: number; tier: string | null; start: string; end: string; earliestExpiry: string | null } {
   // A market's price covers all its holds. When some of them are on another
   // card (another status), its price can't be shown here as if this card had
@@ -242,7 +263,7 @@ export function summarizeBooking(rows: (BookingRow & {
     markets: [...new Set(rows.map(r => r.market))],
     trucks: new Set(rows.map(r => r.truck_number)).size,
     // The priced markets' total; a market with no price is counted, not taken as $0.
-    total: totals.length === 0 || totals.every(t => t === null) ? null : totals.reduce<number>((n, t) => n + (t ?? 0), 0),
+    total: totals.length === 0 || totals.every(t => t === null) ? null : totals.reduce<number>((n, t) => n + (t ?? 0), 0) + uncarriedOrderItems(rows),
     unpricedMarkets: totals.filter(t => t === null).length,
     splitMarkets,
     // One tier for the card only when every market has it.

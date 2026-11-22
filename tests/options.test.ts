@@ -8,8 +8,9 @@ import { eq, section } from './harness'
 import { applyOptions, optionItems, optionRates } from '@/lib/planning/options'
 import { selectionTotal } from '@/lib/planning/studies'
 import { lineFeatures } from '@/lib/planning/booking'
-import { reviseRows, type RevisableHold } from '@/lib/bookings'
+import { reviseRows, summarizeBooking, uncarriedOrderItems, type RevisableHold } from '@/lib/bookings'
 import { computeQuote } from '@/lib/pricing/engine'
+import { validateQuoteRequest } from '@/lib/planning/quote'
 
 const line = (id: string, market: string, start: string, base: number, truckDays = 20) => ({
   id, market, studyMarket: market, startDate: start, endDate: '2026-12-31', estimatedImpressions: 100_000, assigned: [] as { sharedWith: string | null }[],
@@ -49,8 +50,8 @@ section('options: smart directional and device ID')
   eq('optionsTotal is what they add', p.lines[1].optionsTotal, 15000 + 8750 + 2500)
   eq('line items, in the single quote\'s order and words', optionItems(p.options), [
     { label: 'Shadow fencing (25% of base media)', amount: 15000 },
-    { label: 'Smart directional (35 truck-days)', amount: 8750 },
-    { label: 'Device ID passback', amount: 2500 },
+    { label: 'Smart Directional', amount: 8750 },
+    { label: 'Device ID Passback', amount: 2500 },
   ])
   const off = applyOptions(ls, NONE, rates)
   eq('nothing chosen: nothing charged or carried', [off.options.total, off.options.carriedBy, total(off.lines)], [0, null, total(ls)])
@@ -95,4 +96,32 @@ section('options: what each hold records, and what a revision reads back')
   eq('a revision restores shadow fencing from a market that doesn\'t carry it', reviseRows([hold('1', other), hold('2', carrier)]).features.shadowFencing, true)
   eq('older single-market holds (amount only) still read as chosen', reviseRows([hold('1', JSON.stringify({ shadowFencing: 5000 }))]).features.shadowFencing, true)
   eq('none chosen: none restored', reviseRows([hold('1', JSON.stringify({ shadowFencing: 0, shadowFencingIncluded: false }))]).features.shadowFencing, false)
+}
+
+section('options: a booking whose carrying market is released still counts them once')
+{
+  // Two markets: Dallas (first) carries the order's $6,000 shadow fencing and $9,500 of studies.
+  const p = applyOptions([line('a', 'Austin, TX', '2026-11-16', 12000), line('b', 'Dallas, TX', '2026-11-09', 12000)], SF, rates)
+  const withStudies = p.lines.map(l => (l.optionsTotal ? { ...l, studiesTotal: 9500, media: l.media + 9500, total: l.total + 9500 } : l))
+  const order = { options: p.options.total, studies: 9500 }
+  const f = (l: typeof withStudies[number]) => JSON.stringify(lineFeatures(l as never, { ...SF }, 0, null, { studies: ['foot_traffic'], salesLiftRequested: false }, order))
+  const [austin, dallas] = withStudies
+  eq('every hold records the order\'s items; only the carrier is marked', [JSON.parse(f(austin)).orderItems, JSON.parse(f(dallas)).orderItems], [{ options: 6000, studies: 9500, carried: false }, { options: 6000, studies: 9500, carried: true }])
+  eq('nothing recorded without options or studies', JSON.parse(JSON.stringify(lineFeatures(austin as never, { ...NONE }, 0, null, undefined, { options: 0, studies: 0 }))).orderItems, undefined)
+  const row = (l: typeof austin, g: string) => ({ campaign_group_id: g, sfdc_opportunity_id: null, truck_number: g, market: l.market, start_date: l.startDate, end_date: l.endDate, quoted_total: l.total, expires_at: null, features: f(l) })
+  const both = [row(austin, 'mm_x_1'), row(dallas, 'mm_x_2')]
+  eq('both live: the per-market totals already include them', summarizeBooking(both).total, austin.total + dallas.total)
+  eq('carrier present: nothing more to add', uncarriedOrderItems(both), 0)
+  eq('carrier released: the order\'s options and studies counted once', summarizeBooking([row(austin, 'mm_x_1')]).total, austin.total + 6000 + 9500)
+  eq('older holds (nothing recorded): as before', uncarriedOrderItems([{ features: JSON.stringify({ shadowFencing: 5000 }) }, { features: null }]), 0)
+}
+
+section('options: the planner takes them as on or off only')
+{
+  const body = (features: unknown) => ({ rows: [{ id: 'r', market: 'Dallas, TX', startDate: '2099-01-04', endDate: '2099-01-15', trucks: 1, daysPerWeek: 5, hours: 8 }], features }) as never
+  eq('booleans pass', validateQuoteRequest(body({ shadowFencing: true, smartDirectional: false, deviceId: false })), null)
+  eq('a string "true" is refused', validateQuoteRequest(body({ shadowFencing: true, smartDirectional: 'true', deviceId: false })), 'Options must be on or off.')
+  eq('1 is refused', validateQuoteRequest(body({ shadowFencing: 1, smartDirectional: false, deviceId: false })), 'Options must be on or off.')
+  eq('a missing option is refused', validateQuoteRequest(body({ shadowFencing: true })), 'Options must be on or off.')
+  eq('not an object is refused', validateQuoteRequest(body('all')), 'Options must be on or off.')
 }

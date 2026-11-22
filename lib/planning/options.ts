@@ -8,6 +8,7 @@
  */
 
 import { optionRates, shadowFencingPrice, type OptionRates } from '@/lib/pricing/engine'
+import { OPTION_LABELS } from '@/lib/quoteFeatures'
 
 export { optionRates, type OptionRates }
 
@@ -85,11 +86,11 @@ export function applyOptions<L extends OptionLine>(lines: L[], chosen: OptionCho
   }
 }
 
-/** The order's chosen options as line items, in the single-market quote's order and words. Pure. */
-export function optionItems(o: Pick<OrderOptions, 'chosen' | 'prices' | 'shadowFencingFloored' | 'rates' | 'truckDays'>): { label: string; amount: number }[] {
+/** The order's chosen options as line items, in the single-market quote's order and words (OPTION_LABELS, as QuoteBreakdown). Pure. */
+export function optionItems(o: Pick<OrderOptions, 'chosen' | 'prices' | 'shadowFencingFloored' | 'rates'>): { label: string; amount: number }[] {
   const out: { label: string; amount: number }[] = []
-  if (o.chosen.shadowFencing) out.push({ label: `Shadow fencing${o.shadowFencingFloored ? ' (minimum applied)' : ` (${Math.round(o.rates.shadowFencingPct * 100)}% of base media)`}`, amount: o.prices.shadowFencing })
-  if (o.chosen.smartDirectional) out.push({ label: `Smart directional (${o.truckDays} truck-days)`, amount: o.prices.smartDirectional })
-  if (o.chosen.deviceId) out.push({ label: 'Device ID passback', amount: o.prices.deviceId })
+  if (o.chosen.shadowFencing) out.push({ label: `${OPTION_LABELS.shadowFencing}${o.shadowFencingFloored ? ' (minimum applied)' : ` (${Math.round(o.rates.shadowFencingPct * 100)}% of base media)`}`, amount: o.prices.shadowFencing })
+  if (o.chosen.smartDirectional) out.push({ label: OPTION_LABELS.smartDirectional, amount: o.prices.smartDirectional })
+  if (o.chosen.deviceId) out.push({ label: OPTION_LABELS.deviceId, amount: o.prices.deviceId })
   return out
 }

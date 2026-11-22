@@ -242,7 +242,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
         quoted_total: lq.total,
         daily_rate: lq.effectiveDailyRate,
         // The line's quote, plus what this hold itself sells (lib/ledJobs.ts daysSold).
-        features: JSON.stringify({ ...lineFeatures(lq, f, quote.brandMarkupPct, quote.clientType, quote.studies), ...requested, heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
+        features: JSON.stringify({ ...lineFeatures(lq, f, quote.brandMarkupPct, quote.clientType, quote.studies, { options: quote.options.total, studies: quote.studies.total }), ...requested, heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(stint.lineId)!,
         expires_at: expiry.expiresAt,

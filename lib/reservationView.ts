@@ -29,6 +29,8 @@ export type ViewRow = BookingRow & {
   end_date: string
   quoted_total: number | null
   pricing_tier?: string | null
+  /** The stored quote; carries the order's options and studies on multi-market holds (lib/bookings.ts uncarriedOrderItems). */
+  features?: string | null
   expires_at: string | null
   sfdc_account_id: string | null
   led_client: unknown | null

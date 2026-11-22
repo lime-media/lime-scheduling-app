@@ -34,6 +34,7 @@ import type { Area, AreaBuildResult, AreaFlag, ZipRow } from '@/lib/planning/are
 import type { ReviewFinding } from '@/lib/planning/claude'
 import type { Arrival, LineQuote, MultiMarketQuote, QuoteRow, RowError } from '@/lib/planning/quote'
 import { optionItems } from '@/lib/planning/options'
+import { OPTION_LABELS } from '@/lib/quoteFeatures'
 import { selectionTotal } from '@/lib/planning/studies'
 import { STUDY_MIN_IMPRESSIONS, STUDY_PRICE, VALID_STUDIES, type StudyType } from '@/lib/pricing/config'
 import { BRAND_LIFT_PRICE, STUDY_EXTRA_MARKET_PRICE, STUDY_INCLUDED_MARKETS } from '@/lib/pricing/studies'
@@ -610,9 +611,9 @@ export function PlannerTab({ reviseKey = null, reserve = false, onReviseDone }: 
       <div className={card}>
         <h2 className="text-sm font-semibold text-gray-900 mb-2">3. Options</h2>
         <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-gray-700">
-          <label className="flex items-center gap-2"><input type="checkbox" checked={features.shadowFencing} onChange={e => setFeatures(f => ({ ...f, shadowFencing: e.target.checked }))} /> Shadow fencing</label>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={features.smartDirectional} onChange={e => setFeatures(f => ({ ...f, smartDirectional: e.target.checked }))} /> Smart directional</label>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={features.deviceId} onChange={e => setFeatures(f => ({ ...f, deviceId: e.target.checked }))} /> Device ID passback</label>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={features.shadowFencing} onChange={e => setFeatures(f => ({ ...f, shadowFencing: e.target.checked }))} /> {OPTION_LABELS.shadowFencing}</label>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={features.smartDirectional} onChange={e => setFeatures(f => ({ ...f, smartDirectional: e.target.checked }))} /> {OPTION_LABELS.smartDirectional}</label>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={features.deviceId} onChange={e => setFeatures(f => ({ ...f, deviceId: e.target.checked }))} /> {OPTION_LABELS.deviceId}</label>
         </div>
         {/* Lift studies: one study covers the whole order (lib/pricing/studies.ts). */}
         <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-gray-700">

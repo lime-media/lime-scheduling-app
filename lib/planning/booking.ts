@@ -15,7 +15,7 @@ import type { LineQuote, OrderStudies, QuoteRequest } from './quote'
  * nothing internal: no truck origins, no transport we absorb, no fleet counts,
  * no other markets.
  */
-export function lineFeatures(l: LineQuote, f: QuoteRequest['features'], brandMarkupPct = 0, clientType?: 'Agency' | 'Brand Direct' | null, studies: Pick<OrderStudies, 'studies' | 'salesLiftRequested'> = { studies: [], salesLiftRequested: false }): QuoteFeatures {
+export function lineFeatures(l: LineQuote, f: QuoteRequest['features'], brandMarkupPct = 0, clientType?: 'Agency' | 'Brand Direct' | null, studies: Pick<OrderStudies, 'studies' | 'salesLiftRequested'> = { studies: [], salesLiftRequested: false }, order: { options: number; studies: number } | null = null): QuoteFeatures {
   return {
     dailyRate: l.dailyRate,
     hourSurcharge: l.hourSurcharge,
@@ -41,6 +41,12 @@ export function lineFeatures(l: LineQuote, f: QuoteRequest['features'], brandMar
     // priced on the one that carries them (lib/planning/quote.ts applyStudies).
     ...(studies.studies.length ? { studies: studies.studies, studiesTotal: l.studiesTotal } : {}),
     ...(studies.salesLiftRequested ? { salesLiftRequested: true } : {}),
+    // The order's options and studies, on every hold, and whether this market
+    // carries them in its total: a booking whose carrying market is released
+    // still counts them once (lib/bookings.ts uncarriedOrderItems).
+    ...(order && order.options + order.studies > 0
+      ? { orderItems: { options: order.options, studies: order.studies, carried: l.optionsTotal + l.studiesTotal > 0 } }
+      : {}),
     requestedStart: l.startDate,
     requestedEnd: l.endDate,
     brandMarkupPct,

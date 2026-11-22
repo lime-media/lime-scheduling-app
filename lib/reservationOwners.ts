@@ -31,7 +31,7 @@ const key = (id: string) => id.slice(0, 15)
  */
 type OppOwner = { ownerId: string; name: string | null; email: string | null; oppName: string | null; closed: boolean }
 const ownerCache = new Map<string, { owner: OppOwner | null; at: number }>()
-const OWNER_TTL_MS = 5 * 60 * 1000
+const OWNER_TTL_MS = 15 * 60 * 1000
 /** Opportunities a lookup is already reading, so concurrent loads share it instead of re-querying. */
 const inflight = new Map<string, Promise<void>>()
 

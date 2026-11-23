@@ -163,3 +163,12 @@ eq('one bot hold makes the booking the bot\'s, even with one unread', bookingCre
 eq('unread beats person', bookingCreator([{ sfdc_opportunity_id: '006a', sfdc_created_by_id: '005Hs000000PERSONA' }, { sfdc_opportunity_id: '006a', sfdc_created_by_id: null }]), 'unknown')
 eq('a malformed opportunity id says so, not "the next sweep"', buildRequest([hold({ sfdc_opportunity_id: 'not-an-id', sfdc_created_by_id: null })], linked, unsent)!.issues.find(i => i.kind === 'creator_unknown')?.message.includes('isn\'t valid'), true)
 eq('an unread valid id says what to check if it stays', buildRequest([hold({ sfdc_created_by_id: null })], linked, unsent)!.issues.find(i => i.kind === 'creator_unknown')?.message.includes('check it exists'), true)
+
+section('buildRequest: the order\'s options and studies when their market is gone')
+{
+  const order = (carried: boolean) => JSON.stringify({ daysPerWeek: 5, operatingHours: 10, orderItems: { options: 6000, studies: 9500, carried } })
+  const two = buildRequest([hold({ campaign_group_id: 'mm_o_1', quoted_total: 35500, features: order(true) }), hold({ campaign_group_id: 'mm_o_2', quoted_total: 20000, truck_number: '0102', features: order(false) })], linked, unsent)!
+  eq('both markets live: the carrier\'s total already has them', two.request.soldAmount, 55500)
+  const left = buildRequest([hold({ campaign_group_id: 'mm_o_2', quoted_total: 20000, features: order(false) }), hold({ campaign_group_id: 'mm_o_1', status: 'EXPIRED', quoted_total: 35500, truck_number: '0102', features: order(true) })], linked, unsent)!
+  eq('the carrier released: still sold once', left.request.soldAmount, 20000 + 6000 + 9500)
+}

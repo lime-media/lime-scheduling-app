@@ -11,13 +11,14 @@
  */
 
 import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
-import { brandMarkupFor, withMarkup } from '@/lib/pricing/brandMarkup'
+import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import type { ClientSession } from '@/lib/clientAuth'
 import { clientAvailability, parseClientAvailabilityRequest } from '@/lib/clientAvailability'
 import { legsFromTrucks, type AvailabilityResult } from '@/lib/availabilityEngine'
 
 import {
   computeQuote,
+  optionRates,
   priceTransport,
   countActivationDays,
   billedDaysPerWeek,
@@ -264,6 +265,7 @@ function buildFeaturesResponse(
   rateOverrides: Awaited<ReturnType<typeof resolveRateOverrides>>,
   markupPct: number,
 ) {
+  const rates = optionRates(rateOverrides, markupPct)
   return {
     shadowFencing: {
       included: includeShadowFencing,
@@ -275,13 +277,13 @@ function buildFeaturesResponse(
       included: includeSmartDirectional,
       cost: quote.better.smartDirectionalIncluded
         ? quote.better.smartDirectional
-        : quote.input.truckDays * withMarkup(rateOverrides?.smart_directional_daily ?? 250, markupPct),
+        : quote.input.truckDays * rates.smartDirectionalDaily,
     },
     deviceId: {
       included: includeDeviceId,
       cost: quote.better.deviceIdIncluded
         ? quote.better.deviceId
-        : withMarkup(rateOverrides?.device_id_flat ?? 2500, markupPct),
+        : rates.deviceIdFlat,
     },
     studies: {
       available: quote.best.reachOk,

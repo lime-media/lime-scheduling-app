@@ -31,11 +31,6 @@ type Line = {
   firstDay: string | null
   lastDay: string | null
   baseMedia: number
-  shadowFencing: number
-  smartDirectional: number
-  deviceId: number
-  /** What each option would cost on this market, chosen or not. */
-  optionPrices: { shadowFencing: number; smartDirectional: number; deviceId: number }
   studiesTotal: number
   media: number
   transport: number
@@ -43,7 +38,9 @@ type Line = {
   missing: number
 }
 type Studies = { reachOk: boolean; reachMinimum: number; requested: string[]; selected: string[]; prices: Record<string, number>; total: number; uniqueMarkets: number; salesLiftRequested: boolean; warning: string | null }
-type View = { lines: Line[]; studies: Studies; total: number }
+/** The order's options, priced once for the whole order: each one's price (for its switch) and the chosen ones as line items. */
+type Options = { prices: { shadowFencing: number; smartDirectional: number; deviceId: number }; items: { label: string; amount: number }[] }
+type View = { lines: Line[]; options: Options; studies: Studies; total: number }
 /** A quote and the order it priced: Book posts these rows and features, never the live form. */
 type Quote = { asked: View; short: boolean; fits: View | null; requestId: string; rows: Row[]; features: Features }
 type Features = { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean; studies: string[] }
@@ -317,7 +314,7 @@ export function ClientMultiMarketQuote() {
                       </div>
                     ))}
                   </div>
-                  <Breakdown view={quote.fits} features={quote.features} />
+                  <Breakdown view={quote.fits} />
                   <div className="px-4 py-3 border-t border-gray-100">
                     {changed && <p className="text-xs text-amber-800 mb-2">{changed}</p>}
                     {booked ? null : (
@@ -352,21 +349,21 @@ const sum = (lines: Line[], f: (l: Line) => number) => lines.reduce((n, l) => n 
 
 /**
  * The options and lift studies, priced, as the one-market quote shows them
- * (app/client/ai/page.tsx). Each option's price is what it adds across every
- * market; a study covers the whole order. A change prices the order again.
+ * (app/client/ai/page.tsx). Each option and study is priced once for the
+ * whole order. A change prices the order again.
  */
 function Customize({ view, features, onChange, disabled }: { view: View; features: Features; onChange: (p: Partial<Features>) => void; disabled: boolean }) {
-  const lines = view.lines
   const st = view.studies
+  const prices = view.options.prices
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
       <h3 className="text-sm font-semibold text-gray-900">Customize features</h3>
       <FeatureToggle label="Shadow Fencing" description="Geo-targeted digital ads in every market"
-        cost={sum(lines, l => l.optionPrices.shadowFencing)} checked={features.shadowFencing} onChange={v => onChange({ shadowFencing: v })} disabled={disabled} />
+        cost={prices.shadowFencing} checked={features.shadowFencing} onChange={v => onChange({ shadowFencing: v })} disabled={disabled} />
       <FeatureToggle label="Smart Directional" description="GPS-triggered directional messaging"
-        cost={sum(lines, l => l.optionPrices.smartDirectional)} checked={features.smartDirectional} onChange={v => onChange({ smartDirectional: v })} disabled={disabled} />
+        cost={prices.smartDirectional} checked={features.smartDirectional} onChange={v => onChange({ smartDirectional: v })} disabled={disabled} />
       <FeatureToggle label="Device ID Passback" description="Audience device data for retargeting"
-        cost={sum(lines, l => l.optionPrices.deviceId)} checked={features.deviceId} onChange={v => onChange({ deviceId: v })} disabled={disabled} />
+        cost={prices.deviceId} checked={features.deviceId} onChange={v => onChange({ deviceId: v })} disabled={disabled} />
       <div className="pt-2 border-t border-gray-100">
         <div className="flex items-center justify-between mb-2">
           <div>
@@ -401,17 +398,16 @@ function Customize({ view, features, onChange, disabled }: { view: View; feature
 
 /**
  * The order's price as the one-market quote lists it: base media, each option
- * chosen, each study, transport and the total. Base media is the media less
- * the options and studies, so the lines add up to the total exactly.
+ * chosen (priced once for the whole order), each study, transport and the
+ * total. The markets' media leave the options out and carry the studies on
+ * one, so base media is their media less the studies, and the lines add up to
+ * the total exactly.
  */
-function Breakdown({ view, features }: { view: View; features: Features }) {
+function Breakdown({ view }: { view: View }) {
   const lines = view.lines
   const st = view.studies
-  const sf = features.shadowFencing ? sum(lines, l => l.shadowFencing) : 0
-  const sd = features.smartDirectional ? sum(lines, l => l.smartDirectional) : 0
-  const did = features.deviceId ? sum(lines, l => l.deviceId) : 0
   const transport = sum(lines, l => l.transport)
-  const base = sum(lines, l => l.media) - sf - sd - did - st.total
+  const base = sum(lines, l => l.media) - st.total
   const priced = st.selected.filter(s => s !== 'sales_lift')
   const row = (label: string, amount: number, plus = true) => (
     <div key={label} className="flex justify-between text-gray-600"><span>{label}</span><span>{plus ? '+ ' : ''}{money(amount)}</span></div>
@@ -419,9 +415,7 @@ function Breakdown({ view, features }: { view: View; features: Features }) {
   return (
     <div className="px-4 py-3 border-t border-gray-100 space-y-1.5 text-sm">
       {row(`Base media (${sum(lines, l => l.truckDays)} truck-days)`, base, false)}
-      {sf > 0 && row('Shadow fencing', sf)}
-      {sd > 0 && row('Smart Directional', sd)}
-      {did > 0 && row('Device ID Passback', did)}
+      {view.options.items.map(o => row(o.label, o.amount))}
       {priced.map(s => row(`${STUDY_LABELS[s]} study`, st.prices[s] ?? 0))}
       {st.salesLiftRequested && <div className="flex justify-between text-gray-500 text-xs"><span>Sales lift: our team will quote it</span><span>not included</span></div>}
       {transport > 0 && row('Transport', transport)}

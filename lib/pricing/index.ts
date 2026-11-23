@@ -1,5 +1,5 @@
-export { computeQuote, getDailyRate } from './engine'
-export type { QuoteInput, QuoteResult, TierGood, TierBetter, TierBest } from './engine'
+export { computeQuote, getDailyRate, optionRates } from './engine'
+export type { OptionRates, QuoteInput, QuoteResult, TierGood, TierBetter, TierBest } from './engine'
 
 export {
   priceTransport,

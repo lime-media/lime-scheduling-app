@@ -23,6 +23,7 @@ import { billedDaysPerWeek, countCalendarDays } from '@/lib/pricing/schedule'
 import { resolveDefaultRateOverrides, resolveRateOverridesBySfdcAccount, resolveMarketInputAll } from '@/lib/pricing/resolvers'
 import type { RateOverrides, StudyType } from '@/lib/pricing/config'
 import { applyStudies, studiesChange, type OrderStudies } from './studies'
+import { applyOptions, optionRates, type OrderOptions } from './options'
 import { centralDate } from '@/lib/dateOnly'
 import { canonicalMarketName, loadStandardMarketCoords, titleCaseMarket } from '@/lib/marketBounds'
 import { haversineDistance } from '@/lib/marketCoordinates'
@@ -92,6 +93,13 @@ export const HOP_LIMIT_RANGE = { min: 50, max: 450 }
 
 /** Shape and range checks for a quote request; null when it is valid. */
 export function validateQuoteRequest(body: QuoteRequest): string | null {
+  // The options are on or off: anything else (a string "true", 1) would be
+  // booked as chosen in one place and priced as not chosen in another.
+  const f = body.features as unknown
+  if (!f || typeof f !== 'object' || Array.isArray(f)) return 'Options must be on or off.'
+  for (const k of ['shadowFencing', 'smartDirectional', 'deviceId'] as const) {
+    if (typeof (f as Record<string, unknown>)[k] !== 'boolean') return 'Options must be on or off.'
+  }
   if (!Array.isArray(body.rows) || body.rows.length === 0) return 'Add at least one market.'
   if (body.rows.length > 200) return 'Up to 200 markets per quote.'
   const isDate = (s: unknown) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
@@ -133,9 +141,12 @@ export type LineQuote = {
   effectiveDailyRate: number
   shadowFencingFloored: boolean
   baseMedia: number
+  /** The order's options are priced once for the whole order and carried on one market (applyOptions); 0 elsewhere. */
   shadowFencing: number
   smartDirectional: number
   deviceId: number
+  /** What the order's options add to this market's media: their price on the market that carries them, 0 elsewhere. */
+  optionsTotal: number
   media: number
   transport: { outcome: 'INCLUDED' | 'ABSORBED' | 'BILLED'; billed: number; absorbedCost: number }
   /** Why transport is included, when it is absorbed. */
@@ -152,8 +163,6 @@ export type LineQuote = {
   marketSizeTier: { id: number; label: string; dailyA18: number }
   /** The order's lift studies are carried on its first market (one booking total); 0 elsewhere. */
   studiesTotal: number
-  /** What each option would cost on this market, chosen or not (so a form can show its price before it's picked). */
-  optionPrices: { shadowFencing: number; smartDirectional: number; deviceId: number }
   /** The market a study counts it as: its standard market (lib/pricing/studies.ts uniqueMarketCount). */
   studyMarket: string
 }
@@ -203,6 +212,8 @@ export type { OrderStudies } from './studies'
 export type MultiMarketQuote = {
   lines: LineQuote[]
   studies: OrderStudies
+  /** The order's media options, priced once for the whole order (lib/planning/options.ts). */
+  options: OrderOptions
   summary: QuoteSummary
   itineraries: Itinerary[]
   alternatives: Alternative[]
@@ -266,11 +277,14 @@ async function rateOverridesFor(sfdcAccountId?: string): Promise<{ overrides: Ra
   return { overrides, basis }
 }
 
-/** Price every line on its own, with transport for the legs that arrive at it. */
+/**
+ * Price every line on its own, with transport for the legs that arrive at it.
+ * Each line is its base media; the order's options are priced across every
+ * line afterwards (applyOptions), as one quote.
+ */
 async function priceLines(
   lines: OrderLine[],
   plan: OrderPlan,
-  features: QuoteRequest['features'],
   overrides: RateOverrides | null,
   tiers: Map<string, number>,
   markupPct = 0,
@@ -294,22 +308,10 @@ async function priceLines(
       days: truckDays,
       operatingHours: line.hours,
       marketSizeTierId: tiers.get(line.market) ?? 3,
-      includeSmartDirectional: features.smartDirectional,
-      includeDeviceId: features.deviceId,
       rateOverrides: overrides,
       markupPct,
     })
-    // Every option's price, chosen or not, for a form to show beside its
-    // switch: the engine prices an option it isn't asked for at 0, so it's
-    // asked again with every option on (pure arithmetic, no lookups).
-    const all = features.smartDirectional && features.deviceId ? q : computeQuote({
-      truckCount: 1, days: truckDays, operatingHours: line.hours, marketSizeTierId: tiers.get(line.market) ?? 3,
-      includeSmartDirectional: true, includeDeviceId: true, rateOverrides: overrides, markupPct,
-    })
-    const sf = features.shadowFencing ? q.better.shadowFencing : 0
-    const sd = features.smartDirectional ? q.better.smartDirectional : 0
-    const did = features.deviceId ? q.better.deviceId : 0
-    const media = q.good.baseMedia + sf + sd + did
+    const media = Math.round(q.good.baseMedia)
 
     const lineLegs = legs.get(line.id) ?? []
     const t = priceTransport({
@@ -347,9 +349,9 @@ async function priceLines(
       activationDays, calendarDays: countCalendarDays(line.startDate, line.endDate), truckDays,
       requestedTruckDays: line.trucks * activationDays, delivery: lineDelivery(plan, line),
       dailyRate: q.dailyRate, hourSurcharge: q.hourSurcharge, effectiveDailyRate: q.effectiveDailyRate,
-      shadowFencingFloored: features.shadowFencing && q.better.shadowFencingFloored,
-      baseMedia: Math.round(q.good.baseMedia), shadowFencing: Math.round(sf), smartDirectional: Math.round(sd), deviceId: Math.round(did),
-      media: Math.round(media),
+      shadowFencingFloored: false,
+      baseMedia: media, shadowFencing: 0, smartDirectional: 0, deviceId: 0, optionsTotal: 0,
+      media,
       transport: { outcome: t.outcome, billed: Math.round(t.charge), absorbedCost },
       total: Math.round(media + t.charge),
       assigned,
@@ -359,7 +361,6 @@ async function priceLines(
       estimatedImpressions: q.best.estimatedImpressions,
       marketSizeTier: q.input.marketSizeTier,
       studiesTotal: 0,
-      optionPrices: { shadowFencing: Math.round(all.better.shadowFencing), smartDirectional: Math.round(all.better.smartDirectional), deviceId: Math.round(all.better.deviceId) },
       studyMarket: line.standardMarket ?? line.market,
     }
   })
@@ -443,15 +444,21 @@ export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: O
 
   const run = (ls: OrderLine[], settings = s) => planOrder(ls, fleet.trucks, settings)
   const plan = run(lines)
-  const routed = keepBookedPrices(await priceLines(lines, plan, req.features, overrides, tiers, markupPct), kept, markupPct)
+  const routed = keepBookedPrices(await priceLines(lines, plan, overrides, tiers, markupPct), kept, markupPct)
   // A request's studies are only trusted as a list (priceStudies keeps the known ones).
   const asked = Array.isArray(req.features?.studies) ? req.features.studies : []
-  // Every price of the order, alternatives included, carries its lift studies.
-  const withStudies = (ls: LineQuote[]) => applyStudies(ls, asked, overrides?.study_cost, markupPct)
-  const { lines: priced, studies } = withStudies(routed)
+  const optionChoice = { shadowFencing: req.features?.shadowFencing === true, smartDirectional: req.features?.smartDirectional === true, deviceId: req.features?.deviceId === true }
+  const rates = optionRates(overrides, markupPct)
+  // Every price of the order, alternatives included, carries its options and
+  // lift studies, each priced once for the whole order.
+  const withOrderItems = (ls: LineQuote[]) => {
+    const o = applyOptions(ls, optionChoice, rates)
+    return { ...applyStudies(o.lines, asked, overrides?.study_cost, markupPct), options: o.options }
+  }
+  const { lines: priced, studies, options } = withOrderItems(routed)
   const summary = summarize(priced, plan)
 
-  const alternatives = opts.alternatives === false ? [] : await buildAlternatives(lines, plan, summary, { run, price: async (ls, p) => withStudies(await priceLines(ls, p, req.features, overrides, tiers, markupPct)), studies, s, trucks: fleet.trucks })
+  const alternatives = opts.alternatives === false ? [] : await buildAlternatives(lines, plan, summary, { run, price: async (ls, p) => withOrderItems(await priceLines(ls, p, overrides, tiers, markupPct)), studies, s, trucks: fleet.trucks })
 
   const warnings: string[] = []
   if (plan.approximateClusters > 0) warnings.push('Some markets were too many to pair exactly in the time allowed. The truck count is still the minimum, but the weekly hops may not be the shortest possible.')
@@ -475,7 +482,7 @@ export async function buildMultiMarketQuote(req: QuoteRequest, requestedLines: O
   }
 
   return {
-    quote: { lines: priced, studies, summary, itineraries: itineraries(plan), alternatives, reserved: fleet.reserved, pricingBasis: basis, brandMarkupPct: markupPct, clientType, warnings },
+    quote: { lines: priced, studies, options, summary, itineraries: itineraries(plan), alternatives, reserved: fleet.reserved, pricingBasis: basis, brandMarkupPct: markupPct, clientType, warnings },
     lines,
     plan,
   }
@@ -521,7 +528,7 @@ async function buildAlternatives(
   base: QuoteSummary,
   ctx: {
     run: (ls: OrderLine[], s?: EngineSettings) => OrderPlan
-    /** An alternative priced as the order is, its lift studies included (they can drop out or come in). */
+    /** An alternative priced as the order is, its options and lift studies included (studies can drop out or come in). */
     price: (ls: OrderLine[], p: OrderPlan) => Promise<{ lines: LineQuote[]; studies: OrderStudies }>
     /** The order's own studies, to say how an alternative changes them. */
     studies: OrderStudies
@@ -652,7 +659,7 @@ async function applyRevision(req: QuoteRequest, lines: OrderLine[]): Promise<{ l
   if (!req.revise?.bookingKey) return { lines }
   const held = await loadBookingHolds(req.revise.bookingKey)
   if (held.length === 0) return { lines }
-  const kept = keptPrices(held, req.rows, req.features)
+  const kept = keptPrices(held, req.rows)
   const norm = (m: string) => m.trim().toLowerCase().replace(/\s+/g, ' ')
   // Each row keeps the trucks of the booked market it continues: the one with
   // its dates when the same market was booked twice, else the first of that
@@ -677,7 +684,8 @@ async function applyRevision(req: QuoteRequest, lines: OrderLine[]): Promise<{ l
 }
 
 /**
- * Unchanged markets of a live booking keep their booked price — where they
+ * Unchanged markets of a live booking keep their booked price (base media and
+ * transport; the order's options and studies are priced for the whole order) — where they
  * also kept their trucks and are fully covered (otherwise the delivery
  * changed, and today's price applies). The booked breakdown replaces today's
  * so the line, its breakdown and the total agree. Pure.
@@ -694,19 +702,24 @@ export function keepBookedPrices(lines: LineQuote[], kept?: Map<string, KeptPric
     try { f = k.features ? JSON.parse(k.features) : {} } catch { /* booked total alone */ }
     const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback)
     const billed = num(f.transportCharge, 0)
-    // The order's studies are priced again for the whole order (applyStudies), not kept with a market.
+    // The order's options and studies are priced again for the whole order
+    // (applyOptions, applyStudies), not kept with a market: only its base
+    // media and transport are. A booking made before options were priced per
+    // order stored each market's own options; they come off the same way.
     const studies = num(f.studiesTotal, 0)
+    const options = num(f.shadowFencing, 0) + num(f.smartDirectional, 0) + num(f.deviceId, 0)
+    const media = k.total - billed - studies - options
+    // Stored figures that don't add up (an old booking without them): today's price.
+    if (media < 0) return l
     return {
       ...l,
       dailyRate: num(f.dailyRate, l.dailyRate),
       hourSurcharge: num(f.hourSurcharge, l.hourSurcharge),
-      baseMedia: num(f.baseMedia, l.baseMedia),
-      shadowFencing: num(f.shadowFencing, l.shadowFencing),
-      smartDirectional: num(f.smartDirectional, l.smartDirectional),
-      deviceId: num(f.deviceId, l.deviceId),
-      media: k.total - billed - studies,
+      baseMedia: media,
+      shadowFencing: 0, shadowFencingFloored: false, smartDirectional: 0, deviceId: 0, optionsTotal: 0,
+      media,
       transport: { ...l.transport, billed, outcome: billed > 0 ? 'BILLED' : l.transport.outcome === 'BILLED' ? 'ABSORBED' : l.transport.outcome },
-      total: k.total - studies,
+      total: media + billed,
       priceKept: true,
     }
   })

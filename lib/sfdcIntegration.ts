@@ -151,7 +151,7 @@ export function closedOpportunityBlocksReactivation(stage: { isClosed: boolean; 
 
 /**
  * Reinstating or revising onto a Closed Lost opportunity: staff may move the
- * deal back to WARM instead of being sent to Salesforce. `allowed` — nothing
+ * deal back to S3 instead of being sent to Salesforce. `allowed` — nothing
  * stands in the way (open, won, or the stage is unknown); `reopenable` — Closed
  * Lost, so ask the person first; `reopen` — Closed Lost and they said yes.
  * Closed Won is never reopened. Only staff paths pass `reopenOpportunity`
@@ -166,9 +166,9 @@ export function reactivationDecision(
   return { kind: reopenOpportunity ? 'reopen' : 'reopenable', stageName: stage.stageName }
 }
 
-/** What the person is asked before a Closed Lost opportunity is moved back to WARM. */
+/** What the person is asked before a Closed Lost opportunity is moved back to S3. */
 export function reopenQuestion(stageName: string): string {
-  return `This opportunity is "${stageName}" in Salesforce. Move it back to Warm and continue?`
+  return `This opportunity is "${stageName}" in Salesforce. Reopen it (S3 for a reservation, S1 for a quote only) and continue?`
 }
 
 /**

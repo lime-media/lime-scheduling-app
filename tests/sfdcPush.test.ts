@@ -101,7 +101,7 @@ section('Salesforce: a hold added to an existing opportunity never closes it')
   eq('unreadable features: as before', expiryClosesOpportunity({ ...base, features: '{oops' }), true)
 }
 
-section('Closed Lost: staff may move the opportunity back to WARM')
+section('Closed Lost: staff may move the opportunity back to S3')
 {
   const lost = { isClosed: true, isWon: false, stageName: 'Closed Lost - Budget' }
   eq('Closed Lost, not yet asked: ask first', reactivationDecision(lost, false), { kind: 'reopenable', stageName: 'Closed Lost - Budget' })
@@ -109,7 +109,7 @@ section('Closed Lost: staff may move the opportunity back to WARM')
   eq('open: allowed, nothing to reopen', reactivationDecision({ isClosed: false, isWon: false, stageName: 'WARM' }, true), { kind: 'allowed' })
   eq('Closed Won is never reopened', reactivationDecision({ isClosed: true, isWon: true, stageName: 'Closed Won' }, true), { kind: 'allowed' })
   eq('an unknown stage never blocks', reactivationDecision(null, false), { kind: 'allowed' })
-  eq('the question names the stage', reopenQuestion('Closed Lost - Budget'), 'This opportunity is "Closed Lost - Budget" in Salesforce. Move it back to Warm and continue?')
+  eq('the question names the stage', reopenQuestion('Closed Lost - Budget'), 'This opportunity is "Closed Lost - Budget" in Salesforce. Reopen it (S3 for a reservation, S1 for a quote only) and continue?')
 
   const opp = (o: Partial<BookingOpportunity>) => ({ Id: '006X', AccountId: '001A', IsClosed: true, IsWon: false, StageName: 'Closed Lost - Declined', ...o }) as BookingOpportunity
   eq('opportunityRefusal: Closed Lost still refuses by default (quote tool, attach, client paths)', opportunityRefusal(opp({}), '001A')?.includes('Closed Lost - Declined'), true)

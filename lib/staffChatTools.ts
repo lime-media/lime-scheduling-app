@@ -23,7 +23,6 @@ import { checkAvailability } from '@/lib/availabilityEngine'
 import { resolveDefaultRateOverrides } from '@/lib/pricing/resolvers'
 import { VALID_STUDIES } from '@/lib/pricing'
 import { DEFAULT_HOLD_DAYS, MAX_HOLD_DAYS } from '@/lib/holdExpiry'
-import { OPEN_STAGES } from '@/lib/sfdcStages'
 import { LEAD_SOURCES, readLeadSource } from '@/lib/sfdcLeadSource'
 import { OPPORTUNITY_TYPES, readOpportunityType } from '@/lib/sfdcOpportunityType'
 import { chosenClientType } from '@/lib/pricing/brandMarkup'
@@ -65,7 +64,6 @@ const BOOKING_TERMS = {
   primary_contact_id: { type: 'string', description: 'Salesforce Contact id from find_contacts.' },
   brand: { type: 'string', description: 'The brand being advertised. Ask the rep once, plainly; never suggest "none" or "N/A". Pass "none" only when the rep says there is no brand. Required to book.' },
   hold_days: { type: 'integer', minimum: 1, maximum: MAX_HOLD_DAYS, description: 'Days to hold. Default 3; it never runs past 2 days before the start.' },
-  stage: { type: 'string', enum: OPEN_STAGES.map(s => s.value), description: 'Opportunity stage. Default WARM.' },
   opportunity_type: { type: 'string', enum: [...OPPORTUNITY_TYPES], description: "The opportunity's Type. Use the account's opportunityType (find_account): it's inferred, so state it with the quote rather than asking. Leave it out when find_account gave none; the booking then uses Existing Client once the account has won a deal, else New Client." },
   lead_source: { type: 'string', enum: [...LEAD_SOURCES], description: "The opportunity's Lead Source, exactly one of Salesforce's values. Use the account's leadSource (find_account) when it has one: it's inferred, so state it with the quote rather than asking. Ask the rep only when it has none. Required to book." },
   opportunity_name: { type: 'string', maxLength: OPPORTUNITY_NAME_MAX, description: 'The new Salesforce opportunity\'s name, only when the rep gives one. Never ask for it: left out, the booking names it "Brand / Account / first day" (e.g. "Nike / Acme Agency / 2026-12-01").' },
@@ -83,7 +81,7 @@ export const CHAT_TOOLS: Anthropic.Beta.BetaTool[] = [
   },
   {
     name: 'get_quote',
-    description: 'Price one market exactly as the internal Quote page does: trucks picked, media, features, transport, total. Returns quote_ref when the trucks are there to book it. When the rep may book, include sfdc_account_id (agreement and Brand Direct pricing) and the booking terms (account name, primary contact, brand ("none" only when the rep said there is none; place_hold needs one), hold days, stage, lead source, opportunity type, and an opportunity name only if the rep gave one) and client_type: the ref covers them, so place_hold books exactly what the rep confirmed.',
+    description: 'Price one market exactly as the internal Quote page does: trucks picked, media, features, transport, total. Returns quote_ref when the trucks are there to book it. When the rep may book, include sfdc_account_id (agreement and Brand Direct pricing) and the booking terms (account name, primary contact, brand ("none" only when the rep said there is none; place_hold needs one), hold days, lead source, opportunity type, and an opportunity name only if the rep gave one) and client_type: the ref covers them, so place_hold books exactly what the rep confirmed.',
     input_schema: { type: 'object', properties: { ...QUOTE_PROPERTIES, ...BOOKING_TERMS }, required: QUOTE_REQUIRED },
   },
   {
@@ -173,7 +171,7 @@ function quoteInput(i: Bag): StaffQuoteInput | string {
 
 /** The booking terms, type-checked; a string saying what's wrong otherwise. Pure. */
 export function bookingTerms(i: Bag): BookingTerms | string {
-  for (const k of ['sfdc_account_name', 'primary_contact_id', 'brand', 'stage', 'lead_source', 'opportunity_type', 'opportunity_name'] as const) {
+  for (const k of ['sfdc_account_name', 'primary_contact_id', 'brand', 'lead_source', 'opportunity_type', 'opportunity_name'] as const) {
     if (i[k] !== undefined && typeof i[k] !== 'string') return `${k} is text`
   }
   const leadSource = readLeadSource(i.lead_source, false)
@@ -190,7 +188,7 @@ export function bookingTerms(i: Bag): BookingTerms | string {
     // are one answer (no brand: savedBrand gives ''). Left out or blank stays
     // as given, so the brand requirement still refuses it.
     brand: typeof i.brand === 'string' && i.brand.trim() ? savedBrand(i.brand) || 'none' : i.brand as string | undefined,
-    hold_days: i.hold_days as number | undefined, stage: i.stage as string | undefined,
+    hold_days: i.hold_days as number | undefined,
     lead_source: leadSource.leadSource ?? undefined,
     opportunity_type: oppType.opportunityType ?? undefined,
     // As it will be saved (spaces collapsed); blank is left out, so the booking generates one.
@@ -372,7 +370,6 @@ async function book(i: Bag, ctx: ChatToolContext): Promise<ChatToolOutcome> {
     primary_contact_id: i.primary_contact_id.trim(),
     brand: i.brand,
     hold_days: i.hold_days,
-    stage: i.stage,
     lead_source: terms.lead_source,
     opportunity_type: terms.opportunity_type,
     opportunity_name: terms.opportunity_name,

@@ -41,7 +41,7 @@ import { PARTY_KEY, bookingParty } from '@/lib/bookingParty'
 import { STUDIES_REQUESTED_KEY } from '@/lib/quoteFeatures'
 import { readOpportunityType, suggestedOpportunityType } from '@/lib/sfdcOpportunityType'
 import { QUOTE_ONLY_GROUP_PREFIX, QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS, bookingEvent } from '@/lib/quoteOnly'
-import { openStage } from '@/lib/sfdcStages'
+import { newOpportunityStage } from '@/lib/sfdcStages'
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import type { Prisma } from '@prisma/client'
@@ -79,8 +79,6 @@ type HoldBody = QuoteRequest & {
   requestId?: string
   /** The total the rep saw for the selected markets; booking stops if the fresh price differs. */
   expectedTotal?: number
-  /** Opportunity stage the seller chose: Cold, Warm or Hot (never closed). */
-  stage?: string
   /** The seller's name for a new opportunity; blank or absent → the generated one (lib/opportunityName.ts). */
   opportunityName?: unknown
   /** A new opportunity's Lead Source, from Salesforce's picklist (lib/sfdcLeadSource.ts). Required for one. */
@@ -112,7 +110,7 @@ type HoldBody = QuoteRequest & {
   attachOpportunityId?: string
   /**
    * A revision only: the person agreed to move the booking's Closed Lost
-   * opportunity back to WARM (asked after a 409 `reopenable`). Ignored on an
+   * opportunity back to S3 (asked after a 409 `reopenable`). Ignored on an
    * attach, which only offers open opportunities.
    */
   reopenOpportunity?: boolean
@@ -474,14 +472,14 @@ async function handlePost(req: NextRequest) {
       throw err
     }
 
-    // A Closed Lost opportunity the person agreed to reopen goes back to WARM
+    // A Closed Lost opportunity the person agreed to reopen goes back to S3
     // only now, with the revision saved: a push the stage change sets off finds
     // the app's new holds live, so the webhook treats the opportunity as the
     // app's rather than mirroring its old trucks. If Salesforce refuses, the
     // revision is undone (the new holds go, the old ones come back from `was`,
     // every column) and nothing changes.
     if (reviseKey && target && body.reopenOpportunity === true && target.IsClosed && !target.IsWon) {
-      const r = await reopenClosedLostOpportunity(target.Id)
+      const r = await reopenClosedLostOpportunity(target.Id, newOpportunityStage(quoteOnly || stretches.length === 0))
       if (!r.ok) {
         // Put the old booking back. Its holds are normally lapsed already (the
         // deal was lost), but any that still reserve are re-checked under their
@@ -614,7 +612,8 @@ async function handlePost(req: NextRequest) {
           name: (createdOppName = oppNameRead.name ?? planOpportunityName(brand, accountName, quote.lines)),
           brand: brand || undefined,
           primaryContactId: body.primaryContactId,
-          stageName: openStage(body.stage),
+          // S1 for a quote-only log (or nothing reserved), S3 for a reservation (lib/sfdcStages.ts).
+          stageName: newOpportunityStage(quoteOnly || stretches.length === 0),
           closeDate: starts[0],
           amount: quote.summary.grandTotal,
           market: fitNames(oppMarkets, 255),

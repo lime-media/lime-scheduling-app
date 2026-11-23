@@ -5,7 +5,7 @@
  * options. Staff only. Refuses what cannot be revised (lib/bookings.ts
  * reviseRefusal; a lost opportunity: lib/sfdcBooking.ts opportunityRefusal).
  * A Closed Lost opportunity answers 409 `reopenable` so the planner can ask
- * whether to move it back to WARM; `&reopen=1` then loads the booking. Nothing
+ * whether to move it back to S3; `&reopen=1` then loads the booking. Nothing
  * is written here: the reopen happens when the revision is saved
  * (app/api/plan/hold, reopenOpportunity).
  */

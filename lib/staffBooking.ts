@@ -12,7 +12,7 @@
 import { readBrand } from '@/lib/brand'
 import { readOpportunityName, singleMarketOpportunityName } from '@/lib/opportunityName'
 import { QUOTE_ONLY_NO_TRUCK, QUOTE_ONLY_NOTE, QUOTE_ONLY_ORIGINATION, QUOTE_ONLY_STATUS } from '@/lib/quoteOnly'
-import { openStage } from '@/lib/sfdcStages'
+import { newOpportunityStage } from '@/lib/sfdcStages'
 import { prisma } from '@/lib/prisma'
 import { canonicalMarketName } from '@/lib/marketBounds'
 import { selectTrucksForHold, legsFromTrucks } from '@/lib/availabilityEngine'
@@ -52,7 +52,7 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
     market, state, start_date, end_date, truck_count,
     sfdc_account_id, sfdc_account_name, brand: rawBrand, primary_contact_id,
     shadow_fencing, smart_directional, device_id, studies: rawStudies,
-    days_per_week, operating_hours, brand_markup_pct, stage, quote_only, expected_total, hold_days,
+    days_per_week, operating_hours, brand_markup_pct, quote_only, expected_total, hold_days,
     attach_opportunity_id, client_type, lead_source, opportunity_type,
   } = body
   // How long the seller is holding the trucks (default 3 days; lib/holdExpiry.ts).
@@ -396,8 +396,8 @@ export async function placeStaffBooking(body: any, actor: StaffActor, opts: { or
         name: (createdOppName = oppNameRead.name ?? singleMarketOpportunityName(brand, sfdc_account_name, start_date)),
         brand: brand || undefined,
         primaryContactId: primary_contact_id,
-        // The seller's choice of open stage; never a closed one.
-        stageName: openStage(stage),
+        // S1 for a quote-only log, S3 for a reservation (lib/sfdcStages.ts).
+        stageName: newOpportunityStage(quoteOnly),
         closeDate: start_date,
         amount: serverTotal,
         market,

@@ -130,7 +130,7 @@ export async function POST(req: NextRequest) {
     ...booking,
     ...staff,
     sfdc_account_name: accountName,
-    primary_contact_id: str(body.primary_contact_id), brand: str(body.brand), hold_days: body.hold_days, stage: str(body.stage),
+    primary_contact_id: str(body.primary_contact_id), brand: str(body.brand), hold_days: body.hold_days,
     lead_source: lead?.leadSource ?? undefined, opportunity_name: oppName?.name ?? undefined, notes: str(body.notes), expected_total: expectedTotal,
   }, party.actor, { origination: 'mcp', requireLeadSource: true, requireBrand: true })
   return NextResponse.json(result.body, { status: result.status })

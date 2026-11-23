@@ -58,7 +58,7 @@ export async function PATCH(
 
   const { action, truck_number, reason, expires_at: newExpiresAtStr, reopenOpportunity } = (await req.json().catch(() => ({}))) as {
     action?: Action; truck_number?: string; reason?: string; expires_at?: string
-    /** Reinstate only: the person agreed to move a Closed Lost opportunity back to WARM. */
+    /** Reinstate only: the person agreed to move a Closed Lost opportunity back to S3. */
     reopenOpportunity?: boolean
   }
   if (!action || !(action in VALID_FROM)) {
@@ -148,7 +148,7 @@ export async function PATCH(
   //
   // While the hold's Opportunity is Closed Lost (closed by expireHolds() or by a rep) the
   // reconcile (every 15 minutes) would release it again, so the person is asked first whether to
-  // move the deal back to WARM (409 `reopenable`); the request comes back with reopenOpportunity.
+  // move the deal back to S3 (409 `reopenable`); the request comes back with reopenOpportunity.
   // A Closed Won opportunity's hold comes back COMMITTED with no expiry: the deal is won, so the
   // truck is booked, not held (and nothing about the deal changes).
   // Staff only: this route takes staff sessions; the client portal reinstates nothing.
@@ -294,7 +294,7 @@ export async function PATCH(
       throw err
     }
 
-    // A Closed Lost deal the person agreed to reopen goes back to WARM only now,
+    // A Closed Lost deal the person agreed to reopen goes back to S3 only now,
     // with the reinstate saved: a push the stage change sets off finds the
     // app's holds live, so the webhook treats the opportunity as the app's
     // rather than mirroring its old trucks. If Salesforce refuses, the

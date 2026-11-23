@@ -4,7 +4,7 @@ import { waitUntil } from '@vercel/functions'
 import { clientActor, touchActivity } from '@/lib/usageLog'
 
 export async function POST(req: NextRequest) {
-  const actor = clientActor(req)
+  const actor = await clientActor(req)
   if (!actor) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   waitUntil(touchActivity(actor))
   return new NextResponse(null, { status: 204 })

@@ -9,6 +9,9 @@
  */
 import { defer, eq, section } from './harness'
 import { readSession, signSession } from '@/lib/clientSessionToken'
+import { getClientSession, hasClientCookie, linksUnverified, liveClientSession, unverifiedPricingRefusal } from '@/lib/clientAuth'
+import { clientAvailability } from '@/lib/clientAvailability'
+import { placeClientBooking } from '@/lib/clientBooking'
 import { clientEmailRefusal, maskEmail } from '@/lib/clientEmail'
 import { checkOtp, MAX_ATTEMPTS, OtpError } from '@/lib/otp'
 import bcrypt from 'bcryptjs'
@@ -161,3 +164,45 @@ section('login codes: guesses are claimed before the slow compare, not counted a
       eq(`only ${MAX_ATTEMPTS} guesses are ever spent, however many arrive together`, attempts, MAX_ATTEMPTS)
     }))
 }
+
+section('liveClientSession: staff changes reach a signed-in client without a new login')
+{
+  const signed = { id: 'c1', username: 'testclient', companyName: 'Lime Media', sfdcAccountId: '001UAT0000TEST0123' }
+  const now = { username: 'testclient', company_name: 'Acme Agency', partner_id: 'p-7', sfdc_account_id: '001A000000REAL01' }
+  eq('the record\'s account, name and agreement, not the ones signed at login', liveClientSession(signed, now),
+    { id: 'c1', username: 'testclient', companyName: 'Acme Agency', partnerId: 'p-7', sfdcAccountId: '001A000000REAL01' })
+  eq('an account unlinked by staff is unlinked now', liveClientSession(signed, { ...now, sfdc_account_id: null })?.sfdcAccountId, undefined)
+  eq('a deleted client is signed out', liveClientSession(signed, null), null)
+  eq('the record unreadable: the signed session stands (no lockout)', liveClientSession(signed, 'unreadable'), signed)
+  const stale = liveClientSession(signed, 'unreadable')!
+  eq('unreadable: marked, its links are the login-time copies', linksUnverified(stale), true)
+  eq('a live session is not marked', linksUnverified(liveClientSession(signed, now)!), false)
+  eq('the signed claims themselves are never marked', linksUnverified(signed), false)
+  eq('unreadable: pricing refuses, asking to retry', unverifiedPricingRefusal(stale)?.status, 503)
+  eq('live: pricing goes ahead', unverifiedPricingRefusal(liveClientSession(signed, now)!), null)
+  eq('the mark is never part of the claims (nothing extra to sign into a cookie)', Object.keys(stale).sort(), Object.keys(signed).sort())
+  defer((async () => {
+    const q = await clientAvailability(stale, { market: 'Dallas, TX', start_date: '2027-03-01', end_date: '2027-03-12', truck_count: 1 })
+    eq('a quote (and the portal chat) refuses before any lookup', q.refused?.status, 503)
+    const b = await placeClientBooking(stale, { market: 'Dallas, TX', state: 'TX', start_date: '2027-03-01', end_date: '2027-03-12', truck_count: 1 } as Parameters<typeof placeClientBooking>[1])
+    eq('a booking refuses too', b.status, 503)
+  })())
+}
+
+section('hasClientCookie: the typeahead checks the signed cookie, no record read')
+{
+  const secret = process.env.NEXTAUTH_SECRET || 'lime-client-secret'
+  const reqWith = (token?: string) => ({ cookies: { get: (n: string) => (n === 'client_token' && token ? { value: token } : undefined) } }) as unknown as Parameters<typeof hasClientCookie>[0]
+  eq('a valid signed session', hasClientCookie(reqWith(signSession({ id: 'c1', username: 'u', companyName: 'C' }, secret, THIRTY))), true)
+  eq('signed with another key', hasClientCookie(reqWith(signSession({ id: 'c1', username: 'u', companyName: 'C' }, 'other', THIRTY))), false)
+  eq('no cookie', hasClientCookie(reqWith()), false)
+}
+
+section('getClientSession: one read per request')
+defer((async () => {
+  // No cookie: null, and the same promise for every caller of the request.
+  const req = { cookies: { get: () => undefined } } as unknown as Parameters<typeof getClientSession>[0]
+  const a = getClientSession(req), b = getClientSession(req)
+  eq('the usage log and the handler share one read', a === b, true)
+  eq('no cookie: not signed in', await a, null)
+})())

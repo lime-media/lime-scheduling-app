@@ -26,8 +26,7 @@
 
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import type { ClientSession } from '@/lib/clientAuth'
-import { liveClientLinks } from '@/lib/clientLinks'
+import { unverifiedPricingRefusal, type ClientSession } from '@/lib/clientAuth'
 import { reply, type CoreResult } from '@/lib/coreResult'
 import { cleanBrand, opportunityName } from '@/lib/brand'
 import { bookingHoldExpiry, DEFAULT_HOLD_DAYS } from '@/lib/holdExpiry'
@@ -70,7 +69,12 @@ type Prepared =
 async function prepare(session: ClientSession, input: unknown, opts: { forBooking?: boolean } = {}): Promise<Prepared> {
   const parsed = parseClientPlan(input)
   if ('error' in parsed) return { refused: reply({ error: parsed.error }, { status: 400 }) }
-  const [card, links] = await Promise.all([clientRateCard(session), liveClientLinks(session)])
+  // Never priced off login-time links: the client's record couldn't be read (lib/clientAuth.ts).
+  const stale = unverifiedPricingRefusal(session)
+  if (stale) return { refused: reply(stale.body, { status: stale.status }) }
+  // Live: the session is the client's record as of this request (lib/clientAuth.ts).
+  const card = await clientRateCard(session)
+  const links = { sfdcAccountId: session.sfdcAccountId, partnerId: session.partnerId }
   // The account read once, for the price and the opportunity's owner: every
   // routing round prices with the same client type. Unreachable, the quote
   // engine tries again itself, as the single-market quote degrades.

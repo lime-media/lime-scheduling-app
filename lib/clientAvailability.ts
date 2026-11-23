@@ -10,7 +10,7 @@
  * response does), so the chat passes on only its message.
  */
 
-import type { ClientSession } from '@/lib/clientAuth'
+import { unverifiedPricingRefusal, type ClientSession } from '@/lib/clientAuth'
 import { checkAvailability, type AvailabilityResult } from '@/lib/availabilityEngine'
 import { CLIENT_MAX_TRUCKS, daysUntil, MIN_CLIENT_LEAD_DAYS } from '@/lib/pricing'
 import { isCalendarDate } from '@/lib/dateOnly'
@@ -55,6 +55,11 @@ export { CLIENT_MAX_TRUCKS }
 
 export async function clientAvailability(session: ClientSession, request: ClientAvailabilityRequest): Promise<ClientAvailability> {
   const { market, start_date, end_date, truck_count } = request
+
+  // Never priced off login-time links: the client's record couldn't be read
+  // this request (lib/clientAuth.ts). Checked first, before any lookup.
+  const stale = unverifiedPricingRefusal(session)
+  if (stale) return refuse(stale.body, { status: stale.status })
 
   // More trucks than a client booking takes: no, so the quote, the portal chat
   // and MCP never say yes to a booking that would then be refused.

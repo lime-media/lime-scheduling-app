@@ -22,7 +22,7 @@
  */
 
 import { createHash } from 'crypto'
-import { NO_TRUCK, bookingKey, isMultiMarket } from '@/lib/bookings'
+import { NO_TRUCK, bookingKey, isMultiMarket, uncarriedOrderItems } from '@/lib/bookings'
 import { SHORT_RANGE_MAX_DAYS, billedDaysPerWeek, countCalendarDays } from '@/lib/pricing/schedule'
 import { realJobNumber } from '@/lib/jobNumber'
 import { opportunityCreator } from '@/lib/sfdcBots'
@@ -311,7 +311,8 @@ export function buildRequest(holds: RequestHold[], clientUidOf: (accountId: stri
       clientUid,
       startDate: markets.map(m => m.startDate).sort()[0],
       endDate: markets.map(m => m.endDate).sort().reverse()[0],
-      soldAmount: totals.some(t => t === null) ? null : Math.round(totals.reduce<number>((n, t) => n + (t ?? 0), 0) * 100) / 100,
+      // Plus the order's options and studies once when the market that carried them is gone (uncarriedOrderItems).
+      soldAmount: totals.some(t => t === null) ? null : Math.round((totals.reduce<number>((n, t) => n + (t ?? 0), 0) + uncarriedOrderItems(live)) * 100) / 100,
       jobNumber,
       markets,
     },

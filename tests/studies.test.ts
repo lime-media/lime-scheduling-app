@@ -7,6 +7,7 @@ import { eq, section } from './harness'
 import { priceStudies, studiesCost, uniqueMarketCount, STUDY_LONG_WARNING } from '@/lib/pricing/studies'
 import { computeQuote } from '@/lib/pricing/engine'
 import { applyStudies, selectionTotal, studiesChange } from '@/lib/planning/studies'
+import { optionRates } from '@/lib/planning/options'
 import { bookedStudies } from '@/lib/bookings'
 import { keepBookedPrices } from '@/lib/planning/quote'
 import { planTier, studiesDescription } from '@/lib/planning/booking'
@@ -63,7 +64,9 @@ eq('a rate card study_cost is the base', computeQuote({ truckCount: 2, days: 20,
 
 section('studies: the Multi-market Plan, one study for the order')
 const line = (id: string, market: string, start: string, reach: number, o: Record<string, unknown> = {}) =>
-  ({ id, market, studyMarket: market, startDate: start, endDate: '2026-12-31', estimatedImpressions: reach, assigned: [] as { sharedWith: string | null }[], studiesTotal: 0, media: 10000, total: 12000, ...o })
+  ({ id, market, studyMarket: market, startDate: start, endDate: '2026-12-31', estimatedImpressions: reach, assigned: [] as { sharedWith: string | null }[], studiesTotal: 0, media: 10000, total: 12000, truckDays: 20, baseMedia: 10000, shadowFencing: 0, shadowFencingFloored: false, smartDirectional: 0, deviceId: 0, optionsTotal: 0, ...o })
+// No options chosen: the studies alone (the options have their own tests, tests/options.test.ts).
+const noOptions = { chosen: { shadowFencing: false, smartDirectional: false, deviceId: false }, rates: optionRates(null) }
 const order = [line('a', 'Austin, TX', '2026-11-16', 500_000), line('b', 'Dallas, TX', '2026-11-09', 500_000), line('c', 'Houston, TX', '2026-11-23', 500_000)]
 const priced = applyStudies(order, ['foot_traffic'], null)
 eq('reach is the order\'s total', priced.studies.estimatedImpressions, 1_500_000)
@@ -74,11 +77,11 @@ eq('pricing again changes nothing', applyStudies(priced.lines, ['foot_traffic'],
 const twice = applyStudies([...order, line('d', 'Dallas, TX', '2026-12-01', 500_000)], ['foot_traffic'], null)
 eq('a market booked twice counts once', twice.studies.uniqueMarkets, 3)
 eq('each market\'s own reach under the gate, the order\'s over it', applyStudies(order.slice(0, 2), ['foot_traffic'], null).studies.reachOk, false)
-const sel = selectionTotal(priced.lines, new Set(['a', 'c']), priced.studies)
+const sel = selectionTotal(priced.lines, new Set(['a', 'c']), priced.studies, noOptions)
 eq('a selection is priced again: 2 markets, 1.0M reach, no study', sel.total, 24000)
-const selAll = selectionTotal(priced.lines, new Set(['a', 'b', 'c']), priced.studies)
+const selAll = selectionTotal(priced.lines, new Set(['a', 'b', 'c']), priced.studies, noOptions)
 eq('the whole order: as quoted', selAll.total, 45500)
-const bigSel = selectionTotal(applyStudies(order.map(l => ({ ...l, estimatedImpressions: 900_000 })), ['web_lift'], null).lines, new Set(['a', 'c']), { requested: ['web_lift'], base: null })
+const bigSel = selectionTotal(applyStudies(order.map(l => ({ ...l, estimatedImpressions: 900_000 })), ['web_lift'], null).lines, new Set(['a', 'c']), { requested: ['web_lift'], base: null }, noOptions)
 eq('dropping the carrier moves the study to the next market', bigSel.total, 24000 + 7500)
 eq('sales lift on the order: flagged, no price', applyStudies(order, ['sales_lift'], null).studies.salesLiftRequested, true)
 eq('Brand Direct markup on the order\'s studies', applyStudies(order, ['foot_traffic'], 6000, 10).studies.total, 8800)
@@ -127,7 +130,7 @@ eq('no change: nothing said', studiesChange(was, was), '')
 
 section('studies: the selection names its own carrier')
 const s3 = applyStudies(order.map(l => ({ ...l, estimatedImpressions: 900_000 })), ['web_lift'], null)
-eq('whole order: the earliest market carries it', selectionTotal(s3.lines, new Set(['a', 'b', 'c']), s3.studies).carrierId, 'b')
-eq('without it: the next earliest', selectionTotal(s3.lines, new Set(['a', 'c']), s3.studies).carrierId, 'a')
-eq('and the selection\'s own unique markets', selectionTotal(s3.lines, new Set(['a', 'c']), s3.studies).studies.uniqueMarkets, 2)
-eq('under the minimum: no carrier', selectionTotal(s3.lines, new Set(['c']), s3.studies).carrierId, null)
+eq('whole order: the earliest market carries it', selectionTotal(s3.lines, new Set(['a', 'b', 'c']), s3.studies, noOptions).carrierId, 'b')
+eq('without it: the next earliest', selectionTotal(s3.lines, new Set(['a', 'c']), s3.studies, noOptions).carrierId, 'a')
+eq('and the selection\'s own unique markets', selectionTotal(s3.lines, new Set(['a', 'c']), s3.studies, noOptions).studies.uniqueMarkets, 2)
+eq('under the minimum: no carrier', selectionTotal(s3.lines, new Set(['c']), s3.studies, noOptions).carrierId, null)

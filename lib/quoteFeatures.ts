@@ -11,6 +11,13 @@
  */
 export const APP_HOLD_EXP_KEY = 'appHoldExp'
 
+/**
+ * The media options' names in a price breakdown, the same on every surface:
+ * the single-market quote, the Multi-market Plan, the client portal, the hold
+ * pages and the Salesforce Description.
+ */
+export const OPTION_LABELS = { shadowFencing: 'Shadow fencing', smartDirectional: 'Smart Directional', deviceId: 'Device ID Passback' } as const
+
 export type QuoteFeatures = {
   dailyRate?: number
   hourSurcharge?: number
@@ -21,6 +28,15 @@ export type QuoteFeatures = {
   daysPerWeek?: number
   operatingHours?: number
   baseMedia?: number
+  /** Multi-market: shadow fencing was chosen for the order (its amount is on one market's holds only). */
+  shadowFencingIncluded?: boolean
+  /**
+   * Multi-market: the order's options and studies, priced once for the whole
+   * order and carried on one market's quoted_total (`carried` on its holds).
+   * Recorded on every hold so a booking whose carrying market is gone still
+   * counts them once (lib/bookings.ts uncarriedOrderItems).
+   */
+  orderItems?: { options: number; studies: number; carried: boolean }
   shadowFencing?: number
   shadowFencingFloored?: boolean
   smartDirectionalIncluded?: boolean
@@ -230,7 +246,8 @@ export function buildActivationNotes(features: QuoteFeatures, tier?: string | nu
   if (features.truckDays) parts.push(`${features.truckDays} truck-days`)
 
   const featureList: string[] = []
-  if (features.shadowFencing) featureList.push('Shadow Fencing')
+  // Multi-market: chosen for the order, priced on one market's holds only (shadowFencingIncluded).
+  if (features.shadowFencing || features.shadowFencingIncluded) featureList.push('Shadow Fencing')
   if (features.smartDirectionalIncluded) featureList.push('Smart Directional')
   if (features.deviceIdIncluded) featureList.push('Device ID Passback')
   const priced = (features.studies ?? []).filter(s => s !== 'sales_lift')

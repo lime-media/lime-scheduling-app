@@ -207,10 +207,30 @@ export function clientExtendRefusal(holds: { status: string }[]): string | null 
 export const isMultiMarket = (r: BookingRow) => MULTI_MARKET_GROUP.test(r.campaign_group_id ?? '')
 
 /**
+ * What a multi-market booking's rows leave out of their per-market totals:
+ * the order's options and studies (priced once for the whole order and
+ * carried on one market's quoted_total, lib/planning/options.ts) when none of
+ * these rows is that market's, as when its holds were released and the other
+ * markets stay live. 0 when a row carries them, or for holds made before they
+ * were recorded (`orderItems`), which carried them in their own totals. Pure.
+ */
+export function uncarriedOrderItems(rows: { features?: string | null }[]): number {
+  let order: { options: number; studies: number } | null = null
+  for (const r of rows) {
+    const o = parseFeatures(r.features ?? null).orderItems as { options?: unknown; studies?: unknown; carried?: unknown } | undefined
+    if (!o || typeof o !== 'object') continue
+    if (o.carried === true) return 0
+    if (!order && typeof o.options === 'number' && typeof o.studies === 'number' && Number.isFinite(o.options) && Number.isFinite(o.studies)) order = { options: o.options, studies: o.studies }
+  }
+  return order ? order.options + order.studies : 0
+}
+
+/**
  * A booking's headline figures. In a multi-market booking every hold carries
  * its own market's total, so the booking total adds one per market (campaign
- * group), not one per hold. Trucks are counted once each, even a truck that
- * alternates between two markets.
+ * group), not one per hold, plus the order's options and studies once when the
+ * market that carried them is gone (uncarriedOrderItems). Trucks are counted
+ * once each, even a truck that alternates between two markets.
  */
 export function summarizeBooking(rows: (BookingRow & {
   truck_number: string
@@ -220,6 +240,7 @@ export function summarizeBooking(rows: (BookingRow & {
   quoted_total: number | null
   expires_at: string | null
   pricing_tier?: string | null
+  features?: string | null
 })[], wholeBooking?: { campaign_group_id: string | null }[]): { markets: string[]; trucks: number; total: number | null; unpricedMarkets: number; splitMarkets: number; tier: string | null; start: string; end: string; earliestExpiry: string | null } {
   // A market's price covers all its holds. When some of them are on another
   // card (another status), its price can't be shown here as if this card had
@@ -242,7 +263,7 @@ export function summarizeBooking(rows: (BookingRow & {
     markets: [...new Set(rows.map(r => r.market))],
     trucks: new Set(rows.map(r => r.truck_number)).size,
     // The priced markets' total; a market with no price is counted, not taken as $0.
-    total: totals.length === 0 || totals.every(t => t === null) ? null : totals.reduce<number>((n, t) => n + (t ?? 0), 0),
+    total: totals.length === 0 || totals.every(t => t === null) ? null : totals.reduce<number>((n, t) => n + (t ?? 0), 0) + uncarriedOrderItems(rows),
     unpricedMarkets: totals.filter(t => t === null).length,
     splitMarkets,
     // One tier for the card only when every market has it.
@@ -412,13 +433,16 @@ export function reviseRows(holds: RevisableHold[]): {
       campaignGroup,
     }
   }).sort((a, b) => a.startDate.localeCompare(b.startDate) || a.market.localeCompare(b.market))
-  const f = parseFeatures(holds.find(h => h.features)?.features ?? null)
+  // A multi-market order's options are priced once and carried on one market's
+  // holds (lib/planning/options.ts), so each is chosen when any hold says so.
+  const all = holds.map(h => parseFeatures(h.features))
+  const f = all[holds.findIndex(h => h.features)] ?? parseFeatures(null)
   return {
     rows,
     features: {
-      shadowFencing: Number(f.shadowFencing) > 0,
-      smartDirectional: f.smartDirectionalIncluded === true,
-      deviceId: f.deviceIdIncluded === true,
+      shadowFencing: all.some(x => x.shadowFencingIncluded === true || Number(x.shadowFencing) > 0),
+      smartDirectional: all.some(x => x.smartDirectionalIncluded === true),
+      deviceId: all.some(x => x.deviceIdIncluded === true),
       // The order's studies: every hold of a booking records the same ones.
       studies: bookedStudies(holds),
     },
@@ -456,8 +480,10 @@ export type KeptPrice = { total: number; features: string | null; trucks: string
 
 /**
  * Markets of a LIVE booking that a revision leaves unchanged — same market
- * (case and spacing aside), dates, trucks, schedule and hours, with the
- * booking's options unchanged — keep their booked price: a revision never
+ * (case and spacing aside), dates, trucks, schedule and hours — keep their
+ * booked base media and transport, whatever the options do: the order's
+ * options are priced again for the whole order (lib/planning/options.ts), so
+ * turning one on or off doesn't reprice a market's own price: a revision never
  * quietly reprices what the client already has (transport stops being free
  * as a campaign gets close, for instance). The planner applies it only where
  * the market also keeps its trucks (lib/planning/quote.ts). An expired
@@ -466,15 +492,10 @@ export type KeptPrice = { total: number; features: string | null; trucks: string
 export function keptPrices(
   holds: (RevisableHold & { quoted_total: number | null })[],
   rows: { id: string; market: string; startDate: string; endDate: string; trucks: number; daysPerWeek: number; hours: number }[],
-  features: { shadowFencing: boolean; smartDirectional: boolean; deviceId: boolean },
 ): Map<string, KeptPrice> {
   const out = new Map<string, KeptPrice>()
   const booked = reviseRows(holds)
   if (!booked.live || booked.quoteOnly) return out
-  const sameOptions = booked.features.shadowFencing === features.shadowFencing
-    && booked.features.smartDirectional === features.smartDirectional
-    && booked.features.deviceId === features.deviceId
-  if (!sameOptions) return out
   const norm = (m: string) => m.trim().toLowerCase().replace(/\s+/g, ' ')
   const used = new Set<string>()
   for (const row of rows) {

@@ -11,7 +11,7 @@ import { clientOpportunityType } from '@/lib/clientOpportunityType'
 import { RESERVATION_STAGE } from '@/lib/sfdcStages'
 import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import { prisma } from '@/lib/prisma'
-import type { ClientSession } from '@/lib/clientAuth'
+import { unverifiedPricingRefusal, type ClientSession } from '@/lib/clientAuth'
 import { BOOKING_UNAVAILABLE, ClientHoldRefusal, createClientHolds, ServiceUserMissingError } from '@/lib/holdRequestService'
 import { HoldClashError, HoldLockTimeoutError } from '@/lib/holdWriteLock'
 import { sendHoldRequestEmail } from '@/lib/email'
@@ -34,7 +34,6 @@ import {
   type StudyType,
 } from '@/lib/pricing'
 import { resolveMarketSizeTierId, clientRateCard } from '@/lib/pricing/resolvers'
-import { liveClientLinks } from '@/lib/clientLinks'
 import { holdExpDate } from '@/lib/dateOnly'
 import { reply, type CoreResult } from '@/lib/coreResult'
 import { CLIENT_MAX_TRUCKS } from '@/lib/clientAvailability'
@@ -72,6 +71,10 @@ export async function placeClientBooking(
     market, state, start_date, end_date, truck_count, notes,
   } = body
   const brand = savedBrand(body.brand) // "none" means no brand, as everywhere
+
+  // Never booked or priced off login-time links: the client's record couldn't be read (lib/clientAuth.ts).
+  const stale = unverifiedPricingRefusal(session)
+  if (stale) return reply(stale.body, { status: stale.status })
 
   // A whole number, as the quote requires (lib/clientAvailability.ts): 2.5,
   // "2" or true would hold one count of trucks and bill another.
@@ -140,7 +143,8 @@ export async function placeClientBooking(
   // at the default rate (clients cannot change it and never see it).
   // Read from the client's row, not the session's 30-day-old copy, so an ops
   // relink reaches the next booking rather than the next login.
-  const { sfdcAccountId } = await liveClientLinks(session)
+  // Live: the session is the client's record as of this request (lib/clientAuth.ts).
+  const { sfdcAccountId } = session
   // The opportunity's Type is read alongside the account, not in series
   // before the create (clientOpportunityType never throws).
   const [accountInfo, opportunityType] = sfdcAccountId && isSfdcConfigured()

@@ -14,6 +14,7 @@ import { CLIENT_MAX_TRUCKS, daysUntil, MIN_CLIENT_LEAD_DAYS } from '@/lib/pricin
 import { isCalendarDate } from '@/lib/dateOnly'
 import type { LineQuote, QuoteRequest, QuoteRow } from '@/lib/planning/quote'
 import type { OrderStudies } from '@/lib/planning/studies'
+import { optionItems, type OrderOptions } from '@/lib/planning/options'
 import { VALID_STUDIES, type StudyType } from '@/lib/pricing/config'
 
 /** The most markets in one client order. */
@@ -105,15 +106,13 @@ export function clientLine(l: LineQuote) {
     lastDay: l.delivery.lastDay,
     dailyRate: l.effectiveDailyRate,
     baseMedia: l.baseMedia,
-    shadowFencing: l.shadowFencing,
-    smartDirectional: l.smartDirectional,
-    deviceId: l.deviceId,
+    // The market's own price: the order's options are priced once for the
+    // whole order and listed on their own (clientOptions).
     /** The order's lift studies, carried on one market's media (0 on the others). */
     studiesTotal: l.studiesTotal,
-    optionPrices: l.optionPrices,
-    media: l.media,
+    media: l.media - l.optionsTotal,
     transport: l.transport.billed,
-    total: l.total,
+    total: l.total - l.optionsTotal,
     missing: l.missing,
   }
 }
@@ -133,6 +132,15 @@ export function clientStudies(st: OrderStudies) {
     salesLiftRequested: st.salesLiftRequested,
     warning: st.warning ?? null,
   }
+}
+
+/**
+ * The order's media options as the client sees them: each one's price for the
+ * whole order (chosen or not, for its switch) and the chosen ones as line
+ * items, priced once for the order (lib/planning/options.ts).
+ */
+export function clientOptions(o: OrderOptions) {
+  return { prices: o.prices, items: optionItems(o) }
 }
 
 /** Whether a routed order books exactly these trucks per market (row id). */

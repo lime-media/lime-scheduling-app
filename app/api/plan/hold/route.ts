@@ -57,7 +57,8 @@ import { reviseRefusal, summarizeBooking } from '@/lib/bookings'
 import { AMOUNT_LEFT_NOTE, WINDOW_LEFT_NOTE, CLIENT_TYPE_LEFT_NOTE, applyBookingToOpportunity, getBookingOpportunity, opportunityRefusal, reopenClosedLostOpportunity, type BookingOpportunity } from '@/lib/sfdcBooking'
 import { SFDC_SERVICE_USER_EMAIL, attachedToOpportunity, reactivationDecision, reopenQuestion } from '@/lib/sfdcIntegration'
 import { bookWhatFits, buildMultiMarketQuote, holdPlaces, resolveRows, validateQuoteRequest, type QuoteRequest } from '@/lib/planning/quote'
-import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches, planTier, studiesDescription } from '@/lib/planning/booking'
+import { describeBooked, describeQuoted, fitNames, lineFeatures, money, optionsDescription, planStretches, planTier, studiesDescription } from '@/lib/planning/booking'
+import { marketOwnTotal } from '@/lib/planning/options'
 import { VALID_STUDIES, type StudyType } from '@/lib/pricing/config'
 import { centralDate, holdExpDate } from '@/lib/dateOnly'
 import { recordBooking } from '@/lib/transportMetricsRecord'
@@ -153,6 +154,11 @@ async function handlePost(req: NextRequest) {
   // The seller's own name for a new opportunity; never renames an existing one.
   const oppNameRead = readOpportunityName(body.opportunityName)
   if ('error' in oppNameRead) return NextResponse.json({ error: oppNameRead.error }, { status: 400 })
+  body.features = body.features ?? { shadowFencing: true, smartDirectional: false, deviceId: false }
+  // The request's shape (options on or off, never a string or number), before
+  // anything reads the options and before any Salesforce or database call.
+  const invalid = validateQuoteRequest(body)
+  if (invalid) return NextResponse.json({ error: invalid }, { status: 400 })
   // Every opportunity needs its primary contact, on this account — checked
   // after the cheap local guards. A definite no refuses; Salesforce being
   // unreachable only warns (see checkPrimaryContact).
@@ -184,7 +190,6 @@ async function handlePost(req: NextRequest) {
   let attachUnreachable = false
   const reviseIds = reviseHolds.map(h => h.id)
 
-  body.features = body.features ?? { shadowFencing: true, smartDirectional: false, deviceId: false }
   // Only known studies, from the browser (lib/pricing/studies.ts prices them).
   body.features.studies = Array.isArray(body.features.studies)
     ? [...new Set(body.features.studies.filter((x): x is StudyType => (VALID_STUDIES as readonly unknown[]).includes(x)))]
@@ -193,8 +198,6 @@ async function handlePost(req: NextRequest) {
   const requested = body.features.studies.length ? { [STUDIES_REQUESTED_KEY]: body.features.studies } : {}
   // Holds never displace AT&T: soft-hold trucks are always reserved here.
   body.reserveSoftHolds = true
-  const invalid = validateQuoteRequest(body)
-  if (invalid) return NextResponse.json({ error: invalid }, { status: 400 })
 
   const quoteOnly = body.quoteOnly === true
   // Quote-only logs and real bookings live in separate id spaces, so a real
@@ -387,7 +390,7 @@ async function handlePost(req: NextRequest) {
         pricing_tier: tier,
         quoted_total: lq.total,
         daily_rate: lq.effectiveDailyRate,
-        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies)), [PARTY_KEY]: party, ...requested }),
+        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies, { options: quote.options.total, studies: quote.studies.total })), [PARTY_KEY]: party, ...requested }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(lq.id)!,
         expires_at: new Date(),
@@ -419,7 +422,7 @@ async function handlePost(req: NextRequest) {
         daily_rate: lq.effectiveDailyRate,
         // The line's quote, plus what this hold itself sells: a rotating truck's
         // weekly stint works only some of the line's days (lib/ledJobs.ts daysSold).
-        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies)), [PARTY_KEY]: party, ...requested, heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
+        features: JSON.stringify({ ...withAttach(lineFeatures(lq, body.features, quote.brandMarkupPct, quote.clientType, quote.studies, { options: quote.options.total, studies: quote.studies.total })), [PARTY_KEY]: party, ...requested, heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(stint.lineId)!,
         expires_at: expiresAt,
@@ -557,9 +560,11 @@ async function handlePost(req: NextRequest) {
           // Internal record only: every price below already includes it.
           ...(quote.brandMarkupPct ? [`Brand Direct pricing: +${quote.brandMarkupPct}% folded into every line item.`, ''] : []),
           quoteOnly ? 'Quoted (no reservation):' : 'Booked:',
-          ...quote.lines.map(l => `${describeBooked(l)}, ${money(l.total)}`),
-          // Without the order's studies: they're priced once, on what's booked (studiesDescription).
-          ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(l.total - l.studiesTotal)}`)] : []),
+          // Each market without the order's options and studies: they're priced once for the whole order (optionsDescription, studiesDescription).
+          ...quote.lines.map(l => `${describeBooked(l)}, ${money(marketOwnTotal(l))}`),
+          ...optionsDescription(quote.options),
+          // Without the order's options and studies: they're priced once, on what's booked.
+          ...(notSelected.length ? ['', 'Quoted but not selected:', ...notSelected.map(l => `${describeQuoted(l)}, ${money(marketOwnTotal(l))}`)] : []),
           ...(unavailable.length ? ['', 'Quoted but no truck available:', ...unavailable] : []),
           ...studiesDescription(quote.studies),
         ].join('\n')

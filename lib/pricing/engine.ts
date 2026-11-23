@@ -109,6 +109,25 @@ export type TierBest = {
 // Rate lookup
 // ---------------------------------------------------------------------------
 
+/** The media options' rates, Brand Direct markup folded in: one rule for the single-market quote and the Multi-market Plan (lib/planning/options.ts). */
+export type OptionRates = { shadowFencingPct: number; shadowFencingFloor: number; smartDirectionalDaily: number; deviceIdFlat: number }
+
+export function optionRates(overrides: RateOverrides | null | undefined, markupPct = 0): OptionRates {
+  const up = (n: number) => withMarkup(n, markupPct)
+  return {
+    shadowFencingPct: overrides?.shadow_fencing_pct ?? SHADOW_FENCING_RATE,
+    shadowFencingFloor: up(overrides?.shadow_fencing_floor ?? SHADOW_FENCING_FLOOR),
+    smartDirectionalDaily: up(overrides?.smart_directional_daily ?? SMART_DIRECTIONAL_PER_TRUCK_DAY),
+    deviceIdFlat: up(overrides?.device_id_flat ?? DEVICE_ID_PASSBACK_FLAT),
+  }
+}
+
+/** Shadow fencing on a base media: its share, never under its floor. One rule for both quote tools. */
+export function shadowFencingPrice(baseMedia: number, rates: OptionRates): { price: number; floored: boolean } {
+  const raw = baseMedia * rates.shadowFencingPct
+  return { price: Math.max(raw, rates.shadowFencingFloor), floored: raw < rates.shadowFencingFloor }
+}
+
 /**
  * Find the daily rate for a given duration.
  *
@@ -200,20 +219,17 @@ export function computeQuote(input: QuoteInput): QuoteResult {
   }
 
   // Tier 2 — Better
-  const sfRate = rateOverrides?.shadow_fencing_pct ?? SHADOW_FENCING_RATE
-  const sfFloor = up(rateOverrides?.shadow_fencing_floor ?? SHADOW_FENCING_FLOOR)
-  const sfRaw = baseMedia * sfRate
-  const shadowFencing = Math.max(sfRaw, sfFloor)
-  const shadowFencingFloored = sfRaw < sfFloor
+  const opt = optionRates(rateOverrides, markupPct)
+  const { price: shadowFencing, floored: shadowFencingFloored } = shadowFencingPrice(baseMedia, opt)
 
   // Impressions follow the media buy, not the Brand Direct price: take the
   // markup back out before dividing by the CPM.
   const digitalImpressions = ((shadowFencing / (1 + markupPct / 100)) / SHADOW_FENCING_CPM) * 1000
 
-  const sdDaily = up(rateOverrides?.smart_directional_daily ?? SMART_DIRECTIONAL_PER_TRUCK_DAY)
+  const sdDaily = opt.smartDirectionalDaily
   const smartDirectional = includeSmartDirectional ? truckDays * sdDaily : 0
 
-  const didFlat = up(rateOverrides?.device_id_flat ?? DEVICE_ID_PASSBACK_FLAT)
+  const didFlat = opt.deviceIdFlat
   const deviceId = includeDeviceId ? didFlat : 0
 
   const betterTotal = baseMedia + shadowFencing + smartDirectional + deviceId

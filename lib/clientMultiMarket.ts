@@ -26,8 +26,7 @@
 
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import type { ClientSession } from '@/lib/clientAuth'
-import { liveClientLinks } from '@/lib/clientLinks'
+import { unverifiedPricingRefusal, type ClientSession } from '@/lib/clientAuth'
 import { reply, type CoreResult } from '@/lib/coreResult'
 import { cleanBrand, opportunityName } from '@/lib/brand'
 import { bookingHoldExpiry, DEFAULT_HOLD_DAYS } from '@/lib/holdExpiry'
@@ -46,9 +45,10 @@ import { sendHoldRequestEmail } from '@/lib/email'
 import { recordBooking } from '@/lib/transportMetricsRecord'
 import { legsFromArrivals } from '@/lib/transportMetrics'
 import { bookWhatFits, buildMultiMarketQuote, holdPlaces, resolveRows, type PreparedQuote, type QuoteRequest } from '@/lib/planning/quote'
-import { describeBooked, describeQuoted, fitNames, lineFeatures, money, planStretches, planTier, studiesDescription } from '@/lib/planning/booking'
+import { describeBooked, describeQuoted, fitNames, lineFeatures, money, optionsDescription, planStretches, planTier, studiesDescription } from '@/lib/planning/booking'
+import { marketOwnTotal } from '@/lib/planning/options'
 import { STUDIES_REQUESTED_KEY } from '@/lib/quoteFeatures'
-import { clientLine, clientStudies, parseClientPlan, sameTrucks } from '@/lib/clientPlan'
+import { clientLine, clientOptions, clientStudies, parseClientPlan, sameTrucks } from '@/lib/clientPlan'
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
@@ -70,7 +70,12 @@ type Prepared =
 async function prepare(session: ClientSession, input: unknown, opts: { forBooking?: boolean } = {}): Promise<Prepared> {
   const parsed = parseClientPlan(input)
   if ('error' in parsed) return { refused: reply({ error: parsed.error }, { status: 400 }) }
-  const [card, links] = await Promise.all([clientRateCard(session), liveClientLinks(session)])
+  // Never priced off login-time links: the client's record couldn't be read (lib/clientAuth.ts).
+  const stale = unverifiedPricingRefusal(session)
+  if (stale) return { refused: reply(stale.body, { status: stale.status }) }
+  // Live: the session is the client's record as of this request (lib/clientAuth.ts).
+  const card = await clientRateCard(session)
+  const links = { sfdcAccountId: session.sfdcAccountId, partnerId: session.partnerId }
   // The account read once, for the price and the opportunity's owner: every
   // routing round prices with the same client type. Unreachable, the quote
   // engine tries again itself, as the single-market quote degrades.
@@ -103,7 +108,9 @@ async function route(p: Extract<Prepared, { refused: null }>): Promise<CoreResul
   return { asked, fits }
 }
 
-const view = (q: PreparedQuote) => ({ lines: q.quote.lines.map(clientLine), studies: clientStudies(q.quote.studies), total: q.quote.summary.grandTotal })
+// Each market at its own price; the order's options and studies, priced once
+// for the whole order, on their own (lib/planning/options.ts, studies.ts).
+const view = (q: PreparedQuote) => ({ lines: q.quote.lines.map(clientLine), options: clientOptions(q.quote.options), studies: clientStudies(q.quote.studies), total: q.quote.summary.grandTotal })
 
 /** POST /api/client/plan/quote */
 export async function clientMultiMarketQuote(session: ClientSession, input: unknown): Promise<CoreResult> {
@@ -240,7 +247,7 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
         quoted_total: lq.total,
         daily_rate: lq.effectiveDailyRate,
         // The line's quote, plus what this hold itself sells (lib/ledJobs.ts daysSold).
-        features: JSON.stringify({ ...lineFeatures(lq, f, quote.brandMarkupPct, quote.clientType, quote.studies), ...requested, heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
+        features: JSON.stringify({ ...lineFeatures(lq, f, quote.brandMarkupPct, quote.clientType, quote.studies, { options: quote.options.total, studies: quote.studies.total }), ...requested, heldStart: stint.start, heldEnd: stint.end, heldWorkDays: stint.workDays }),
         truck_count: lq.trucks,
         campaign_group_id: groupOf.get(stint.lineId)!,
         expires_at: expiry.expiresAt,
@@ -313,7 +320,9 @@ export async function placeClientMultiMarketBooking(session: ClientSession, inpu
         const description = [
           ...(quote.brandMarkupPct ? [`Brand Direct pricing: +${quote.brandMarkupPct}% folded into every line item.`, ''] : []),
           'Booked by the client in the portal:',
-          ...quote.lines.map(l => `${describeBooked(l)}, ${money(l.total)}`),
+          // Each market without the order's options and studies: they're priced once for the whole order (their own lines).
+          ...quote.lines.map(l => `${describeBooked(l)}, ${money(marketOwnTotal(l))}`),
+          ...optionsDescription(quote.options),
           ...(notBooked.length ? ['', 'Asked for but no truck available:', ...notBooked] : []),
           ...studiesDescription(quote.studies),
         ].join('\n')

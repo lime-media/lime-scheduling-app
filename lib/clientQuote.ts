@@ -11,13 +11,14 @@
  */
 
 import { getSfdcAccountInfo, isSfdcConfigured } from '@/lib/salesforceClient'
-import { brandMarkupFor, withMarkup } from '@/lib/pricing/brandMarkup'
+import { brandMarkupFor } from '@/lib/pricing/brandMarkup'
 import type { ClientSession } from '@/lib/clientAuth'
 import { clientAvailability, parseClientAvailabilityRequest } from '@/lib/clientAvailability'
 import { legsFromTrucks, type AvailabilityResult } from '@/lib/availabilityEngine'
 
 import {
   computeQuote,
+  optionRates,
   priceTransport,
   countActivationDays,
   billedDaysPerWeek,
@@ -26,7 +27,6 @@ import {
   type StudyType,
 } from '@/lib/pricing'
 import { resolveRateOverrides } from '@/lib/pricing/resolvers'
-import { liveClientLinks } from '@/lib/clientLinks'
 import { reply, type CoreResult } from '@/lib/coreResult'
 
 export type ClientQuoteInput = {
@@ -85,7 +85,8 @@ export async function clientQuote(session: ClientSession, body: ClientQuoteInput
   // Brand Direct accounts are priced with the markup folded into every price,
   // at the default rate (clients cannot change it and never see it).
   // Read from the client's row, not the session's 30-day-old copy.
-  const { sfdcAccountId } = await liveClientLinks(session)
+  // Live: the session is the client's record as of this request (lib/clientAuth.ts).
+  const { sfdcAccountId } = session
   const accountInfo = sfdcAccountId && isSfdcConfigured()
     ? await getSfdcAccountInfo(sfdcAccountId).catch(() => null)
     : null
@@ -264,6 +265,7 @@ function buildFeaturesResponse(
   rateOverrides: Awaited<ReturnType<typeof resolveRateOverrides>>,
   markupPct: number,
 ) {
+  const rates = optionRates(rateOverrides, markupPct)
   return {
     shadowFencing: {
       included: includeShadowFencing,
@@ -275,13 +277,13 @@ function buildFeaturesResponse(
       included: includeSmartDirectional,
       cost: quote.better.smartDirectionalIncluded
         ? quote.better.smartDirectional
-        : quote.input.truckDays * withMarkup(rateOverrides?.smart_directional_daily ?? 250, markupPct),
+        : quote.input.truckDays * rates.smartDirectionalDaily,
     },
     deviceId: {
       included: includeDeviceId,
       cost: quote.better.deviceIdIncluded
         ? quote.better.deviceId
-        : withMarkup(rateOverrides?.device_id_flat ?? 2500, markupPct),
+        : rates.deviceIdFlat,
     },
     studies: {
       available: quote.best.reachOk,

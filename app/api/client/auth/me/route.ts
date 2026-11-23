@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getClientSession } from '@/lib/clientAuth'
 
 export async function GET(req: NextRequest) {
-  const session = getClientSession(req)
+  const session = await getClientSession(req)
   if (session) return NextResponse.json({ user: session })
 
   const res = NextResponse.json({ user: null })

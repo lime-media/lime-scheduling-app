@@ -50,7 +50,7 @@ section('client multi-market: what a client sees')
     activationDays: 10, calendarDays: 12, truckDays: 20, requestedTruckDays: 20,
     delivery: { firstDay: '2026-11-23', lastDay: '2026-12-04', fullWeeks: 2, fullWeekDays: 10, partialWeek: null, days: 20 },
     dailyRate: 1500, hourSurcharge: 0, effectiveDailyRate: 1500, shadowFencingFloored: false,
-    baseMedia: 30000, shadowFencing: 900, smartDirectional: 0, deviceId: 0, media: 30900,
+    baseMedia: 30000, shadowFencing: 900, smartDirectional: 0, deviceId: 0, optionsTotal: 900, media: 30900,
     transport: { outcome: 'ABSORBED', billed: 0, absorbedCost: 4321 }, transportNote: 'absorbed: long run',
     total: 30900, missing: 0,
     assigned: [{ truckNumber: '9999', sharedWith: null, hopRoadMiles: 0 }],
@@ -58,7 +58,8 @@ section('client multi-market: what a client sees')
   } as unknown as LineQuote
   const json = JSON.stringify(clientLine(lq))
   eq('no truck numbers, origins, our costs or reasons', ['9999', 'Denver', '4321', 'absorbed', 'assigned', 'arrivals', 'ourCost'].filter(t => json.includes(t)), [])
-  eq('the client\'s figures are there', [clientLine(lq).total, clientLine(lq).transport, clientLine(lq).truckDays], [30900, 0, 20])
+  // This market carries the order's $900 of options: the client sees them as the order's own line (lib/clientMultiMarket.ts view), not in this market's price.
+  eq('the client\'s figures are there, without the order\'s options', [clientLine(lq).total, clientLine(lq).media, clientLine(lq).transport, clientLine(lq).truckDays], [30000, 30000, 0, 20])
 }
 
 section('client multi-market: shared booking helpers')

@@ -6,7 +6,7 @@
  */
 import { eq, section } from './harness'
 import { opportunityName } from '@/lib/brand'
-import { OPPORTUNITY_NAME_MAX, planOpportunityName, readOpportunityName, singleMarketOpportunityName } from '@/lib/opportunityName'
+import { OPPORTUNITY_NAME_MAX, planOpportunityName, readOpportunityName, renameRefusal, singleMarketOpportunityName } from '@/lib/opportunityName'
 
 section('Opportunity name: defaults (the Closed Won form, Brand / Account / date)')
 eq('single market: brand / account / first day', singleMarketOpportunityName('Nike', 'Rolling Adz', '2026-12-11'), 'Nike / Rolling Adz / 2026-12-11')
@@ -34,3 +34,9 @@ eq('over 120 is refused, not cut', 'error' in readOpportunityName('x'.repeat(121
 eq('a number is refused', 'error' in readOpportunityName(42), true)
 eq('an array is refused', 'error' in readOpportunityName(['Nike']), true)
 eq('an object is refused', 'error' in readOpportunityName({ name: 'Nike' }), true)
+
+section('opportunity name: renamed from Reservations only while open')
+eq('an open opportunity may be renamed', renameRefusal({ isClosed: false, isWon: false, stageName: 'S3' }), null)
+eq('Closed Won: renamed in Salesforce', renameRefusal({ isClosed: true, isWon: true, stageName: 'Closed Won' }), 'The opportunity is Closed Won: change its name in Salesforce.')
+eq('a Closed Lost reason names the stage', renameRefusal({ isClosed: true, isWon: false, stageName: 'Closed Lost - Budget' }), 'The opportunity is "Closed Lost - Budget": change its name in Salesforce.')
+eq('not read: never written blind', renameRefusal(null)?.startsWith("The opportunity couldn't be read"), true)

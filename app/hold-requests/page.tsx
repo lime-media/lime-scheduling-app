@@ -3,7 +3,7 @@
 import { ATT_RELEASE_WARNING, ATT_RELEASE_MAX_DAYS, validateReleaseRange } from '@/lib/attSoftRules'
 import { QUOTE_ONLY_ORIGINATION, listedQuotes } from '@/lib/quoteOnly'
 import { SERVICE_AREA_RADIUS_MILES } from '@/lib/pricing/config'
-import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 import toast from 'react-hot-toast'
 import { CANCEL_REASON_MAX, cancelledOf } from '@/lib/cancelReason'
@@ -23,6 +23,7 @@ import { UNASSIGNED_OWNER_LABEL, defaultOwner, ownedBy, ownerOptions, runsBetwee
 import { ATTENTION_LABEL, EXPIRING_SOON_HOURS, attentionOf, groupBookings, summaryTiles, tileOf, type Attention } from '@/lib/reservationView'
 import { useSession } from 'next-auth/react'
 import { accountUrl, opportunityUrl } from '@/lib/sfdcLinks'
+import { OpportunityNameEdit } from '@/components/OpportunityNameEdit'
 
 type HoldRequest = {
   id: string
@@ -42,6 +43,9 @@ type HoldRequest = {
   owner_name: string
   /** No person owns it (a client's request): listed under every seller's Me. */
   owner_unassigned?: boolean
+  /** Its Salesforce opportunity's name as Salesforce has it now, and whether it's closed there (null: not read). */
+  opportunity_name?: string | null
+  opportunity_closed?: boolean | null
   pricing_tier: string | null
   quoted_total: number | null
   daily_rate: number | null
@@ -601,13 +605,34 @@ export default function HoldRequestsPage() {
     }
   }
 
+  // Opportunity renames made on this page, by opportunity (15-char id): the
+  // list shows the new name until it reloads with it, since another server
+  // instance can serve the old name from its cache for a few minutes. `stale`
+  // is every name this page renamed away from (a second rename keeps the
+  // first's old name, which a stale instance can still serve). Dropped once
+  // the list shows any other name (Salesforce has caught up or moved on).
+  const oppRenames = useRef(new Map<string, { stale: (string | null)[]; to: string }>())
+  const withRenames = useCallback((rows: HoldRequest[]): HoldRequest[] => {
+    const renames = oppRenames.current
+    if (renames.size === 0) return rows
+    for (const r of rows) {
+      const k = r.sfdc_opportunity_id?.slice(0, 15)
+      const o = k ? renames.get(k) : undefined
+      if (k && o && r.opportunity_name != null && !o.stale.includes(r.opportunity_name)) renames.delete(k)
+    }
+    return rows.map(r => {
+      const o = r.sfdc_opportunity_id ? renames.get(r.sfdc_opportunity_id.slice(0, 15)) : undefined
+      return o && o.stale.includes(r.opportunity_name ?? null) ? { ...r, opportunity_name: o.to } : r
+    })
+  }, [])
+
   const fetchRequests = useCallback(async () => {
     setLoading(true)
     try {
       const res = await fetch('/api/hold-requests')
       if (!res.ok) throw new Error()
       const data = await res.json()
-      setRequests(data.holdRequests || [])
+      setRequests(withRenames(data.holdRequests || []))
       setExpiredWindowDays(typeof data.expired_window_days === 'number' ? data.expired_window_days : null)
       setLedUnavailable(data.led_unavailable === true)
       setSfdcBase(typeof data.sfdc_base_url === 'string' ? data.sfdc_base_url : null)
@@ -617,7 +642,7 @@ export default function HoldRequestsPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [withRenames])
 
   useEffect(() => { fetchRequests() }, [fetchRequests])
 
@@ -881,7 +906,7 @@ export default function HoldRequestsPage() {
     }
     const q = search.trim().toLowerCase()
     if (q) {
-      result = wholeBookings(result, r => [r.company_name, r.truck_number, r.market, r.notes]
+      result = wholeBookings(result, r => [r.company_name, r.opportunity_name, r.truck_number, r.market, r.notes]
         .filter(Boolean)
         .some((field) => field!.toLowerCase().includes(q)))
     }
@@ -1163,6 +1188,20 @@ export default function HoldRequestsPage() {
           <div className={panel}>
             <div className={panelTitle}>Salesforce &amp; LED</div>
             <dl className="text-xs grid grid-cols-[auto,1fr] gap-x-3 gap-y-1">
+              {first.sfdc_opportunity_id && (<>
+                <dt className="text-gray-500">Opportunity</dt>
+                <dd className="text-gray-900 min-w-0">
+                  <OpportunityNameEdit opportunityId={first.sfdc_opportunity_id} name={first.opportunity_name ?? null} closed={first.opportunity_closed ?? null}
+                    onSaved={(to) => {
+                      const k = first.sfdc_opportunity_id!.slice(0, 15)
+                      const prior = oppRenames.current.get(k)
+                      const stale = prior ? [...prior.stale, prior.to] : [first.opportunity_name ?? null]
+                      oppRenames.current.set(k, { stale: [...new Set(stale)].filter(n => n !== to), to })
+                      // Only the name changed (in Salesforce), so the list isn't reloaded: the overlay shows it.
+                      setRequests(prev => withRenames(prev))
+                    }} />
+                </dd>
+              </>)}
               <dt className="text-gray-500">Owner</dt><dd className="text-gray-900 break-words">{first.owner_unassigned ? UNASSIGNED_OWNER_LABEL : first.owner_name || '—'}</dd>
               <dt className="text-gray-500">Created by</dt><dd className="text-gray-900 break-words">{first.created_by_name || '—'}</dd>
               <dt className="text-gray-500">Source</dt>
@@ -1407,6 +1446,7 @@ export default function HoldRequestsPage() {
                           </td>
                           <td className="px-3 py-3 min-w-0">
                             <div className="font-semibold text-gray-900 break-words">{v.first.company_name}</div>
+                          {v.first.opportunity_name && <div className="text-xs text-gray-700 break-words">{v.first.opportunity_name}</div>}
                             <div className="text-xs text-gray-500 break-words">{v.first.owner_unassigned ? UNASSIGNED_OWNER_LABEL : v.first.owner_name || '—'} · {SOURCE_LABEL[v.first.source] ?? v.first.source}</div>
                           </td>
                           <td className="px-3 py-3 text-gray-700 break-words">{v.marketsLabel}</td>
@@ -1439,6 +1479,7 @@ export default function HoldRequestsPage() {
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <div className="font-semibold text-gray-900 break-words">{v.first.company_name}</div>
+                          {v.first.opportunity_name && <div className="text-xs text-gray-700 break-words">{v.first.opportunity_name}</div>}
                           <div className="text-xs text-gray-500 break-words">{v.first.owner_unassigned ? UNASSIGNED_OWNER_LABEL : v.first.owner_name || '—'} · {SOURCE_LABEL[v.first.source] ?? v.first.source}</div>
                         </div>
                         <StatusPill v={v} />

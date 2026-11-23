@@ -205,6 +205,9 @@ export async function GET() {
     owner_id:          owners.get(h.id)!.owner_id,
     owner_name:        owners.get(h.id)!.owner_name,
     owner_unassigned:  owners.get(h.id)!.owner_unassigned,
+    // The opportunity's name as Salesforce has it now (lib/reservationOwners.ts), and whether it's closed there.
+    opportunity_name:  owners.get(h.id)!.opportunity_name,
+    opportunity_closed: owners.get(h.id)!.opportunity_closed,
     pricing_tier:      h.pricing_tier ?? null,
     quoted_total:      h.quoted_total ?? null,
     daily_rate:        h.daily_rate ?? null,

@@ -135,26 +135,39 @@ export async function applyBookingToOpportunity(opts: {
   // A validation rule, record type or lock that refuses either can't keep the
   // booking's trucks, amount and window out of Salesforce. Refused with them,
   // the update is sent again without them (a PATCH, so sending it twice can't
-  // duplicate anything) and the rep told about a Client Type left. The stage
-  // is dropped first, so a refused raise never costs the Client Type (or tells
-  // the rep it was left when it wasn't). Only a definite refusal (Salesforce's
+  // duplicate anything) and the rep told about a Client Type left
+  // (updateAttempts: a refused one never costs the other). Only a definite refusal (Salesforce's
   // error list) is retried: a 5xx or an unreadable reply may have applied
   // them, so the rep isn't told it was left.
-  const withClientType: Record<string, unknown> = opts.clientType && opts.clientType !== opts.opp.Client_Type__c
-    ? { ...fields, Client_Type__c: opts.clientType } : fields
+  const clientType = opts.clientType && opts.clientType !== opts.opp.Client_Type__c ? opts.clientType : null
   const raised = reservationStageRaise(opts.opp.StageName, !!opts.booking.holdStart)
-  const attempts = [
-    ...(raised ? [{ body: { ...withClientType, StageName: raised }, clientTypeLeft: false }] : []),
-    ...(withClientType !== fields ? [{ body: withClientType, clientTypeLeft: false }] : []),
-    { body: fields, clientTypeLeft: withClientType !== fields },
-  ]
+  const attempts = updateAttempts(fields, clientType, raised)
   for (let i = 0; i < attempts.length; i++) {
     const res = await updateOpportunityWithError(opts.opp.Id, attempts[i].body)
     if (res.ok) return { ok: true, amountLeft, windowLeft, clientTypeLeft: attempts[i].clientTypeLeft }
     if (res.error.startsWith('HTTP ') || i === attempts.length - 1) break
-    console.warn(`[sfdc] ${opts.opp.Id}: update refused (${res.error}); sending it again without ${i === 0 && raised ? `StageName ${raised}` : `Client Type ${opts.clientType}`}`)
+    console.warn(`[sfdc] ${opts.opp.Id}: update refused (${res.error}); trying ${attempts[i + 1].label}`)
   }
   return { ok: false, amountLeft, windowLeft, clientTypeLeft: false }
+}
+
+/**
+ * The order applyBookingToOpportunity sends a booking's update in when
+ * Salesforce refuses one: everything; without the stage raise; without the
+ * Client Type but with the raise; then neither. So a refused raise never costs
+ * the Client Type, and a refused Client Type never costs the raise. Attempts
+ * that would repeat one already sent are left out. Pure.
+ */
+export function updateAttempts(fields: Record<string, unknown>, clientType: string | null, raised: string | null): { body: Record<string, unknown>; clientTypeLeft: boolean; label: string }[] {
+  const ct = clientType ? { Client_Type__c: clientType } : null
+  const st = raised ? { StageName: raised } : null
+  const out = [
+    { body: { ...fields, ...ct, ...st }, clientTypeLeft: false, label: 'everything', when: true },
+    { body: { ...fields, ...ct }, clientTypeLeft: false, label: `without StageName ${raised}`, when: !!st && !!ct },
+    { body: { ...fields, ...st }, clientTypeLeft: !!ct, label: `without Client Type ${clientType}`, when: !!ct && !!st },
+    { body: fields, clientTypeLeft: !!ct, label: 'without the Client Type or stage', when: !!ct || !!st },
+  ]
+  return out.filter(a => a.when).map(({ body, clientTypeLeft, label }) => ({ body, clientTypeLeft, label }))
 }
 
 /** What the rep is told when an opportunity kept its own Client Type (applyBookingToOpportunity). */
